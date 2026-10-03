@@ -3,6 +3,8 @@
 A bilingual (English / 繁體中文) computer vision tutorial site, from basic image processing to modern deep learning.
 Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to Cloudflare Pages.
 
+**Live site: <https://blog.shyandram.dev/>** ([English](https://blog.shyandram.dev/en/) · [繁體中文](https://blog.shyandram.dev/zh-tw/))
+
 - Survey of website systems: [`docs/01-survey.md`](docs/01-survey.md)
 - Site design: [`docs/02-design.md`](docs/02-design.md)
 - Visual mockup: [`design/mockup/index.html`](design/mockup/index.html)
@@ -20,7 +22,7 @@ One-time setup in the Cloudflare dashboard (**Workers & Pages → Create → Pag
 | Framework preset | Astro |
 | Build command | `npm run build` |
 | Build output directory | `dist` |
-| Environment variable | `SITE` = your production URL, e.g. `https://cv-blog.pages.dev` |
+| Environment variable | `SITE` = `https://blog.shyandram.dev` |
 
 Node 22 is picked up from `.nvmrc`. Pushes to `main` go to production; other branches and pull requests
 get their own preview URL. `public/_headers` sets long-term caching for built assets.

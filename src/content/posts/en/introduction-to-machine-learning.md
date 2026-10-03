@@ -1,10 +1,13 @@
 ---
 title: "Introduction to Machine Learning"
 description: "Notes on the basics of machine learning: supervised and unsupervised learning, regression, classification and gradient descent."
-tags: [machine-learning]
+tags: [machine-learning, gradient-descent]
 published: 2024-02-01
+updated: 2026-10-04
 original: https://medium.com/@shyangen104/introduction-to-machine-learning-1a16455d111f
 ---
+
+> **Updated October 2026:** The basics below still hold. I added a few marked corrections and short notes on self-supervised and reinforcement learning, which now power today's large AI models.
 
 ## Notes: Introduction to Machine Learning
 
@@ -14,11 +17,19 @@ Feb 1, 2024
 
 > Field of study that gives computers the ability to learn without being explicitly programmed.”Arthur Samuel (1959)
 
+> **Correction:** The original quotes Samuel (1959); more precisely, this is a popular paraphrase. [His 1959 paper](https://mlanthology.org/misc/1959/samuel1959misc-some/) says learning from experience should "eliminate the need for much of this detailed programming effort."
+
 ## Machine learning categories
 
 - Supervised
 - Unsupervised
 - Reinforcement
+
+### Self-supervised learning (2026 addition)
+
+Now a major category: the model makes labels from the data itself, e.g. hiding part of a sentence and predicting it ([LeCun & Misra, 2021](https://ai.meta.com/blog/self-supervised-learning-the-dark-matter-of-intelligence/)). "Foundation models" like GPT-3 are trained on broad data, then adapted to many tasks ([Bommasani et al., 2021](https://arxiv.org/abs/2108.07258)).
+
+> **Update (2026):** Reinforcement learning is now best known for tuning chatbots with human feedback, RLHF ([Ouyang et al., 2022](https://arxiv.org/abs/2203.02155)).
 
 ## Supervised learning
 
@@ -64,6 +75,8 @@ No specific answers to the problem, clustering the data into n groups.
 - Anomaly detection: Find unusual data points.
 - Dimensionality reduction: Compress data using fewer numbers. E.g. PCA (Principal component analysis)
 
+> **Correction:** The original lists KNN as clustering; more precisely, k-nearest neighbors is [supervised](https://scikit-learn.org/stable/modules/neighbors.html). K-means is the clustering example.
+
 ## Terminology of Machine Learning
 
 **Dataset**
@@ -105,6 +118,8 @@ Simplified version
 y = J(w)= w_1 x + w_0 1 = w x
 ```
 
+> **Correction:** The original writes the model as $J(w, b)$; more precisely, the model is $f_{w,b}(x) = wx + b$ and $J$ is the cost. For classification, logistic regression is used.
+
 ### What do parameters (w, b) do?
 
 ![Figure 6](./images/introduction-to-machine-learning/06.png)
@@ -118,6 +133,8 @@ Find w, b:
 y^(i) is close to y^(i) for all (x^(i) , y^(i)).
 ```
 
+> **Correction:** The original says "y^(i) is close to y^(i)"; more precisely, $\hat{y}^{(i)}$ is close to $y^{(i)}$.
+
 ![Figure 7](./images/introduction-to-machine-learning/07.png)
 
 ![Figure 8](./images/introduction-to-machine-learning/08.png)
@@ -125,6 +142,16 @@ y^(i) is close to y^(i) for all (x^(i) , y^(i)).
 ### Cost Function
 
 ![Figure 9](./images/introduction-to-machine-learning/09.png)
+
+### The formulas in text (2026 addition)
+
+MSE cost over $m$ examples, and the update with learning rate $\alpha$:
+
+$$
+J(w,b) = \frac{1}{2m}\sum_{i=1}^{m}\left(f_{w,b}(x^{(i)}) - y^{(i)}\right)^2,
+\qquad
+w \leftarrow w - \alpha \frac{\partial J}{\partial w}
+$$
 
 ### What is the best function we can get?
 
@@ -169,6 +196,8 @@ Cost = 0
 
 - The minimum points
 
+> **Correction:** The original says "Cost = 0" at the minimum; more precisely, the *derivative* is 0 there.
+
 **Derivative**: the “direction” of the optimization steps
 
 ![Figure 15](./images/introduction-to-machine-learning/15.png)
@@ -193,8 +222,15 @@ Batch and mini-batch
 - Batch: Split the training set into n pieces
 - minibatch stochastic methods: Split the training set into pieces with minibatch size (or batch size) as n.
 
+> **Correction:** The original says "Batch" splits the training set into pieces; more precisely, batch gradient descent uses the *whole* set each step (though "batch size" in code means minibatch size).
+
 ## References
 
 [Deep Learning](https://www.deeplearningbook.org/)
 
 **Slides from Machine Learning Specialization** by **Andrew Ng**
+
+## Further reading (2024–2026)
+
+- [Machine Learning Specialization](https://www.coursera.org/specializations/machine-learning-introduction): the course these notes follow.
+- [DeepSeek-R1](https://arxiv.org/abs/2501.12948) (2025): reinforcement learning for reasoning.
