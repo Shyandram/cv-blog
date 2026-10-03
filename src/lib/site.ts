@@ -49,11 +49,16 @@ export async function tutorialsFor(lang: Lang) {
     .sort((a, b) => TRACKS.indexOf(a.entry.data.track) - TRACKS.indexOf(b.entry.data.track) || a.entry.data.order - b.entry.data.order);
 }
 
-export async function postsFor(lang: Lang) {
-  const all = (await getCollection('posts')).filter(visible);
+/**
+ * Posts written in `lang`. With `includeUntranslated`, also posts that exist only in
+ * another language, so readers of either language see everything; `lang` on each item
+ * is the language the post is written in, and its URL lives under that language.
+ */
+export async function postsFor(lang: Lang, { includeUntranslated = false } = {}) {
+  const all = (await getCollection('posts')).filter(visible).map((p: Post) => ({ ...splitId(p.id), entry: p }));
+  const own = new Set(all.filter((p) => p.lang === lang).map((p) => p.slug));
   return all
-    .filter((p: Post) => splitId(p.id).lang === lang)
-    .map((p: Post) => ({ slug: splitId(p.id).slug, entry: p }))
+    .filter((p) => p.lang === lang || (includeUntranslated && !own.has(p.slug)))
     .sort((a, b) => b.entry.data.published.valueOf() - a.entry.data.published.valueOf());
 }
 

@@ -58,7 +58,19 @@ Math uses `$...$` and `$$...$$`. Components available in MDX (import them at the
 | `<Callout type="note\|tip\|warn\|math" title="…">` | Aside box |
 | `<Figure src={img} alt caption />` | Optimized, captioned image |
 
-Blog posts go in `src/content/posts/<lang>/<slug>.md(x)`.
+Blog posts go in `src/content/posts/<lang>/<slug>.md(x)`. A post that exists in only one language
+is still listed on the other language's blog, labelled with its language. Add `original: <url>` to
+show an "Originally published on …" link.
+
+### Importing from Medium
+
+```bash
+curl -L -o feed.xml https://medium.com/feed/@shyangen104   # the 10 most recent posts, full text
+python scripts/import_medium.py feed.xml my-slug=<id at the end of the Medium URL>
+```
+
+The script converts the post to Markdown, downloads its images next to it, and fills in the frontmatter.
+Review the description and any links to other Medium posts afterwards.
 
 ## Local preview (optional)
 
