@@ -1,0 +1,836 @@
+---
+title: "DL 06・物件追蹤：從單一物件到多物件"
+description: "電腦視覺如何在影片中跟住物體：重識別、從相關濾波器到 Transformer 與 SAM 2 的單物件追蹤，以及結合卡爾曼濾波器、匈牙利演算法、端到端模型與 MOTA／IDF1／HOTA 指標的多物件追蹤。"
+track: deep-learning
+order: 60
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection, image-processing/dip-10-segmentation, image-processing/dip-12-feature-extraction]
+tags: [object-tracking, multi-object-tracking, re-identification, kalman-filter, video]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import taxonomy from '../../../../assets/deep-learning/dl-06-object-tracking/taxonomy.png';
+import sotArch from '../../../../assets/deep-learning/dl-06-object-tracking/sot-siamese-vs-onestream.png';
+import pipeline from '../../../../assets/deep-learning/dl-06-object-tracking/tbd-pipeline.png';
+import kalmanFig from '../../../../assets/deep-learning/dl-06-object-tracking/kalman.png';
+import tracksFig from '../../../../assets/deep-learning/dl-06-object-tracking/tracks-id-switches.png';
+import hotaFig from '../../../../assets/deep-learning/dl-06-object-tracking/hota-vs-mota.png';
+
+## 你將學到
+
+- 追蹤在「分類 → 偵測」之後的位置，以及每個追蹤器都要做的兩件事：感知跨影格的運動、維持每個物件的身分。
+- 一套清楚的分類：重識別（re-identification）與時序追蹤；單物件追蹤（SOT／VOT）與多物件追蹤（MOT）；以及多目標跨攝影機追蹤（MTMCT）。
+- 單物件追蹤的演進：相關濾波器（MOSSE、KCF）、孿生網路（Siamese；SiamFC、SiamRPN）、單流 Transformer（OSTrack、SeqTrack），以及影片分割模型（SAM 2、SAMURAI、SAM 3）。
+- 深入多物件追蹤：「先偵測再追蹤」（tracking-by-detection）流程（偵測器、卡爾曼濾波器、外觀嵌入、匈牙利演算法）、SORT 家族（SORT、DeepSORT、ByteTrack、OC-SORT、BoT-SORT）、聯合偵測與嵌入（JDE、FairMOT）、以 query 為基礎的端到端追蹤器（MOTR、MOTRv2、MOTIP），以及開放詞彙追蹤。
+- 怎麼評估追蹤器：Re-ID 的 CMC 與 mAP、SOT 的 success 與 precision、MOT 的 MOTA、IDF1 與 HOTA，以及 HOTA 為什麼會被提出。
+- 一個可以直接執行的 NumPy 追蹤器，並在合成場景上實際量測 ID 切換與各項指標。
+
+## 先看全貌
+
+偵測器看一張圖，告訴你「這裡有三個人」。追蹤器看一段影片，告訴你「這個人和一秒前那個是**同一個**，而那一位剛走到柱子後面，等一下會再出來」。追蹤就是在偵測之上加入時間與記憶。
+
+<Callout type="tip" title="用最簡單的話說">
+想像你和朋友一起看足球賽，各自挑一位最喜歡的球員。在一張照片裡找出場上所有球員，是**偵測**。眼睛一直盯著**你的**球員，看她跑、轉身、被別人擋住一下又出現，是**單物件追蹤**。幫**每一位**球員都貼上號碼貼紙，而且就算兩個人撞在一起，貼紙也絕對不會貼錯，是**多物件追蹤**。電視切到另一台攝影機時，你還認得出你的球員，就是**重識別**。
+</Callout>
+
+為什麼重要：自駕車要靠追蹤才知道行人是**正走向**馬路，而不只是站在路邊；運動分析要靠追蹤才算得出每位球員跑了多遠；倉儲要靠追蹤來清點堆高機和機器人；影片剪輯要靠追蹤讓遮罩黏在移動的物體上。這些應用不只要知道東西**在哪裡**，還要知道**誰是誰**、隨時間怎麼變化。
+
+<Callout type="note" title="關於本篇">
+本篇由作者先前的部落格文章〈物件追蹤Object Tracking 簡介〉[1] 擴充而成，保留原文架構，並補上技術細節、可執行的追蹤器與最新的文獻回顧。原文請見[這裡](/zh-tw/blog/object-tracking-intro/)。
+</Callout>
+
+## 從分類、偵測到追蹤
+
+**白話版。** 分類回答「圖裡**是什麼**」；偵測回答「是什麼、**在哪裡**」；追蹤回答「是什麼、在哪裡、**是哪一個**，而且隨時間持續」。
+
+[1] 的這條路線，正好是電腦視覺任務的一張地圖：
+
+1. **影像分類**把影像 $I$ 對應到一個標籤 $y$。
+2. **物件偵測**把影像對應到一組帶有類別與信心分數的框，$\mathcal{D} = \{(b_j, c_j, s_j)\}_{j=1}^{N}$，其中 $b_j$ 是邊界框，$c_j$ 是類別，$s_j \in [0, 1]$ 是分數。偵測模仿的是人類視覺判斷畫面中目標位置的能力，詳細內容請見 [DL 03・物件偵測](/zh-tw/learn/deep-learning/dl-03-object-detection/)。
+3. **物件追蹤**輸入影格序列 $I_1, \dots, I_T$，輸出**軌跡**：對每個物件 $k$，給出它在可見影格集合 $\mathcal{T}_k$ 上的一串框（或遮罩）$\big(b^k_{t}\big)_{t \in \mathcal{T}_k}$，而且全部帶著同一個身分 $k$。
+
+新加入的關鍵元素是身分標籤。偵測是無狀態的：第 $t$ 格與第 $t+1$ 格各自獨立處理。追蹤則是有狀態的：它要把資訊帶到下一格。
+
+## 追蹤在做什麼？
+
+**白話版。** 追蹤模仿人類視覺對運動物體的感知：我們會預測東西接下來往哪裡去、往那裡看，並在它外觀改變或短暫被擋住時，依然把它當成同一個東西。
+
+更精確地說，每個追蹤器都在解兩個互相耦合的子問題：
+
+- **隨時間定位**（運動感知）：估計每個目標在每一格中的位置，最好能用過去預測未來。這讓追蹤器能撐過模糊、漏偵測與短暫遮擋。
+- **維持身分**（資料關聯，data association）：決定第 $t$ 格的哪個觀測屬於第 $t-1$ 格的哪個目標。這能防止兩個交錯而過的人互換標籤。
+
+單物件追蹤因為只有一個身分，主要力氣花在第一個問題；多物件追蹤主要在處理第二個問題；重識別則是**完全沒有**運動資訊時的第二個問題。
+
+[1] 對各類方法列出的困難，都來自這兩件事：外觀變化（姿態、光照、尺度、視角）、被其他物體或場景遮擋、長得很像的干擾物、快速或非線性的運動、攝影機本身的移動，以及目標進出畫面。
+
+## 追蹤的分類
+
+**白話版。** 追蹤器可以依照**追什麼**（一個或多個物件、一台或多台攝影機）來分，也可以依照**怎麼維持身分**（只靠外觀，或是逐格跟著運動）來分。
+
+<Figure src={taxonomy} alt="分類圖：物件追蹤依目標分為 SOT/VOT 與 MOT，兩者結合成 MTMCT；依方法分為 Re-ID 與時序追蹤；Re-ID 在 MTMCT 中負責連接不同攝影機；點追蹤與影片分割列為相關任務。" caption="圖 1 — 追蹤的分類。依目標：單物件（SOT，又稱 VOT）與多物件（MOT）。依方法：只靠外觀的重識別，以及時序追蹤。兩者結合後最困難的情境是多目標跨攝影機追蹤（MTMCT）。" />
+
+依照 [1]：
+
+- **依作法。** *重識別（Re-ID）*只靠外觀（有時加上姿態），在時間相隔很遠、或來自不同攝影機的影像之間比對同一個目標。*時序物件追蹤*則在同一段影片中逐格跟隨目標，可以利用運動的連續性。
+- **依目標。** *視覺物件追蹤（visual object tracking, VOT）*又稱*單物件追蹤（single-object tracking, SOT）*，追蹤第一格中以框指定的任意一個物件。*多物件追蹤（multi-object tracking, MOT）*則在**連續影格**中追蹤指定類別的所有物件（例如每一位行人），並為每個物件維持一致的 ID。
+- **終極目標。** *多目標跨攝影機追蹤（Multi-Target Multi-Camera Tracking, MTMCT）*在整個攝影機網路中追蹤多個目標，當一個人離開某台攝影機、出現在另一台時，仍維持相同身分。它結合了單一攝影機內的 MOT 與攝影機之間的 Re-ID。
+
+傳統文獻與大多數基準資料集都以**行人**為主要目標 [1]，因為監控與自駕車讓「人」成為最有價值的追蹤類別。新的基準則加入了舞者、運動員、車輛與開放詞彙類別。
+
+## 重識別（Re-ID）
+
+**白話版。** Re-ID 是一個搜尋問題：給你某台攝影機拍到的一個人，請在其他攝影機拍到的照片中找出同一個人，並由最像到最不像排序。
+
+### 問題定義
+
+Re-ID 被定義成**檢索**（retrieval）問題 [7]。查詢影像（query）$q$ 與由其他攝影機偵測出的行人圖庫（gallery）$\mathcal{G} = \{g_1, \dots, g_M\}$，都經由網路 $f_\theta$ 映射成嵌入向量，再依距離排序圖庫，通常使用餘弦距離
+
+$$
+d(q, g) = 1 - \frac{f_\theta(q)^\top f_\theta(g)}{\lVert f_\theta(q)\rVert\,\lVert f_\theta(g)\rVert},
+$$
+
+其中 $f_\theta(\cdot) \in \mathbb{R}^D$ 是參數為 $\theta$ 的網路輸出的 $D$ 維嵌入。訓練的目標是讓同一身分的嵌入靠近、不同身分的嵌入遠離。常見做法是把身分分類損失（對 $C$ 個訓練身分做交叉熵）與**三元組損失**（triplet loss）結合：
+
+$$
+\mathcal{L}_{\text{tri}} = \big[\, d(a, p) - d(a, n) + m \,\big]_+ ,
+$$
+
+其中 $a$ 是錨點影像，$p$ 是正樣本（同一身分），$n$ 是負樣本（不同身分），$m > 0$ 是邊界（margin），$[x]_+ = \max(x, 0)$。測試時的身分從未在訓練中出現，所以 Re-ID 是開放集合（open-set）問題：網路必須學到一般性的「是不是同一個人」。
+
+### 挑戰
+
+[1] 把困難分成**資料因素**與**環境因素**。資料因素：標註身分數量有限、偵測器給出的框有雜訊、身體只拍到一部分、解析度低。環境因素：視角與各攝影機色彩響應不同、光照、遮擋、雜亂背景，以及換了衣服的人。Re-ID 也帶來明顯的**隱私**疑慮，這也是一些監控型資料集被撤下的原因之一（見下文）。原文把城市級監控系統列為主要應用；如今 Re-ID 同樣常見於 MOT 追蹤器裡的外觀模組，以及零售與運動分析。
+
+### 代表模型
+
+- **強基線（strong baseline）。** Luo 等人 [14] 證明：一個普通的 ResNet-50，搭配一組訓練「技巧」——學習率暖身（warm-up）、隨機擦除（random erasing）資料增強、標籤平滑（label smoothing）、最後一層 stride 設為 1 以得到更大的特徵圖，以及 **BNNeck**（一層批次正規化，把三元組損失用的特徵與分類用的特徵分開）——就是一個強大且可重現的基線。
+- **質心三元組損失（centroid triplet loss, CTL）。** 原文提到的模型（ResNet-50，輸入 $256 \times 128$）[15]，把「樣本對樣本」的三元組換成「樣本對類別質心」的距離，檢索時也是拿查詢影像與各身分的質心比較，而不是與每一張圖庫影像比較。
+- **CLIP-ReID。** Li 等人 [16] 把視覺語言模型 CLIP 用在沒有文字標籤的 Re-ID 上。第一階段凍結編碼器，學習每個身分專屬的文字 token；第二階段再以這些文字特徵作為額外監督，微調影像編碼器。
+
+### 資料集
+
+| 資料集 | 內容 | 狀態 |
+| --- | --- | --- |
+| Market-1501 [12] | 1,501 個身分、6 台攝影機、偵測器裁切的框 | 可取得 |
+| MSMT17 [13] | 4,101 個身分、15 台室內外攝影機 | 可取得 |
+| DukeMTMC [10]（及 DukeMTMC-reID） | 8 台同步的校園攝影機 | **2019 年已撤下** |
+
+DukeMTMC 與跨攝影機追蹤的 IDF1 指標一起被提出 [10]，其中的 Re-ID 子集也被廣泛使用。由於在校園拍攝行人引發的隱私與倫理疑慮，作者已於 2019 年撤下該資料集，不應再下載或使用；Peng 等人 [11] 追蹤了它在撤下後仍以衍生版本流傳的情形，並主張資料集需要更好的管理（stewardship）。
+
+### 指標：CMC rank-$k$ 與 mAP
+
+**累積匹配特性**（cumulative matching characteristic, CMC）在 rank $k$ 的值，是「第一個正確匹配出現在排序後圖庫前 $k$ 名」的查詢比例：
+
+$$
+\text{CMC}(k) = \frac{1}{|Q|} \sum_{q \in Q} \mathbb{1}\big[\, r_q \le k \,\big],
+$$
+
+其中 $Q$ 是查詢集合，$r_q$ 是查詢 $q$ 的第一個正確匹配的名次。*Rank-1 準確率*就是 $\text{CMC}(1)$。由於一個查詢在圖庫中通常有好幾個正確匹配，只看 rank-$k$ 會忽略**其他**正確匹配排得好不好。**平均精確度均值**（mean average precision, mAP）補上了這一點：
+
+$$
+\text{AP}(q) = \frac{1}{G_q}\sum_{i=1}^{G_q} \frac{i}{r_{q,i}}, \qquad \text{mAP} = \frac{1}{|Q|}\sum_{q} \text{AP}(q),
+$$
+
+其中 $G_q$ 是 $q$ 在圖庫中的正確匹配數，$r_{q,i}$ 是第 $i$ 個正確匹配的名次，所以 $i / r_{q,i}$ 就是找到第 $i$ 個正確匹配那一刻的精確度。
+
+```python
+import numpy as np
+
+def cmc_map(dist, q_ids, g_ids, max_rank=5):
+    """dist: (Q, G) distances between query and gallery embeddings."""
+    order = np.argsort(dist, axis=1)                 # closest gallery items first
+    match = g_ids[order] == q_ids[:, None]           # (Q, G) True where same person
+    cmc = (np.cumsum(match, axis=1) > 0).mean(axis=0)[:max_rank]
+    aps = []
+    for row in match:
+        hits = np.flatnonzero(row)                   # ranks (0-based) of true matches
+        precision_at_hits = np.arange(1, len(hits) + 1) / (hits + 1)
+        aps.append(precision_at_hits.mean())
+    return cmc, np.mean(aps)
+
+rng = np.random.default_rng(0)
+centres = rng.normal(size=(50, 64))                  # 50 identities, 64-D embeddings
+g_ids = np.repeat(np.arange(50), 4)                  # 4 gallery images per identity
+q_ids = np.arange(50)
+gallery = centres[g_ids] + 1.6 * rng.normal(size=(200, 64))
+query = centres[q_ids] + 1.6 * rng.normal(size=(50, 64))
+norm = lambda x: x / np.linalg.norm(x, axis=1, keepdims=True)
+dist = 1 - norm(query) @ norm(gallery).T             # cosine distance
+cmc, mAP = cmc_map(dist, q_ids, g_ids)
+print("rank-1 %.2f  rank-5 %.2f  mAP %.2f" % (cmc[0], cmc[4], mAP))
+```
+
+在這個合成圖庫（每個身分 4 張）上，程式輸出 `rank-1 0.76  rank-5 0.92  mAP 0.57`：大多數查詢都能在前面找到**一張**正確影像，但另外三張散落在後面，只有 mAP 看得出來。
+
+## 單物件追蹤
+
+**白話版。** 你在第一格框住某個東西，追蹤器必須在接下來整段影片中一直把框放在同一個東西上，而且事先不知道它是哪一類物體。
+
+### 問題定義
+
+給定影格 $I_1, \dots, I_T$ 與初始框 $b_1$，單物件追蹤器輸出 $\hat b_2, \dots, \hat b_T$。目標**與類別無關**：可能是人、鳥或咖啡杯。因此 SOT 是一種 *one-shot* 學習：目標唯一的範例就是第一格的影像塊，也就是**模板**（template）$z$。在每個新影格，追蹤器在上一個位置附近的搜尋區域 $x$ 中尋找目標。[1] 列出的挑戰是：複雜的外觀變化、移動模式，以及光照、遮擋等環境變化。
+
+### 傳統方法：相關濾波器
+
+在深度學習之前，最快的追蹤器會線上學習一個**相關濾波器**（correlation filter）。MOSSE [17] 在頻率域學習濾波器 $H$，讓它與訓練影像塊 $F_i$ 做相關後，在目標中心產生尖銳的高斯峰 $G_i$：
+
+$$
+\min_{H^*} \sum_i \big\lvert F_i \odot H^* - G_i \big\rvert^2
+\quad\Rightarrow\quad
+H^* = \frac{\sum_i G_i \odot F_i^*}{\sum_i F_i \odot F_i^*},
+$$
+
+其中大寫字母代表二維離散傅立葉轉換，$\odot$ 是逐元素相乘，$^*$ 是複數共軛，除法也是逐元素進行。因為相關運算在頻率域變成乘法（見[第 4 章](/zh-tw/learn/image-processing/dip-04-frequency-domain/)），訓練與偵測只需要幾次 FFT，在 CPU 上就能達到每秒數百格。KCF [18] 指出，用影像塊的**所有循環位移**來訓練，會得到一個可以被 DFT 對角化的循環矩陣，於是核嶺迴歸（kernel ridge regression）變成逐元素運算，也能使用 HOG 等多通道特徵。它們的弱點是搜尋視窗固定、循環假設造成的邊界效應，以及人工設計的特徵。
+
+### 孿生網路追蹤器
+
+**白話版。** 離線用大量影片訓練一個網路，只回答一個問題：「模板出現在這張搜尋影像的哪裡？」測試時直接凍結使用。
+
+SiamFC [19] 把**同一個**全卷積網路 $\varphi$ 同時套用在模板 $z$ 與搜尋區域 $x$ 上，再把兩張特徵圖做互相關：
+
+$$
+f(z, x) = \varphi(z) \star \varphi(x) + b\,\mathbb{1},
+$$
+
+其中 $\star$ 是互相關（模板特徵扮演卷積核），$b$ 是可學習的偏差，$\mathbb{1}$ 是全為 1 的圖。輸出是一張分數圖，峰值位置就是新位置。訓練時使用邏輯損失（logistic loss），真實中心附近標為正、其他位置標為負。由於不做線上更新，它速度快、也不容易漂移，但只能預測位置，尺度則靠搜尋一個小型影像金字塔來處理。
+
+SiamRPN [20] 在孿生特徵之後加上**區域提議網路**（region proposal network）：一個分支判斷錨框是目標還是背景，另一個分支迴歸框的偏移量。追蹤因此變成以模板定義類別的「one-shot 偵測」，能輸出長寬比會變化的精確框。
+
+### Transformer 單流追蹤器
+
+2022 年後，主流從孿生 CNN 轉向 Transformer。關鍵差別在於模板與搜尋區域**在哪裡**互動（圖 2）。雙流（two-stream）設計中，兩者分別編碼，最後才比較一次。在 OSTrack [21] 這類**單流**（one-stream）設計中，$z$ 與 $x$ 的影像 patch 被串成同一個 token 序列，由同一個 Vision Transformer 處理，因此每一層注意力都同時在擷取特徵、也在建立模板與搜尋區域之間的關係。OSTrack 也會在前幾層丟掉明顯是背景的搜尋 token 以節省計算。SeqTrack [22] 更進一步簡化：由編碼器—解碼器 Transformer 以自迴歸方式，把框的四個座標當成離散 token 序列逐一生成，只用一般的交叉熵訓練——與語言模型的做法相同。
+
+<Figure src={sotArch} alt="兩張示意圖。左：模板與搜尋影像分別經過共享的 CNN，在互相關處會合並產生分數圖。右：模板與搜尋 patch 一起進入同一個具聯合注意力的 ViT 編碼器，再接框預測頭。" caption="圖 2 — 雙流孿生追蹤器只在最後比較一次模板與搜尋特徵；單流 Transformer 追蹤器讓兩者在每一層都互動。" />
+
+### 用影片分割模型做追蹤
+
+**白話版。** 新一代「影片中分割一切」的模型，只要你點一下說「就是這個」，就能用像素遮罩在整段影片中跟住它。這**就是**單物件追蹤，只是輸出遮罩而不是框。
+
+SAM 2 [23] 把 Segment Anything 模型延伸到影片，加入**串流記憶**（streaming memory）：過去影格的特徵與預測遮罩，連同被提示的影格，都存在記憶庫中，供目前影格做注意力。只要在一格中用點、框或遮罩提示，就能得到貫穿整段影片的「masklet」，行為就像輸出遮罩的 SOT 追蹤器。SAMURAI [24] 不需重新訓練就把 SAM 2 改造成追蹤器：它加入卡爾曼濾波器運動模型，從 SAM 2 的多個候選遮罩中挑選，並用考慮運動的規則決定哪些過去影格進入記憶，這在有相似干擾物的擁擠場景特別有幫助。SAM 3 [25] 加入**可提示概念分割**（promptable concept segmentation）：給一個名詞片語，例如「黃色校車」，或一張範例影像，它就能在影片中偵測、分割並追蹤**所有**符合的實例，並給每個實例各自的身分。這已經是一種開放詞彙 MOT，SOT 與 MOT 的界線也因此更加模糊。
+
+### 基準資料集與指標
+
+| 基準 | 特色 |
+| --- | --- |
+| OTB [26] | 早期的標準基準，每段序列都有屬性標記（遮擋、快速運動等）；提出 success plot 與 precision plot |
+| VOT challenge [53] | 自 2013 年起每年舉辦的競賽，採用失敗後重新初始化的評估協定；現為 VOTS，同時評估追蹤**與**分割 |
+| LaSOT [27] | 長時追蹤：1,400 段序列、超過 350 萬格，每一格都由人工標註 |
+| GOT-10k [28] | one-shot 協定：訓練與測試的物件類別互不重疊 |
+| TrackingNet [29] | 大規模、真實場景影片，以獨立的評估伺服器評分 |
+
+兩個經典指標來自 OTB [26]：
+
+$$
+\text{Success}(\tau) = \frac{1}{T}\sum_{t=1}^{T} \mathbb{1}\big[\operatorname{IoU}(\hat b_t, b_t) > \tau\big],
+\qquad
+\text{AUC} = \int_0^1 \text{Success}(\tau)\, d\tau,
+$$
+
+$$
+\text{Precision}(\delta) = \frac{1}{T}\sum_{t=1}^{T} \mathbb{1}\big[\lVert \hat c_t - c_t \rVert_2 \le \delta\big],
+$$
+
+其中 $\hat b_t, b_t$ 是預測框與真實框，$\tau$ 是 IoU 門檻，$\hat c_t, c_t$ 是兩者的中心，$\delta$ 是像素距離，慣例取 20。success plot 的 AUC 是 OTB 與 LaSOT 的主要數字。GOT-10k 則報告**平均重疊**（average overlap，即平均 IoU），以及 $\tau = 0.5$ 與 $0.75$ 時的成功率。
+
+```python
+import numpy as np
+
+def iou_xywh(a, b):
+    """IoU between rows of a and b, boxes as [x, y, w, h] (top-left corner)."""
+    x1 = np.maximum(a[:, 0], b[:, 0]); y1 = np.maximum(a[:, 1], b[:, 1])
+    x2 = np.minimum(a[:, 0] + a[:, 2], b[:, 0] + b[:, 2])
+    y2 = np.minimum(a[:, 1] + a[:, 3], b[:, 1] + b[:, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    return inter / (a[:, 2] * a[:, 3] + b[:, 2] * b[:, 3] - inter)
+
+def success_auc(pred, gt, thresholds=np.linspace(0, 1, 21)):
+    ious = iou_xywh(pred, gt)
+    curve = np.array([(ious > t).mean() for t in thresholds])
+    return curve.mean()                              # area under the success plot
+
+def precision_at(pred, gt, px=20):
+    c_pred = pred[:, :2] + pred[:, 2:] / 2; c_gt = gt[:, :2] + gt[:, 2:] / 2
+    return (np.linalg.norm(c_pred - c_gt, axis=1) <= px).mean()
+
+rng = np.random.default_rng(0)
+gt = np.c_[np.linspace(50, 400, 300), np.full(300, 80.0), np.full(300, 40.0), np.full(300, 60.0)]
+pred = gt + rng.normal(0, 4, gt.shape)
+pred[200:230, :2] += 120                             # 30 frames lost on a distractor
+print("success AUC %.3f   precision@20px %.3f" % (success_auc(pred, gt), precision_at(pred, gt)))
+```
+
+輸出為 `success AUC 0.647   precision@20px 0.900`：跟到干擾物上的 30 格讓 precision 掉了 10 個百分點；而其他影格上的小幅抖動對 AUC 的影響大得多，因為 AUC 也會獎勵貼得很緊的框。
+
+## 多物件追蹤
+
+**白話版。** 在每一格找出所有感興趣的物件，並給每個物件一個號碼，只要它還在畫面中，號碼就不變——即使物件彼此交錯、互相遮擋，或離開後又回來。
+
+MOT 是在**連續影格**中同時追蹤多個目標，並為每個目標維持一致的 ID；單一畫格本身只能做偵測。[1] 列出的挑戰包括：頻繁遮擋、軌跡何時開始與結束、目標之間外觀相似，以及目標之間的相互影響（人群中的人會一起移動、彼此遮擋）。
+
+形式上，給定每一格的偵測 $\mathcal{D}_t$，MOT 要找出一組軌跡 $\mathcal{T} = \{\tau_k\}$，把真實的偵測分組、丟掉誤報，並補上漏掉的偵測。離線（offline）方法對整段影片一起求解，常寫成圖或網路流問題；本節著重的**線上**（online）方法，必須只用第 $1..t$ 格在第 $t$ 格就做出決定，這正是即時應用所需要的。
+
+### 「先偵測再追蹤」流程
+
+十年來的主流設計是**先偵測再追蹤**（tracking-by-detection）[2]、[4]：每一格都跑偵測器，再把偵測結果跨時間連起來（圖 3）。每一格經過四個步驟：
+
+1. **偵測。** 偵測器（Faster R-CNN、YOLO 系列、DETR 系列；見 [DL 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)）輸出框與分數。
+2. **預測。** 運動模型把每條現有軌跡往前推到現在應該在的位置。
+3. **描述。** （可選）用 Re-ID 網路把每個偵測框裁切出的影像轉成嵌入向量。
+4. **關聯。** 在預測的軌跡與偵測之間建立代價矩陣，解指派問題。匹配到的軌跡被更新；沒匹配到的偵測可能開啟新軌跡（**出生**）；太久沒匹配到的軌跡被刪除（**死亡**）。
+
+<Figure src={pipeline} alt="流程圖：第 t 格送入偵測器與 Re-ID 頭；第 t-1 格的軌跡送入卡爾曼預測；兩者匯入代價矩陣，接著做匈牙利指派，再更新軌跡並處理出生與死亡；迴圈把軌跡帶到下一格。" caption="圖 3 — 線上的先偵測再追蹤流程。觀測（框、嵌入）與狀態（預測的軌跡）在代價矩陣中會合，指派結果再更新下一格要用的狀態。" />
+
+### 運動模型：卡爾曼濾波器
+
+**白話版。** 先根據物體上一刻的位置與速度猜它現在在哪；再把這個猜測往偵測結果拉一點，而且比較不確定的那一方，就比較不被相信。
+
+幾乎所有先偵測再追蹤的系統，都使用等速模型的**線性卡爾曼濾波器**（Kalman filter）[30]。在我們的程式中，一條軌跡的狀態是
+
+$$
+\mathbf{x} = [\,c_x,\ c_y,\ w,\ h,\ v_x,\ v_y\,]^\top,
+$$
+
+其中 $(c_x, c_y)$ 是框的中心，$w, h$ 是寬與高，$(v_x, v_y)$ 是中心的速度（像素／格）。（SORT 使用中心、面積與長寬比，而不是 $w, h$ [32]；BoT-SORT 又改回 $w$ 與 $h$ [36]。）模型分兩步。
+
+**預測**（時間更新）：
+
+$$
+\begin{aligned}
+\hat{\mathbf{x}}_{t \mid t-1} &= \mathbf{F}\,\hat{\mathbf{x}}_{t-1 \mid t-1}, \\
+\mathbf{P}_{t \mid t-1} &= \mathbf{F}\,\mathbf{P}_{t-1 \mid t-1}\,\mathbf{F}^\top + \mathbf{Q},
+\end{aligned}
+$$
+
+其中 $\mathbf{F}$ 是 $6\times 6$ 的狀態轉移矩陣（單位矩陣再加上幾個 1，把 $v_x, v_y$ 加到 $c_x, c_y$ 上，因為 $\Delta t = 1$ 格），$\mathbf{P}$ 是狀態共變異數（我們的不確定性），$\mathbf{Q}$ 是過程雜訊共變異數（真實運動可以偏離等速多少）。
+
+**更新**（量測更新），使用匹配到的偵測 $\mathbf{z}_t = [c_x, c_y, w, h]^\top$：
+
+$$
+\begin{aligned}
+\mathbf{S}_t &= \mathbf{H}\,\mathbf{P}_{t\mid t-1}\,\mathbf{H}^\top + \mathbf{R}, \qquad
+\mathbf{K}_t = \mathbf{P}_{t\mid t-1}\,\mathbf{H}^\top\,\mathbf{S}_t^{-1}, \\
+\hat{\mathbf{x}}_{t\mid t} &= \hat{\mathbf{x}}_{t\mid t-1} + \mathbf{K}_t\big(\mathbf{z}_t - \mathbf{H}\,\hat{\mathbf{x}}_{t\mid t-1}\big), \qquad
+\mathbf{P}_{t\mid t} = (\mathbf{I} - \mathbf{K}_t\mathbf{H})\,\mathbf{P}_{t\mid t-1},
+\end{aligned}
+$$
+
+其中 $\mathbf{H} = [\,\mathbf{I}_4\ \ \mathbf{0}\,]$ 取出狀態中可觀測的部分，$\mathbf{R}$ 是偵測器的量測雜訊共變異數，$\mathbf{z}_t - \mathbf{H}\hat{\mathbf{x}}_{t\mid t-1}$ 是**創新量**（innovation，也就是「意外程度」），$\mathbf{S}_t$ 是它的共變異數，$\mathbf{K}_t$ 是**卡爾曼增益**。若預測非常不確定（$\mathbf{P}$ 很大），更新會幾乎把估計值拉到偵測結果上；若偵測器雜訊很大（$\mathbf{R}$ 很大），就比較相信預測。偵測缺漏時，追蹤器只做預測步驟（稱為「滑行」，coasting），$\mathbf{P}$ 會持續變大（圖 4）。
+
+```python
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+# ---------- 1. constant-velocity Kalman filter ----------
+class KalmanBox:
+    """State x = [cx, cy, w, h, vx, vy]; measurement z = [cx, cy, w, h]."""
+    def __init__(self, z, q=1.0, r=4.0):
+        self.x = np.r_[z, 0.0, 0.0]
+        self.P = np.diag([r, r, r, r, 100.0, 100.0])    # unknown velocity: large variance
+        self.F = np.eye(6); self.F[0, 4] = self.F[1, 5] = 1.0   # dt = 1 frame
+        self.H = np.eye(4, 6)
+        self.Q = q * np.diag([1, 1, 0.1, 0.1, 0.5, 0.5])
+        self.R = r * np.eye(4)
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x[:4]
+
+    def update(self, z):
+        S = self.H @ self.P @ self.H.T + self.R          # innovation covariance
+        K = self.P @ self.H.T @ np.linalg.inv(S)          # Kalman gain
+        self.x = self.x + K @ (z - self.H @ self.x)
+        self.P = (np.eye(6) - K @ self.H) @ self.P
+```
+
+<Figure src={kalmanFig} alt="左：一條彎曲的軌跡與帶雜訊的偵測點，紫色是預測的不確定性橢圓，綠色是更新後較小的橢圓；在連續五格漏偵測的區間，預測橢圓不斷變大，估計值沿直線前進。右：cx 的標準差隨時間呈鋸齒狀，並在漏偵測區間急遽上升。" caption="圖 4 — 在合成軌跡上的卡爾曼預測與更新。每次預測都讓不確定性膨脹，每次更新都讓它縮小。連續五格漏偵測時（粉紅色區域），濾波器沿直線滑行，不確定性持續上升——身分錯誤正是在這種時候發生。" />
+
+在模型假設下，創新量 $\boldsymbol\nu$ 的平方**馬氏距離**（Mahalanobis distance）$d_M^2 = \boldsymbol\nu^\top \mathbf{S}^{-1}\boldsymbol\nu$ 服從自由度 4 的 $\chi^2$ 分布，所以 DeepSORT [33] 用它來**閘控**（gating，直接禁止不合理的匹配）。等速假設也是最大的弱點：舞者、運動員，以及任何由移動攝影機拍攝的畫面，都會違反它。
+
+### 外觀嵌入
+
+Re-ID 網路（見上一節）把每個偵測裁切影像轉成單位向量 $\mathbf{e}_j$。每條軌跡保有外觀記憶，例如指數移動平均 $\mathbf{m}_k \leftarrow \alpha\,\mathbf{m}_k + (1-\alpha)\,\mathbf{e}_j$ 後再重新正規化，其中 $\alpha \in [0, 1)$（我們用 $0.9$）。外觀代價就是餘弦距離 $1 - \mathbf{m}_k^\top \mathbf{e}_j$。在長時間遮擋後運動預測已經沒用時，正是靠外觀把身分找回來。
+
+### 關聯：代價矩陣與匈牙利演算法
+
+**白話版。** 為每一組「軌跡 $k$ 配上偵測 $j$」打一個「有多不合適」的分數，做成一張表，再選出一對一配對中總分最小的那一組。
+
+有 $K$ 條預測軌跡與 $N$ 個偵測時，建立代價矩陣 $\mathbf{C} \in \mathbb{R}^{K \times N}$，例如
+
+$$
+C_{kj} = \lambda\,\big(1 - \operatorname{IoU}(\hat b_k, b_j)\big) + (1 - \lambda)\,\big(1 - \mathbf{m}_k^\top \mathbf{e}_j\big),
+$$
+
+其中 $\hat b_k$ 是軌跡 $k$ 的預測框，$b_j$ 是偵測 $j$ 的框，$\lambda \in [0, 1]$ 是運動與外觀的權重（$\lambda = 1$ 就是 SORT 的純 IoU）。接著解**線性指派問題**
+
+$$
+\min_{\mathbf{X} \in \{0,1\}^{K \times N}} \sum_{k,j} C_{kj} X_{kj}
+\quad \text{s.t.}\quad \sum_j X_{kj} \le 1,\ \ \sum_k X_{kj} \le 1,
+$$
+
+讓每條軌跡最多拿一個偵測，反之亦然。**匈牙利演算法**（Hungarian algorithm）[31] 能在多項式時間內精確求解（$n = \max(K, N)$ 時為 $O(n^3)$）；SciPy 的 `linear_sum_assignment` 實作了一個快速的變形。最後，代價超過門檻的配對會被拒絕，實務上的閘控就是這樣做的。
+
+```python
+# ---------- 2. IoU and Hungarian association ----------
+def iou_matrix(a, b):
+    """a: (N,4), b: (M,4) boxes as [cx, cy, w, h] -> (N,M) IoU."""
+    a1, a2 = a[:, None, :2] - a[:, None, 2:] / 2, a[:, None, :2] + a[:, None, 2:] / 2
+    b1, b2 = b[None, :, :2] - b[None, :, 2:] / 2, b[None, :, :2] + b[None, :, 2:] / 2
+    wh = np.clip(np.minimum(a2, b2) - np.maximum(a1, b1), 0, None)
+    inter = wh[..., 0] * wh[..., 1]
+    area = lambda x: x[..., 2] * x[..., 3]
+    return inter / (area(a)[:, None] + area(b)[None, :] - inter + 1e-9)
+
+def associate(cost, max_cost):
+    """Hungarian assignment; pairs whose cost exceeds max_cost are rejected."""
+    if cost.size == 0:
+        return [], list(range(cost.shape[0])), list(range(cost.shape[1]))
+    rows, cols = linear_sum_assignment(cost)
+    pairs = [(r, c) for r, c in zip(rows, cols) if cost[r, c] <= max_cost]
+    mr = {r for r, _ in pairs}; mc = {c for _, c in pairs}
+    return (pairs, [r for r in range(cost.shape[0]) if r not in mr],
+            [c for c in range(cost.shape[1]) if c not in mc])
+```
+
+### 在合成場景上的完整追蹤器
+
+為了看清楚每個想法帶來什麼，我們產生一個 80 格、5 位行人的場景，刻意放入幾種經典的失敗情境：
+
+- 物件 0 與 1 **交錯而過**，重疊時位在後方的物件 1 只得到**低信心**偵測；
+- 物件 2 與 3 相遇後**反彈回去**（非線性運動，像舞者），重疊時後方那位同樣只有低信心偵測；
+- 物件 4 走到**柱子後方** 8 格，這段期間偵測都是低信心；
+- 每個偵測都有 5% 機率漏掉，另外偶爾會出現低分的誤報。
+
+每個偵測也帶有一個 16 維外觀向量：所屬物件固定的單位向量加上雜訊。
+
+```python
+# ---------- 3. synthetic scene ----------
+def make_scene(T=80, seed=0):
+    rng = np.random.default_rng(seed)
+    W, H = 30.0, 70.0
+    t = np.arange(T, dtype=float)
+    tr = {}
+    # pair 1: plain crossing, B is behind A (occluded while they overlap)
+    tr[0] = np.c_[80 + 5 * t, np.full(T, 120.0)]
+    tr[1] = np.c_[480 - 5 * t, np.full(T, 128.0)]
+    # pair 2: they meet and bounce back (non-linear motion, like dancers)
+    m = 40
+    x2 = np.where(t < m, 120 + 4 * t, 120 + 4 * m - 4 * (t - m))
+    x3 = np.where(t < m, 440 - 4 * t, 440 - 4 * m + 4 * (t - m))
+    tr[2] = np.c_[x2 + 10, np.full(T, 260.0)]
+    tr[3] = np.c_[x3 - 10, np.full(T, 266.0)]
+    # walker passing behind a pole (frames 30-37): detections become low-score
+    tr[4] = np.c_[60 + 3 * t, 40 + 1.0 * t]
+    gt = []                                   # per frame list of (id, box)
+    dets = []                                 # per frame list of (box, score, gt_id)
+    feats = {k: (lambda v: v / np.linalg.norm(v))(rng.normal(size=16)) for k in tr}
+    for f in range(T):
+        g, d = [], []
+        boxes = {k: np.r_[tr[k][f], W, H] for k in tr}
+        for k, b in boxes.items():
+            g.append((k, b))
+            score = rng.uniform(0.6, 0.95)
+            if k == 1 and iou_matrix(b[None], boxes[0][None])[0, 0] > 0.2:
+                score = rng.uniform(0.15, 0.45)       # occluded by object 0
+            if k == 3 and iou_matrix(b[None], boxes[2][None])[0, 0] > 0.2:
+                score = rng.uniform(0.15, 0.45)       # occluded by object 2
+            if k == 4 and 30 <= f <= 37:
+                score = rng.uniform(0.15, 0.45)       # behind the pole
+            if rng.random() < 0.05:
+                continue                               # random missed detection
+            noisy = b + np.r_[rng.normal(0, 2.0, 2), rng.normal(0, 1.0, 2)]
+            e = feats[k] + 0.15 * rng.normal(size=16)
+            d.append((noisy, score, k, e / np.linalg.norm(e)))
+        if rng.random() < 0.3:                         # low-score false positive
+            fp = np.r_[rng.uniform(50, 550), rng.uniform(50, 320), W, H]
+            e = rng.normal(size=16)
+            d.append((fp, rng.uniform(0.1, 0.4), -1, e / np.linalg.norm(e)))
+        gt.append(g); dets.append(d)
+    return gt, dets
+```
+
+下面的追蹤器有三個開關。全部關閉時就是 **SORT 風格**：卡爾曼預測、IoU 代價、只對高分偵測（分數 $\ge 0.5$）做匈牙利匹配，連續漏 2 格就刪除軌跡。`use_low=True` 加入 **BYTE** 風格的第二輪：沒配到的軌跡再只用 IoU 去配低分偵測。`use_app=True` 在第一輪加入**外觀**代價，並加上第三輪：純靠外觀，把遺失 30 格以內的軌跡重新識別回來。
+
+```python
+# ---------- 4. SORT-style tracker with optional BYTE and appearance ----------
+class Track:
+    def __init__(self, tid, z, emb):
+        self.id, self.kf, self.emb = tid, KalmanBox(z), emb
+        self.lost = 0
+
+def run_tracker(dets, use_low=False, use_app=False, hi=0.5, max_age=2,
+                app_age=30, lam=0.5):
+    tracks, out, next_id = [], [], 0
+    for d in dets:
+        for tk in tracks:
+            tk.kf.predict()
+        boxes = np.array([x[0] for x in d]).reshape(-1, 4)
+        scores = np.array([x[1] for x in d])
+        embs = np.array([x[3] for x in d]).reshape(-1, 16)
+        high = np.where(scores >= hi)[0]
+        low = np.where((scores < hi) & (scores >= 0.1))[0]
+        active = [tk for tk in tracks if tk.lost <= max_age]
+        pred = np.array([tk.kf.x[:4] for tk in active]).reshape(-1, 4)
+        # stage 1: high-score detections vs active tracks
+        cost = 1 - iou_matrix(pred, boxes[high])
+        gate = 0.7
+        if use_app and len(active) and len(high):
+            tE = np.array([tk.emb for tk in active])
+            app = 1 - tE @ embs[high].T            # cosine distance
+            cost = np.where(cost > 0.9, 9.0, lam * cost + (1 - lam) * app)
+            gate = 0.6
+        pairs, ut, ud = associate(cost, gate)
+        matched = [(active[r], high[c]) for r, c in pairs]
+        rest_tracks = [active[r] for r in ut]
+        rest_high = [high[c] for c in ud]
+        # stage 2 (BYTE): remaining tracks vs low-score detections, IoU only
+        if use_low and rest_tracks and len(low):
+            p2 = np.array([tk.kf.x[:4] for tk in rest_tracks])
+            pairs2, ut2, _ = associate(1 - iou_matrix(p2, boxes[low]), 0.5)
+            matched += [(rest_tracks[r], low[c]) for r, c in pairs2]
+            rest_tracks = [rest_tracks[r] for r in ut2]
+        # stage 3 (appearance only): long-lost tracks vs leftover high-score dets
+        if use_app and rest_high:
+            lost = [tk for tk in tracks if max_age < tk.lost <= app_age]
+            if lost:
+                app = 1 - np.array([tk.emb for tk in lost]) @ embs[rest_high].T
+                pairs3, _, ud3 = associate(app, 0.3)
+                matched += [(lost[r], rest_high[c]) for r, c in pairs3]
+                rest_high = [rest_high[c] for c in ud3]
+        for tk, j in matched:
+            tk.kf.update(boxes[j]); tk.lost = 0
+            tk.emb = 0.9 * tk.emb + 0.1 * embs[j]; tk.emb /= np.linalg.norm(tk.emb)
+        hit = {id(tk) for tk, _ in matched}
+        for tk in tracks:
+            if id(tk) not in hit:
+                tk.lost += 1
+        for j in rest_high:                           # birth: unmatched high-score
+            tracks.append(Track(next_id, boxes[j], embs[j])); next_id += 1
+        tracks = [tk for tk in tracks if tk.lost <= (app_age if use_app else max_age)]
+        out.append([(tk.id, tk.kf.x[:4].copy()) for tk in tracks if tk.lost == 0])
+    return out
+```
+
+指標程式（MOTA、IDF1、HOTA，下文說明）與實驗：
+
+```python
+# ---------- 5. metrics: MOTA, IDF1, HOTA ----------
+def frame_match(g, p, thr):
+    if not g or not p:
+        return []
+    iou = iou_matrix(np.array([b for _, b in g]), np.array([b for _, b in p]))
+    r, c = linear_sum_assignment(-iou)
+    return [(g[i][0], p[j][0]) for i, j in zip(r, c) if iou[i, j] >= thr]
+
+def mota(gt, hyp, thr=0.5):
+    fn = fp = idsw = 0; ngt = 0; last = {}
+    for g, p in zip(gt, hyp):
+        m = frame_match(g, p, thr)
+        ngt += len(g); fn += len(g) - len(m); fp += len(p) - len(m)
+        for gi, pi in m:
+            if gi in last and last[gi] != pi:
+                idsw += 1
+            last[gi] = pi
+    return 1 - (fn + fp + idsw) / ngt, idsw
+
+def idf1(gt, hyp, thr=0.5):
+    gids = sorted({i for g in gt for i, _ in g}); pids = sorted({i for p in hyp for i, _ in p})
+    gi = {k: n for n, k in enumerate(gids)}; pi = {k: n for n, k in enumerate(pids)}
+    ov = np.zeros((len(gids), len(pids)))
+    for g, p in zip(gt, hyp):
+        if g and p:
+            iou = iou_matrix(np.array([b for _, b in g]), np.array([b for _, b in p]))
+            for a in range(len(g)):
+                for b in range(len(p)):
+                    ov[gi[g[a][0]], pi[p[b][0]]] += iou[a, b] >= thr
+    r, c = linear_sum_assignment(-ov)
+    idtp = ov[r, c].sum()
+    n_gt = sum(len(g) for g in gt); n_p = sum(len(p) for p in hyp)
+    return 2 * idtp / (n_gt + n_p)
+
+def hota(gt, hyp, alphas=np.arange(0.05, 0.96, 0.05)):
+    res = []
+    for a in alphas:
+        pairs = []; n_gt = n_p = 0
+        for g, p in zip(gt, hyp):
+            pairs += frame_match(g, p, a); n_gt += len(g); n_p += len(p)
+        tp = len(pairs)
+        if tp == 0:
+            res.append((0, 0, 0)); continue
+        cnt = {}
+        for q in pairs:
+            cnt[q] = cnt.get(q, 0) + 1
+        gcount = {}; pcount = {}
+        for g in gt:
+            for i, _ in g: gcount[i] = gcount.get(i, 0) + 1
+        for p in hyp:
+            for i, _ in p: pcount[i] = pcount.get(i, 0) + 1
+        ass = sum(cnt[q] / (gcount[q[0]] + pcount[q[1]] - cnt[q]) for q in pairs) / tp
+        det = tp / (n_gt + n_p - tp)
+        res.append((np.sqrt(det * ass), det, ass))
+    return np.array(res).mean(axis=0)   # HOTA, DetA, AssA averaged over alpha
+
+gt, dets = make_scene(seed=3)
+for name, kw in [("IoU only", {}), ("+ low-score pass", dict(use_low=True)),
+                 ("+ appearance", dict(use_low=True, use_app=True))]:
+    hyp = run_tracker(dets, **kw)
+    m, sw = mota(gt, hyp)
+    print(f"{name:18s} MOTA {m:.2f}  IDF1 {idf1(gt, hyp):.2f}  "
+          f"HOTA {hota(gt, hyp)[0]:.2f}  ID switches {sw}")
+```
+
+<Figure src={tracksFig} alt="三張上下排列的圖，橫軸為影格、縱軸為框中心 x，粗灰線是真實軌跡，彩色點依預測 ID 上色。只用 IoU 的追蹤器在第 38 到 45 格附近有六個黑色叉號（ID 切換）；加入低分偵測的版本剩一個；加入外觀的版本沒有。" caption="圖 5 — 同一組合成偵測，用三種方式追蹤。顏色代表預測 ID，黑色叉號標示 ID 切換。低分關聯消除了遮擋造成的斷裂；外觀則修正了反彈情境，因為等速預測此時指向錯誤的方向。" />
+
+程式輸出：
+
+| 追蹤器 | MOTA | IDF1 | HOTA | ID 切換 | 使用的 ID 數（真實：5） |
+| --- | --- | --- | --- | --- | --- |
+| SORT 風格，只用 IoU | 0.88 | 0.59 | 0.62 | 6 | 9 |
+| + BYTE 低分偵測第二輪 | 0.93 | 0.88 | 0.79 | 1 | 6 |
+| + 外觀與重新識別 | 0.94 | 0.97 | 0.83 | 0 | 5 |
+
+仔細看這張表。只用 IoU 的追蹤器會弄丟被遮擋的物件，因為它們的偵測分數低於門檻，軌跡死掉，再出現時就換了**新 ID**（軌跡斷裂，fragmentation）。低分偵測的第二輪讓這些軌跡活下來，幾乎修好了所有問題，但修不了反彈：卡爾曼濾波器預測兩位舞者會繼續往前走，所以重疊之後其中一位沒被配到，稍後以新 ID 重新出現。只有外觀能解決這個情況。也請注意 MOTA 的變化（0.88 → 0.94）比 IDF1（0.59 → 0.97）小得多：MOTA 主要是在衡量偵測，我們會在指標一節再回來談。
+
+### SORT 家族
+
+這些想法正好對應到最常被引用的線上追蹤器：
+
+| 追蹤器 | 核心想法 |
+| --- | --- |
+| SORT [32] | 卡爾曼濾波器 + IoU 代價 + 匈牙利指派；刻意極簡、速度非常快。證明了偵測器的品質主導追蹤品質。 |
+| DeepSORT [33] | 加入在行人 Re-ID 資料集上訓練的 CNN 外觀描述子、馬氏距離閘控，以及優先處理最近才看到之軌跡的**匹配級聯**（matching cascade）。能撐過更長的遮擋，ID 切換更少。 |
+| ByteTrack [34] | 關聯**每一個**偵測框：先配高分框，再把剩下的軌跡只用 IoU 去配**低分**框。被遮擋的物件常常分數偏低，因此能被救回而不是被丟掉；而低分的背景框配不到軌跡，就被捨棄。 |
+| OC-SORT [35] | 「以觀測為中心」：遺失的軌跡被重新找到時，沿著上一次與這一次觀測之間的虛擬軌跡重跑卡爾曼更新（修正滑行期間累積的誤差），並在代價中加入運動方向一致性項。在 DanceTrack 這類非線性運動上特別強。 |
+| BoT-SORT [36] | ByteTrack 式的關聯，再加上攝影機運動補償（全域影像對齊）、以 $w, h$ 取代長寬比的卡爾曼狀態，以及融合 IoU 與 Re-ID 的代價。 |
+
+這個家族的教訓是：在強偵測器之上**精心設計的關聯規則**，在行人基準上非常難被超越。Adžemović 2025 年的綜述 [4] 也得到同樣的結論：在密集、運動大致線性的場景，啟發式方法領先；運動複雜時，學習式關聯表現較好。
+
+### 聯合偵測與嵌入，以及以偵測器追蹤
+
+對每個裁切框都另外跑一次 Re-ID 網路很昂貴。**JDE** [37] 在單階段偵測器上加一個嵌入頭，一次前向傳遞就同時輸出框與外觀向量。**FairMOT** [38] 指出這種共享對 Re-ID 並「不公平」：以錨框為基礎的偵測器產生的特徵對身分而言很模糊，而且訓練被偵測任務主導。它改用無錨框、CenterNet 風格的偵測器，在高解析度特徵圖上放兩個對等的分支（偵測與 Re-ID）。原文也提到的 **Tracktor** [39]，則在大多數情況下省去顯式關聯：把上一格的框送進偵測器的框迴歸頭，讓每個框被拉到物件的新位置，並保留原本的身分。
+
+### 以 query 追蹤：端到端 MOT
+
+**白話版。** 不再手寫「預測、比較、配對」，而是給 Transformer 每個物件一個記憶格，讓它自己學會每一格怎麼更新這個記憶格。
+
+DETR 風格的偵測器（見 [DL 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)）用 **query** 表示物件。MOTR [40] 把這延伸到影片：每個偵測到的物件的輸出嵌入，變成一個**軌跡 query**（track query）傳到下一格，持續預測同一個物件；新的**偵測 query** 則負責找出新出現的物件。身分由 query 隱式攜帶，推論時沒有卡爾曼濾波器，也沒有匈牙利匹配。訓練時使用考慮軌跡的標籤指派（tracklet-aware label assignment）與在片段上平均的損失。它的弱點是偵測品質：同一個解碼器既要偵測又要關聯，兩個任務互相衝突。MOTRv2 [41] 以另一個預訓練偵測器（YOLOX）的提議框作為錨點來引導 MOTR，緩解了這個衝突。MOTIP [42]（CVPR 2025）把關聯重新定義為 **ID 預測**：給定到目前為止的軌跡，每條軌跡帶有一個從可學習 ID 字典中取出的 ID 標籤，解碼器把每個新偵測分類成既有的某個 ID 或「新物件」。這是 in-context、可端到端訓練的，而且只需要物件層級的特徵。
+
+### 開放詞彙 MOT
+
+傳統 MOT 只能追蹤訓練集中出現過的類別。**OVTrack** [43]（CVPR 2023）透過從視覺語言模型（CLIP）蒸餾知識來做分類與關聯，並用擴散模型**幻想生成**（hallucinate）的影像對來學習穩健的外觀特徵，藉此追蹤任意類別。SAM 3 的概念提示 [25] 則從分割這一側朝同一個目標前進。
+
+### 資料集
+
+| 資料集 | 領域 | 考驗什麼 |
+| --- | --- | --- |
+| MOT17 [44] | 行人，固定與移動攝影機 | 標準行人基準；以 MOT16 的序列重新發布為 MOT17 |
+| MOT20 [45] | 非常擁擠的行人場景 | 嚴重遮擋、小目標 |
+| DanceTrack [46] | 群舞 | 外觀一致、運動多變且非線性；無法靠外觀區分人 |
+| SportsMOT [47] | 籃球、排球、足球（240 段序列） | 快速且速度多變的運動，外觀相似但仍可區分 |
+| BDD100K MOT [48] | 行車影片 | 從移動車輛上做多類別追蹤（汽車、行人、自行車騎士等） |
+
+從 MOT17 轉向 DanceTrack 與 SportsMOT，改變了這個領域的重點：在 MOT17 上，好的偵測器加上 IoU 匹配就能走很遠；但在 DanceTrack 上，運動模型與學習式關聯才是關鍵。
+
+### 指標：MOTA、IDF1、HOTA
+
+**白話版。** 追蹤器有兩種失敗方式：漏掉物件或憑空多出物件（偵測錯誤），或是把誰是誰搞混（關聯錯誤）。不同指標對這兩者的權重不同。
+
+三個指標都先在每一格、以某個 IoU 門檻把預測與真實值配對。令 $\text{GT}_t$、$\text{FN}_t$、$\text{FP}_t$ 與 $\text{IDSW}_t$ 分別是第 $t$ 格的真實物件數、漏偵測數、誤報數與身分切換數。所謂身分切換，是指某個真實物件這次配到的預測 ID，與它上一次配到的不同。
+
+**MOTA**（CLEAR MOT [9]）：
+
+$$
+\text{MOTA} = 1 - \frac{\sum_t \big(\text{FN}_t + \text{FP}_t + \text{IDSW}_t\big)}{\sum_t \text{GT}_t}.
+$$
+
+它的範圍是 $-\infty$ 到 1。由於偵測數量通常遠多於切換次數，FN 與 FP 主導了 MOTA：它主要是偵測分數。而且切換只在發生的那一刻被計算一次，所以一個把兩個 ID 換掉後維持 1,000 格的追蹤器，與一個 1 格後就換回來的追蹤器，付出的代價相同。
+
+**IDF1** [10] 在真實軌跡與預測軌跡之間做**全域**的一對一匹配（同樣用匈牙利演算法），最大化兩者一致的影格數，然後
+
+$$
+\text{IDF1} = \frac{2\,\text{IDTP}}{2\,\text{IDTP} + \text{IDFP} + \text{IDFN}},
+$$
+
+其中 IDTP 計算那些配到「與其真實身分對應之預測軌跡」的偵測，IDFP、IDFN 則是其餘的預測與真實偵測。IDF1 衡量追蹤器能維持正確身分多久，所以主要是關聯分數——但因為匹配是全域的，它的行為有時並不直觀，例如偵測變好時 IDF1 反而下降。
+
+**HOTA**（Higher Order Tracking Accuracy [8]）的提出，正是因為上述兩個指標既不平衡、也無法拆解。對一個定位門檻 $\alpha$，以每格配對得到真陽性（TP）、FN 與 FP：
+
+$$
+\text{DetA}_\alpha = \frac{|\text{TP}|}{|\text{TP}| + |\text{FN}| + |\text{FP}|}, \qquad
+\text{AssA}_\alpha = \frac{1}{|\text{TP}|}\sum_{c \in \text{TP}} \frac{|\text{TPA}(c)|}{|\text{TPA}(c)| + |\text{FNA}(c)| + |\text{FPA}(c)|},
+$$
+
+$$
+\text{HOTA}_\alpha = \sqrt{\text{DetA}_\alpha \cdot \text{AssA}_\alpha}, \qquad
+\text{HOTA} = \frac{1}{19}\sum_{\alpha \in \{0.05,\, 0.10,\, \dots,\, 0.95\}} \text{HOTA}_\alpha .
+$$
+
+對一個配對 $c$（真實 ID $g$、預測 ID $p$），$\text{TPA}(c)$ 是整段影片中同樣把 $g$ 配到 $p$ 的所有 TP；$\text{FNA}(c)$ 是 $g$ 被配到其他 ID 或漏掉的偵測；$\text{FPA}(c)$ 是 $p$ 被配到其他物件或沒配到任何物件的偵測。幾何平均代表追蹤器必須在偵測與關聯**兩方面**都好才能得高分；DetA 與 AssA（以及定位準確度 LocA）也可以分開報告，用來診斷問題。對 $\alpha$ 取平均也會獎勵精確的框。（我們的程式用的是簡化版：每格最大化 IoU 的匹配；正式定義使用的匹配分數還會偏好過去已經關聯過的配對。）
+
+<Figure src={hotaFig} alt="左：100 格中單一真實物件的時間軸；追蹤器 A 覆蓋所有影格，但每 10 格換一次顏色；追蹤器 B 以同一顏色覆蓋前 60 格。右：長條圖。A 的 MOTA 0.91、IDF1 0.10、HOTA 0.32、DetA 1.00、AssA 0.10；B 的 MOTA、HOTA、DetA、AssA 皆為 0.60，IDF1 為 0.75。" caption="圖 6 — HOTA 為什麼被提出。追蹤器 A 每格都偵測到，但換了九次身分；追蹤器 B 漏掉 40% 的影格，但從不換身分。MOTA 認為 A 遠遠領先；IDF1 與 HOTA 認為 B 較好，而 DetA／AssA 正好說明原因。" />
+
+圖 6 是用上面的函式算出來的：追蹤器 A 的 MOTA $= 1 - 9/100 = 0.91$，AssA $= 0.10$，所以 HOTA $= \sqrt{1.0 \times 0.10} \approx 0.32$；追蹤器 B 的 MOTA、DetA、AssA 與 HOTA 都是 $0.60$，IDF1 $= 2 \cdot 60 / (100 + 60) = 0.75$。如今 MOT17、MOT20、DanceTrack 與 SportsMOT 上的論文會同時報告 HOTA、IDF1 與 MOTA，而 HOTA 通常是主要的排名指標。
+
+## 點追蹤：相關的新趨勢
+
+**白話版。** 不追整個物件，而是追單一個**點**——臉頰上的一顆雀斑、箱子的一個角——貫穿整段影片，即使它短暫被擋住也一樣。
+
+**追蹤任意點**（tracking any point, TAP）的問題是：給定第 $t_0$ 格的查詢點 $(x, y)$，求它在其他每一格的位置與是否可見。它把光流（兩格之間）推廣到長時間、能處理遮擋的軌跡，也是[第 12 章](/zh-tw/learn/image-processing/dip-12-feature-extraction/)傳統關鍵點追蹤的自然延伸。TAPIR [49] 先在每一格獨立比對查詢點的特徵得到粗略軌跡，再用時間卷積加以精修。CoTracker [50] 用 Transformer **聯合**追蹤許多點，讓點與點互相幫忙：被遮擋的點可以從還看得見的鄰近點推斷出來。CoTracker3 [51] 簡化了架構，並改用由既有追蹤器產生偽標籤的真實影片來訓練，而不只靠合成資料。點追蹤器現在被用作物件追蹤器中的運動線索，也用在影片編輯與機器人上。
+
+## 多目標跨攝影機追蹤（MTMCT）
+
+**白話版。** 很多台攝影機看著同一個地方。先在每台攝影機裡追蹤每個人，再判斷離開 3 號攝影機的那位女士，就是走進 5 號攝影機的同一位。
+
+MTMCT 就是 [1] 所說的終極目標。典型的流程是：先在每台攝影機內做 MOT 得到**短軌跡**（tracklet），用 Re-ID 特徵描述每條短軌跡，再利用外觀、攝影機拓樸（哪些攝影機相連、彼此之間的移動時間），以及在已校正攝影機下的地面 3D 位置，把不同攝影機的短軌跡分群。IDF1 原本就是為這個情境提出的 [10]。**AI City Challenge** 是主要的常態性基準。第九屆（2025）[52] 的 Track 1 是倉儲型環境中的多類別 **3D** 跨攝影機追蹤，類別包括人、人形機器人、自主移動機器人與堆高機，並提供攝影機校正資料與 3D 框標註。從影像上的框走向多視角、已校正的 3D 軌跡，正是 MTMCT 前進的方向。
+
+## 現代觀點
+
+### 綜述論文怎麼說
+
+- **Luo 等人〈Multiple object tracking: A literature review〉[3]**（*Artificial Intelligence*，2021；2014 年首次公開）。經典參考文獻。它形式化定義 MOT 問題，依初始化方式（以偵測為基礎或不需偵測）、處理模式（線上或離線）與輸出型態（確定性或機率性）分類方法，並分析外觀模型、運動模型、互動模型、互斥限制與遮擋處理等元件，以及各種推論方法。想不依賴任何網路去理解問題本身，就讀這篇。
+- **Ciaparrone 等人〈Deep learning in video multi-object tracking: A survey〉[2]**（*Neurocomputing*，2020）。把深度 MOT 整理成四個階段——偵測、特徵擷取／運動預測、親和度計算與關聯——並回顧深度學習如何進入每個階段。從 MOTChallenge 上的比較得到的主要結論是：大部分進步來自偵測品質與學習式外觀特徵。
+- **Adžemović〈Deep learning-based multi-object tracking: A comprehensive survey from foundations to state-of-the-art〉[4]**（arXiv，2025）。把先偵測再追蹤分成聯合偵測與嵌入、啟發式、以運動為主、親和度學習與離線方法五類，並與端到端追蹤器比較。它指出 2022 年（ByteTrack 與 MOTR）是加速的轉捩點，並總結：啟發式追蹤器在擁擠、運動大致線性的場景領先，學習式關聯則在複雜運動上勝出。
+- **Marvasti-Zadeh 等人〈Deep learning for visual tracking: A comprehensive survey〉[5]**（*IEEE T-ITS*，2022）。針對 SOT。從九個面向（網路架構、網路運用、訓練方式、目標函數、輸出、與相關濾波器的結合、空拍視角、長時追蹤與線上追蹤）分析深度追蹤器，並在 OTB、VOT、LaSOT 與空拍基準上比較。
+- **Thangavel（Kugarajeevan）等人〈Transformers in single object tracking: An experimental survey〉[6]**（*IEEE Access*，2023）。把 Transformer 追蹤器分成 CNN-Transformer 混合、雙流兩階段，以及單流單階段全 Transformer 三類，並實驗評估其穩健性與效率；單流設計（OSTrack 類）成為主流模式。
+- **Ye 等人〈Deep learning for person re-identification: A survey and outlook〉[7]**（*IEEE TPAMI*，2022）。把封閉世界 Re-ID（特徵學習、度量學習、排序最佳化）與開放世界 Re-ID（異質資料、原始影像、雜訊標籤、非監督與開放集合設定）分開討論，提出 AGW 基線與 mINP 指標，後者衡量找到**所有**正確匹配所需的代價。
+- **Luiten 等人〈HOTA〉[8]**（*IJCV*，2020）。不是綜述，但它重新檢視了整個領域的評估方式，以實例與使用者研究說明 MOTA 與 IDF1 的偏差，也是目前排行榜以 HOTA 排名的原因。
+
+### 2024–2026 的技術現況
+
+- **SOT** 由 OSTrack／SeqTrack 一脈的單流 Transformer 追蹤器主導，而分割基礎模型的角色越來越重：加上運動感知記憶的 SAM 2（SAMURAI），不需針對追蹤訓練就有很強的 zero-shot 追蹤能力 [23]、[24]。
+- **MOT** 兩個陣營並存。啟發式的先偵測再追蹤（ByteTrack、OC-SORT、BoT-SORT 及其後繼者）仍是實務上的預設選擇：簡單、快速、模組化，大部分工作由強大的偵測器完成。端到端追蹤器（MOTR、MOTRv2、MOTIP）則在運動複雜、外觀模糊的情境領先，例如 DanceTrack 與 SportsMOT [4]、[42]。
+- **開放詞彙與可提示追蹤**正進入主流模型：OVTrack 建立了這個任務，SAM 3 則能依文字概念偵測、分割並追蹤帶有身分的實例 [25]、[43]。
+- **點追蹤**（TAPIR、CoTracker、CoTracker3）已成熟為通用的運動基本元件 [49]–[51]。
+- **MTMCT** 正走向已校正、多類別的 3D 追蹤（AI City Challenge 2025）[52]。
+
+### 尚待解決的問題
+
+- **長時間遮擋與重新進場。** 幾秒之後運動模型就沒用了，只能靠外觀維持身分；但在服裝一致（DanceTrack、運動比賽）或跨攝影機時，外觀並不可靠。
+- **非線性運動與攝影機運動。** 等速卡爾曼濾波器仍是預設，也是舞蹈、運動與行車資料上的弱點；學習式運動模型還沒有在所有情境都明顯更好。
+- **端到端與啟發式關聯之爭。** 端到端追蹤器優雅、在複雜運動上勝出，但需要大量影片訓練資料與計算，在擁擠行人場景上仍輸給簡單的啟發式方法。如何設計出兩邊都最好的統一架構，仍是開放問題。
+- **開放詞彙與長尾追蹤。** 稀有類別，以及能推廣到訓練中從未見過之類別的外觀特徵。
+- **評估。** HOTA 解決了很多問題，但基準仍以行人為主，而跨數小時影片與多台攝影機的身分層級評估依然困難。**隱私與資料集倫理**（DukeMTMC 的教訓）也限制了能蒐集哪些資料。
+
+## 重點整理
+
+- 追蹤 = 偵測 + 時間：每個追蹤器都要同時跟住運動與維持身分，兩者的比重定義了 SOT、MOT 與 Re-ID。
+- Re-ID 是以學習嵌入進行的檢索；請同時報告 CMC rank-$k$ 與 mAP；DukeMTMC 已於 2019 年撤下，不應再使用。
+- SOT 從相關濾波器（快速、人工特徵）走到孿生網路比對（離線訓練），再到單流 Transformer；SAM 2 類的影片分割如今能以遮罩做 SOT，SAM 3 更能依文字提示擴展到多個實例。
+- 線上 MOT 是一個迴圈：偵測 → 卡爾曼預測 → 代價矩陣 → 匈牙利指派 → 更新／出生／死亡。實務上的進步大多來自代價矩陣裡放了什麼，以及哪些偵測被允許參與匹配。
+- ByteTrack 的低分偵測第二輪修正遮擋造成的斷裂；外觀修正非線性運動與長時間缺漏；端到端 query 追蹤器則直接學習關聯。
+- MOTA 主要衡量偵測，IDF1 主要衡量關聯；HOTA $= \sqrt{\text{DetA}\cdot\text{AssA}}$（再對 IoU 門檻取平均）兼顧並能拆解兩者。
+- 目前的前沿是長時間身分維持、非線性運動、開放詞彙類別，以及跨攝影機的 3D 追蹤。
+
+## 練習
+
+1. **卡爾曼增益的直覺。** 對一維等位置模型，先驗變異數為 $P$、量測雜訊為 $R$，證明卡爾曼增益為 $K = P / (P + R)$，且後驗變異數為 $PR/(P+R)$。若每次預測都讓 $P$ 增加 $Q$，連續五格沒有偵測之後 $K$ 會怎麼變？
+
+<details>
+<summary>提示</summary>
+
+$H = 1$ 時，$S = P + R$，$K = P/S$。後驗變異數為 $(1 - K)P = PR/(P+R)$，比 $P$ 與 $R$ 都小。滑行五步後先驗變成 $P + 5Q$，$K$ 往 1 靠近：濾波器會非常相信下一個偵測，這也是為什麼遮擋後一次錯誤的匹配會讓軌跡大幅移動。
+
+</details>
+
+2. **手算匈牙利演算法。** 軌跡 A、B 與偵測 1、2 的預測 IoU 為 $\begin{bmatrix} 0.6 & 0.5 \\ 0.55 & 0.0 \end{bmatrix}$。貪婪匹配（IoU 最高者優先）的結果是什麼？以 $1 - \text{IoU}$ 為代價的匈牙利演算法結果又是什麼？哪一個的 IoU 總和較大？
+
+<details>
+<summary>提示</summary>
+
+貪婪法先選 A–1（0.6），剩下 B–2 的 IoU 為 0（被拒絕），總和 0.6。匈牙利演算法選 A–2 與 B–1，總和 $0.5 + 0.55 = 1.05$。貪婪法讓軌跡 B 沒配到，並為偵測 2 開一個新 ID——這正是 ID 切換出現的方式之一。
+
+</details>
+
+3. **把追蹤器弄壞。** 在合成場景中修改 `make_scene` 裡的反彈，讓物件 2 與 3 直接穿過彼此（速度不反轉）。三個追蹤器中哪一個進步最多？為什麼？
+
+<details>
+<summary>提示</summary>
+
+運動變成線性後，等速預測在重疊期間都是正確的。以 `seed=3` 來說，低分偵測追蹤器的 IDF1 從 0.88 提升到約 0.96，也用了正確的 5 個 ID，幾乎追上外觀追蹤器（同樣約 0.96）；只用 IoU 的追蹤器仍會讓被遮擋的物件斷裂。外觀最有幫助的時候，正是運動非線性的時候，這也是 DanceTrack 的設計初衷。
+
+</details>
+
+4. **指標計算。** 一段影片中只有一個物件，共 200 格。追蹤器每一格都偵測到它，但第 1–100 格用 ID 1，第 101–200 格用 ID 2。假設框完全正確，在單一門檻下計算 MOTA、IDF1、DetA、AssA 與 HOTA。
+
+<details>
+<summary>提示</summary>
+
+MOTA $= 1 - 1/200 = 0.995$。最佳全域 ID 匹配涵蓋 100 格：IDF1 $= 2 \cdot 100/(200 + 200) = 0.5$。DetA $= 1$。每個 TP 的 $|\text{TPA}| = 100$、$|\text{FNA}| = 100$、$|\text{FPA}| = 0$，所以 AssA $= 0.5$，HOTA $= \sqrt{0.5} \approx 0.71$。一次切換幾乎不影響 MOTA，卻讓 AssA 減半。
+
+</details>
+
+5. **Re-ID 指標。** 在 Re-ID 程式中，把雜訊從 1.6 改成 2.2，再改成 1.0。rank-1 與 mAP 怎麼變？哪一個比較敏感？請用 AP 的定義解釋。
+
+<details>
+<summary>提示</summary>
+
+雜訊變大時 mAP 下降得比 rank-1 快，因為 rank-1 只需要最容易的那一個正確匹配排在第一，而 AP 會懲罰每一個被往後推的正確匹配。每個查詢有 4 個正確匹配時，最難的那一個通常決定了 AP 損失多少。
+
+</details>
+
+6. **設計題。** 你要在倉庫中用 12 台已校正的攝影機追蹤堆高機與工作人員。用本篇介紹的元件畫出一個流程，並說明你會報告哪個指標、為什麼。
+
+<details>
+<summary>提示</summary>
+
+每台攝影機做偵測，搭配 ByteTrack／BoT-SORT 風格的追蹤器；利用校正參數把框投影到地面；跨攝影機關聯先看 3D 位置與時間，再看 Re-ID 外觀（工作人員可能穿著一樣的背心）；兩個類別分開處理。報告 HOTA（平衡，且可拆成 DetA／AssA）與 IDF1（跨攝影機的長時身分），與 AI City Challenge 的設定一致。
+
+</details>
+
+## 參考文獻
+
+1. Shyandram，〈物件追蹤Object Tracking 簡介〉，部落格文章，2023；2026 年更新。[連結](/zh-tw/blog/object-tracking-intro/)
+2. G. Ciaparrone, F. Luque Sánchez, S. Tabik, L. Troiano, R. Tagliaferri and F. Herrera, "Deep learning in video multi-object tracking: A survey," *Neurocomputing*, 2020. [arXiv:1907.12740](https://arxiv.org/abs/1907.12740)
+3. W. Luo, J. Xing, A. Milan, X. Zhang, W. Liu and T.-K. Kim, "Multiple object tracking: A literature review," *Artificial Intelligence*, vol. 293, 2021 (arXiv 2014). [arXiv:1409.7618](https://arxiv.org/abs/1409.7618)
+4. M. Adžemović, "Deep learning-based multi-object tracking: A comprehensive survey from foundations to state-of-the-art," arXiv:2506.13457, 2025. [arXiv](https://arxiv.org/abs/2506.13457)
+5. S. M. Marvasti-Zadeh, L. Cheng, H. Ghanei-Yakhdan and S. Kasaei, "Deep learning for visual tracking: A comprehensive survey," *IEEE Transactions on Intelligent Transportation Systems*, vol. 23, 2022. [arXiv:1912.00535](https://arxiv.org/abs/1912.00535)
+6. J. Thangavel (Kugarajeevan), T. Kokul, A. Ramanan and S. Fernando, "Transformers in single object tracking: An experimental survey," *IEEE Access*, vol. 11, 2023. [arXiv:2302.11867](https://arxiv.org/abs/2302.11867)
+7. M. Ye, J. Shen, G. Lin, T. Xiang, L. Shao and S. C. H. Hoi, "Deep learning for person re-identification: A survey and outlook," *IEEE TPAMI*, vol. 44, 2022. [arXiv:2001.04193](https://arxiv.org/abs/2001.04193)
+8. J. Luiten, A. Ošep, P. Dendorfer, P. Torr, A. Geiger, L. Leal-Taixé and B. Leibe, "HOTA: A higher order metric for evaluating multi-object tracking," *International Journal of Computer Vision*, 2020. [arXiv:2009.07736](https://arxiv.org/abs/2009.07736)
+9. K. Bernardin and R. Stiefelhagen, "Evaluating multiple object tracking performance: The CLEAR MOT metrics," *EURASIP Journal on Image and Video Processing*, 2008. [doi](https://doi.org/10.1155/2008/246309)
+10. E. Ristani, F. Solera, R. S. Zou, R. Cucchiara and C. Tomasi, "Performance measures and a data set for multi-target, multi-camera tracking," *ECCV Workshop on Benchmarking Multi-Target Tracking*, 2016. [arXiv:1609.01775](https://arxiv.org/abs/1609.01775)
+11. K. Peng, A. Mathur and A. Narayanan, "Mitigating dataset harms requires stewardship: Lessons from 1000 papers," arXiv:2108.02922, 2021. [arXiv](https://arxiv.org/abs/2108.02922)
+12. L. Zheng, L. Shen, L. Tian, S. Wang, J. Wang and Q. Tian, "Scalable person re-identification: A benchmark," *ICCV*, 2015. [doi](https://doi.org/10.1109/ICCV.2015.133)
+13. L. Wei, S. Zhang, W. Gao and Q. Tian, "Person transfer GAN to bridge domain gap for person re-identification," *CVPR*, 2018. [arXiv:1711.08565](https://arxiv.org/abs/1711.08565)
+14. H. Luo, Y. Gu, X. Liao, S. Lai and W. Jiang, "Bag of tricks and a strong baseline for deep person re-identification," *CVPR Workshops*, 2019. [arXiv:1903.07071](https://arxiv.org/abs/1903.07071)
+15. M. Wieczorek, B. Rychalska and J. Dąbrowski, "On the unreasonable effectiveness of centroids in image retrieval," arXiv:2104.13643, 2021. [arXiv](https://arxiv.org/abs/2104.13643)
+16. S. Li, L. Sun and Q. Li, "CLIP-ReID: Exploiting vision-language model for image re-identification without concrete text labels," *AAAI*, 2023. [arXiv:2211.13977](https://arxiv.org/abs/2211.13977)
+17. D. S. Bolme, J. R. Beveridge, B. A. Draper and Y. M. Lui, "Visual object tracking using adaptive correlation filters," *CVPR*, 2010. [doi](https://doi.org/10.1109/CVPR.2010.5539960)
+18. J. F. Henriques, R. Caseiro, P. Martins and J. Batista, "High-speed tracking with kernelized correlation filters," *IEEE TPAMI*, vol. 37, 2015. [arXiv:1404.7584](https://arxiv.org/abs/1404.7584)
+19. L. Bertinetto, J. Valmadre, J. F. Henriques, A. Vedaldi and P. H. S. Torr, "Fully-convolutional Siamese networks for object tracking," arXiv:1606.09549, 2016 (ECCV 2016 workshops). [arXiv](https://arxiv.org/abs/1606.09549)
+20. B. Li, J. Yan, W. Wu, Z. Zhu and X. Hu, "High performance visual tracking with Siamese region proposal network," *CVPR*, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00935)
+21. B. Ye, H. Chang, B. Ma, S. Shan and X. Chen, "Joint feature learning and relation modeling for tracking: A one-stream framework" (OSTrack), *ECCV*, 2022. [arXiv:2203.11991](https://arxiv.org/abs/2203.11991)
+22. X. Chen, H. Peng, D. Wang, H. Lu and H. Hu, "SeqTrack: Sequence to sequence learning for visual object tracking," *CVPR*, 2023 (the arXiv entry was later extended as SeqTrackv2). [arXiv:2304.14394](https://arxiv.org/abs/2304.14394)
+23. N. Ravi, V. Gabeur, Y.-T. Hu, R. Hu, C. Ryali, T. Ma et al., "SAM 2: Segment anything in images and videos," *ICLR*, 2025. [arXiv:2408.00714](https://arxiv.org/abs/2408.00714)
+24. C.-Y. Yang, H.-W. Huang, W. Chai, Z. Jiang and J.-N. Hwang, "SAMURAI: Adapting segment anything model for zero-shot visual tracking with motion-aware memory," arXiv:2411.11922, 2024. [arXiv](https://arxiv.org/abs/2411.11922)
+25. N. Carion, L. Gustafson, Y.-T. Hu et al., "SAM 3: Segment anything with concepts," *ICLR*, 2026. [arXiv:2511.16719](https://arxiv.org/abs/2511.16719)
+26. Y. Wu, J. Lim and M.-H. Yang, "Object tracking benchmark," *IEEE TPAMI*, vol. 37, 2015. [doi](https://doi.org/10.1109/TPAMI.2014.2388226)
+27. H. Fan, L. Lin, F. Yang, P. Chu, G. Deng, S. Yu et al., "LaSOT: A high-quality benchmark for large-scale single object tracking," *CVPR*, 2019. [arXiv:1809.07845](https://arxiv.org/abs/1809.07845)
+28. L. Huang, X. Zhao and K. Huang, "GOT-10k: A large high-diversity benchmark for generic object tracking in the wild," *IEEE TPAMI*, vol. 43, 2021. [arXiv:1810.11981](https://arxiv.org/abs/1810.11981)
+29. M. Müller, A. Bibi, S. Giancola, S. Al-Subaihi and B. Ghanem, "TrackingNet: A large-scale dataset and benchmark for object tracking in the wild," arXiv:1803.10794, 2018 (ECCV 2018). [arXiv](https://arxiv.org/abs/1803.10794)
+30. R. E. Kalman, "A new approach to linear filtering and prediction problems," *Journal of Basic Engineering*, vol. 82, no. 1, pp. 35–45, 1960. [doi](https://doi.org/10.1115/1.3662552)
+31. H. W. Kuhn, "The Hungarian method for the assignment problem," *Naval Research Logistics Quarterly*, vol. 2, pp. 83–97, 1955. [doi](https://doi.org/10.1002/nav.3800020109)
+32. A. Bewley, Z. Ge, L. Ott, F. Ramos and B. Upcroft, "Simple online and realtime tracking," *ICIP*, 2016. [arXiv:1602.00763](https://arxiv.org/abs/1602.00763)
+33. N. Wojke, A. Bewley and D. Paulus, "Simple online and realtime tracking with a deep association metric," *ICIP*, 2017. [doi](https://doi.org/10.1109/ICIP.2017.8296962)
+34. Y. Zhang, P. Sun, Y. Jiang, D. Yu, F. Weng, Z. Yuan, P. Luo, W. Liu and X. Wang, "ByteTrack: Multi-object tracking by associating every detection box," *ECCV*, 2022. [arXiv:2110.06864](https://arxiv.org/abs/2110.06864)
+35. J. Cao, J. Pang, X. Weng, R. Khirodkar and K. Kitani, "Observation-centric SORT: Rethinking SORT for robust multi-object tracking," *CVPR*, 2023. [arXiv:2203.14360](https://arxiv.org/abs/2203.14360)
+36. N. Aharon, R. Orfaig and B.-Z. Bobrovsky, "BoT-SORT: Robust associations multi-pedestrian tracking," arXiv:2206.14651, 2022. [arXiv](https://arxiv.org/abs/2206.14651)
+37. Z. Wang, L. Zheng, Y. Liu, Y. Li and S. Wang, "Towards real-time multi-object tracking" (JDE), *ECCV*, 2020. [arXiv:1909.12605](https://arxiv.org/abs/1909.12605)
+38. Y. Zhang, C. Wang, X. Wang, W. Zeng and W. Liu, "FairMOT: On the fairness of detection and re-identification in multiple object tracking," *IJCV*, 2021. [arXiv:2004.01888](https://arxiv.org/abs/2004.01888)
+39. P. Bergmann, T. Meinhardt and L. Leal-Taixé, "Tracking without bells and whistles" (Tracktor), *ICCV*, 2019. [arXiv:1903.05625](https://arxiv.org/abs/1903.05625)
+40. F. Zeng, B. Dong, Y. Zhang, T. Wang, X. Zhang and Y. Wei, "MOTR: End-to-end multiple-object tracking with transformer," *ECCV*, 2022. [arXiv:2105.03247](https://arxiv.org/abs/2105.03247)
+41. Y. Zhang, T. Wang and X. Zhang, "MOTRv2: Bootstrapping end-to-end multi-object tracking by pretrained object detectors," *CVPR*, 2023. [arXiv:2211.09791](https://arxiv.org/abs/2211.09791)
+42. R. Gao, J. Qi and L. Wang, "Multiple object tracking as ID prediction" (MOTIP), *CVPR*, 2025. [arXiv:2403.16848](https://arxiv.org/abs/2403.16848)
+43. S. Li, T. Fischer, L. Ke, H. Ding, M. Danelljan and F. Yu, "OVTrack: Open-vocabulary multiple object tracking," *CVPR*, 2023. [arXiv:2304.08408](https://arxiv.org/abs/2304.08408)
+44. A. Milan, L. Leal-Taixé, I. Reid, S. Roth and K. Schindler, "MOT16: A benchmark for multi-object tracking," arXiv:1603.00831, 2016 (MOT16/MOT17). [arXiv](https://arxiv.org/abs/1603.00831)
+45. P. Dendorfer, H. Rezatofighi, A. Milan, J. Shi, D. Cremers, I. Reid, S. Roth, K. Schindler and L. Leal-Taixé, "MOT20: A benchmark for multi object tracking in crowded scenes," arXiv:2003.09003, 2020. [arXiv](https://arxiv.org/abs/2003.09003)
+46. P. Sun, J. Cao, Y. Jiang, Z. Yuan, S. Bai, K. Kitani and P. Luo, "DanceTrack: Multi-object tracking in uniform appearance and diverse motion," *CVPR*, 2022. [arXiv:2111.14690](https://arxiv.org/abs/2111.14690)
+47. Y. Cui, C. Zeng, X. Zhao, Y. Yang, G. Wu and L. Wang, "SportsMOT: A large multi-object tracking dataset in multiple sports scenes," *ICCV*, 2023. [arXiv:2304.05170](https://arxiv.org/abs/2304.05170)
+48. F. Yu, H. Chen, X. Wang, W. Xian, Y. Chen, F. Liu, V. Madhavan and T. Darrell, "BDD100K: A diverse driving dataset for heterogeneous multitask learning," *CVPR*, 2020. [arXiv:1805.04687](https://arxiv.org/abs/1805.04687)
+49. C. Doersch, Y. Yang, M. Vecerik, D. Gokay, A. Gupta, Y. Aytar et al., "TAPIR: Tracking any point with per-frame initialization and temporal refinement," *ICCV*, 2023. [arXiv:2306.08637](https://arxiv.org/abs/2306.08637)
+50. N. Karaev, I. Rocco, B. Graham, N. Neverova, A. Vedaldi and C. Rupprecht, "CoTracker: It is better to track together," *ECCV*, 2024. [arXiv:2307.07635](https://arxiv.org/abs/2307.07635)
+51. N. Karaev, I. Makarov, J. Wang, N. Neverova, A. Vedaldi and C. Rupprecht, "CoTracker3: Simpler and better point tracking by pseudo-labelling real videos," arXiv:2410.11831, 2024. [arXiv](https://arxiv.org/abs/2410.11831)
+52. Z. Tang, S. Wang, D. C. Anastasiu et al., "The 9th AI City Challenge," *ICCV Workshops*, 2025. [arXiv:2508.13564](https://arxiv.org/abs/2508.13564)
+53. VOT Challenge organizers, "The Visual Object Tracking (VOT) challenge series," website, 2013–present. [votchallenge.net](https://www.votchallenge.net/)
