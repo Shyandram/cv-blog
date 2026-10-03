@@ -19,6 +19,7 @@ import cmpNoisy from '../../../../assets/deep-learning/dl-04-image-restoration/c
 import cmpDenoised from '../../../../assets/deep-learning/dl-04-image-restoration/compare-denoised.png';
 import allInOne from '../../../../assets/deep-learning/dl-04-image-restoration/all-in-one.png';
 import perceptionDistortion from '../../../../assets/deep-learning/dl-04-image-restoration/perception-distortion.png';
+import nrIqa from '../../../../assets/deep-learning/dl-04-image-restoration/nr-iqa-mscn.png';
 
 ## What you'll learn
 
@@ -198,7 +199,13 @@ A model trained on one fixed $\mathcal D$ (say, bicubic $\times 4$) breaks on re
 - **Make the synthetic distribution wide enough to cover reality.** Real-ESRGAN [4] applies the classic pipeline *twice* in sequence ("high-order" degradation, with randomized blur kernels, resizing, noise and JPEG in each round) and adds sinc filters to simulate ringing and overshoot. Trained on purely synthetic data, it generalizes much better to real low-quality images than bicubic-trained models.
 - **Bring in a strong generative prior.** Pretrained text-to-image diffusion models already know what natural images look like. DiffBIR [16], SUPIR [17] and OSEDiff [18] condition such a model on the degraded input, so that the prior "fills in" plausible detail. This is the main recent trend in real-world SR and is discussed below.
 
-A third, complementary strategy is to **estimate the degradation** (noise level, kernel, degradation type) and feed it to the network, as FFDNet's noise-level map [21] and the all-in-one models do.
+A third, complementary strategy is to **estimate the degradation** (noise level, kernel, degradation type) and feed it to the network, as FFDNet's noise-level map [21] and the all-in-one models do. For blind super-resolution, where the unknown is mostly the blur kernel $k$ in $y = (x * k)\downarrow_s + n$, this line of work developed its own family of methods:
+
+- **Condition the network on the kernel.** SRMD [87] gives a single SR network the degradation as extra input: the blur kernel, reduced to a low-dimensional vector, and the noise level are stretched into maps of the same size as the low-resolution image and concatenated with it. One network then handles many kernels and noise levels, provided someone supplies them. USRNet [91] goes further with **deep unfolding**: it unrolls a half-quadratic-splitting MAP solver into a network whose data module uses the given kernel, scale and noise level in closed form and whose prior module is a learned denoiser, so one model serves arbitrary known kernels.
+- **Estimate the kernel, then correct it.** IKC [88] observes that a wrong kernel causes characteristic artifacts (too large gives over-sharpening, too small gives over-smoothing), and uses them to iteratively correct an initial kernel estimate while a kernel-conditioned SR network (SFTMD) restores the image. DAN [90] unfolds the alternation into one end-to-end network: an *estimator* predicts the kernel from both the low-resolution input and the current SR result, a *restorer* super-resolves with the current kernel, and the two alternate, the same idea as the classical deblurring loop above.
+- **Estimate the kernel from the image alone.** KernelGAN [89] trains a small GAN on the single test image at test time: its generator learns to downscale the image so that the discriminator cannot tell the patches of the downscaled image from those of the original. Because patches recur across scales in natural images, the learned downscaler is an estimate of the image's own SR kernel, which is then given to a non-blind SR method.
+
+Explicit-kernel methods are interpretable and accurate when the degradation really is "blur, downsample, noise" with a roughly uniform kernel. They are fragile when it is not (JPEG, camera processing, spatially varying blur), and errors in the estimated kernel propagate into the result. That motivated the **implicit** route: BSRGAN [92] trains on a practical degradation model with randomly shuffled blur (isotropic and anisotropic Gaussian kernels), downsampling, noise and JPEG steps, and Real-ESRGAN [4] uses its high-order pipeline; neither estimates a kernel at test time. Diffusion-prior methods [16]–[18] are implicit as well. The survey by Liu et al. [93] organizes blind SR methods by how they model the degradation and which data (external datasets or the single test image) they use, and compares them on synthetic and real images.
 
 ## Super-resolution
 
@@ -411,6 +418,117 @@ Three common settings appear in the post [1]: **infrared and visible** fusion (t
 
 Deblurring is the direct instance of $g = h * f + n$. If the kernel $h$ is known it is **non-blind** deblurring (the setting of the classical Wiener and CLS filters in DIP 5, and of learned non-blind solvers); if $h$ is unknown it is **blind** deblurring. Real motion blur in dynamic scenes is worse: different objects move differently and depth varies, so there is no single global $h$.
 
+### Blind deblurring: estimating the kernel
+
+**Plain version.** If you knew exactly how the camera shook, undoing the blur would be a well-studied filtering problem. In blind deblurring you do not know the shake, so you must guess the shake *and* the sharp photo together. The trick is to guess them in turns: first sharpen with your current guess of the shake, then use the sharpest edges you got to improve the guess of the shake, and repeat.
+
+**The joint problem.** For a spatially uniform blur, blind deconvolution solves
+
+$$
+(\hat f, \hat h) = \arg\min_{f,\, h} \; \bigl\| h * f - g \bigr\|_2^2 + \lambda_f\, \phi(f) + \lambda_h\, \psi(h) \quad \text{subject to} \quad h \ge 0, \;\; \textstyle\sum_{u,v} h(u, v) = 1,
+$$
+
+where $g$ is the blurred image, $f$ the unknown sharp image, $h$ the unknown kernel (supported on a small window, e.g. $15 \times 15$ to $75 \times 75$ pixels for camera shake), $\phi$ an image prior (typically a sparse gradient penalty $\sum_p |\nabla f(p)|^\alpha$ with $0 \lt \alpha \le 1$, because natural images have mostly flat regions and a few strong edges), $\psi$ a kernel prior (e.g. $\|h\|_2^2$ or $\|h\|_1$, favoring compact, sparse motion paths), and $\lambda_f, \lambda_h > 0$ their weights. The constraints say a blur kernel only redistributes light: it is non-negative and preserves total brightness. They also remove one ambiguity, because $(c\,h,\, f/c)$ explains $g$ as well as $(h, f)$ for any $c > 0$. A second ambiguity cannot be removed: shifting $f$ one way and $h$ the other leaves $h * f$ unchanged, so the kernel is only recovered up to a translation.
+
+**Why it is badly ill-posed.** Far more unknowns ($f$ and $h$) than equations, and many pairs explain $g$ exactly. Worse, the most obvious pair is wrong: $h = \delta$ (no blur) and $f = g$ fits the data perfectly. Levin et al. [74] showed that with the usual sparse gradient priors, the blurry image often has a *lower* prior cost than the sharp one, because blur shrinks gradients and $\phi$ rewards small gradients. So naive joint MAP estimation over $(f, h)$ tends to return the no-blur solution. Their analysis points to a better-posed target: estimate only the kernel, integrating out the image,
+
+$$
+\hat h = \arg\max_{h} \; p(h \mid g) = \arg\max_h \; p(h) \int p(g \mid f, h)\, p(f)\, df,
+$$
+
+where $p(g \mid f, h)$ is the Gaussian likelihood given by the data term, $p(f)$ and $p(h)$ the priors behind $\phi$ and $\psi$, and the integral averages over all sharp images. A kernel has few unknowns compared with the many pixel observations, so its posterior is much better determined than that of the full image. Once $\hat h$ is known, a non-blind deconvolution recovers $f$.
+
+**Classical remedies.** The methods that worked in practice either approximate that marginalization or change the prior so the sharp solution wins:
+
+- **Variational Bayes.** Fergus et al. [75] fit a heavy-tailed mixture-of-Gaussians model of image gradients and approximate the kernel posterior with variational Bayes, estimating the kernel coarse-to-fine; the image is then recovered by a standard non-blind method.
+- **Edge prediction and selection.** Shan et al. [76] alternate kernel and image estimation with a natural-image gradient prior and a careful noise model to suppress ringing. Cho and Lee [77] made the alternation fast: they *predict* sharp edges from the current latent image with bilateral and shock filtering, and estimate the kernel in the gradient domain with FFTs. Xu and Jia [78] observed that thin edges narrower than the kernel can mislead estimation, so they select only informative edges in a first phase and refine the kernel's support in a second phase.
+- **Priors that prefer sharp images.** Krishnan et al. [79] replace $\|\nabla f\|_1$ by the normalized sparsity $\|\nabla f\|_1 / \|\nabla f\|_2$, which is scale-invariant and *increases* with blur, so it no longer favors the blurry solution. Pan et al. [80] use the dark channel (the same quantity as in He et al.'s dehazing prior [25]): blur averages dark pixels with bright neighbors, so the dark channel becomes less sparse, and an $L_0$ penalty on it favors sharp images.
+
+**The standard recipe.** Almost all classical blind deblurring methods follow the same loop. Starting from a delta kernel at the coarsest level of an image pyramid, alternate
+
+$$
+\begin{aligned}
+f^{(t+1)} &= \arg\min_f \; \bigl\| h^{(t)} * f - g \bigr\|_2^2 + \lambda_f\, \phi(f), \\
+h^{(t+1)} &= \arg\min_{h \ge 0,\ \sum h = 1} \; \bigl\| h * \nabla \tilde f^{(t+1)} - \nabla g \bigr\|_2^2 + \lambda_h \|h\|_2^2,
+\end{aligned}
+$$
+
+where $t$ is the iteration, $\nabla$ the image gradient, and $\tilde f$ the latent image after edge prediction or selection (sharpened, with weak gradients set to zero). The kernel step works in the gradient domain because convolution commutes with differentiation, $\nabla(h * f) = h * \nabla f$, and gradients are where the blur information sits; with a quadratic penalty it has a closed form in the Fourier domain, followed by projection onto the constraints. After a few iterations the kernel is upsampled to the next pyramid level (**coarse-to-fine**), which avoids poor local minima because a large blur is only a few pixels wide at coarse scales. Finally, with $\hat h$ fixed, a **non-blind deconvolution** produces the output image: Wiener or constrained least squares filtering as in [DIP 5](/en/learn/image-processing/dip-05-restoration-reconstruction/), or a hyper-Laplacian or learned non-blind solver.
+
+**Deep learning and the kernel.** Networks entered blind deblurring in three ways.
+
+- **Predict the kernel (or a filter), then deconvolve.** Sun et al. [81] trained a CNN to classify the local motion kernel of each patch among a set of linear motions, smoothed the resulting non-uniform motion field with a Markov random field, then deconvolved. Schuler et al. [82] built a deep network with stages that mimic the classical loop (feature extraction, kernel estimation, image estimation) and trained it end-to-end on synthetic blur. Chakrabarti [83] trained a network to predict, for each patch, the Fourier coefficients of a deconvolution filter, used the result to estimate one global kernel, and finished with standard non-blind deconvolution.
+- **Self-supervised, per-image estimation.** Deep Image Prior [84] showed that the structure of an untrained generator network is itself a useful image prior. SelfDeblur [85] uses two generators, an encoder–decoder for the image and a fully connected network with a softmax output for the kernel (the softmax enforces $h \ge 0$ and $\sum h = 1$), and fits both to the single blurred image. No training data is needed, but each image takes an optimization run.
+- **Kernel-free, end-to-end.** The multi-scale network of Nah et al. [44], DeblurGAN [86] (a conditional GAN with a content loss) and the general backbones Restormer and NAFNet map blurred to sharp images directly, never forming $h$.
+
+Which is preferable? Kernel-based methods fit **spatially uniform** blur (camera shake of a distant, static scene), give an **interpretable** intermediate result that can be checked and reused (for example to deblur other frames from the same exposure), and generalize to new kernels as long as the physics holds; they are slower and break when the blur varies across the image or the image has few edges. Kernel-free networks handle **non-uniform** blur from object motion and depth, are fast at test time, and are the current state of the art on dynamic-scene benchmarks such as GoPro, but they generalize only as far as their training blur distribution and give no explicit kernel. The survey of Zhang et al. [69] summarizes this shift.
+
+**Code: a toy alternating blind deconvolution.** The snippet blurs a $256 \times 256$ `camera` image with a curved $15 \times 15$ camera-shake kernel, then alternates a closed-form image step (a CLS-like filter with a quadratic gradient penalty) and a kernel step (least squares on the strongest 2% of shock-filtered gradients, projected onto $h \ge 0$, $\sum h = 1$). It runs in about a second on a CPU.
+
+```python
+import numpy as np
+from numpy.fft import fft2, ifft2
+from scipy.ndimage import convolve, gaussian_filter, laplace
+from skimage import data, img_as_float, transform
+
+rng = np.random.default_rng(0)
+f_true = transform.resize(img_as_float(data.camera()), (256, 256), anti_aliasing=True)
+K = 15                                               # kernel support K x K
+h_true = np.zeros((K, K))
+for t in np.linspace(0, 1, 40):                      # a curved "camera-shake" path
+    h_true[round(3 + 8 * t), round(2 + 10 * t + 2 * np.sin(3 * t))] += 1
+h_true = gaussian_filter(h_true, 0.5); h_true /= h_true.sum()
+g = convolve(f_true, h_true, mode="wrap") + 0.005 * rng.standard_normal(f_true.shape)
+
+def otf(h, shape):                                   # centered kernel -> transfer function
+    p = np.zeros(shape); p[:h.shape[0], :h.shape[1]] = h
+    return fft2(np.roll(p, (-(h.shape[0] // 2), -(h.shape[1] // 2)), (0, 1)))
+
+G = fft2(g)
+Dx, Dy = otf(np.array([[0, -1, 1]]), g.shape), otf(np.array([[0], [-1], [1]]), g.shape)
+
+def image_step(h, lam):        # f = argmin ||h*f - g||^2 + lam ||grad f||^2  (closed form, CLS-like)
+    H = otf(h, g.shape)
+    return np.real(ifft2(np.conj(H) * G / (np.abs(H)**2 + lam * (np.abs(Dx)**2 + np.abs(Dy)**2))))
+
+def shock(f, n=5, dt=0.5):     # edge prediction: a shock filter turns soft edges into steps
+    f = gaussian_filter(f, 0.7)
+    for _ in range(n):
+        gy, gx = np.gradient(f)
+        f = f - dt * np.sign(laplace(f)) * np.hypot(gx, gy)
+    return f
+
+def kernel_step(f, keep=0.02, beta=1e-3):   # least squares in the gradient domain, strong edges only
+    num = den = 0
+    for D in (Dx, Dy):
+        fx = np.real(ifft2(D * fft2(f)))
+        fx[np.abs(fx) < np.quantile(np.abs(fx), 1 - keep)] = 0
+        Fx = fft2(fx)
+        num, den = num + np.conj(Fx) * D * G, den + np.abs(Fx)**2
+    h = np.roll(np.real(ifft2(num / (den + beta))), (K // 2, K // 2), (0, 1))[:K, :K]
+    h = np.maximum(h, 0)                             # project onto h >= 0 ...
+    return h / h.sum()                               # ... and sum(h) = 1
+
+def best_shift(fn):            # blind deconvolution recovers h (and f) only up to a small translation
+    return min(fn(dy, dx) for dy in range(-3, 4) for dx in range(-3, 4))
+kernel_error = lambda h: best_shift(lambda dy, dx: np.linalg.norm(np.roll(h, (dy, dx), (0, 1)) - h_true)) / np.linalg.norm(h_true)
+psnr = lambda f: -best_shift(lambda dy, dx: 10 * np.log10(np.mean((np.clip(np.roll(f, (dy, dx), (0, 1)), 0, 1) - f_true)[8:-8, 8:-8] ** 2)))
+
+h = np.zeros((K, K)); h[K // 2, K // 2] = 1
+h = gaussian_filter(h, 1.0); h /= h.sum()            # start from an almost-delta kernel ("no blur")
+print(f"kernel error at start: {kernel_error(h):.2f}")
+for _ in range(30):                                  # alternate: image update, then kernel update
+    h = kernel_step(shock(image_step(h, lam=0.02)))
+print(f"kernel error after 30 alternations: {kernel_error(h):.2f}")
+print(f"PSNR  blurry {psnr(g):.2f} dB | estimated kernel {psnr(image_step(h, 1e-2)):.2f} dB"
+      f" | true kernel {psnr(image_step(h_true, 1e-2)):.2f} dB")
+# kernel error at start: 1.19
+# kernel error after 30 alternations: 0.57
+# PSNR  blurry 22.59 dB | estimated kernel 27.11 dB | true kernel 29.67 dB
+```
+
+The relative kernel error roughly halves, and the final non-blind step with the estimated kernel recovers most of the gap between the blurry input and the true-kernel result. Be honest about what this toy is: the blur is synthetic, uniform and circular (so the FFT model is exact), the noise is low, and the parameters (`lam`, `keep`, the number of shock iterations) were tuned on this one image. There is no image pyramid, so larger kernels would fail, and with real photos you would also need boundary handling, saturated-pixel handling and robust losses. Both errors are measured after the best small shift, because of the translation ambiguity explained above.
+
 ### Data and milestones
 
 Nah et al. [44] (CVPR 2017) addressed this with the **GoPro** dataset: they recorded sharp video with a high-speed camera and averaged consecutive frames to produce realistically blurred images, keeping the middle frame as the sharp target. Their network is **multi-scale**: it restores a coarse version first, then refines at finer scales, like the coarse-to-fine schemes of classical blind deblurring, but without estimating a kernel at all. GoPro is still the most common deblurring benchmark.
@@ -542,7 +660,209 @@ Always report the conventions (RGB or Y channel, border crop, data range, 8-bit 
 
 ### No-reference metrics
 
-When there is no ground truth (real photos), we use no-reference quality measures. **NIQE** [62] fits a multivariate Gaussian to natural-scene statistics of pristine images and measures how far a test image's statistics are from it (lower is better, no training on human scores). The **Perceptual Index (PI)** of the PIRM 2018 challenge [63] combines NIQE with a learned no-reference score into one number. **FID** [64] compares the distribution of Inception features of a *set* of outputs with a set of real images; it was designed for generative models and is used for generative restoration such as diffusion SR. **IS** (Inception Score), mentioned in the post, measures confidence and diversity of class predictions; it is better suited to class-conditional generation than to restoration and is rarely used there today.
+**Plain version.** A no-reference (or *blind*) metric looks at a single image and guesses how good a person would say it is, without a "correct answer" to compare against. It is like a teacher grading an essay without an answer key: the teacher relies on what good essays usually look like. Restoration needs such metrics because the photos we most want to fix (real blurry, noisy, rainy, dark photos) have no clean version anywhere.
+
+#### Full-reference, reduced-reference and no-reference
+
+Image quality assessment (IQA) methods are grouped by how much they know about the pristine image $x$:
+
+- **Full-reference (FR)**: the whole $x$ is available, and the metric compares $\hat x$ with it pixel by pixel or feature by feature (PSNR, SSIM [60], LPIPS [61]). This is what synthetic benchmarks use.
+- **Reduced-reference (RR)**: only a few summary features of $x$ are available (for example statistics sent alongside a compressed video), and the metric compares the same features computed on $\hat x$.
+- **No-reference (NR, blind)**: only $\hat x$ is available. The metric must carry its own model of what "good" looks like.
+
+Restoration needs NR metrics for three reasons. (1) **Real test images have no ground truth**: real-world SR, deraining and dehazing are evaluated on photos where nobody has the clean version. (2) **The reference itself can be imperfect or only one of many valid answers**: a GAN or diffusion output can look excellent yet have low PSNR because its texture differs from the reference's (the perception–distortion trade-off below). (3) **NR scores can steer systems at run time**, for example to choose among outputs or parameters when no reference exists. The price: an NR metric is a *model of human opinion*, and every model has blind spots.
+
+#### How NR metrics are validated: correlation with human opinion
+
+**Plain version.** We trust an NR metric only if it ranks images the way people do. So researchers collect many human ratings on many images and check how well the metric's scores agree with them.
+
+**Mean opinion score.** In a subjective study, each image $i$ is rated by several observers, and the average rating is its **mean opinion score**, $\mathrm{MOS}_i = \frac{1}{R}\sum_{r=1}^{R} s_{ir}$, where $s_{ir}$ is the score of rater $r$ and $R$ the number of raters. Some datasets publish a **differential** score (DMOS), based on the difference between the ratings of the distorted image and its reference; for DMOS, lower usually means better.
+
+**SRCC** (Spearman rank-order correlation) measures whether the metric puts the images in the same *order* as people:
+
+$$
+\mathrm{SRCC} = 1 - \frac{6 \sum_{i=1}^{n} d_i^2}{n\,(n^2 - 1)},
+$$
+
+where $n$ is the number of test images and $d_i$ the difference between the rank of image $i$ by predicted score and its rank by MOS (this short form assumes no tied ranks; with ties one computes the Pearson correlation of the ranks). SRCC is unchanged by any monotonic transformation of the scores, so it measures **prediction monotonicity**.
+
+**PLCC** (Pearson linear correlation) measures how *linearly* the scores agree:
+
+$$
+\mathrm{PLCC} = \frac{\sum_{i=1}^{n} (q_i - \bar q)(m_i - \bar m)}{\sqrt{\sum_{i=1}^{n} (q_i - \bar q)^2}\,\sqrt{\sum_{i=1}^{n} (m_i - \bar m)^2}},
+$$
+
+where $q_i$ is the metric's score for image $i$, $m_i$ its MOS, and $\bar q$, $\bar m$ their means. Because metric scales are arbitrary, it is common practice to first pass $q_i$ through a fitted monotonic (usually logistic) function and compute PLCC on the mapped scores, so PLCC measures **prediction accuracy** after calibration. Both lie in $[-1, 1]$. For "lower is better" metrics such as NIQE the raw correlation with MOS is negative, and papers report its absolute value. A metric is typically trained on part of a dataset and tested on the rest, and its cross-dataset correlation is the more honest test of generalization.
+
+**Human-rated datasets.** NR models are trained and tested on IQA datasets. They differ in *where the distortions come from*, which matters a lot for restoration:
+
+| Dataset | Distortions | What it contains |
+|---|---|---|
+| LIVE (Release 2) [104] | Synthetic | Images with five distortion types (JPEG, JPEG2000, Gaussian blur, white noise, JPEG2000 bit errors), with DMOS |
+| TID2013 [105] | Synthetic | 25 reference images × 24 distortion types × 5 levels = 3,000 distorted images; scores from 971 experiments with observers in five countries |
+| KADID-10k [106] | Synthetic | 81 pristine images × 25 distortion types × 5 levels = 10,125 images, 30 crowdsourced ratings each |
+| KonIQ-10k [107] | Authentic (in the wild) | 10,073 photos with about 1.2 million ratings from 1,459 crowd workers |
+| SPAQ [108] | Authentic (smartphones) | 11,125 photos from 66 smartphones, with quality, attribute (brightness, colorfulness, contrast, noisiness, sharpness) and scene labels plus EXIF data |
+| PIPAL [109] | Restoration outputs | Outputs of image restoration algorithms, including GAN-based ones, with over 1.13 million human judgments converted to scores by an Elo system |
+
+Synthetic datasets control the distortion exactly but contain only "textbook" damage. Authentic datasets contain real camera problems but no restoration outputs. Only datasets such as PIPAL contain the kind of images a restoration paper actually needs to score.
+
+#### Family 1: natural-scene-statistics (NSS) models
+
+**Plain version.** Clean photos share hidden statistical habits. If you remove local brightness and local contrast from a photo, the leftovers follow a bell-shaped histogram of a typical shape, and neighboring leftovers are only weakly related. Blur, noise and compression change that shape in characteristic ways. NSS metrics measure the shape and ask how unusual it is.
+
+**MSCN coefficients.** For a grayscale image $I$, the **mean-subtracted contrast-normalized** (MSCN) coefficients are [94]
+
+$$
+\hat I(i, j) = \frac{I(i, j) - \mu(i, j)}{\sigma(i, j) + C}, \qquad
+\mu(i, j) = \sum_{k, l} w_{k, l}\, I(i + k, j + l), \qquad
+\sigma(i, j) = \sqrt{\sum_{k, l} w_{k, l}\, \bigl(I(i + k, j + l) - \mu(i, j)\bigr)^2},
+$$
+
+where $(i, j)$ is a pixel position, $w$ a small circularly symmetric Gaussian window whose weights sum to 1, $\mu$ and $\sigma$ the local weighted mean and standard deviation, and $C$ a small constant (1 for 8-bit images) that prevents division by zero in flat regions. This is a divisive normalization, loosely modeled on contrast gain control in early human vision.
+
+**The generalized Gaussian fit.** The histogram of $\hat I$ is modeled by a zero-mean generalized Gaussian distribution (GGD),
+
+$$
+f(t;\, \alpha, \sigma^2) = \frac{\alpha}{2\beta\, \Gamma(1/\alpha)} \exp\!\Bigl(-\bigl(|t| / \beta\bigr)^{\alpha}\Bigr), \qquad \beta = \sigma \sqrt{\frac{\Gamma(1/\alpha)}{\Gamma(3/\alpha)}},
+$$
+
+where $t$ is an MSCN value, $\alpha > 0$ the **shape** ($\alpha = 2$ is a Gaussian, $\alpha = 1$ a Laplacian; smaller $\alpha$ means a peakier histogram with heavier tails, larger $\alpha$ a flatter top), $\sigma^2$ the variance, $\beta$ the corresponding scale and $\Gamma$ the gamma function. A simple way to estimate $\alpha$ is **moment matching**: the ratio
+$\mathbb E[t^2] / (\mathbb E|t|)^2 = \Gamma(1/\alpha)\,\Gamma(3/\alpha) / \Gamma(2/\alpha)^2$
+depends only on $\alpha$, so one computes the left side from the data and searches for the $\alpha$ that matches it.
+
+**BRISQUE** [94] (Blind/Referenceless Image Spatial Quality Evaluator) computes the GGD shape and variance of the MSCN coefficients, plus parameters of *asymmetric* GGDs fitted to products of neighboring MSCN coefficients in four orientations (horizontal, vertical and the two diagonals), at two image scales. A support-vector regressor trained on human scores of synthetically distorted images maps these features to a quality score. Lower is better. It is **opinion-aware**: it needs human scores for training.
+
+**NIQE** [62] (Natural Image Quality Evaluator) is **opinion-unaware**: it never sees human scores or distorted images. It computes similar NSS features on sharp patches, fits a multivariate Gaussian (MVG) with mean $\nu_1$ and covariance $\Sigma_1$ to features from a corpus of pristine images, fits another MVG $(\nu_2, \Sigma_2)$ to the test image's patches, and reports
+
+$$
+D(\nu_1, \nu_2, \Sigma_1, \Sigma_2) = \sqrt{(\nu_1 - \nu_2)^{\top} \Bigl(\frac{\Sigma_1 + \Sigma_2}{2}\Bigr)^{-1} (\nu_1 - \nu_2)},
+$$
+
+a Mahalanobis-like distance between the two Gaussians ($^{\top}$ is the transpose). Lower is better; zero means "statistically like the pristine corpus".
+
+**PIQE** [96] (Perception-based Image Quality Evaluator) also uses MSCN coefficients but works **block by block**: it divides the image into $16 \times 16$ blocks, flags blocks that show blocking artifacts or noise, and pools the distortion of the flagged blocks into one score. It needs no training on opinion scores, and it gives a local map of where the image looks distorted. In the common MATLAB implementation the score lies between 0 and 100, lower is better.
+
+**Ma et al.'s score and the Perceptual Index.** Ma et al. [95] ran human studies on super-resolved images and learned a no-reference metric for SR from those scores, using statistical features in spatial and frequency domains and a two-stage regression; their score ("Ma", higher is better) lies roughly between 0 and 10. The 2018 PIRM challenge on perceptual SR [63] combined it with NIQE into the **Perceptual Index**,
+
+$$
+\mathrm{PI} = \tfrac{1}{2}\bigl((10 - \mathrm{Ma}) + \mathrm{NIQE}\bigr),
+$$
+
+so that lower PI means better perceptual quality. PIRM ranked methods by PI within three regions of the perception–distortion plane, defined by RMSE at most 11.5, 12.5 and 16, so that realism was compared at a fixed distortion budget. PI is still reported in many perceptual SR papers.
+
+**Code: MSCN statistics in practice.** The snippet computes MSCN coefficients, the GGD shape by moment matching, the MSCN variance and the correlation between horizontal neighbors (a simplified version of BRISQUE's pairwise features) on `camera` and on blurred, noisy and over-sharpened versions:
+
+```python
+import numpy as np
+from scipy.ndimage import gaussian_filter
+from scipy.special import gamma
+from skimage import data, img_as_float
+
+def mscn(img, sigma=7/6, C=1.0):
+    """Mean-subtracted contrast-normalized coefficients of a grayscale image in [0, 255]."""
+    mu = gaussian_filter(img, sigma)
+    sd = np.sqrt(np.abs(gaussian_filter(img * img, sigma) - mu * mu))
+    return (img - mu) / (sd + C)
+
+def ggd_shape(x):
+    """Moment-matching estimate of the generalized Gaussian shape alpha (2 = Gaussian)."""
+    alphas = np.arange(0.2, 10.0, 0.001)
+    r_theory = gamma(1 / alphas) * gamma(3 / alphas) / gamma(2 / alphas) ** 2
+    r_data = np.mean(x ** 2) / np.mean(np.abs(x)) ** 2
+    return alphas[np.argmin((r_theory - r_data) ** 2)], np.mean(x ** 2)
+
+rng = np.random.default_rng(0)
+clean = img_as_float(data.camera()) * 255
+versions = {
+    "clean": clean,
+    "blur (sigma=2)": gaussian_filter(clean, 2),
+    "noise (sigma=20)": np.clip(clean + rng.normal(0, 20, clean.shape), 0, 255),
+    "over-sharpened": np.clip(clean + 2.0 * (clean - gaussian_filter(clean, 2)), 0, 255),
+}
+for name, img in versions.items():
+    m = mscn(img)
+    alpha, var = ggd_shape(m)
+    rho = np.mean(m[:, :-1] * m[:, 1:]) / var           # correlation of horizontal neighbors
+    print(f"{name:17s} GGD shape {alpha:4.2f} | MSCN variance {var:4.2f} | neighbor corr. {rho:+.2f}")
+# clean             GGD shape 1.56 | MSCN variance 0.28 | neighbor corr. +0.12
+# blur (sigma=2)    GGD shape 0.87 | MSCN variance 0.04 | neighbor corr. +0.89
+# noise (sigma=20)  GGD shape 3.12 | MSCN variance 0.68 | neighbor corr. -0.10
+# over-sharpened    GGD shape 2.35 | MSCN variance 0.43 | neighbor corr. +0.09
+```
+
+Each distortion pushes the features in its own direction (Figure 6). **Blur** removes local contrast, so most MSCN values collapse toward zero: tiny variance, a very peaky histogram (small $\alpha$) and strongly correlated neighbors. **Noise** adds independent energy: larger variance, a flat-topped histogram ($\alpha$ above 2) and neighbor correlation near zero (slightly negative, because subtracting the local mean couples neighbors). **Over-sharpening** moves the features *in the same direction as noise*. That is the core weakness of NSS metrics for restoration: they cannot tell restored texture from invented high-frequency energy. Note also that the absolute numbers depend on content and on $C$ (the clean `camera` image is not a unit Gaussian), which is why BRISQUE needs a trained regressor and NIQE a pristine reference corpus rather than fixed thresholds.
+
+<Figure src={nrIqa} alt="Top row: crops of the cameraman image clean, blurred, with white noise and over-sharpened. Bottom row: log-scale histograms of their MSCN coefficients with fitted generalized Gaussian curves. The clean histogram is moderately peaked with shape 1.56; the blurred one is a narrow spike with shape 0.87; the noisy one is wide and flat-topped with shape 3.12; the over-sharpened one is also flat-topped with shape 2.35." caption="Figure 6 — MSCN statistics, the basis of BRISQUE, NIQE and PIQE. Blur makes the histogram narrow and peaky; noise and over-sharpening both make it wider and flatter, so an NSS metric sees them as similar changes." />
+
+#### Family 2: learned deep models
+
+**Plain version.** Instead of hand-made statistics, train a neural network to predict human ratings directly. Deep features capture content, semantics and complex artifacts far better, but the model only knows the kinds of images and opinions it was trained on.
+
+- **NIMA** [97] predicts the whole *distribution* of human ratings with a CNN, not a single number. With $p_k$ the predicted probability of score $k$ (on a 1–10 scale), the reported score is the mean $\hat s = \sum_k k\, p_k$, and the spread of the distribution says how much people would disagree. Checkpoints trained on aesthetic ratings judge "is this a nice photo", not "is this a faithful restoration".
+- **HyperIQA** [98] targets authentic, in-the-wild distortions. It splits assessment into three stages: a backbone first *understands the content*, a **hyper network** then generates the weights of the quality-prediction network from that content (the "perception rule" adapts to what is in the picture, since the same blur is judged differently on a sky and on a face), and the generated network predicts the score.
+- **MUSIQ** [99] is a multi-scale transformer that takes the image at its **native resolution and aspect ratio** plus downscaled versions, using hash-based 2-D spatial and scale embeddings, so no resizing or cropping changes the very artifacts being judged.
+- **MANIQA** [100] combines vision-transformer features with transposed (channel) attention blocks and scale Swin-transformer blocks, and predicts the score with a dual-branch, patch-weighted head. It won the no-reference track of the NTIRE 2022 perceptual IQA challenge, whose data include outputs of restoration and GAN-based algorithms, so it is closer to the restoration setting than metrics trained on camera distortions.
+- **TOPIQ** [101] follows a **top-down** idea: high-level semantic features decide where to look, and a cross-scale attention mechanism uses them to weight lower-level, distortion-sensitive features (its network is called CFANet, with a ResNet-50 backbone). The same design works for FR and NR assessment and is light compared with transformer-based IQA models.
+
+All of these are **opinion-aware** and output "higher is better" scores, and each depends on its training dataset: a model trained on KonIQ-10k and the same architecture trained on PIPAL can rank restoration methods differently.
+
+#### Family 3: vision-language and large multimodal models
+
+**Plain version.** Models trained on huge collections of images and text already "know" what a good or bad photo looks like. You can ask them, either by comparing the image with text prompts or by literally asking a chatbot-style model to rate it.
+
+**CLIP-IQA** [102] compares the CLIP embedding of the image with the embeddings of an antonym prompt pair such as "Good photo." and "Bad photo.". With $\mathbf x$ the image embedding, $\mathbf t_1, \mathbf t_2$ the two text embeddings and $s_i = \mathbf x^{\top} \mathbf t_i / (\lVert \mathbf x \rVert\, \lVert \mathbf t_i \rVert)$ their cosine similarities, the score is
+
+$$
+\mathrm{CLIP\text{-}IQA} = \frac{e^{s_1}}{e^{s_1} + e^{s_2}} \in [0, 1],
+$$
+
+higher is better. The basic version is **zero-shot** (no opinion scores at all), and other prompt pairs ("Noisy photo." / "Clean photo.", "Sharp photo." / "Blurry photo.") probe single attributes. The wording of the prompts changes the scores.
+
+**Q-Align** [103] fine-tunes a large multimodal model to answer the way human raters do, with a **text rating level** (bad, poor, fair, good, excellent) instead of a number. At test time, with $X_{l_i}$ the model's logit for level $l_i$, the score is the expected level under a softmax restricted to the five words,
+
+$$
+S = \sum_{i=1}^{5} i \cdot \frac{e^{X_{l_i}}}{\sum_{j=1}^{5} e^{X_{l_j}}},
+$$
+
+where $i = 1, \dots, 5$ indexes the levels from bad to excellent. Such models are strong across datasets but heavy, and they inherit the biases of their base model.
+
+#### Distribution-level metrics
+
+Some metrics score a *set* of outputs rather than one image. **FID** [64] compares the distribution of Inception features of the restored set with that of a set of real images; it was designed for generative models and is used for generative restoration such as diffusion SR, but it needs many images and says nothing about any single one. **IS** (Inception Score), mentioned in the post, measures the confidence and diversity of class predictions; it suits class-conditional generation rather than restoration and is rarely used there today.
+
+#### Pitfalls
+
+- **Metrics can be gamed.** A restorer that adds grain or sharpens edges can improve NSS scores, as the code above shows, without becoming more faithful. Any differentiable metric (and any learned IQA network) used as a training loss or for model selection can be optimized directly, and the network may learn to please the metric rather than people. If a method uses CLIP or an IQA network in its loss, evaluating it with the same model is not independent.
+- **Domain mismatch.** Most opinion-aware metrics were trained on synthetic distortions (LIVE, TID2013, KADID-10k) or on camera photos (KonIQ-10k, SPAQ). Restoration outputs contain different artifacts: hallucinated textures, over-smoothing, GAN patterns. This mismatch was the explicit motivation for PIPAL [109], whose authors found that existing IQA methods could not fairly evaluate GAN-based restoration. For low light, the problems are exposure and color, which most NSS features normalize away; see the low-light-specific discussion in [DL 05](/en/learn/deep-learning/dl-05-low-light-enhancement/).
+- **Metrics disagree.** NSS, learned and vision-language metrics often rank the same methods differently, and all can disagree with people. Scores also depend on the implementation, checkpoint, color space, input size and whether the image is resized, so numbers copied from different papers are often not comparable.
+- **"Higher NR quality" is not "more correct".** An NR metric cannot know whether a sharp face or line of text matches the real scene. A hallucinated license plate can score perfectly.
+
+#### Recommended practice
+
+1. When a reference exists, lead with FR metrics (PSNR, SSIM, LPIPS) and add NR metrics as a complement; place your method on the perception–distortion plane (next subsection).
+2. On real images without references, report **several NR metrics from different families** (for example NIQE or PI, one or two learned models such as MUSIQ, MANIQA or TOPIQ, and a vision-language one such as CLIP-IQA or Q-Align), and say which way each one points.
+3. Use one shared implementation and state it, with versions and checkpoints. The open-source **IQA-PyTorch** toolbox (`pyiqa`) [110] reimplements most metrics in this section (NIQE, BRISQUE, PIQE, the Ma score and PI, NIMA, HyperIQA, MUSIQ, MANIQA, TOPIQ, CLIP-IQA, Q-Align, and FR metrics) behind one interface.
+4. Do not tune on the judge: keep at least one metric that played no role in training or model selection.
+5. Back important claims with a **user study** (mean opinion scores or paired comparisons, blind and randomized); [DL 05](/en/learn/deep-learning/dl-05-low-light-enhancement/) describes MOS and Bradley–Terry paired-comparison protocols. When metrics disagree with each other or with people, say so.
+
+#### Summary table
+
+| Metric | Family | Needs training? | Better | Mainly sensitive to |
+|---|---|---|---|---|
+| NIQE [62] | NSS | Pristine images only (opinion-unaware) | Lower | Deviations of local statistics: blur, noise, compression |
+| BRISQUE [94] | NSS + regression | Yes, human scores on synthetic distortions | Lower | The same statistics, mapped to human scores |
+| PIQE [96] | NSS, block-wise | No opinion scores | Lower | Blocking and noise in local blocks; gives a distortion map |
+| Ma [95] | Handcrafted features + regression | Yes, human scores on SR outputs | Higher | SR artifacts, texture and sharpness |
+| PI [63] | NSS + learned | Through its Ma part | Lower | Perceptual quality of SR; rewards texture, including amplified noise |
+| NIMA [97] | Learned CNN | Yes, rating distributions | Higher | Technical or aesthetic quality, depending on checkpoint |
+| HyperIQA [98] | Learned CNN + hyper network | Yes | Higher | Authentic distortions, judged in the context of content |
+| MUSIQ [99] | Learned transformer | Yes | Higher | Multi-scale quality at native resolution |
+| MANIQA [100] | Learned transformer | Yes | Higher | Restoration and GAN artifacts (trained on such data) |
+| TOPIQ [101] | Learned CNN, top-down attention | Yes | Higher | Distortions in semantically important regions |
+| CLIP-IQA [102] | Vision-language | No (zero-shot version) | Higher | Overall "good photo" impression; depends on prompts |
+| Q-Align [103] | Large multimodal model | Yes, ratings as text levels | Higher | Human-like overall quality judgments |
+| FID [64] | Distribution-level | Pretrained Inception features | Lower | Distribution gap between a set of outputs and real images |
 
 ### The perception–distortion trade-off
 
@@ -554,7 +874,7 @@ $$
 
 where the minimum is over all (possibly random) restoration methods. They proved that $P(D)$ is non-increasing and (for divergences convex in their second argument) convex: there is an unattainable region near the origin. A method cannot be both minimal-distortion and perfectly realistic. In particular, the MMSE estimator $\mathbb E[x \mid y]$ has the lowest distortion but a blurry, unrealistic output distribution; to look real you must accept higher MSE. GANs (and now diffusion models) are principled ways to move along the bound.
 
-<Figure src={perceptionDistortion} alt="Schematic plot of perceptual index versus distortion. A convex decreasing curve bounds a gray unattainable region near the origin. An MSE-trained model sits at low distortion but poor perceptual quality, a GAN model and a diffusion-prior model sit near the curve at higher distortion but better perceptual quality, and bicubic is far from the curve." caption="Figure 6 — Schematic of the perception–distortion trade-off [65] (not measured data). The bound is convex and decreasing; methods trade fidelity (left) against realism (bottom)." />
+<Figure src={perceptionDistortion} alt="Schematic plot of perceptual index versus distortion. A convex decreasing curve bounds a gray unattainable region near the origin. An MSE-trained model sits at low distortion but poor perceptual quality, a GAN model and a diffusion-prior model sit near the curve at higher distortion but better perceptual quality, and bicubic is far from the curve." caption="Figure 7 — Schematic of the perception–distortion trade-off [65] (not measured data). The bound is convex and decreasing; methods trade fidelity (left) against realism (bottom)." />
 
 This is the update in the post's metric section: since diffusion models can generate plausible but unfaithful detail, the gap between fidelity (PSNR/SSIM) and perceptual quality has become central. The **NTIRE 2025** $\times 4$ SR challenge therefore ran two tracks: a restoration track ranked by PSNR and a perceptual track ranked by a perceptual score [3], whereas the 2024 edition ranked by PSNR [2]. Practical advice: report both a distortion and a perceptual metric, and say where on the trade-off your method aims.
 
@@ -614,7 +934,9 @@ The post ends with two observations that still hold. First, because each task is
 - A few general backbones dominate: U-Net-style CNNs (NAFNet), transformers (SwinIR, Restormer, HAT) and state-space models (MambaIR); key design habits are global residuals, no batch norm, large receptive fields and gating/attention.
 - All-in-one models (AirNet, TransWeather, PromptIR, AdaIR, DA-CLIP, InstructIR) handle unknown degradations by conditioning one network on a learned, prompted or text-given degradation description.
 - L2/L1 losses give faithful but smooth results; perceptual, adversarial and diffusion-based methods give realistic but less faithful ones. The **perception–distortion trade-off** says you cannot have both at the limit, so report both kinds of metric.
+- Blind deblurring and blind SR must estimate the **kernel** as well as the image. Naive joint MAP prefers the no-blur solution [74]; working methods marginalize over the image, use edge prediction or sharpness-favoring priors, alternate image and kernel updates coarse-to-fine and finish with non-blind deconvolution. Deep methods either predict or condition on the kernel (SRMD, IKC, DAN, KernelGAN, SelfDeblur) or skip it entirely (GoPro-trained networks, BSRGAN, Real-ESRGAN).
 - KITTI is a driving benchmark, not a dehazing dataset; for dehazing use RESIDE plus real pairs such as O-HAZE and Dense-Haze.
+- No-reference metrics are models of human opinion, validated by SRCC/PLCC against mean opinion scores. NSS metrics (BRISQUE, NIQE, PIQE, PI) measure deviations of MSCN statistics; learned (NIMA, HyperIQA, MUSIQ, MANIQA, TOPIQ) and vision-language (CLIP-IQA, Q-Align) models learn from ratings. All can be gamed by sharpening or noise and suffer from the gap between their training distortions and restoration artifacts, so report several, together with FR metrics and a user study.
 
 ## Exercises
 
@@ -669,6 +991,24 @@ The MMSE-like output lies at low distortion but far from the natural-image distr
 <summary>Hint</summary>
 
 Mix datasets per task with balanced sampling; add a degradation encoder (contrastive as in AirNet, or prompts as in PromptIR) trained jointly. Compare with three single-task models of the same backbone and size, and with a version without conditioning. Interference shows up as the all-in-one model falling behind the single-task model on one task while matching it on others; also test on mixed degradations (rain + haze) unseen in training.
+
+</details>
+
+7. **Kernel estimation by hand.** In the blind-deconvolution snippet, (a) remove the `shock(...)` call and set `keep=1.0` (use all gradients) and compare the kernel error and final PSNR; (b) start from a $3 \times 3$ box kernel instead of the near-delta; (c) replace `h_true` by a straight $25$-pixel motion path in a $31 \times 31$ window. Explain each result with the discussion of Levin et al. [74] and the coarse-to-fine strategy.
+
+<details>
+<summary>Hint</summary>
+
+(a) With all gradients, the many weak gradients of the smoothed latent image dominate the least-squares fit, and the estimate no longer improves (in our run the kernel error grew instead of shrinking and the final PSNR stayed at the blurry input's level). Selecting a few strong, well-predicted edges is what makes the kernel step informative, which is the practical answer to the "no-blur" bias of naive joint MAP. (b) The loop is a non-convex alternation, so the start matters; a different start can converge to a different local minimum. (c) A large kernel at full resolution is hard to find from a delta start: in our run the error dropped much less and most of the true-kernel PSNR was not recovered. Estimating the kernel on a downsampled image first (where it is only a few pixels long) and upsampling the result is what the image pyramid is for.
+
+</details>
+
+8. **Validating an NR metric.** Five restored images have mean opinion scores $\mathrm{MOS} = (4.1, 3.2, 2.5, 1.8, 3.9)$ and NIQE scores $(3.4, 4.2, 5.1, 6.3, 3.0)$. (a) Compute SRCC by hand and interpret its sign. (b) Would SRCC change if you reported $\log(\mathrm{NIQE})$ instead? Would PLCC? (c) Run the MSCN snippet on an over-sharpened version of a *denoised* image and explain why an NSS metric might rate it better than the plain denoised output.
+
+<details>
+<summary>Hint</summary>
+
+(a) Ranking from smallest to largest, the MOS ranks of images 1–5 are $(5, 3, 2, 1, 4)$ and the NIQE ranks are $(2, 3, 4, 5, 1)$. The rank differences are $(3, 0, -2, -4, 3)$, so $\sum d_i^2 = 38$ and $\mathrm{SRCC} = 1 - 6 \cdot 38 / (5 \cdot 24) = -0.9$. The sign is negative because lower NIQE means better quality; one reports $|\mathrm{SRCC}| = 0.9$. Only images 1 and 5 are swapped. (b) SRCC depends only on ranks, so any monotonic transform such as $\log$ leaves it unchanged; PLCC changes, which is why PLCC is usually computed after a fitted monotonic mapping. (c) Denoising leaves a smooth image whose MSCN statistics resemble mild blur (low variance, peaky histogram). Sharpening restores high-frequency energy and pushes the statistics back toward those of natural images, whether or not the added detail is real.
 
 </details>
 
@@ -747,3 +1087,40 @@ Mix datasets per task with balanced sampling; add a degradation encoder (contras
 71. W. Yang, R. T. Tan, S. Wang, Y. Fang and J. Liu, "Single Image Deraining: From Model-Based to Data-Driven and Beyond," *IEEE TPAMI*, 2021. [doi](https://doi.org/10.1109/TPAMI.2020.2995190) · [arXiv](https://arxiv.org/abs/1912.07150)
 72. J. Jiang, Z. Zuo, G. Wu, K. Jiang and X. Liu, "A Survey on All-in-One Image Restoration: Taxonomy, Evaluation and Future Trends," *IEEE TPAMI*, 2025. [arXiv](https://arxiv.org/abs/2410.15067)
 73. X. Li, Y. Ren, X. Jin, C. Lan, X. Wang, W. Zeng, X. Wang and Z. Chen, "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey," *International Journal of Computer Vision*, 2025. [arXiv](https://arxiv.org/abs/2308.09388)
+74. A. Levin, Y. Weiss, F. Durand and W. T. Freeman, "Understanding and Evaluating Blind Deconvolution Algorithms," in *Proc. IEEE CVPR*, 2009, pp. 1964–1971. [doi](https://doi.org/10.1109/CVPR.2009.5206815)
+75. R. Fergus, B. Singh, A. Hertzmann, S. T. Roweis and W. T. Freeman, "Removing Camera Shake from a Single Photograph," *ACM Transactions on Graphics* (Proc. SIGGRAPH), vol. 25, no. 3, pp. 787–794, 2006. [doi](https://doi.org/10.1145/1141911.1141956)
+76. Q. Shan, J. Jia and A. Agarwala, "High-quality Motion Deblurring from a Single Image," *ACM Transactions on Graphics* (Proc. SIGGRAPH), vol. 27, no. 3, 2008. [doi](https://doi.org/10.1145/1360612.1360672)
+77. S. Cho and S. Lee, "Fast Motion Deblurring," *ACM Transactions on Graphics* (Proc. SIGGRAPH Asia), vol. 28, no. 5, 2009. [doi](https://doi.org/10.1145/1618452.1618491)
+78. L. Xu and J. Jia, "Two-Phase Kernel Estimation for Robust Motion Deblurring," in *Proc. ECCV*, 2010, pp. 157–170. [doi](https://doi.org/10.1007/978-3-642-15549-9_12)
+79. D. Krishnan, T. Tay and R. Fergus, "Blind Deconvolution Using a Normalized Sparsity Measure," in *Proc. IEEE CVPR*, 2011, pp. 233–240. [doi](https://doi.org/10.1109/CVPR.2011.5995521)
+80. J. Pan, D. Sun, H. Pfister and M.-H. Yang, "Blind Image Deblurring Using Dark Channel Prior," in *Proc. IEEE CVPR*, 2016, pp. 1628–1636. [doi](https://doi.org/10.1109/CVPR.2016.180)
+81. J. Sun, W. Cao, Z. Xu and J. Ponce, "Learning a Convolutional Neural Network for Non-uniform Motion Blur Removal," in *Proc. IEEE CVPR*, 2015. [arXiv](https://arxiv.org/abs/1503.00593)
+82. C. J. Schuler, M. Hirsch, S. Harmeling and B. Schölkopf, "Learning to Deblur," *IEEE TPAMI*, vol. 38, no. 7, pp. 1439–1451, 2016. [doi](https://doi.org/10.1109/TPAMI.2015.2481418) · [arXiv](https://arxiv.org/abs/1406.7444)
+83. A. Chakrabarti, "A Neural Approach to Blind Motion Deblurring," in *Proc. ECCV*, 2016. [arXiv](https://arxiv.org/abs/1603.04771)
+84. D. Ulyanov, A. Vedaldi and V. Lempitsky, "Deep Image Prior," in *Proc. IEEE/CVF CVPR*, 2018, pp. 9446–9454. [doi](https://doi.org/10.1109/CVPR.2018.00984) · [arXiv](https://arxiv.org/abs/1711.10925)
+85. D. Ren, K. Zhang, Q. Wang, Q. Hu and W. Zuo, "Neural Blind Deconvolution Using Deep Priors," in *Proc. IEEE/CVF CVPR*, 2020. [arXiv](https://arxiv.org/abs/1908.02197)
+86. O. Kupyn, V. Budzan, M. Mykhailych, D. Mishkin and J. Matas, "DeblurGAN: Blind Motion Deblurring Using Conditional Adversarial Networks," in *Proc. IEEE/CVF CVPR*, 2018. [arXiv](https://arxiv.org/abs/1711.07064)
+87. K. Zhang, W. Zuo and L. Zhang, "Learning a Single Convolutional Super-Resolution Network for Multiple Degradations," in *Proc. IEEE/CVF CVPR*, 2018. [arXiv](https://arxiv.org/abs/1712.06116)
+88. J. Gu, H. Lu, W. Zuo and C. Dong, "Blind Super-Resolution With Iterative Kernel Correction," in *Proc. IEEE/CVF CVPR*, 2019. [arXiv](https://arxiv.org/abs/1904.03377)
+89. S. Bell-Kligler, A. Shocher and M. Irani, "Blind Super-Resolution Kernel Estimation using an Internal-GAN," in *Proc. NeurIPS*, 2019. [link](https://proceedings.neurips.cc/paper/2019/hash/5fd0b37cd7dbbb00f97ba6ce92bf5add-Abstract.html) · [arXiv](https://arxiv.org/abs/1909.06581)
+90. Z. Luo, Y. Huang, S. Li, L. Wang and T. Tan, "Unfolding the Alternating Optimization for Blind Super Resolution," in *Proc. NeurIPS*, 2020. [arXiv](https://arxiv.org/abs/2010.02631)
+91. K. Zhang, L. Van Gool and R. Timofte, "Deep Unfolding Network for Image Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2020. [arXiv](https://arxiv.org/abs/2003.10428)
+92. K. Zhang, J. Liang, L. Van Gool and R. Timofte, "Designing a Practical Degradation Model for Deep Blind Image Super-Resolution," in *Proc. IEEE/CVF ICCV*, 2021. [arXiv](https://arxiv.org/abs/2103.14006)
+93. A. Liu, Y. Liu, J. Gu, Y. Qiao and C. Dong, "Blind Image Super-Resolution: A Survey and Beyond," *IEEE TPAMI*, 2022 (early access). [doi](https://doi.org/10.1109/TPAMI.2022.3203009) · [arXiv](https://arxiv.org/abs/2107.03055)
+94. A. Mittal, A. K. Moorthy and A. C. Bovik, "No-Reference Image Quality Assessment in the Spatial Domain," *IEEE Transactions on Image Processing*, vol. 21, no. 12, pp. 4695–4708, 2012. [doi](https://doi.org/10.1109/TIP.2012.2214050)
+95. C. Ma, C.-Y. Yang, X. Yang and M.-H. Yang, "Learning a No-Reference Quality Metric for Single-Image Super-Resolution," *Computer Vision and Image Understanding*, vol. 158, pp. 1–16, 2017. [doi](https://doi.org/10.1016/j.cviu.2016.12.009) · [arXiv](https://arxiv.org/abs/1612.05890)
+96. N. Venkatanath, D. Praneeth, M. C. Bh, S. S. Channappayya and S. S. Medasani, "Blind Image Quality Evaluation Using Perception Based Features," in *Proc. Twenty First National Conference on Communications (NCC)*, 2015, pp. 1–6. [doi](https://doi.org/10.1109/NCC.2015.7084843) · [MATLAB documentation](https://www.mathworks.com/help/images/ref/piqe.html)
+97. H. Talebi and P. Milanfar, "NIMA: Neural Image Assessment," *IEEE Transactions on Image Processing*, vol. 27, no. 8, pp. 3998–4011, 2018. [doi](https://doi.org/10.1109/TIP.2018.2831899) · [arXiv](https://arxiv.org/abs/1709.05424)
+98. S. Su, Q. Yan, Y. Zhu, C. Zhang, X. Ge, J. Sun and Y. Zhang, "Blindly Assess Image Quality in the Wild Guided by a Self-Adaptive Hyper Network," in *Proc. IEEE/CVF CVPR*, 2020, pp. 3664–3673. [doi](https://doi.org/10.1109/CVPR42600.2020.00372)
+99. J. Ke, Q. Wang, Y. Wang, P. Milanfar and F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," in *Proc. IEEE/CVF ICCV*, 2021, pp. 5128–5137. [doi](https://doi.org/10.1109/ICCV48922.2021.00510) · [arXiv](https://arxiv.org/abs/2108.05997)
+100. S. Yang, T. Wu, S. Shi, S. Lao, Y. Gong, M. Cao, J. Wang and Y. Yang, "MANIQA: Multi-dimension Attention Network for No-Reference Image Quality Assessment," in *Proc. IEEE/CVF CVPR Workshops*, 2022, pp. 1190–1199. [doi](https://doi.org/10.1109/CVPRW56347.2022.00126) · [arXiv](https://arxiv.org/abs/2204.08958)
+101. C. Chen, J. Mo, J. Hou, H. Wu, L. Liao, W. Sun, Q. Yan and W. Lin, "TOPIQ: A Top-Down Approach From Semantics to Distortions for Image Quality Assessment," *IEEE Transactions on Image Processing*, vol. 33, pp. 2404–2418, 2024. [doi](https://doi.org/10.1109/TIP.2024.3378466) · [arXiv](https://arxiv.org/abs/2308.03060)
+102. J. Wang, K. C. K. Chan and C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," in *Proc. AAAI Conference on Artificial Intelligence*, 2023. [arXiv](https://arxiv.org/abs/2207.12396)
+103. H. Wu, Z. Zhang, W. Zhang, C. Chen, L. Liao, C. Li, Y. Gao, A. Wang, E. Zhang, W. Sun, Q. Yan, X. Min, G. Zhai and W. Lin, "Q-Align: Teaching LMMs for Visual Scoring via Discrete Text-Defined Levels," in *Proc. ICML*, PMLR 235, pp. 54015–54029, 2024. [link](https://proceedings.mlr.press/v235/wu24ah.html) · [arXiv](https://arxiv.org/abs/2312.17090)
+104. H. R. Sheikh, M. F. Sabir and A. C. Bovik, "A Statistical Evaluation of Recent Full Reference Image Quality Assessment Algorithms," *IEEE Transactions on Image Processing*, vol. 15, no. 11, pp. 3440–3451, 2006 (LIVE Image Quality Assessment Database). [doi](https://doi.org/10.1109/TIP.2006.881959) · [database](https://live.ece.utexas.edu/research/quality/subjective.htm)
+105. N. Ponomarenko, L. Jin, O. Ieremeiev, V. Lukin, K. Egiazarian, J. Astola, B. Vozel, K. Chehdi, M. Carli, F. Battisti and C.-C. J. Kuo, "Image Database TID2013: Peculiarities, Results and Perspectives," *Signal Processing: Image Communication*, vol. 30, pp. 57–77, 2015. [doi](https://doi.org/10.1016/j.image.2014.10.009) · [database](https://www.ponomarenko.info/tid2013.htm)
+106. H. Lin, V. Hosu and D. Saupe, "KADID-10k: A Large-scale Artificially Distorted IQA Database," in *Proc. Eleventh International Conference on Quality of Multimedia Experience (QoMEX)*, 2019. [doi](https://doi.org/10.1109/QoMEX.2019.8743252) · [database](https://database.mmsp-kn.de/kadid-10k-database.html)
+107. V. Hosu, H. Lin, T. Sziranyi and D. Saupe, "KonIQ-10k: An Ecologically Valid Database for Deep Learning of Blind Image Quality Assessment," *IEEE Transactions on Image Processing*, vol. 29, pp. 4041–4056, 2020. [arXiv](https://arxiv.org/abs/1910.06180)
+108. Y. Fang, H. Zhu, Y. Zeng, K. Ma and Z. Wang, "Perceptual Quality Assessment of Smartphone Photography," in *Proc. IEEE/CVF CVPR*, 2020, pp. 3674–3683. [doi](https://doi.org/10.1109/CVPR42600.2020.00373)
+109. J. Gu, H. Cai, H. Chen, X. Ye, J. Ren and C. Dong, "PIPAL: A Large-Scale Image Quality Assessment Dataset for Perceptual Image Restoration," in *Proc. ECCV*, 2020. [arXiv](https://arxiv.org/abs/2007.12142)
+110. C. Chen and J. Mo, "IQA-PyTorch: PyTorch Toolbox for Image Quality Assessment," software (pip package `pyiqa`), 2022. [GitHub](https://github.com/chaofengc/IQA-PyTorch)
