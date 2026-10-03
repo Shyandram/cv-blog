@@ -22,11 +22,14 @@ for (const file of process.argv.slice(2)) {
     for (const k of need) if (!new RegExp(`^${k}:`, 'm').test(fm[1])) problems.push(`frontmatter missing "${k}"`);
   }
   try {
-    await compile(body, {
+    const out = await compile(body, {
       format: file.endsWith('.md') ? 'md' : 'mdx',
       remarkPlugins: [remarkGfm, remarkMath],
       rehypePlugins: [[rehypeKatex, { throwOnError: true, strict: false }]],
     });
+    // rehype-katex reports bad formulas as file messages instead of throwing.
+    const offset = fm ? fm[0].split('\n').length - 1 : 0;
+    for (const m of out.messages) problems.push(`${m.line ? `line ${m.line + offset}: ` : ''}${m.reason}`);
   } catch (e) {
     problems.push(`${e.line ? `line ${e.line + (fm ? fm[0].split('\n').length - 1 : 0)}: ` : ''}${e.reason ?? e.message}`);
   }

@@ -1,0 +1,598 @@
+---
+title: "第 11 章・影像分割（二）：主動輪廓——蛇模型與水平集"
+description: "用「會動的曲線」分割物體：參數式蛇模型、梯度向量流、氣球力，以及測地主動輪廓與 Chan–Vese 等水平集方法。"
+track: image-processing
+order: 110
+level: advanced
+prereqs: [image-processing/dip-10-segmentation]
+tags: [dip, segmentation, active-contours, level-sets, variational-methods]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import snakeAstronaut from '../../../../assets/dip/ch11/snake-astronaut.png';
+import gvfFig from '../../../../assets/dip/ch11/gvf-vs-gradient.png';
+import balloonFig from '../../../../assets/dip/ch11/balloon.png';
+import levelSetSurface from '../../../../assets/dip/ch11/level-set-surface.png';
+import chanVeseCamera from '../../../../assets/dip/ch11/chan-vese-camera.png';
+import topologyFig from '../../../../assets/dip/ch11/topology-comparison.png';
+
+## 你將學到
+
+- 為什麼可以把分割問題寫成「移動一條曲線，直到能量不再下降」，以及這樣做比門檻化和邊緣連接多了什麼好處。
+- **蛇模型**（snake，一種顯式、參數式的主動輪廓）如何由內部能量與外部能量定義，以及 Euler–Lagrange 方程式如何把能量變成迭代演算法。
+- 外力該怎麼選：影像梯度、邊緣圖、**梯度向量流**（gradient vector flow, GVF）與**氣球力**（balloon force），以及它們各自要解決的問題。
+- **水平集方法**（level-set method）如何把曲線隱式表示為函數 $\phi$ 的零等高線，並在 CFL 限制下以迎風有限差分求解 $\phi_t + F\lvert\nabla\phi\rvert = 0$。
+- 速度函數如何編碼以邊緣為主的模型（**測地主動輪廓**）與以區域為主的模型（源自 Mumford–Shah 的 **Chan–Vese**），以及符號距離重新初始化、窄帶法與形態學近似。
+- 主動輪廓在今天的位置：成為深度網路裡的輪廓精修模組，以及損失函數。
+
+## 先看全貌
+
+第 10 章用的是局部規則：這個像素過門檻、那段邊緣連起來、這塊區域往外長。這些規則完全不在乎結果的**形狀**。於是我們可能得到有缺口的邊界、從弱邊緣漏出去的區域，或是一堆零散的孤立像素。
+
+主動輪廓（active contour）換了一個角度。先在物體附近放一條封閉曲線，然後讓它**動起來**。影像推著曲線走（朝向邊緣，或朝向「裡面」與「外面」分得最好的位置），曲線本身的彈性又把它拉住（不喜歡被拉長、也不喜歡被折彎）。當兩邊的力互相抵消，曲線停下來，它最後的位置就是分割結果。輸出永遠是一條封閉、平滑的邊界，而不是一堆邊緣碎片。
+
+<Callout type="tip" title="用最簡單的話說">
+在桌上的玩具外面套一條大橡皮筋，然後讓橡皮筋慢慢縮小。它會往內滑，碰到玩具就停住，緊緊貼著玩具的輪廓。橡皮筋自己想要變短、變圓滑；玩具擋住它，不讓它再縮。蛇模型就是那條橡皮筋，而「玩具」就是圖片裡邊緣很明顯的地方。水平集則是更聰明的橡皮筋：如果裡面有兩個玩具，它還會自己「啪」一聲分成兩條。
+</Callout>
+
+本章依照課本 [1] 的編排，依序介紹這兩大家族。**蛇模型**（Kass、Witkin 與 Terzopoulos [2]）把曲線存成一串點，直接移動這些點。**水平集**（Osher 與 Sethian [5]）把曲線隱式地存成某個曲面的零等高線，改為移動曲面，因此曲線的分裂與合併會自動發生。兩者都是**變分法**（variational）：先寫下一個能量，再對它做梯度下降。這個想法本身，比任何一條特定公式都更長壽，一路延續到了深度學習。
+
+## 背景：為什麼要讓曲線動起來
+
+白話地說：與其逐一判斷每個像素，不如一次描述整條邊界，然後問「這條邊界有多好？」，再一點一點改進它。
+
+精確地說，主動輪廓方法有三個要素：
+
+1. 封閉曲線 $C$ 在影像定義域 $\Omega \subset \mathbb{R}^2$ 中的**表示法**：顯式（參數化曲線 $v(s)$）或隱式（函數 $\phi(x, y)$ 的零水平集）。
+2. 一個**能量** $E(C)$，當 $C$ 是好邊界時能量低。它總是混合了**規則性**項（偏好短而平滑的曲線）與**資料**項（曲線上的邊緣很強，或曲線內外兩區各自很均勻）。
+3. 一條**演化規則**，改變 $C$ 讓 $E$ 下降，通常是以人工時間 $t$ 寫成的偏微分方程式（PDE）形式的梯度下降。
+
+和第 10 章相比，規則性項能補上邊緣的缺口，輸出永遠是可以直接交給第 12 章形狀描述子的封閉曲線，而先驗知識（使用者點一下的位置、對平滑的偏好、物體內部的灰階模型）也能自然地放進來。代價是能量不是凸函數：梯度下降只會找到**局部**最小值，所以結果取決於起點。
+
+## 以蛇模型做影像分割
+
+蛇模型是一串在影像上滑動的封閉點鏈。每個點同時感受到兩種拉力：相鄰的點讓鏈子保持短而平滑，影像則把它拖向邊緣。
+
+### 蛇模型是一條參數曲線
+
+我們把輪廓寫成
+
+$$
+v(s) = \big(x(s),\, y(s)\big), \qquad s \in [0, 1], \quad v(0) = v(1),
+$$
+
+其中 $s$ 是沿曲線繞一圈的參數，$x(s)$、$y(s)$ 是影像座標。對 $s$ 的導數記為 $v_s = dv/ds$、$v_{ss} = d^2 v / ds^2$。在電腦裡，曲線被取樣成 $n$ 個點 $v_i = (x_i, y_i)$，$i = 0, \dots, n-1$；對封閉蛇模型而言，索引以 $n$ 取模。
+
+### 能量泛函
+
+[2] 的蛇模型能量是
+
+$$
+E_{\text{snake}}(v) = \int_0^1 \Big[\, \underbrace{\tfrac12\big(\alpha\,\lvert v_s(s)\rvert^2 + \beta\,\lvert v_{ss}(s)\rvert^2\big)}_{E_{\text{int}}} \;+\; E_{\text{ext}}\big(v(s)\big) \Big]\, ds .
+$$
+
+- $\alpha \ge 0$ 是**彈性**（張力）權重。$\lvert v_s\rvert^2$ 在曲線被拉長時變大，所以 $\alpha$ 讓蛇模型像一條想縮短的鬆緊帶。
+- $\beta \ge 0$ 是**剛性**（彎曲）權重。$\lvert v_{ss}\rvert^2$ 衡量曲線轉彎有多急，所以 $\beta$ 讓蛇模型像一根不肯被折彎的細金屬棒。
+- $E_{\text{ext}}(x, y)$ 是**外部（影像）能量**，一個定義在整張影像上的純量場，在我們希望蛇停下的地方數值**較低**。
+
+對灰階影像 $f$，常見的外部能量是
+
+$$
+E_{\text{ext}}(x, y) = -\,w_{\text{edge}}\,\big\lvert \nabla\big(G_\sigma * f\big)(x, y)\big\rvert^2 \;-\; w_{\text{line}}\,(G_\sigma * f)(x, y),
+$$
+
+其中 $G_\sigma$ 是標準差為 $\sigma$ 的高斯函數，$*$ 是卷積，$\nabla$ 是梯度，$w_{\text{edge}}$、$w_{\text{line}}$ 是權重。$w_{\text{edge}} > 0$ 時蛇被強邊緣吸引；$w_{\text{line}} > 0$ 時被暗線吸引，$w_{\text{line}} \lt 0$ 時被亮線吸引。高斯模糊把 $E_{\text{ext}}$ 的谷底變寬，讓蛇在幾個像素外就能「感覺」到邊緣；[2] 稱之為尺度空間延續（scale-space continuation）。
+
+### 從能量到運動：Euler–Lagrange 方程式
+
+要最小化 $\int L(v, v_s, v_{ss})\,ds$ 這種積分，我們用變分法。最小值必須滿足 Euler–Lagrange 方程式
+
+$$
+\frac{\partial L}{\partial v} - \frac{d}{ds}\frac{\partial L}{\partial v_s} + \frac{d^2}{ds^2}\frac{\partial L}{\partial v_{ss}} = 0 .
+$$
+
+當 $L = \tfrac12\alpha\lvert v_s\rvert^2 + \tfrac12\beta\lvert v_{ss}\rvert^2 + E_{\text{ext}}(v)$，有 $\partial L/\partial v = \nabla E_{\text{ext}}$、$\partial L/\partial v_s = \alpha v_s$、$\partial L/\partial v_{ss} = \beta v_{ss}$。若 $\alpha$、$\beta$ 為常數，便得到
+
+$$
+\alpha\, v_{ss} - \beta\, v_{ssss} - \nabla E_{\text{ext}}(v) = 0 .
+$$
+
+把它讀成力平衡：$\alpha v_{ss}$ 是張力（指向局部曲率中心，讓曲線縮短），$-\beta v_{ssss}$ 是彎曲力（把折角拉直），$F_{\text{ext}} = -\nabla E_{\text{ext}}$ 是影像力。平衡時三者互相抵消。
+
+這條方程式通常無法直接解，所以讓 $v$ 隨人工時間 $t$ 變化，沿著下坡滑動：
+
+$$
+\gamma\, \frac{\partial v}{\partial t} = \alpha\, v_{ss} - \beta\, v_{ssss} + F_{\text{ext}}(v),
+$$
+
+其中 $\gamma > 0$ 是黏滯（阻尼）常數。當 $\partial v/\partial t = 0$，就回到 Euler–Lagrange 方程式。
+
+### 離散化與迭代解法
+
+以單位間距取樣 $n$ 個點，中央差分給出
+
+$$
+v_{ss} \approx v_{i+1} - 2v_i + v_{i-1}, \qquad v_{ssss} \approx v_{i+2} - 4v_{i+1} + 6v_i - 4v_{i-1} + v_{i-2}.
+$$
+
+把所有 $x$ 座標排成向量 $\mathbf{x} \in \mathbb{R}^n$（$\mathbf{y}$ 同理），則 $\alpha v_{ss} - \beta v_{ssss} = -A\mathbf{x}$，其中 $A$ 是對稱、循環、五對角的 $n\times n$ 矩陣，每一列以對角線為中心為
+
+$$
+\big[\;\beta,\;\; -\alpha - 4\beta,\;\; 2\alpha + 6\beta,\;\; -\alpha - 4\beta,\;\; \beta\;\big]
+$$
+
+（在頭尾處循環繞回）。內力對點的位置是線性的，外力則不是。[2] 的經典技巧是**半隱式**步驟：內力部分以新時刻 $t$ 隱式處理，外力部分以舊時刻 $t-1$ 顯式處理：
+
+$$
+\gamma\,(\mathbf{x}^{t} - \mathbf{x}^{t-1}) = -A\,\mathbf{x}^{t} + \mathbf{f}_x\big(\mathbf{x}^{t-1}, \mathbf{y}^{t-1}\big)
+\;\;\Longrightarrow\;\;
+\mathbf{x}^{t} = (A + \gamma I)^{-1}\big(\gamma\,\mathbf{x}^{t-1} + \mathbf{f}_x\big),
+$$
+
+$\mathbf{y}$ 則搭配 $\mathbf{f}_y$ 做同樣的事。$\mathbf{f}_x$、$\mathbf{f}_y$ 是 $F_{\text{ext}}$ 在目前點位上（以內插）取得的分量，$I$ 是單位矩陣。$(A + \gamma I)$ 固定不變，只需反矩陣或分解一次；之後每次迭代只是一次便宜的矩陣–向量乘法。把剛硬的四階項隱式處理，正是蛇模型能走合理步長而不爆掉的原因。步長是 $1/\gamma$：$\gamma$ 越大，步伐越小越安全。
+
+```python
+import numpy as np
+
+def snake_step_matrix(n, alpha, beta, gamma):
+    """(A + gamma*I)^-1 for a closed snake with n points (h = 1)."""
+    row = np.zeros(n)
+    row[[0, 1, 2, -2, -1]] = [2*alpha + 6*beta, -alpha - 4*beta, beta,
+                              beta, -alpha - 4*beta]
+    A = np.stack([np.roll(row, i) for i in range(n)])
+    return np.linalg.inv(A + gamma * np.eye(n))
+
+M = snake_step_matrix(100, alpha=0.05, beta=0.05, gamma=1.0)
+# one iteration, given external forces fx, fy sampled at the points:
+# x = M @ (gamma * x + fx);  y = M @ (gamma * y + fy)
+```
+
+scikit-image 的 `active_contour` 實作的正是這個方法，外部能量用的是上面的邊緣與線條能量，並額外限制每次迭代每個點最多能移動多遠 [12]：
+
+```python
+import numpy as np
+from skimage import data
+from skimage.color import rgb2gray
+from skimage.filters import gaussian
+from skimage.segmentation import active_contour
+
+img = rgb2gray(data.astronaut())
+s = np.linspace(0, 2 * np.pi, 400)
+init = np.column_stack([100 + 100 * np.sin(s),   # rows
+                        220 + 100 * np.cos(s)])  # columns
+snake = active_contour(gaussian(img, sigma=3), init,
+                       alpha=0.015, beta=10, gamma=0.001)
+print(snake.shape)  # (400, 2): the final (row, col) points
+```
+
+<Figure src={snakeAstronaut} alt="左：太空人頭部外圍的紅色虛線圓，以及三條逐漸收縮、貼上頭髮與臉部輪廓的蛇。右：一個帶 V 形缺口的方塊；β 小的蛇沿著缺口與尖角走，β 大的蛇直接以弧線跨過缺口。" caption="圖 11.1 — (a) 以圓形起始的蛇在張力作用下收縮，直到邊緣力讓它停在頭髮與臉的輪廓上。(b) 彎曲權重 β：β = 0.001 時蛇會沿著 V 形缺口與尖角走；β = 20 時它不肯彎得那麼急，改以一段平滑弧線跨過缺口。" />
+
+圖 11.1(a) 是蛇模型典型的一生：在平坦背景中只靠張力快速收縮，進入模糊邊緣圖有坡度的範圍後放慢，最後鎖定附近最強的邊緣。(b) 顯示 $\beta$ 控制的取捨：剛硬的蛇不怕雜訊和小缺口，卻跟不上尖角與凹陷。
+
+### 外力的選擇
+
+外力決定蛇要找**什麼**。常見的選擇有：
+
+- **邊緣圖的梯度。** 先算一張在邊緣上數值大的邊緣圖 $e(x, y) \ge 0$，例如 $e = \lvert\nabla(G_\sigma * f)\rvert$（或其平方），再用 $F_{\text{ext}} = \kappa\, \nabla e$，$\kappa$ 為權重。這個力沿 $e$ 往上坡，指向邊緣的脊線。
+- **線條吸引。** 用 $F_{\text{ext}} = \pm\nabla (G_\sigma * f)$ 追蹤暗或亮的曲線狀結構（道路、血管、文字筆畫）。
+
+它們有同一個弱點。邊緣圖的梯度在遠離邊緣處幾乎為零（圖 11.2a）。起點離邊界太遠的蛇，除了自己的張力之外什麼都感覺不到。而在狹窄的凹陷裡，兩側牆面的力都指向側面而互相抵消，沒有任何力把蛇**往下**拉進去。這兩個問題，**捕捉範圍有限**與**難以收斂進凹陷**，正是 GVF 的動機。
+
+### 梯度向量流（GVF）
+
+GVF 保留 $\nabla e$ 好的部分（在有邊緣的地方準確指向邊緣），再以平滑擴散把其餘區域填滿。Xu 與 Prince [3] 把 GVF 場 $\mathbf{w}(x, y) = (u(x, y), v(x, y))$ 定義為下列能量的最小化者：
+
+$$
+\mathcal{E}(\mathbf{w}) = \iint_\Omega \mu\,\big(u_x^2 + u_y^2 + v_x^2 + v_y^2\big) \;+\; \lvert\nabla e\rvert^2\,\lvert \mathbf{w} - \nabla e\rvert^2 \; dx\,dy .
+$$
+
+- $u_x, u_y, v_x, v_y$ 是場的兩個分量的偏導數；第一項要求場變化緩慢。
+- $\lvert\nabla e\rvert^2\,\lvert\mathbf{w} - \nabla e\rvert^2$ 要求 $\mathbf{w}$ 等於 $\nabla e$，但只在 $\lvert\nabla e\rvert$ 大的地方，也就是邊緣附近。
+- $\mu > 0$ 平衡兩者，雜訊越多應該越大。
+
+其 Euler–Lagrange 方程式是一對彼此獨立的擴散方程式。以時間上的梯度下降求解得到
+
+$$
+u_t = \mu\,\nabla^2 u - (u - e_x)\,\lvert\nabla e\rvert^2, \qquad
+v_t = \mu\,\nabla^2 v - (v - e_y)\,\lvert\nabla e\rvert^2,
+$$
+
+其中 $\nabla^2$ 是 Laplacian，$e_x$、$e_y$ 是 $\nabla e$ 的分量。遠離邊緣時第二項消失，場就只是從邊緣往外擴散，同時把邊緣的方向帶出去。在單位時間步長與 5 點 Laplacian 下，若 $e$ 已縮放到 $[0, 1]$，顯式格式在 $\mu \le 1/4$ 時穩定。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+def gvf(f, mu=0.2, iters=500):
+    """Gradient vector flow of an edge map f scaled to [0, 1]."""
+    fy, fx = np.gradient(f)
+    mag2 = fx**2 + fy**2
+    u, v = fx.copy(), fy.copy()
+    for _ in range(iters):  # explicit scheme, stable for mu <= 0.25
+        u += mu * ndi.laplace(u, mode="nearest") - (u - fx) * mag2
+        v += mu * ndi.laplace(v, mode="nearest") - (v - fy) * mag2
+    return u, v
+```
+
+接著蛇模型把 $\kappa\,\nabla e$ 換成 $F_{\text{ext}} = \kappa\,\mathbf{w}$，演算法其餘部分完全不變。
+
+<Figure src={gvfFig} alt="U 形物體的四個子圖。左上：邊緣圖梯度的箭頭只出現在邊緣周圍的細帶。右上：GVF 箭頭布滿整張影像，並向下指入缺口。左下：梯度力的蛇橫跨缺口開口。右下：GVF 的蛇下降進入缺口並描出 U 形。" caption="圖 11.2 — (a) 邊緣圖的梯度只在邊緣周圍的細帶內非零。(b) GVF 把這些向量擴散到整張影像；缺口內的向量向下指。(c) 使用梯度力時，從虛線圓出發的蛇卡在缺口開口處（鋸齒狀處是它被邊緣帶勾住、又沒有力量把它撫平的地方）。(d) 同樣的蛇、同樣的參數，改用 GVF 驅動，便一路沿著凹陷走到底。" />
+
+圖 11.2 在合成的 U 形上重現了 [3] 的經典測試。改變有兩點：蛇現在從影像任何地方都能感覺到物體（捕捉範圍大），而缺口內擴散後的向量是往下而非往側面指，所以蛇被拉進凹陷。有一個實作細節很重要：蛇進入缺口時長度變長，所以每隔幾十次迭代就要把點**重新取樣**成大致等間距，否則點鏈會太稀疏，貼不住牆面。
+
+### 氣球力
+
+Cohen [4] 從另一個角度處理捕捉範圍問題。如果把一條小蛇初始化在物體**內部**，張力會讓它在任何邊緣力碰得到它之前就縮成一點。那就加上壓力：
+
+$$
+F_{\text{ext}}(v) = \kappa\,\nabla e(v) \;+\; k_1\, \mathbf{n}(s),
+$$
+
+其中 $\mathbf{n}(s)$ 是曲線在 $v(s)$ 的單位外法向量，$k_1$ 是壓力。$k_1 > 0$ 時蛇像氣球一樣膨脹；$k_1 \lt 0$ 時則洩氣收縮。在真正的邊界上，邊緣力必須能壓過壓力（那裡 $\kappa\,\lvert\nabla e\rvert > \lvert k_1\rvert$），但在物體內部微弱、雜亂的梯度處則不行。Cohen 也建議把邊緣力正規化成 $\nabla e/\lvert\nabla e\rvert$，讓一個常數就能控制各處的強度。
+
+<Figure src={balloonFig} alt="一個帶雜訊的亮橢圓。左：在橢圓內部起始的小蛇縮成一小團。右：加上氣球壓力後，蛇膨脹並停在橢圓邊界上。" caption="圖 11.3 — 氣球力。(a) 帶雜訊物體內部的一條小蛇，只靠張力和邊緣力時會塌縮，因為附近沒有任何邊緣構得到。(b) 加上每次迭代 0.3 像素的向外壓力，蛇會一直膨脹，直到真實邊界上的邊緣力與壓力平衡。" />
+
+氣球力有代價：你必須事先知道該膨脹還是收縮，而壓力太大時蛇會直接衝過弱邊緣。GVF 與氣球力彼此互補，實務上常一起使用。
+
+### 蛇模型的限制
+
+- **初始化。** 能量有許多局部最小值。即使用了 GVF，起點橫跨兩個物體、或落在雜亂強邊緣錯誤一側的蛇，仍會收斂到錯誤答案。
+- **參數調整。** $\alpha$、$\beta$、$\gamma$、$\kappa$、模糊程度 $\sigma$、壓力 $k_1$ 與 GVF 的 $\mu$ 互相影響。在一張影像上好用的數值，換一張常常就失效。
+- **點的管理。** 點會沿著曲線漂移，有的地方擠在一起，有的地方散開。實用的蛇模型需要重新取樣，還得偵測曲線是否自我相交。
+- **拓撲固定。** 蛇是一條封閉點鏈。若不加額外且容易出錯的處理，它圍住兩個物體時無法分裂成兩條（圖 11.6a），也無法和另一條蛇合併。
+
+最後這個限制，正是水平集要拿掉的。
+
+## 以水平集做分割
+
+不直接追蹤邊界，而是追蹤一片地形，讓它的海岸線就是邊界。把地形抬高或壓低，海岸線就跟著移動。如果水位上升到把兩座山丘分開，一條海岸線就變成兩條，不需要任何特殊程式碼。
+
+### 隱式表示
+
+**水平集函數**（level-set function）是純量函數 $\phi: \Omega \times [0, \infty) \to \mathbb{R}$，使得時刻 $t$ 的曲線就是它的零水平集：
+
+$$
+C(t) = \{\, (x, y) \in \Omega \;:\; \phi(x, y, t) = 0 \,\}.
+$$
+
+本章採用的慣例是：曲線內部 $\phi \lt 0$，外部 $\phi > 0$。（有些論文，包括 [8]，採相反符號，方程式的正負號也隨之改變。）從 $\phi$ 可以直接得到兩個幾何量：
+
+$$
+\mathbf{N} = \frac{\nabla\phi}{\lvert\nabla\phi\rvert}, \qquad
+\kappa = \nabla\cdot\frac{\nabla\phi}{\lvert\nabla\phi\rvert},
+$$
+
+其中 $\mathbf{N}$ 是單位**外**法向量，$\kappa$ 是通過該點之等高線的**曲率**（凸的部分為正；半徑 $r$ 的圓有 $\kappa = 1/r$）。
+
+最方便的 $\phi$ 是**符號距離函數**（signed distance function）：$\lvert\phi(x, y)\rvert$ 是 $(x, y)$ 到 $C$ 的歐氏距離，正負號則區分內外。它幾乎處處滿足 $\lvert\nabla\phi\rvert = 1$，讓數值計算保持良好。
+
+<Figure src={levelSetSurface} alt="左：一個有兩個錐形凹陷的 3D 曲面，零高度的灰色平面沿兩個紅色圓切過它。右：同一函數的色彩圖，等高線分別在 -12（兩個小圓）、0（兩個相切的圓）、+6 與 +14（合併成單一外框）。" caption="圖 11.4 — 兩個相切圓盤的水平集函數 φ，以符號距離建構。(a) 曲線就是曲面與 φ = 0 平面相交之處。(b) 在其他高度切同一個曲面，會得到兩條分開的曲線（φ = −12），或一條合併的曲線（φ = +6、+14）。把 φ 往上或往下移動，就是水平集輪廓不需特殊處理就能分裂與合併的方式。" />
+
+### 水平集方程式
+
+假設曲線上每一點沿外法向以速度 $F$ 移動（正值代表向外）：
+
+$$
+\frac{\partial C}{\partial t} = F\,\mathbf{N}.
+$$
+
+曲線上的點始終保持零值，所以對所有 $t$ 都有 $\phi\big(C(t), t\big) = 0$。以連鎖律微分：
+
+$$
+\phi_t + \nabla\phi\cdot\frac{\partial C}{\partial t} = 0
+\;\;\Longrightarrow\;\;
+\phi_t + F\,\nabla\phi\cdot\frac{\nabla\phi}{\lvert\nabla\phi\rvert} = 0
+\;\;\Longrightarrow\;\;
+\boxed{\;\phi_t + F\,\lvert\nabla\phi\rvert = 0\;}
+$$
+
+這就是 Osher 與 Sethian [5] 的水平集方程式。$\phi_t$ 是 $\phi$ 對時間的導數，$F$ 是**速度函數**，可以取決於位置（影像資料）、曲線的幾何（曲率 $\kappa$）或全域統計量。方程式是在固定的像素網格上對所有 $(x, y)$ 求解，而不只在曲線上；任何時刻都能取出零等高線得到曲線。方程式完全不在乎零集合有幾塊，所以分裂與合併自然發生。
+
+### 離散計算：迎風差分與 CFL 條件
+
+令 $\phi^n_{ij}$ 為像素 $(i, j)$ 在第 $n$ 步（步長 $\Delta t$）的值，網格間距 $\Delta x = 1$。單側差分
+
+$$
+D^{-x}_{ij} = \phi_{ij} - \phi_{i-1,j}, \qquad D^{+x}_{ij} = \phi_{i+1,j} - \phi_{ij}
+$$
+
+（$D^{\pm y}$ 同理）的組合方式，要保證資訊永遠取自波前**來的那一側**。這就是 [5] 的**迎風**（upwind）格式：
+
+$$
+\phi^{n+1}_{ij} = \phi^n_{ij} - \Delta t\,\Big[\max(F_{ij}, 0)\,\nabla^{+}_{ij} + \min(F_{ij}, 0)\,\nabla^{-}_{ij}\Big],
+$$
+
+$$
+\nabla^{+} = \sqrt{\max(D^{-x}, 0)^2 + \min(D^{+x}, 0)^2 + \max(D^{-y}, 0)^2 + \min(D^{+y}, 0)^2},
+$$
+
+$$
+\nabla^{-} = \sqrt{\min(D^{-x}, 0)^2 + \max(D^{+x}, 0)^2 + \min(D^{-y}, 0)^2 + \max(D^{+y}, 0)^2}.
+$$
+
+若這裡改用普通的中央差分，會產生振盪，尖角也會被抹平甚至發散；迎風格式才能讓波前保持銳利且穩定。
+
+顯式格式只有在波前每步移動不超過一格時才穩定，這就是 **Courant–Friedrichs–Lewy（CFL）條件**：
+
+$$
+\Delta t \,\max_{ij}\lvert F_{ij}\rvert \le c\,\Delta x, \qquad 0 \lt c \le 1 .
+$$
+
+若 $F$ 含有曲率項 $b\,\kappa$，這部分的行為類似擴散，以中央差分離散；它在 2D 中會額外帶來一個更嚴格的二階限制，大約是 $\Delta t \le \Delta x^2 / (4b)$。實務上每一步都依目前的最大速度計算 $\Delta t$。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+def signed_distance(mask):
+    """Negative inside, positive outside, ~0 on the boundary."""
+    return ndi.distance_transform_edt(~mask) - ndi.distance_transform_edt(mask)
+
+def evolve(phi, F, steps=100, cfl=0.5):
+    """Upwind scheme for phi_t + F |grad phi| = 0 (F is an array or scalar)."""
+    for _ in range(steps):
+        p = np.pad(phi, 1, mode="edge")
+        dxm = phi - p[1:-1, :-2]; dxp = p[1:-1, 2:] - phi   # backward / forward
+        dym = phi - p[:-2, 1:-1]; dyp = p[2:, 1:-1] - phi
+        grad_plus = np.sqrt(np.maximum(dxm, 0)**2 + np.minimum(dxp, 0)**2 +
+                            np.maximum(dym, 0)**2 + np.minimum(dyp, 0)**2)
+        grad_minus = np.sqrt(np.minimum(dxm, 0)**2 + np.maximum(dxp, 0)**2 +
+                             np.minimum(dym, 0)**2 + np.maximum(dyp, 0)**2)
+        dt = cfl / (np.abs(F).max() + 1e-12)             # CFL: |F| dt <= dx
+        phi = phi - dt * (np.maximum(F, 0) * grad_plus + np.minimum(F, 0) * grad_minus)
+    return phi
+
+yy, xx = np.mgrid[:128, :128]
+phi = signed_distance((xx - 64)**2 + (yy - 64)**2 < 20**2)
+phi = evolve(phi, F=1.0, steps=20)                # grow outward by 20 * 0.5 = 10 px
+phi = signed_distance(phi < 0)                     # re-initialize
+print(np.sqrt((phi < 0).sum() / np.pi))            # radius, about 30
+```
+
+### 指定速度函數
+
+所有的影像分析都寫在 $F$ 裡。主流有兩大家族。
+
+#### 以邊緣為主的速度：測地主動輪廓
+
+定義一個**邊緣停止函數**，在平坦區域接近 $1$、在邊緣上接近 $0$，例如
+
+$$
+g(x, y) = \frac{1}{1 + \lvert\nabla(G_\sigma * f)(x, y)\rvert^2}.
+$$
+
+Caselles、Kimmel 與 Sapiro [6] 指出，$\beta = 0$ 的蛇模型與尋找**加權長度**最小的曲線密切相關：
+
+$$
+L_g(C) = \oint_C g\big(C(s)\big)\, ds,
+$$
+
+其中 $ds$ 是弧長。在 $g$ 定義的度量下，邊緣是「便宜」的地方，所以最小化者是一條緊貼邊緣的測地線（最短路徑）。這就是**測地主動輪廓**（geodesic active contour, GAC）。對 $L_g$ 做梯度下降，再加上一個類似 Cohen 氣球的選擇性常數壓力 $c$，在本章的符號慣例下得到
+
+$$
+\phi_t = g\,\lvert\nabla\phi\rvert\,(\kappa - c) + \nabla g\cdot\nabla\phi .
+$$
+
+每一項各有任務。$g\,\kappa\,\lvert\nabla\phi\rvert$ 是曲率流（縮短並平滑曲線），在邊緣附近減速到停止。$-c\,g\,\lvert\nabla\phi\rvert$ 是壓力：$c > 0$ 膨脹、$c \lt 0$ 收縮，同樣在邊緣上被關掉。$\nabla g\cdot\nabla\phi$ 是平流項，把曲線拉進邊緣谷底（$g$ 最小處），避免它衝過頭。與蛇模型不同，GAC 是**內蘊的**（intrinsic）：它與曲線如何參數化無關；寫成水平集形式後，也能自由分裂與合併。
+
+由於 $g$ 永遠不會真正等於零，強壓力仍會從微弱或模糊的邊緣漏出去。這正是以區域為主之速度函數的動機。
+
+#### 以區域為主的速度：Mumford–Shah 與 Chan–Vese
+
+Mumford 與 Shah [7] 把分割寫成：同時找出影像 $f$ 的分段平滑近似 $u$ 與一組邊界 $C$：
+
+$$
+E_{\text{MS}}(u, C) = \int_\Omega (u - f)^2\, dx\,dy \;+\; \mu \int_{\Omega\setminus C} \lvert\nabla u\rvert^2\, dx\,dy \;+\; \nu\,\lvert C\rvert,
+$$
+
+第一項要求 $u$ 貼近 $f$，第二項要求 $u$ 平滑，但**跨越** $C$ 時除外，$\lvert C\rvert$ 是邊界總長度。這個能量一般而言很難最小化。
+
+Chan 與 Vese [8] 把 $u$ 限制成**只有兩個值的分段常數**：$C$ 內為 $c_1$，$C$ 外為 $c_2$。能量變成
+
+$$
+E_{\text{CV}}(c_1, c_2, C) = \mu\,\lvert C\rvert + \lambda_1 \int_{\text{inside}(C)} (f - c_1)^2 \, dx\,dy + \lambda_2 \int_{\text{outside}(C)} (f - c_2)^2 \, dx\,dy,
+$$
+
+（原論文還有一個選擇性的面積項 $\nu\,\text{Area}(\text{inside}(C))$，通常設為零）。$\mu \ge 0$ 是平滑權重，$\lambda_1, \lambda_2 > 0$ 衡量各區域被其常數擬合得多好。注意少了什麼：完全沒有梯度。這個模型可以分割邊界模糊、或只由平均亮度改變所定義的物體，這也是 [8] 取名為「沒有邊緣的主動輪廓」（active contours without edges）的原因。
+
+要改寫成水平集形式，使用 Heaviside 函數 $H(z)$（$z \ge 0$ 時為 $1$，否則為 $0$）及其導數 Dirac delta $\delta(z)$。內部 $\phi \lt 0$ 時，內部指示函數是 $H(-\phi)$，長度是 $\lvert C\rvert = \int \delta(\phi)\lvert\nabla\phi\rvert$。固定 $\phi$ 時，最佳常數就是兩區的平均：
+
+$$
+c_1 = \frac{\int f\, H(-\phi)}{\int H(-\phi)}, \qquad c_2 = \frac{\int f\, H(\phi)}{\int H(\phi)} .
+$$
+
+固定 $c_1, c_2$ 時，對 $\phi$ 做梯度下降得到
+
+$$
+\phi_t = \delta_\varepsilon(\phi)\,\Big[\, \mu\,\kappa + \lambda_1 (f - c_1)^2 - \lambda_2 (f - c_2)^2 \,\Big],
+$$
+
+其中 $\delta_\varepsilon$ 是寬度為 $\varepsilon$ 的平滑化 delta。逐像素來讀：如果某像素的亮度離 $c_1$ 遠、離 $c_2$ 近，括號為正，$\phi$ 上升，這個像素就移到外面。曲率項讓邊界保持短。演算法交替更新平均值與 $\phi$。由於 $\delta_\varepsilon$ 在零水平集以外也不為零，這個模型還能在離初始曲線很遠的地方**產生新的輪廓**，因此幾乎從任何起始曲線出發，都能偵測內部的洞並分開不同物體，這是 [8] 特別強調的特性。
+
+Cremers、Rousson 與 Deriche [14] 指出，這只是一個大家族中的一員：把「常數亮度加平方誤差」換成任何區域的機率模型（未知變異數的高斯分布、色彩直方圖、紋理特徵、運動），就得到結構相同的區域式水平集方法，括號則變成內外兩區之間的對數概似比。
+
+```python
+from skimage import data, img_as_float
+from skimage.segmentation import chan_vese, morphological_chan_vese
+
+cam = img_as_float(data.camera())
+seg, phi, energies = chan_vese(cam, mu=0.25, lambda1=1, lambda2=1,
+                               dt=0.5, max_num_iter=200, extended_output=True)
+fast = morphological_chan_vese(cam, num_iter=100, init_level_set="checkerboard",
+                               smoothing=3)
+```
+
+<Figure src={chanVeseCamera} alt="攝影師影像的三個子圖。左：形態學 Chan-Vese 在第 5、25、100 次迭代的輪廓，從臉上的圓盤長進深色外套。中：黑白分割，把深色的人、相機和三腳架與明亮的天空和草地分開。右：最終水平集函數的紅藍色彩圖。" caption="圖 11.5 — 在攝影師影像上執行 Chan–Vese。(a) 從臉上一個圓盤出發的形態學近似版本；區域會長進所有「比較接近暗平均、而非亮平均」的地方。(b) 從棋盤格出發的 PDE 版本：兩相分割把深色人物、相機和三腳架與天空、草地分開，還產生了從未與初始曲線相連的新輪廓（三腳架的腳、遠方建築）。(c) 最終的 φ；注意 scikit-image 採用相反的符號慣例（內部 φ > 0）[12]。" />
+
+### 以符號距離函數初始化與重新初始化
+
+初始的 $\phi$ 通常是到某條曲線的符號距離：使用者畫的曲線、一個方框、一個圓盤，或許多小圓組成的「棋盤格」，讓演化從每個可能的物體附近開始。PDE 執行時，$\phi$ 會逐漸偏離距離函數：有些地方變得很陡，有些地方變得很平。陡的地方逼迫時間步長變得極小；平的地方則讓零交越點位置不準、容易受雜訊影響。
+
+經典的補救方法是**重新初始化**（reinitialization）：每隔幾次迭代，在不移動零水平集的前提下，把 $\phi$ 換成到目前零水平集的符號距離。可以像上面程式那樣用快速歐氏距離轉換重算，也可以解一條把 $\lvert\nabla\phi\rvert$ 推向 $1$、同時凍結 $\phi$ 正負號的 PDE。重新初始化很有效，但可能讓波前稍微位移，而「何時」該做也只能靠經驗法則。
+
+Li、Xu、Gui 與 Fox [10] 提出**距離正則化水平集演化**（distance-regularized level-set evolution, DRLSE），在能量中加入一個懲罰項 $\int p(\lvert\nabla\phi\rvert)$，其最小值落在 $\lvert\nabla\phi\rvert = 1$。這個懲罰項的梯度流在整個演化過程中都讓 $\phi$ 在零水平集附近保持接近符號距離，因此不再需要重新初始化。
+
+### 提升效率
+
+全網格的水平集求解器每一步都更新每個像素，但真正重要的只有零交越處。三種標準的加速方式：
+
+- **窄帶法**（narrow band）。Adalsteinsson 與 Sethian [9] 只在零水平集周圍半寬 $w$（幾個像素）的帶狀區域內更新 $\phi$。波前接近帶的邊緣時，就以新波前為中心重建窄帶（同時重新初始化）。每步的工作量從整張影像面積降到大約曲線長度乘以 $w$。
+- **更大的穩定步長。** 半隱式或算子分裂格式可讓剛硬的曲率項使用更大的 $\Delta t$，代價是每步要解一個線性系統。
+- **形態學近似。** Márquez-Neila、Baumela 與 Álvarez [11] 以一連串作用在**二值**水平集 $u \in \{0, 1\}$ 上的二值形態學算子取代 PDE。膨脹與侵蝕扮演氣球項，線段式 sup-inf 與 inf-sup 算子的組合近似曲率流，$\nabla g\cdot\nabla u$ 的正負號則實作平流項。他們證明這些算子與 PDE 各項具有相同的**無窮小**行為。結果速度快、沒有時間步長、不需要重新初始化，也不會數值不穩定。
+
+scikit-image 依據 [11] 提供 `morphological_geodesic_active_contour` 與 `morphological_chan_vese`，另外也有以 PDE 為基礎的 `chan_vese` [12]。請記住，形態學版本是 PDE 的**近似**：它們在像素網格上移動，「smoothing」參數是算子套用的次數而不是權重 $\mu$，結果與連續模型相近，但並不相同。
+
+```python
+from skimage import data, img_as_float
+from skimage.segmentation import (inverse_gaussian_gradient, disk_level_set,
+                                  morphological_geodesic_active_contour)
+
+coins = img_as_float(data.coins())
+g = inverse_gaussian_gradient(coins, alpha=100, sigma=2)   # ~0 on edges, ~1 elsewhere
+init = disk_level_set(coins.shape, radius=150)
+mask = morphological_geodesic_active_contour(g, num_iter=250, init_level_set=init,
+                                             smoothing=1, balloon=-1, threshold=0.69)
+```
+
+這裡 `inverse_gaussian_gradient` 建立邊緣停止函數 $g$，`balloon=-1` 讓初始圓盤收縮（相當於 $c \lt 0$），`threshold` 決定 $g$ 的哪些值算是能擋住氣球的邊緣。
+
+## 實務比較：蛇模型與水平集
+
+兩個家族最小化的能量很相似，差別主要在表示法，而表示法決定了什麼事情容易做。
+
+| | 蛇模型（顯式） | 水平集（隱式） |
+|---|---|---|
+| 未知數 | 曲線上的 $n$ 個點 | 每個像素（或窄帶內每個像素）一個值 |
+| 每次迭代成本 | 分解一次矩陣後為 $O(n)$ | $O(\text{pixels})$；用窄帶則為 $O(\text{band})$ |
+| 拓撲改變 | 需要額外邏輯 | 自動分裂與合併 |
+| 自我相交 | 可能發生，必須偵測 | 結構上不可能 |
+| 點的間距 | 會漂移，需要重新取樣 | 沒有點需要管理 |
+| 形狀先驗、標記點、開放曲線 | 容易：點可以帶標籤 | 較難：迭代之間沒有對應關係 |
+| 互動編輯 | 很自然（拖動一個點） | 間接 |
+| 延伸到 3D | 網格，簿記較麻煩 | 同樣的方程式放到體素網格上 |
+| 次像素精度 | 有 | 有，內插零交越點即可 |
+| 典型失敗 | 卡在雜亂邊緣或凹陷中 | 從弱邊緣漏出（邊緣式）；把外觀相似的區域併在一起（區域式） |
+
+Xu、Yezzi 與 Prince 研究過兩種表述之間的關係 [3]；對許多能量而言，選擇哪一種是實作上的考量，而不是原則上能不能建模。經驗法則：
+
+- 需要一條拓撲已知的邊界、要互動、要快、或需要點的對應關係時（在影片各影格間追蹤輪廓、擬合嘴唇外形、描繪建物輪廓），用**蛇模型**。
+- 物體數量未知、物體可能相接或分裂、邊界無法以梯度清楚定義（區域式模型），或在 3D 中工作時，用**水平集**。
+
+<Figure src={topologyFig} alt="帶雜訊、含兩個亮圓盤的影像，三個子圖。左：圍住兩個圓盤起始的蛇，最後變成一條包住兩者的花生形曲線。中：從大圓出發的測地主動輪廓水平集，最後變成兩個分開的圓。右：從棋盤格出發的 Chan-Vese 找到兩個圓盤。" caption="圖 11.6 — 實務上的拓撲問題。(a) 圍住兩個圓盤起始的蛇只能收縮成一條曲線，包住兩者並橫跨中間的空隙。(b) 從同一個初始圓出發的測地主動輪廓（形態學水平集版本），兩半在中間相遇時就分裂成兩條曲線。(c) 從棋盤格出發的 Chan–Vese 根本不需要有意義的初始曲線。" />
+
+## 現代觀點
+
+主動輪廓已經不是分割影像的預設方法，深度網路才是。但本章的想法，包括結合邊界長度與區域擬合的能量、反覆變形的顯式輪廓，以及把水平集當作形狀表示，仍是深度分割中活躍的成分。以下六篇論文構成一張不錯的地圖。
+
+**醫學影像中的可變形模型。** McInerney 與 Terzopoulos [13] 寫下了醫學影像分析中可變形模型的經典早期綜述。他們把蛇模型及其 3D 延伸視為最小化能量的物理模型，並回顧它們在 CT、MRI 等模態上用於分割、形狀表示、比對與運動追蹤的應用。他們的主要結論至今仍成立：當影像本身含糊不清、需要模型提供平滑性與先驗知識時，可變形模型最有用。
+
+**統計式區域水平集。** Cremers、Rousson 與 Deriche [14] 回顧以區域為主的水平集方法，並從同一個貝氏框架推導出它們：每個區域都有一個機率模型（針對亮度、色彩、紋理或運動），水平集要最大化這個分割的後驗機率，並可選擇性地加入統計形狀先驗。他們主張區域式能量比邊緣式蛇模型對雜訊較不敏感、局部最小值也較少，這正是後來的研究以 Chan–Vese 類型項為主流的原因。
+
+**主動輪廓模型的近期分類。** Chen、Ge、Wang 與 Chen [15] 把主動輪廓模型分為邊緣式（GAC、DRLSE）、區域式（Chan–Vese，以及為處理亮度不均而設計的局部擬合變體）與混合式模型，實作了一組代表性模型，並在合成、醫學與自然影像上與深度學習分割比較。他們的結論很務實：傳統模型不需要訓練資料、能給出平滑的封閉邊界，但對初始化和參數敏感；在有標註資料的情況下，深度模型更準確；兩者是互補的。
+
+**深度分割中的形狀限制。** Bohlender、Oksuz 與 Mukhopadhyay [16] 綜述了如何把解剖形狀知識注入深度醫學影像分割：條件隨機場、統計形狀模型、主動輪廓，以及符號距離圖等隱式形狀表示。他們的動機正是主動輪廓當初要修補的弱點：逐像素分類器可能產生破碎的區域與拓撲錯誤。
+
+**端對端學習的顯式輪廓。** Peng 等人的 Deep Snake [17] 保留了蛇模型的表示法，也就是一個反覆變形的封閉多邊形頂點序列，但把由能量推導出的更新換成學習而來的更新。每個頂點以其位置上取樣的 CNN 特徵描述，再沿多邊形做環狀卷積（circular convolution），預測每個頂點朝物體邊界的位移。用於實例分割時，它從偵測器給出的方框開始，作者報告可達即時速度。環狀卷積扮演的角色，正是經典蛇模型中五對角矩陣 $A$ 的角色：沿著封閉曲線把每個頂點與它的鄰居耦合起來。
+
+**把主動輪廓能量當作損失函數。** 有些方法不在測試時執行輪廓演化，而是把能量放進訓練損失：
+
+- Chen 等人 [18] 為醫學影像分割提出一個損失，把邊界長度項與內外區域擬合項（Chan–Vese 能量的監督式版本）加到密集分割網路上，並報告在心臟 MRI 上優於交叉熵。
+- Kim 與 Ye [19] 把網路的 softmax 輸出視為各區域的特徵函數，並以 Mumford–Shah 風格的分段常數能量當作損失。由於這個能量不需要標註，同一個損失可支援非監督與半監督分割，也能在監督式訓練中當作正則項。
+- Kervadec 等人 [20] 提出**邊界損失**（boundary loss），靈感來自以圖論方法最佳化主動輪廓流。它把預測邊界與真實邊界之間的距離寫成一個以真值符號距離圖加權的區域積分，而那張符號距離圖恰好就是真實輪廓的水平集函數。它是為極度不平衡的問題（例如微小病灶）設計的，因為單靠重疊類損失在這類問題上訓練效果差；使用時會與區域損失搭配。
+
+深度學習改變了什麼、沒改變什麼：
+
+- **改變了：資料項。** 手工設計的力（$\nabla e$、GVF、$g$、區域平均）被學習到的特徵取代，這是準確度提升的主因。
+- **沒改變：規則性先驗。** 邊界長度、曲率懲罰、符號距離表示與區域均勻性，以損失項和輸出表示的形式重新出現，因為沒有它們，逐像素分類器仍會產生參差不齊、破碎的邊界。
+- **沒改變：顯式與隱式的取捨。** 以輪廓為基礎的網路繼承了蛇模型固定的拓撲（每個實例一個多邊形）與速度；以遮罩或距離圖為基礎的網路則繼承了水平集的彈性。
+- **本身仍然有用。** 沒有標註資料時，用 scikit-image 跑 Chan–Vese 或 GAC 只要幾行程式、不需訓練，很適合當基準、產生偽標籤，或作為清理網路遮罩的後處理步驟。
+
+## 重點整理
+
+- 主動輪廓透過**在曲線上最小化能量**來分割：規則性項（長度、彎曲）加上資料項（邊緣或區域擬合）。對能量做梯度下降，就是一條人工時間中的 PDE。
+- **蛇模型**是顯式的點鏈。它的 Euler–Lagrange 方程式 $\alpha v_{ss} - \beta v_{ssss} + F_{\text{ext}} = 0$ 以半隱式步驟 $\mathbf{x}^t = (A + \gamma I)^{-1}(\gamma\mathbf{x}^{t-1} + \mathbf{f}_x)$ 求解。
+- 單純的梯度力**捕捉範圍小**，也進不了**凹陷**。GVF 把邊緣向量擴散到整張影像；氣球力讓曲線膨脹或收縮。
+- **水平集**把曲線存成 $\{\phi = 0\}$，在 **CFL** 步長限制下以**迎風差分**演化 $\phi_t + F\lvert\nabla\phi\rvert = 0$，拓撲改變自動發生。
+- 模型寫在速度 $F$ 裡：**測地主動輪廓**最小化以邊緣加權的長度；**Chan–Vese** 擬合兩個區域平均，不需要邊緣。
+- 讓 $\phi$ 保持接近**符號距離**（重新初始化或 DRLSE），並用**窄帶**或**形態學**近似節省計算；後者是近似 PDE，而不是精確求解。
+- 在深度學習中，同樣的想法以**學習式輪廓變形**（Deep Snake）以及由長度、區域與符號距離項構成的**損失函數**延續下來。
+
+## 練習
+
+**1. 只有張力。** 一條 $\beta = 0$、沒有外力的封閉蛇，初始為半徑 $R$ 的圓，以 $n$ 個等距點取樣。利用離散內力 $\alpha(v_{i+1} - 2v_i + v_{i-1})$，證明圓仍然是圓，並求出步長 $\tau$ 的一次顯式更新後半徑如何改變。
+
+<details>
+<summary>提示</summary>
+
+對角度間隔 $\theta = 2\pi/n$ 的正多邊形（從圓心量起），$v_{i+1} + v_{i-1} = 2\cos\theta\, v_i$。內力為 $-2\alpha(1 - \cos\theta)\, v_i$，指向圓心，所以 $R \mapsto R\,[1 - 2\alpha\tau(1 - \cos\theta)]$。圓以等比方式縮小；注意縮小速率與 $n$ 有關，這也是蛇模型參數會與取樣綁在一起的原因之一。
+
+</details>
+
+**2. 凹陷測試。** 用上面的 `gvf` 函數建立圖 11.2 的 U 形，改變 GVF 權重 $\mu$（0.05、0.1、0.2）與 GVF 迭代次數。哪個參數決定場能從邊緣延伸多遠？哪個決定它有多平滑？
+
+<details>
+<summary>提示</summary>
+
+迭代次數決定擴散能傳多遠（大約與迭代次數乘以 $\mu$ 的平方根成正比）。較大的 $\mu$ 也會平滑得更強，有助於抵抗雜訊，但會把小細節磨圓。$\mu$ 超過 0.25 時顯式格式會變得不穩定。
+
+</details>
+
+**3. 正負號與方向。** 在本章慣例（內部 $\phi \lt 0$）下，當 $F = -1$ 時，圓在 $\phi_t + F\lvert\nabla\phi\rvert = 0$ 下會怎樣？$F = -\kappa$ 時呢？分別寫出半徑 $r(t)$。
+
+<details>
+<summary>提示</summary>
+
+$F = -1$：圓以單位速度縮小，$r(t) = r_0 - t$。$F = -\kappa = -1/r$：曲線縮短流，$\dot r = -1/r$，所以 $r(t) = \sqrt{r_0^2 - 2t}$，圓在 $t = r_0^2/2$ 時消失。
+
+</details>
+
+**4. 實際體會 CFL。** 用 `evolve` 程式碼片段，在同一個圓上分別以 `cfl=0.5`、`1.0`、`2.0` 執行。量測最後的半徑並觀察零等高線。哪裡壞掉了？為什麼窄帶法無法移除這個限制？
+
+<details>
+<summary>提示</summary>
+
+超過 1 時，波前每一步試圖跨越不只一格；迎風資訊取自錯誤的位置，輪廓變得鋸齒狀，甚至數值發散。窄帶法減少的是更新的像素數，而不是每一步的大小。
+
+</details>
+
+**5. Chan–Vese 失效的時候。** 建立一張合成影像：左半部是由黑到白的平滑漸層；右半部是灰色背景上的一個灰色圓盤，兩者平均值相同但變異數不同（只在圓盤內加強烈雜訊）。執行 `chan_vese`，從能量的角度解釋結果，並提出一個能成功的區域模型修改。
+
+<details>
+<summary>提示</summary>
+
+Chan–Vese 只比較平均值，所以（平均相同的）圓盤是看不見的，而漸層會從中間被切開。若像 [14] 的統計框架那樣，以各自擁有平均值**和**變異數的高斯分布描述每個區域，圓盤就能被分開。
+
+</details>
+
+**6. 把能量當作損失。** 改用軟遮罩 $m(x, y) \in [0, 1]$（屬於內部的機率）而非水平集來寫 Chan–Vese 能量，並以總變差 $\int \lvert\nabla m\rvert$ 取代長度項。證明固定 $m$ 時最佳的 $c_1, c_2$ 是加權平均，並說明為什麼這個函數可以在沒有標註的情況下訓練網路。
+
+<details>
+<summary>提示</summary>
+
+$E = \mu\int\lvert\nabla m\rvert + \lambda_1\int m\,(f - c_1)^2 + \lambda_2\int (1 - m)(f - c_2)^2$。令 $\partial E/\partial c_1 = 0$ 得 $c_1 = \int m f / \int m$。$E$ 中沒有任何地方用到真值，只用到影像本身，所以不需標註就能對產生 $m$ 的網路求梯度；可與 [19] 對照。
+
+</details>
+
+## 參考文獻
+
+1. R. C. Gonzalez and R. E. Woods, *Digital Image Processing*, 4th ed., Pearson, 2018, Ch. 11. [publisher page](https://www.pearson.com/en-us/subject-catalog/p/digital-image-processing/P200000003249/9780133356724)
+2. M. Kass, A. Witkin, and D. Terzopoulos, "Snakes: Active contour models," *International Journal of Computer Vision*, vol. 1, no. 4, pp. 321–331, 1988. [doi:10.1007/BF00133570](https://doi.org/10.1007/BF00133570)
+3. C. Xu and J. L. Prince, "Snakes, shapes, and gradient vector flow," *IEEE Transactions on Image Processing*, vol. 7, no. 3, pp. 359–369, 1998; see also C. Xu, A. Yezzi Jr., and J. L. Prince, "On the relationship between parametric and geometric active contours," *Proc. 34th Asilomar Conf. on Signals, Systems, and Computers*, 2000. [GVF project page with both papers](https://iacl.ece.jhu.edu/static/gvf)
+4. L. D. Cohen, "On active contour models and balloons," *CVGIP: Image Understanding*, vol. 53, no. 2, pp. 211–218, 1991. [author PDF](https://www.ceremade.dauphine.fr/~cohen/mypapers/cohenCVGIP91.pdf)
+5. S. Osher and J. A. Sethian, "Fronts propagating with curvature-dependent speed: Algorithms based on Hamilton–Jacobi formulations," *Journal of Computational Physics*, vol. 79, pp. 12–49, 1988. [doi:10.1016/0021-9991(88)90002-2](https://doi.org/10.1016/0021-9991(88)90002-2)
+6. V. Caselles, R. Kimmel, and G. Sapiro, "Geodesic active contours," *International Journal of Computer Vision*, vol. 22, no. 1, pp. 61–79, 1997. [PDF](https://www.sci.utah.edu/~gerig/CS7960-S2010/handouts/Caselles97.pdf)
+7. D. Mumford and J. Shah, "Optimal approximations by piecewise smooth functions and associated variational problems," *Communications on Pure and Applied Mathematics*, vol. 42, no. 5, pp. 577–685, 1989. [doi:10.1002/cpa.3160420503](https://doi.org/10.1002/cpa.3160420503)
+8. T. F. Chan and L. A. Vese, "Active contours without edges," *IEEE Transactions on Image Processing*, vol. 10, no. 2, pp. 266–277, 2001. [doi:10.1109/83.902291](https://doi.org/10.1109/83.902291)
+9. D. Adalsteinsson and J. A. Sethian, "A fast level set method for propagating interfaces," *Journal of Computational Physics*, vol. 118, pp. 269–277, 1995. [summary page](https://math.berkeley.edu/~sethian/2006/Semiconductors/ieee_paper_narrow_band.html)
+10. C. Li, C. Xu, C. Gui, and M. D. Fox, "Distance regularized level set evolution and its application to image segmentation," *IEEE Transactions on Image Processing*, vol. 19, no. 12, pp. 3243–3254, 2010. [doi:10.1109/TIP.2010.2069690](https://doi.org/10.1109/TIP.2010.2069690)
+11. P. Márquez-Neila, L. Baumela, and L. Álvarez, "A morphological approach to curvature-based evolution of curves and surfaces," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2014. [doi:10.1109/TPAMI.2013.106](https://doi.org/10.1109/TPAMI.2013.106)
+12. scikit-image developers, "skimage.segmentation" API reference (`active_contour`, `chan_vese`, `morphological_chan_vese`, `morphological_geodesic_active_contour`). [docs](https://scikit-image.org/docs/stable/api/skimage.segmentation.html)
+13. T. McInerney and D. Terzopoulos, "Deformable models in medical image analysis: A survey," *Medical Image Analysis*, vol. 1, no. 2, 1996. [author PDF](https://www.cs.toronto.edu/~dt/papers/mia96/mia96.pdf)
+14. D. Cremers, M. Rousson, and R. Deriche, "A review of statistical approaches to level set segmentation: Integrating color, texture, motion and shape," *International Journal of Computer Vision*, vol. 72, no. 2, pp. 195–215, 2007. [doi:10.1007/s11263-006-8711-1](https://doi.org/10.1007/s11263-006-8711-1)
+15. Y. Chen, P. Ge, G. Wang, and H. Chen, "An overview of intelligent image segmentation using active contour models," *Intelligence & Robotics*, vol. 3, no. 1, pp. 23–55, 2023. [open access](https://www.oaepublish.com/articles/ir.2023.02)
+16. S. Bohlender, I. Oksuz, and A. Mukhopadhyay, "A survey on shape-constraint deep learning for medical image segmentation," *IEEE Reviews in Biomedical Engineering*, vol. 16, pp. 225–240, 2023. [arXiv:2101.07721](https://arxiv.org/abs/2101.07721)
+17. S. Peng, W. Jiang, H. Pi, X. Li, H. Bao, and X. Zhou, "Deep snake for real-time instance segmentation," *CVPR*, 2020. [arXiv:2001.01629](https://arxiv.org/abs/2001.01629)
+18. X. Chen, B. M. Williams, S. R. Vallabhaneni, G. Czanner, R. Williams, and Y. Zheng, "Learning active contour models for medical image segmentation," *CVPR*, 2019. [CVF open access](https://openaccess.thecvf.com/content_CVPR_2019/html/Chen_Learning_Active_Contour_Models_for_Medical_Image_Segmentation_CVPR_2019_paper.html)
+19. B. Kim and J. C. Ye, "Mumford–Shah loss functional for image segmentation with deep learning," *IEEE Transactions on Image Processing*, vol. 29, pp. 1856–1866, 2020. [doi](https://doi.org/10.1109/TIP.2019.2941265) · [arXiv:1904.02872](https://arxiv.org/abs/1904.02872)
+20. H. Kervadec, J. Bouchtiba, C. Desrosiers, E. Granger, J. Dolz, and I. Ben Ayed, "Boundary loss for highly unbalanced segmentation," *Medical Image Analysis*, vol. 67, 2021 (first presented at MIDL 2019). [arXiv:1812.07032](https://arxiv.org/abs/1812.07032)

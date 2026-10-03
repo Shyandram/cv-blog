@@ -33,7 +33,7 @@ const posts = defineCollection({
     published: z.coerce.date(),
     updated: z.coerce.date().optional(),
     draft: z.boolean().default(false),
-    original: z.string().url().optional(), // where the post first appeared, e.g. Medium
+    original: z.url().optional(), // where the post first appeared, e.g. Medium
   }),
 });
 

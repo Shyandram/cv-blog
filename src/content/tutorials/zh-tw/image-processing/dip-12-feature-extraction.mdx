@@ -1,0 +1,683 @@
+---
+title: "第 12 章・特徵擷取"
+description: "把區域、邊界與整張影像轉成一小串數字，讓它們在物體平移、旋轉、縮放或亮度改變時保持不變：從鏈碼、GLCM 紋理到 Harris、MSER 與 SIFT。"
+track: image-processing
+order: 120
+level: advanced
+prereqs: [image-processing/dip-11-active-contours]
+tags: [dip, feature-extraction, shape-descriptors, texture, sift]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figBoundary from '../../../../assets/dip/ch12/boundary-representations.png';
+import figFourier from '../../../../assets/dip/ch12/fourier-descriptors.png';
+import figGlcm from '../../../../assets/dip/ch12/glcm-texture.png';
+import figPca from '../../../../assets/dip/ch12/pca-alignment.png';
+import figHarris from '../../../../assets/dip/ch12/harris-corners.png';
+import figMser from '../../../../assets/dip/ch12/mser-regions.png';
+import figDog from '../../../../assets/dip/ch12/sift-scale-space.png';
+import figSift from '../../../../assets/dip/ch12/sift-matches.png';
+
+## 你將學到
+
+- 「特徵」（feature）與「描述子」（descriptor）的差別，以及描述子最常追求的四種不變性：平移、旋轉、尺度與光照。
+- 如何把分割出來的邊界變成可以量測的東西：鏈碼、多邊形、標記圖（signature）與骨架，再進一步算出形狀數與傅立葉描述子。
+- 如何用大小、形狀、拓撲（尤拉數）、紋理（直方圖動差、共生矩陣、頻譜）與動差不變量描述整個區域。
+- 主成分分析（PCA）如何把物體轉正，並把大量量測壓縮成少數幾個數字。
+- Harris–Stephens 角點偵測器、最大穩定極值區域（MSER）與 SIFT 如何找出並描述可以在兩張照片之間配對的興趣點。
+- 近二十年的綜述論文如何評價這些手工設計的特徵，以及學習式特徵（SuperPoint、LoFTR、LightGlue、DINOv2）在哪些地方取代了它們。
+
+## 先看全貌
+
+分割（第 10、11 章）告訴我們物體「在哪裡」。但程式沒辦法像人一樣「看」一個區域，它需要一小串數字來說明這個區域「長什麼樣子」，才能比較、排序、搜尋和辨識。產生這串數字的過程，就是特徵擷取。
+
+<Callout type="tip" title="用最簡單的話說">
+想像你在電話裡跟朋友形容一個玩具。你沒辦法傳照片，所以你說：「它是圓的，大概跟柳丁一樣大，中間有一個洞，表面摸起來凹凸不平。」朋友就能從一整箱玩具裡挑出正確的那一個，就算它倒過來放、放得比較遠，或房間比較暗也沒關係。你說的每一句話都是一個**特徵**。好的特徵，就是不管玩具怎麼轉、怎麼移、燈光怎麼變，都依然成立的那些描述。
+</Callout>
+
+本章依照 Gonzalez 與 Woods 教科書的順序 [1]：先談邊界，再談區域，接著是處理大量量測的統計工具（PCA），最後是完全不需要分割的特徵：角點、穩定區域與 SIFT 關鍵點。最後這一類把傳統影像處理接上了現代電腦視覺的任務，例如全景接圖、三維重建與視覺定位。
+
+## 背景：特徵、描述子與不變性
+
+**白話版。** 特徵是你在影像中找到的有趣東西（一個角、一團斑點、一個區域）。描述子是你用來描述它的一串數字。我們希望那些「無關緊要的變化」發生時，描述子不要跟著變。
+
+**精確版。** 依照 [1]，我們把工作拆成兩步：
+
+- **特徵偵測**（feature detection）：找出特徵**在哪裡**——一條邊界、一個區域，或一個帶有尺度與方向的點。
+- **特徵描述**（feature description）：替每個偵測到的特徵指定一個向量 $\mathbf{d} \in \mathbb{R}^n$。
+
+若描述子 $\mathbf{d}(\cdot)$ 對一族轉換 $\mathcal{T}$ 滿足
+
+$$
+\mathbf{d}(T(f)) = \mathbf{d}(f) \quad \text{for all } T \in \mathcal{T},
+$$
+
+就稱它對 $\mathcal{T}$ **不變**（invariant），其中 $f$ 是影像（或區域），$T$ 是施加在它上面的轉換。若偵測到的量會以可預期的方式**跟著**轉換一起變（例如關鍵點的位置隨物體移動，物體放大兩倍時偵測到的尺度也變成兩倍），就稱它是**共變的**（covariant）。偵測器應該共變，描述子應該不變。
+
+我們最在意的轉換是：
+
+| 變化 | 對影像的影響 | 常見的解法 |
+| --- | --- | --- |
+| 平移 | 座標整體位移 | 減去質心，或改用差值 |
+| 旋轉 | 座標旋轉 | 使用標準方向、取絕對值，或使用與旋轉無關的量 |
+| 尺度 | 座標乘上倍率 | 依大小正規化，或在各尺度上搜尋 |
+| 光照 | 強度改變，大致為 $f \mapsto af + b$ | 用梯度消去 $b$，再正規化消去 $a$ |
+
+不變性與**鑑別力**之間永遠有取捨。對一切都不變的描述子，其實什麼也描述不了：「6」轉 180° 就變成「9」。挑選特徵，其實就是在決定哪些差異對你的任務是重要的。
+
+## 邊界前處理
+
+**白話版。** 在量測邊界之前，得先把邊界像素按順序排好；通常還要簡化它，免得雜訊和像素造成的鋸齒主導了結果。
+
+### 邊界追蹤
+
+分割出的區域是一堆像素的集合，而大多數邊界描述子需要的是**有順序**、封閉的點列。標準的 Moore 邊界追蹤法 [1] 從最上方、最左邊的前景像素 $b_0$ 以及它西邊的背景鄰居 $c_0$ 出發，從 $c$ 開始沿順時針方向檢查目前邊界像素的 8 鄰域，直到碰到前景像素。這個像素就是下一個邊界點，而它前一個被檢查的背景像素成為新的 $c$；如此重複，直到回到 $b_0$ 且即將走向第二個點為止。結果就是一串點 $(x_0, y_0), \dots, (x_{K-1}, y_{K-1})$。OpenCV 的 `cv2.findContours` 和 scikit-image 的 `measure.find_contours` 都能直接給你這串點。
+
+### 鏈碼
+
+**鏈碼**（chain code）把點列換成**方向**序列。從一個邊界像素走到下一個，每一步都是 4 或 8 個方向之一，從正東開始逆時針編號為 0–3 或 0–7 [1]。鏈碼很精簡（8 方向時每步 3 位元），而且本來就與平移無關。
+
+剩下兩個問題：鏈碼取決於**起點**，也取決於**旋轉**。解法都很簡單：
+
+- **起點。** 把碼視為環狀序列，選擇能組成最小整數的那個循環位移。
+- **旋轉（45° 的倍數）。** 改用**一階差分**（first difference）：相鄰兩個元素之間逆時針轉了幾個方向，$d_k = (c_k - c_{k-1}) \bmod 8$，其中 $c_k$ 是第 $k$ 個碼。物體轉 90° 時每個 $c_k$ 都加 2，而每個 $d_k$ 不變。
+
+直接在原始像素格點上算出的鏈碼又長又雜，所以實務上會先把邊界重新取樣到較粗的格點上，讓每一節跨過好幾個像素（圖 12.1 左）。
+
+```python
+import numpy as np, cv2
+from skimage import data
+
+mask = (data.horse() == 0).astype(np.uint8)          # True inside the horse
+cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+pts = max(cnts, key=len)[:, 0, :]                    # (x, y), 8-connected boundary
+
+# Freeman 8-direction code: 0 = east, counted counter-clockwise (y points down)
+DIRS = {(1, 0): 0, (1, -1): 1, (0, -1): 2, (-1, -1): 3,
+        (-1, 0): 4, (-1, 1): 5, (0, 1): 6, (1, 1): 7}
+steps = np.diff(np.vstack([pts, pts[:1]]), axis=0)
+code = np.array([DIRS[tuple(s)] for s in steps])
+
+diff = (code - np.roll(code, 1)) % 8                 # first difference: rotation invariant
+shifts = [tuple(np.roll(diff, -i)) for i in range(len(diff))]
+shape_number = min(shifts)                           # start-point invariant
+print(len(code), code[:12], diff[:12])
+```
+
+### 斜率鏈碼
+
+一般鏈碼只認得八個方向。**斜率鏈碼**（slope chain code, SCC）[1] 則是沿著曲線首尾相接地放上**等長**的直線段，記錄相鄰兩段之間的斜率變化，並把它正規化成區間 $(-1, 1]$ 內的實數（$\pm 1$ 代表完全折返）。因為只記錄方向的**變化**，SCC 對平移和旋轉不變；又因為每段等長，只要依曲線長度設定段長，它也對尺度不變。所有斜率變化絕對值的總和，正好是曲線「有多彎曲」（曲折度，tortuosity）的自然量度。
+
+### 多邊形近似
+
+用少數幾個頂點的多邊形，就能抓住邊界的精髓。
+
+**最小周長多邊形**（minimum-perimeter polygon, MPP）。用一條由方格組成的帶子（cellular complex）把邊界蓋住，帶子的內牆與外牆形成兩道封閉的圍籬。想像在兩道圍籬之間放一條橡皮筋，讓它自然收縮：它最後會停在帶子內最短的封閉路徑上，這就是 MPP [1]。它的頂點一定落在內牆的凸角或外牆的凹角上，因此可以設計出很有效率的演算法。方格大小控制細節多寡：方格越大，多邊形越粗略。
+
+**合併法**（merging）。沿著邊界前進，只要目前這段的最小平方直線擬合誤差低於門檻 $T$，就繼續把點加進來；誤差超過 $T$ 時就開新的一段。方法簡單，但頂點不一定落在真正的轉角上。
+
+**分裂法**（splitting）。把距離最遠的兩個邊界點連成一條弦，找出離這條弦最遠的邊界點；若距離超過 $T$，就把它設為頂點，問題一分為二，再遞迴處理。分裂法較容易把頂點放在真正的反曲點上。`skimage.measure.approximate_polygon` 實作的就是這種遞迴分裂的概念；圖 12.1 第二格顯示兩種容許誤差的結果。
+
+### 標記圖
+
+**標記圖**（signature）把二維邊界降成一維函數。最簡單的是質心到邊界的距離，表示成角度的函數 $r(\theta)$，或正規化弧長的函數 $r(s)$ [1]。圓形得到常數；正方形得到四個一模一樣的凸起。標記圖天生與平移無關；旋轉變成函數的**循環位移**，尺度變成乘法，所以只要選一個標準起點（例如最遠點），再除以最大值或標準差即可正規化。$r(\theta)$ 只有在星形區域才是函數；像圖 12.1 的馬，從質心射出的一條射線可能穿過邊界不只一次，所以那裡改用 $r(s)$。
+
+### 骨架與中軸
+
+**白話版。** 在一片草地的整圈邊緣同時點火，火線從四面八方往內燒，不同方向的火線相遇的地方就構成**骨架**。
+
+**精確版。** 區域 $R$（邊界為 $B$）的**中軸**（medial axis）是 $R$ 中那些在 $B$ 上有**不只一個**最近點的點所組成的集合 [1]。每個中軸點加上它到邊界的距離，定義了一個最大內切圓；所有這些圓的聯集能完整重建 $R$（這就是中軸轉換，medial axis transform）。直接計算的代價很高，所以實務上用**細化**（thinning）求骨架：反覆刪除那些不是端點、且刪掉後不會破壞連通性的邊界像素，直到再也刪不動為止。骨架對邊界上的小突起非常敏感，通常需要先平滑，或事後修剪短分支。
+
+<Figure src={figBoundary} alt="馬的剪影的四種邊界表示：粗格點上的鏈碼、兩種容許誤差的多邊形近似、骨架，以及質心距離標記圖" caption="圖 12.1 — 同一匹馬剪影（skimage.data.horse）的邊界表示。由左至右：12 像素格點上的 8 方向鏈碼；容許誤差 2 與 12 像素的遞迴分裂多邊形近似；細化得到的骨架；以及標記圖 r(s)，即到質心的距離對正規化弧長作圖（幾個深谷就是馬腿）。" />
+
+## 邊界特徵描述子
+
+**白話版。** 邊界一旦變成有序點列，就可以量它：有多長、有多寬、有多彎，以及把它寫成一堆波的總和時長什麼樣子。
+
+### 基本描述子
+
+- **長度。** 邊界上的像素數是粗略估計。若用 8 連通鏈碼，水平與垂直步長算 1，斜向步長算 $\sqrt{2}$。
+- **直徑。** $\operatorname{Diam}(B) = \max_{i,j} D(p_i, p_j)$，其中 $p_i, p_j$ 是邊界點，$D$ 是距離（通常是歐氏距離）。連接這兩個最遠點的線段稱為**長軸**；**短軸**與之垂直，長度取到能讓以兩軸為邊的方框剛好包住邊界。這個方框稱為**基本矩形**（basic rectangle）。
+- **離心率。** 長軸長度與短軸長度的比值。（後面的區域離心率改用二階動差定義。）
+- **曲率。** 沿邊界的斜率變化率。數位邊界上的曲率很雜，所以通常改算某點兩側擬合線段的斜率差。曲率變號處就是反曲點；（沿行進方向）曲率為正表示凸的部分，為負表示凹的部分。
+
+### 形狀數
+
+邊界的**形狀數**（shape number）是其 4 方向鏈碼的一階差分，再循環位移成最小整數 [1]。它的長度稱為形狀的**階數**（order）$n$。在 4 連通格點上，封閉邊界的 $n$ 一定是偶數，而且每個階數只有有限多種形狀。要公平比較兩個形狀，先固定方向：讓格點對齊形狀的基本矩形（或長軸），選擇能得到指定階數的格點大小，在該格點上算鏈碼，再算形狀數。兩個形狀的**相似度**（degree of similarity）定義為它們的形狀數仍然相同的最大階數。
+
+### 傅立葉描述子
+
+**白話版。** 沿著邊界走一圈，把每個點寫成一個複數。這串數每走一圈就重複一次，所以可以拆成許多波。前幾個慢的波給出大致輪廓，快的波負責補細節。
+
+**精確版。** 設邊界有 $K$ 個點 $(x_k, y_k)$，$k = 0, \dots, K-1$，把每個點寫成
+
+$$
+s(k) = x(k) + j\,y(k).
+$$
+
+對 $s(k)$ 做離散傅立葉轉換，就得到**傅立葉描述子**
+
+$$
+a(u) = \sum_{k=0}^{K-1} s(k)\, e^{-j 2\pi u k / K}, \qquad u = 0, 1, \dots, K-1,
+$$
+
+反轉換則可以重建邊界。如果只保留其中 $P$ 個係數（正負頻率中最低的那些），其餘設為零，就得到平滑、但保留整體形狀的近似 $\hat{s}(k)$（圖 12.2）。這就是為什麼少數幾個傅立葉描述子就能精簡地表示一個形狀。
+
+這些描述子對基本幾何變化的反應很單純 [1]：
+
+| 邊界的變化 | 對 $a(u)$ 的影響 |
+| --- | --- |
+| 平移 $\Delta_{xy} = \Delta_x + j\Delta_y$ | 只有 $a(0)$ 改變：變成 $a(0) + K\Delta_{xy}$ |
+| 旋轉 $\theta$ | 每個係數乘上 $e^{j\theta}$ |
+| 縮放 $\alpha$ | 每個係數乘上 $\alpha$ |
+| 起點移動 $k_0$ | $a(u)$ 乘上 $e^{-j 2\pi k_0 u / K}$ |
+
+因此可以組出不變的描述子：丟掉 $a(0)$（平移）、除以 $|a(1)|$（尺度）、只保留大小 $|a(u)|$（旋轉與起點）。只留大小的代價是丟掉了相位，而相位也帶有一部分形狀資訊。
+
+```python
+import numpy as np
+from skimage import data, measure
+
+mask = data.horse() == 0
+c = max(measure.find_contours(mask.astype(float), 0.5), key=len)
+z = c[:, 1] + 1j * c[:, 0]                       # boundary as complex numbers x + jy
+
+def fourier_descriptor(z, n=16):
+    a = np.fft.fft(z)
+    a[0] = 0                                     # drop DC   -> translation invariance
+    a = a / np.abs(a[1])                         # divide by |a(1)| -> scale invariance
+    return np.abs(np.r_[a[1:n + 1], a[-n:]])     # magnitudes -> rotation and start-point invariance
+
+f1 = fourier_descriptor(z)
+f2 = fourier_descriptor(0.5 * np.exp(1j * 0.7) * np.roll(z, 300) + (40 + 10j))
+print(np.abs(f1 - f2).max())                     # ~1e-16: same descriptor
+```
+
+<Figure src={figFourier} alt="用 4、8、16、32、64 與全部 512 個傅立葉係數重建的六個馬形邊界" caption="圖 12.2 — 將馬的邊界重新取樣成 512 點，再用最低頻的 P 個傅立葉描述子重建。P = 4 時只是一團橢圓；到 P = 32 時腿、脖子和頭都已經認得出來；其餘係數主要在補小尺度的細節。" />
+
+### 邊界的統計動差
+
+一段邊界或一個標記圖可以看成一維函數 $g(r)$。把它的振幅當成隨機變數 $v$，建立直方圖 $p(v_i)$，$i = 0, \dots, A-1$，其中 $A$ 是振幅的分箱數。則
+
+$$
+\mu_n(v) = \sum_{i=0}^{A-1} (v_i - m)^n\, p(v_i), \qquad m = \sum_{i=0}^{A-1} v_i\, p(v_i),
+$$
+
+其中 $m$ 是平均振幅，$\mu_n$ 是第 $n$ 階中心動差 [1]。$\mu_2$ 量的是分散程度，$\mu_3$ 量的是不對稱性。另一種做法是把 $g(r)$ 正規化成面積為 1，視為 $r$ 的機率密度，這時動差描述的就是曲線的**形狀**。動差計算便宜、物理意義清楚，而且（若在旋轉正規化後的標記圖上計算）對旋轉不敏感。
+
+## 區域特徵描述子
+
+**白話版。** 除了描邊，也可以看整塊區域：多大、多圓、有幾個洞，以及內部看起來如何（平滑、粗糙、有條紋）。
+
+### 基本描述子
+
+- **面積** $A$：區域中的像素數。
+- **周長** $P$：邊界的長度。
+- **緊緻度**（compactness）：$P^2 / A$。它沒有單位，所以對尺度不變（在數位化誤差範圍內也對平移與旋轉不變）。圓盤使它最小。
+- **圓度**（circularity）：$R_c = 4\pi A / P^2$。圓盤為 1，越細長或越不規則就越小，等於緊緻度的倒數再乘上常數。
+- **等效直徑**：$d_e = 2\sqrt{A/\pi}$，即同面積圓盤的直徑。
+- **離心率**（用動差定義）：設 $\lambda_1 \ge \lambda_2$ 為像素座標共變異數矩陣的特徵值，$e = \sqrt{1 - \lambda_2/\lambda_1}$。圓盤為 0，線段趨近 1。（scikit-image 採用此定義。）
+
+```python
+import numpy as np
+from skimage import data, filters, measure, morphology, segmentation
+
+img = data.coins()
+bw = img > filters.threshold_otsu(img)
+bw = morphology.binary_closing(bw, morphology.disk(2))
+bw = segmentation.clear_border(morphology.remove_small_objects(bw, 200))
+for r in measure.regionprops(measure.label(bw))[:4]:
+    circ = 4 * np.pi * r.area / r.perimeter ** 2  # 1 for a perfect disk
+    print(f"area={r.area:5.0f}  circularity={circ:.2f}  "
+          f"eccentricity={r.eccentricity:.2f}  euler={r.euler_number}  "
+          f"hu1={r.moments_hu[0]:.4f}")
+```
+
+在 coins 影像上，分割良好的硬幣圓度約 0.9、離心率約 0.3–0.4（數位周長會略為高估，所以即使是完美的數位圓盤，得分也會比 1 低一點）。
+
+### 拓撲描述子
+
+拓撲研究的是在「橡皮膜」變形下保持不變的性質：可以拉伸、彎折，但不能撕開或黏合。面積和周長不是拓撲性質；連通塊的數目和洞的數目才是。**尤拉數**（Euler number）定義為
+
+$$
+E = C - H,
+$$
+
+其中 $C$ 是連通成分數，$H$ 是洞數 [1]。字母「A」的 $E = 0$（一個成分、一個洞）；「B」的 $E = -1$。對於由直線段構成的區域（多邊形網路），尤拉公式把拓撲與計數連在一起：
+
+$$
+V - Q + F = C - H = E,
+$$
+
+其中 $V$ 是頂點數，$Q$ 是邊數，$F$ 是面數。注意 $E$ 會受前景與背景所用的連通定義（4 或 8 連通）影響。
+
+### 紋理
+
+**白話版。** 紋理是表面在眼睛裡的「觸感」：平滑、粗糙、規則。我們用像素值的統計，以及「像素值彼此如何相鄰」的統計來描述它。
+
+**直方圖的統計動差。** 設 $z$ 為代表強度的隨機變數，$p(z_i)$ 為正規化直方圖，$i = 0, \dots, L-1$，平均值 $m = \sum_i z_i p(z_i)$。則 [1]：
+
+$$
+\begin{aligned}
+\mu_n(z) &= \sum_{i=0}^{L-1} (z_i - m)^n\, p(z_i) && \text{(}n\text{-th central moment)}\\
+R(z) &= 1 - \frac{1}{1 + \sigma^2(z)} && \text{(relative smoothness; } \sigma^2 = \mu_2\text{)}\\
+U(z) &= \sum_{i=0}^{L-1} p^2(z_i) && \text{(uniformity)}\\
+e(z) &= -\sum_{i=0}^{L-1} p(z_i) \log_2 p(z_i) && \text{(entropy)}
+\end{aligned}
+$$
+
+$R$ 對常數區域為 0，變異數越大越接近 1（先把 $\sigma^2$ 正規化到 $[0,1]$，例如除以 $(L-1)^2$）。$\mu_3$ 量的是直方圖的偏斜。這些量完全不管像素**在哪裡**，所以棋盤格和把它打亂後的影像會得到一模一樣的值。
+
+**共生矩陣。** 為了描述空間排列，Haralick、Shanmugam 與 Dinstein 提出了灰階共生矩陣（gray-level co-occurrence matrix, GLCM）[3]。先固定一個**位置運算子** $Q$，例如「右邊一個像素」。$G$ 是 $L \times L$ 矩陣，元素 $g_{ij}$ 計算「灰階為 $i$ 的像素，在 $Q$ 指定的位置上出現灰階為 $j$ 的像素」的次數。令 $n = \sum_{i,j} g_{ij}$，
+
+$$
+p_{ij} = g_{ij} / n,
+$$
+
+就是該像素對出現的機率估計。由 $p_{ij}$ 可以算出幾個好用的描述子（$m_r, m_c$ 與 $\sigma_r, \sigma_c$ 分別是列、行邊際分布的平均值與標準差）：
+
+$$
+\begin{aligned}
+\text{Contrast} &= \sum_{i,j} (i - j)^2\, p_{ij} \qquad
+\text{Homogeneity} = \sum_{i,j} \frac{p_{ij}}{1 + |i - j|}\\
+\text{Uniformity (energy)} &= \sum_{i,j} p_{ij}^2 \qquad
+\text{Entropy} = -\sum_{i,j} p_{ij} \log_2 p_{ij}\\
+\text{Correlation} &= \sum_{i,j} \frac{(i - m_r)(j - m_c)\, p_{ij}}{\sigma_r \sigma_c}
+\end{aligned}
+$$
+
+（scikit-image 的 `graycoprops` 所回報的 "energy" 是均勻度總和的平方根。）質量集中在對角線附近，表示鄰居的值相近（平滑紋理：均質性高、對比低）；質量遠離對角線，表示變化劇烈（對比高）。實務上會先量化到少數幾階（8–32 階），對多個角度與距離計算 $G$，再對角度取平均，以得到近似的旋轉不變性。
+
+```python
+import numpy as np
+from skimage import data
+from skimage.feature import graycomatrix, graycoprops
+
+for name in ["brick", "grass", "gravel"]:
+    q = (getattr(data, name)()[:256, :256] // 32).astype(np.uint8)   # 8 gray levels
+    P = graycomatrix(q, distances=[1], angles=[0, np.pi/4, np.pi/2, 3*np.pi/4],
+                     levels=8, symmetric=True, normed=True)
+    feats = {p: graycoprops(P, p).mean() for p in ["contrast", "homogeneity", "energy", "correlation"]}
+    print(name, {k: round(float(v), 3) for k, v in feats.items()})
+```
+
+```text
+brick  {'contrast': 0.269, 'homogeneity': 0.883, 'energy': 0.579, 'correlation': 0.817}
+grass  {'contrast': 0.995, 'homogeneity': 0.717, 'energy': 0.288, 'correlation': 0.664}
+gravel {'contrast': 0.669, 'homogeneity': 0.772, 'energy': 0.323, 'correlation': 0.78}
+```
+
+磚牆以大片平坦的磚面為主，GLCM 集中在少數幾個對角線格子：能量高、對比低。草地每根草葉都不同，GLCM 散得很開：對比最高、能量最低。光是四個數字，就足以把三種紋理分開（圖 12.3）。
+
+<Figure src={figGlcm} alt="磚牆、草地、碎石三種紋理區塊，它們的 8 階共生矩陣，以及比較對比、均質性、能量與相關性的長條圖" caption="圖 12.3 — 三種 skimage.data 紋理的共生矩陣特徵。上排：256 × 256 的區塊。下排：距離 1、四個角度平均後的 GLCM（越亮表示該像素對越常出現）。右：四個 Haralick 式特徵，各自除以三種紋理中的最大值，以便畫在同一個座標軸上。" />
+
+**頻譜紋理。** 週期性或有方向性的紋理，會在傅立葉頻譜上產生強烈而集中的峰值。把頻譜寫成極座標 $S(r, \theta)$，$r$ 是到原點的距離（頻率），$\theta$ 是方向。兩個一維函數可以摘要它 [1]：
+
+$$
+S(r) = \sum_{\theta=0}^{\pi} S_\theta(r), \qquad S(\theta) = \sum_{r=1}^{R_0} S_r(\theta),
+$$
+
+其中 $S_\theta(r)$ 是角度 $\theta$ 那條射線上的頻譜，$S_r(\theta)$ 是半徑 $r$ 的半圓上的頻譜，$R_0$ 是考慮的最大半徑。$S(r)$ 的峰值揭露圖樣的週期（例如磚塊的間距）；$S(\theta)$ 的峰值揭露主要方向。只需要半圈，因為實數影像的頻譜對原點對稱。
+
+### 動差不變量
+
+對大小為 $M \times N$ 的二維影像（或區域指示函數）$f(x, y)$，$(p + q)$ 階動差為
+
+$$
+m_{pq} = \sum_{x=0}^{M-1} \sum_{y=0}^{N-1} x^p y^q f(x, y),
+$$
+
+**中心動差**為
+
+$$
+\mu_{pq} = \sum_{x}\sum_{y} (x - \bar{x})^p (y - \bar{y})^q f(x, y), \qquad \bar{x} = \frac{m_{10}}{m_{00}},\ \bar{y} = \frac{m_{01}}{m_{00}},
+$$
+
+其中 $(\bar{x}, \bar{y})$ 是質心。中心動差對平移不變。**正規化中心動差**
+
+$$
+\eta_{pq} = \frac{\mu_{pq}}{\mu_{00}^{\gamma}}, \qquad \gamma = \frac{p + q}{2} + 1,
+$$
+
+則再加上尺度不變。Hu [2] 從二階與三階的 $\eta_{pq}$ 推導出七個對平移、尺度**以及旋轉**都不變的組合。前兩個是
+
+$$
+\phi_1 = \eta_{20} + \eta_{02}, \qquad \phi_2 = (\eta_{20} - \eta_{02})^2 + 4\eta_{11}^2.
+$$
+
+$\phi_1$ 是對質心的正規化「轉動慣量」：質量離中心越遠就越大。$\phi_2$ 量的是細長程度。第七個不變量在鏡射下會變號，因此可以分辨形狀與它的鏡像。由於高階動差會放大雜訊，而且數值跨越好幾個數量級，一般會比較 $\operatorname{sign}(\phi_i)\log|\phi_i|$。在 scikit-image 中，`regionprops(...).moments_hu` 會傳回全部七個；OpenCV 則是 `cv2.HuMoments(cv2.moments(mask))`。
+
+## 以主成分作為特徵描述子
+
+**白話版。** 量測一個物體很多項時，有些量測其實在重複講同一件事。PCA 會找出一組新的座標軸，從「最有資訊」排到「最沒資訊」，讓我們只留前幾個、丟掉其他。對二維形狀來說，第一個軸就是形狀最長的那個方向。
+
+**精確版。** 設 $\mathbf{x}_1, \dots, \mathbf{x}_K$ 是 $n$ 維向量，例如多光譜影像中每個像素的 $n$ 個波段值，或某區域中每個像素的 $(x, y)$ 座標。它們的平均與共變異數為
+
+$$
+\mathbf{m}_x = \frac{1}{K}\sum_{k=1}^{K} \mathbf{x}_k, \qquad
+\mathbf{C}_x = \frac{1}{K-1}\sum_{k=1}^{K} (\mathbf{x}_k - \mathbf{m}_x)(\mathbf{x}_k - \mathbf{m}_x)^{\mathsf T}.
+$$
+
+$\mathbf{C}_x$ 是實對稱矩陣，因此有 $n$ 個正交單位特徵向量 $\mathbf{e}_i$，對應特徵值 $\lambda_1 \ge \lambda_2 \ge \dots \ge \lambda_n \ge 0$。把特徵向量當成矩陣 $\mathbf{A}$ 的各列。**Hotelling 轉換**（也稱離散 Karhunen–Loève 轉換，或 PCA）為
+
+$$
+\mathbf{y} = \mathbf{A}(\mathbf{x} - \mathbf{m}_x).
+$$
+
+新向量的平均為零，共變異數是**對角**矩陣 $\mathbf{C}_y = \mathbf{A}\mathbf{C}_x\mathbf{A}^{\mathsf T} = \operatorname{diag}(\lambda_1, \dots, \lambda_n)$：$\mathbf{y}$ 的各分量互不相關，第 $i$ 軸上的變異數為 $\lambda_i$。若只保留前 $k$ 列 $\mathbf{A}_k$，重建 $\hat{\mathbf{x}} = \mathbf{A}_k^{\mathsf T}\mathbf{y} + \mathbf{m}_x$ 的均方誤差為
+
+$$
+e_{\text{ms}} = \sum_{j=k+1}^{n} \lambda_j,
+$$
+
+也就是被丟掉的特徵值總和。在這個意義下，沒有其他投影到 $k$ 維的線性方法做得更好。
+
+**在影像處理中的三種用途 [1]：**
+
+1. **壓縮多光譜影像。** 有 $n$ 個對齊好的波段時，每個像素是一個 $n$ 維向量。大部分變異通常集中在前兩、三個主成分影像，因此可以用它們代替全部 $n$ 個波段來顯示或分類。
+2. **正規化物體姿態。** 把區域的像素座標當作向量，$\mathbf{y} = \mathbf{A}(\mathbf{x} - \mathbf{m}_x)$ 會把質心移到原點，並把區域轉到長軸與第一座標軸對齊（圖 12.4）。之後算出的描述子就與平移、旋轉無關；再除以 $\sqrt{\lambda_1}$ 就連尺度也無關。要注意：特徵向量的正負號是任意的，轉正後的物體可能被翻轉；可以用「三階動差較重的一側朝右」之類的規則決定。
+3. **特徵影像**（eigen-images）。把同一類物體的大量同尺寸影像各自攤平成向量，前幾個特徵向量重新排回影像形狀，就是涵蓋該組影像大部分變化的「特徵影像」。任何新影像都可以用少數幾個座標 $\mathbf{y}$ 描述，成為精簡的辨識特徵。
+
+```python
+import numpy as np
+from skimage import data, transform
+
+mask = transform.rotate((data.horse() == 0).astype(float), 35, resize=True) > 0.5
+X = np.argwhere(mask)[:, ::-1].astype(float)     # (x, y) of every object pixel
+m = X.mean(axis=0)
+C = np.cov((X - m).T)                            # 2x2 covariance matrix
+evals, evecs = np.linalg.eigh(C)                 # ascending eigenvalues
+A = evecs[:, ::-1].T                             # rows = eigenvectors, largest first
+Y = (X - m) @ A.T                                # Hotelling transform y = A(x - m)
+print(np.round(np.cov(Y.T), 3))                  # diagonal: the axes are decorrelated
+```
+
+<Figure src={figPca} alt="旋轉過的馬形剪影與以箭頭表示的兩個主軸，以及經 Hotelling 轉換後置中並與座標軸對齊的同一批像素" caption="圖 12.4 — 用 PCA 正規化姿態。左：旋轉 35° 的馬，箭頭是座標共變異數的特徵向量（長度 = 2√λ）。右：經 y = A(x − m) 轉換後的像素座標。物體已置中，最長的方向落在水平軸上；它看起來是翻過來的，因為每個特徵向量的正負號是任意的。" />
+
+## 整張影像的特徵
+
+**白話版。** 前面都需要先分割出物體。但很多任務（全景接圖、追蹤、三維重建）需要的是**地標**：能在任何照片中自動找到，並且能在同一場景的另一張照片中再找到。角點和穩定的斑塊就是好地標。
+
+### Harris–Stephens 角點偵測器
+
+**白話版。** 透過一個小窗口看影像，然後把窗口稍微挪一下。在平坦區域，什麼都沒變；在邊緣上，沿著邊緣挪不會變，橫越邊緣才會變；在角點上，往**任何**方向挪，看到的都會變。Harris 與 Stephens 把這個想法寫成公式 [4]。
+
+**精確版。** 窗口 $w$ 位移 $(u, v)$ 所造成的變化為
+
+$$
+E(u, v) = \sum_{x, y} w(x, y)\,\big[f(x + u, y + v) - f(x, y)\big]^2 \approx [u\ \ v]\, \mathbf{M} \begin{bmatrix} u \\ v \end{bmatrix},
+$$
+
+這裡用了一階泰勒展開，**結構張量**（structure tensor，又稱二階動差矩陣）為
+
+$$
+\mathbf{M} = \sum_{x, y} w(x, y) \begin{bmatrix} f_x^2 & f_x f_y \\ f_x f_y & f_y^2 \end{bmatrix},
+$$
+
+其中 $f_x, f_y$ 是影像的偏導數，$w$ 是窗函數（通常為高斯）。$\mathbf{M}$ 的特徵值 $\lambda_1, \lambda_2$ 說明一切：兩個都小是平坦區，一大一小是邊緣，兩個都大是角點。1988 年時逐像素算特徵值太昂貴，所以 Harris 與 Stephens 改用**響應函數**
+
+$$
+R = \det(\mathbf{M}) - k\,\operatorname{tr}(\mathbf{M})^2 = \lambda_1 \lambda_2 - k(\lambda_1 + \lambda_2)^2,
+$$
+
+$k$ 是一個小常數（常見值約 0.04–0.06）。$R$ 在角點為大的正值，在邊緣為負值，在平坦區接近零。角點就是 $R$ 在非極大值抑制後、超過門檻的局部極大值。
+
+性質：$\mathbf{M}$ 由導數組成，所以 $R$ 不受亮度加減的影響；它的特徵值與旋轉無關，所以偵測器對旋轉共變。但它**不**對尺度共變：在小窗口中看到的角點，換成大窗口可能就像一條邊緣。補上尺度的正是 SIFT。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, feature, util
+
+def harris(img, sigma_d=1.0, sigma_i=1.5, k=0.05):
+    Ix = ndi.gaussian_filter(img, sigma_d, order=(0, 1))   # derivative along x (columns)
+    Iy = ndi.gaussian_filter(img, sigma_d, order=(1, 0))   # derivative along y (rows)
+    Sxx = ndi.gaussian_filter(Ix * Ix, sigma_i)            # entries of the structure tensor M
+    Syy = ndi.gaussian_filter(Iy * Iy, sigma_i)
+    Sxy = ndi.gaussian_filter(Ix * Iy, sigma_i)
+    det, tr = Sxx * Syy - Sxy ** 2, Sxx + Syy
+    return det - k * tr ** 2                               # R > 0 corner, R < 0 edge, |R| small flat
+
+img = util.img_as_float(data.camera())
+R = harris(img)
+corners = feature.corner_peaks(R, min_distance=7, threshold_rel=0.02)   # (row, col) list
+```
+
+<Figure src={figHarris} alt="攝影師影像、紅色為角點藍色為邊緣的 Harris 響應圖，以及用黃色圓圈標出的偵測角點" caption="圖 12.5 — skimage.data.camera 上的 Harris–Stephens 角點（k = 0.05，積分 σ = 1.5）。中：響應 R；強烈的正值（紅）集中在相機機身與腳架關節，而腳架的腳屬於邊緣，呈負值（藍）。右：非極大值抑制後 R 的局部極大值。" />
+
+### 最大穩定極值區域（MSER）
+
+**白話版。** 想像把一片灰階地形慢慢灌水。白紙上的黑字會變成一個個小湖。水位上升時，大部分湖泊會迅速擴大或彼此合併，但字母形成的湖，在很長一段水位範圍內都維持同樣形狀，因為墨水比周圍的紙暗得多。水位變化很大、形狀卻幾乎不變的區域，就是**最大穩定**的區域。Matas、Chum、Urban 與 Pajdla 為寬基線立體視覺提出了這個方法 [5]。
+
+**精確版。** 在每個灰階 $t$ 對影像做門檻化。$\{f \le t\}$（亮區域則為 $\{f \ge t\}$）的一個連通成分稱為**極值區域** $Q_t$：區域內每個像素都比它外圍邊界上的每個像素暗（或亮）。隨著 $t$ 增加，成分逐漸長大、合併，形成一棵樹。對每個區域定義穩定度
+
+$$
+q(t) = \frac{|Q_{t+\Delta} \setminus Q_{t-\Delta}|}{|Q_t|},
+$$
+
+其中 $|\cdot|$ 是面積，$\Delta$ 是灰階步長。$q(t)$ 出現局部最小值時，該區域就是**最大穩定**的。把像素依強度排序後，用 union-find 結構就能在接近線性的時間內建出整棵樹。
+
+為什麼有效：這個定義只用到強度的**大小順序**，所以 MSER 對任何單調的亮度變化都不變。在連續的幾何變換下，連通區域仍映射成連通區域，所以 MSER 對仿射變換共變（常見做法是對每個區域擬合橢圓，再正規化成圓形後才描述）。MSER 最適合邊界清楚的均勻斑塊，例如文字、標誌、窗戶；在模糊或紋理繁雜的場景中表現較差。
+
+```python
+import cv2
+from skimage import data
+
+img = data.page()                                    # uint8 grayscale
+mser = cv2.MSER_create(delta=5, min_area=10, max_area=800, max_variation=0.5)
+regions, boxes = mser.detectRegions(img)             # pixel lists + bounding boxes
+print(len(regions), "regions")
+```
+
+<Figure src={figMser} alt="一張拍攝的文字頁面，以及以顏色填滿偵測到的 MSER 區域後的同一頁面，大多是單一字母或字母群" caption="圖 12.6 — 光照不均的 skimage.data.page 上的 MSER。每個上色的區域都是在 ±5 個灰階內保持穩定的極值區域，大多是單一字母或黏在一起的字母群；由於穩定度只取決於強度順序，左下角較暗的部分並不造成困擾。" />
+
+## 尺度不變特徵轉換（SIFT）
+
+**白話版。** Lowe 提出的 SIFT [6] 對每個地標回答三個問題：它**在哪裡**、它**多大**、它**朝哪個方向**？接著在這個地標自己的大小與方向下，寫下周圍梯度的摘要。如此一來，不論照片是近拍、遠拍、傾斜，還是光線較暗，這份摘要都一樣。
+
+### 尺度空間
+
+為了找出各種大小的特徵，SIFT 先建立**尺度空間**（scale space）：用寬度越來越大的高斯核模糊影像，
+
+$$
+L(x, y, \sigma) = G(x, y, \sigma) \star f(x, y), \qquad G(x, y, \sigma) = \frac{1}{2\pi\sigma^2} e^{-(x^2 + y^2)/2\sigma^2},
+$$
+
+其中 $\star$ 表示卷積，$\sigma$ 是尺度。尺度分成好幾個**八度**（octave）；每個八度讓 $\sigma$ 加倍，並切成 $s$ 個間隔，所以相鄰尺度相差 $k = 2^{1/s}$ 倍。Lowe [6] 使用 $s = 3$ 與基礎尺度 $\sigma_0 = 1.6$。每完成一個八度就把影像降取樣一半，以節省計算。
+
+### 以高斯差偵測關鍵點
+
+把相鄰的模糊影像相減：
+
+$$
+D(x, y, \sigma) = L(x, y, k\sigma) - L(x, y, \sigma).
+$$
+
+這個**高斯差**（difference of Gaussians, DoG）非常接近尺度正規化的高斯拉普拉斯 $\sigma^2 \nabla^2 G$，只差常數倍 $(k - 1)$。它對大小與 $\sigma$ 相符的斑塊反應最強（圖 12.7）。候選關鍵點是 $D$ 值比全部 26 個鄰居都大或都小的像素：同一張 DoG 影像中的 8 個，加上上下兩個尺度各 9 個。因此每個關鍵點同時帶有位置**和**特徵尺度。
+
+<Figure src={figDog} alt="上排是越來越模糊的四張太空人影像；下排是相鄰模糊影像的差，凸顯出越來越大尺度的斑塊與邊緣" caption="圖 12.7 — 在 skimage.data.astronaut 的局部上建立的一個 SIFT 式八度（σ₀ = 1.6，每個八度三個間隔）。下排為 DoG 影像：細結構（髮絲、眼睛）在小 σ 有反應，大結構（頭盔環、火箭箭身）在大 σ 有反應。關鍵點是同時在空間與相鄰 DoG 影像間取極值的點。" />
+
+### 關鍵點定位
+
+極值是在離散格點上找到的。為了精修位置，用泰勒展開對樣本點附近的 $D$ 擬合三維二次函數，
+
+$$
+D(\mathbf{x}) \approx D + \frac{\partial D}{\partial \mathbf{x}}^{\mathsf T} \mathbf{x} + \frac{1}{2}\mathbf{x}^{\mathsf T} \frac{\partial^2 D}{\partial \mathbf{x}^2}\mathbf{x}, \qquad
+\hat{\mathbf{x}} = -\left(\frac{\partial^2 D}{\partial \mathbf{x}^2}\right)^{-1} \frac{\partial D}{\partial \mathbf{x}},
+$$
+
+其中 $\mathbf{x} = (x, y, \sigma)^{\mathsf T}$ 是相對於樣本點的偏移，$\hat{\mathbf{x}}$ 是極值在次像素、次尺度上的位置。接著用兩個測試剔除不穩定的點 [6]：
+
+- **低對比**：若 $|D(\hat{\mathbf{x}})| < 0.03$（強度範圍為 $[0, 1]$ 時）就捨棄。
+- **邊緣響應**：DoG 在邊緣上也有反應，但邊緣上的位置定不準。用 $D$ 的 $2 \times 2$ 空間 Hessian 矩陣 $\mathbf{H}$，只有在
+
+$$
+\frac{\operatorname{tr}(\mathbf{H})^2}{\det(\mathbf{H})} < \frac{(r + 1)^2}{r}
+$$
+
+時才保留，其中 $r$ 限制兩個主曲率的比值；Lowe 使用 $r = 10$。這和 Harris 的想法相同：好的點必須在**兩個**方向上都彎得厲害。
+
+### 方向指定
+
+在關鍵點附近、以它的尺度在 $L$ 上計算梯度大小與方向，建立 36 格（每格 10°）的方向直方圖；每個樣本以梯度大小加權，並乘上 $\sigma$ 為關鍵點尺度 1.5 倍的高斯窗。最高峰就是關鍵點的方向；其他超過最高峰 80% 的峰值，會產生同位置但方向不同的額外關鍵點 [6]。此後所有量測都相對於這個方向進行，因而得到旋轉不變性。
+
+### 關鍵點描述子
+
+在關鍵點周圍取一個窗口，依其方向旋轉、依其尺度決定大小，再切成 $4 \times 4$ 個格子。每個格子累積一個 8 格的梯度方向直方圖，以梯度大小與以關鍵點為中心的高斯加權，並用三線性內插，避免小小的位移造成數值在格子之間突然跳動。這樣得到 $4 \times 4 \times 8 = 128$ 個數字 [6]。最後：
+
+1. 把向量正規化成單位長度（抵消 $f \mapsto af$ 的對比變化；梯度本身已抵消 $+b$）；
+2. 把每個元素截在 0.2 以下（限制少數超大梯度的影響，例如反光等非線性光照）；
+3. 再正規化一次。
+
+### 配對
+
+兩張影像的描述子用歐氏距離比較。只看最近鄰並不可靠：很多關鍵點根本沒有真正的對應點。Lowe 的**比值測試**（ratio test）只在
+
+$$
+\frac{\lVert \mathbf{d} - \mathbf{d}_{1} \rVert}{\lVert \mathbf{d} - \mathbf{d}_{2} \rVert} < \tau
+$$
+
+時保留配對，其中 $\mathbf{d}_1, \mathbf{d}_2$ 是另一張影像中最近與次近的描述子，$\tau$ 是門檻（Lowe 建議 0.8）[6]。有鑑別力的配對會比第二名近得多。大型資料庫會改用近似最近鄰搜尋，而留下來的配對通常還要經過幾何驗證，例如用 RANSAC（random sample consensus，隨機取樣一致）[21] 擬合相似、仿射或投影轉換，只保留內點（inlier）。
+
+```python
+import numpy as np
+from skimage import data, feature, transform
+from skimage.color import rgb2gray
+from skimage.measure import ransac
+
+img1 = rgb2gray(data.astronaut())
+tf = transform.AffineTransform(scale=0.7, rotation=np.deg2rad(25), translation=(140, -60))
+img2 = 0.8 * transform.warp(img1, tf.inverse) + 0.1        # second "view"
+
+sift = feature.SIFT()
+sift.detect_and_extract(img1); k1, d1 = sift.keypoints, sift.descriptors
+sift.detect_and_extract(img2); k2, d2 = sift.keypoints, sift.descriptors
+
+matches = feature.match_descriptors(d1, d2, max_ratio=0.6, cross_check=True)  # ratio test
+src, dst = k1[matches[:, 0]][:, ::-1], k2[matches[:, 1]][:, ::-1]           # (row, col) -> (x, y)
+model, inliers = ransac((src, dst), transform.SimilarityTransform,
+                        min_samples=3, residual_threshold=2, max_trials=500)
+print(len(matches), "matches,", inliers.sum(), "inliers")
+print("recovered scale %.3f, rotation %.1f deg" % (model.scale, np.degrees(model.rotation)))
+```
+
+在這組合成影像上，程式找到 484 個配對，其中 483 個與真正的轉換一致，並還原出尺度 0.700、旋轉 25.0°。真實照片有視角變化、遮擋和重複圖樣，內點比例會低得多，所以幾何驗證絕對不能省。
+
+<Figure src={figSift} alt="左：太空人影像上的 SIFT 關鍵點，以圓圈大小表示尺度、線段表示方向。右：原圖與一張旋轉、縮小並變暗的複本之間，以線段連接的配對關鍵點" caption="圖 12.8 — skimage.data.astronaut 上的 SIFT。左：尺度最大的 60 個關鍵點（圓半徑 ∝ 尺度，線段 = 方向）。右：與旋轉 25°、縮放 0.7 並改變對比的複本之間的部分比值測試配對；484 個配對中有 483 個與真實轉換的誤差在 3 像素以內。" />
+
+<Callout type="note" title="去哪裡找 SIFT">
+scikit-image 在 0.19 版加入了 SIFT 偵測器與描述子（即上面用到的 `skimage.feature.SIFT`）。在 OpenCV 中，先呼叫 `cv2.SIFT_create()`，再用 `detectAndCompute(gray, None)`。
+</Callout>
+
+## 現代觀點
+
+### 綜述論文怎麼說
+
+**形狀描述子。** Zhang 與 Lu 的綜述 [9] 沿兩個軸分類形狀描述子：**以輪廓為主**或**以區域為主**，以及**全域式**（整個形狀一個向量）或**結構式**（把形狀拆成基本單元）。本章前半段的方法都能放進這個表格：鏈碼與多邊形是結構式輪廓方法；傅立葉描述子與邊界動差是全域式輪廓方法；面積、尤拉數與 Hu 動差是全域式區域方法；骨架則是結構式區域方法。綜述對每種技術說明實作方式，並列出優缺點；實務上的訊息是：沒有一種描述子適用於所有應用，該選哪一種，取決於任務需要哪些不變性、需要多少細節。
+
+**局部特徵偵測器。** Tuytelaars 與 Mikolajczyk [10] 綜述了興趣點與區域偵測器：角點偵測器（Harris 及其尺度、仿射調適版本）、斑點偵測器（Laplacian/DoG、Hessian）與區域偵測器（MSER 等）。他們以好的局部特徵應具備的性質來組織這個領域：可重複性（repeatability）、鑑別性（distinctiveness）、局部性（locality）、數量、準確度與效率。他們指出，最重要的可重複性可以用兩種方式達成：**不變性**（用數學模型描述大的形變，再設計不受其影響的偵測器）或**強健性**（容忍雜訊、模糊、壓縮等小的形變）。他們也提醒，有些性質彼此競爭：鑑別性與局部性無法同時最大化，因為越局部的特徵看到的強度圖樣越少，也就越難正確配對；該怎麼取捨要看應用。SIFT 的兩個重速度的後繼者正是用準確度換時間的例子：SURF [7] 在積分影像上用方框濾波器近似高斯導數，ORB [8] 結合 FAST 角點測試與有方向性的二元描述子，以漢明距離比較，快到可以在手機上執行。
+
+**紋理。** Liu 等人 [11] 回顧了約二十年的紋理分類表示法，分為詞袋（bag-of-words）流程（局部描述子、編碼與池化）、以 CNN 為基礎的方法，以及以屬性為基礎的方法。共生統計 [3] 位在這段歷史的源頭：它們是第一批被廣泛使用的「像素**對**」描述子。這篇涵蓋兩百多篇論文的綜述，描繪了領域如何從以詞袋編碼的手工局部描述子，轉向以 CNN 特徵為基礎的表示法，最後並整理了尚待解決的問題與未來方向。
+
+**影像配對：從手工到深度。** Ma 等人 [12] 沿著完整的配對流程（偵測、描述、配對與離群值剔除），從手工方法談到可訓練的方法，並在標準資料集上做實驗比較；可以看到學習已經進入流程的每一個階段，而不只是描述子。Jin 等人 [13] 建立了一個以最終相機姿態準確度、而非中間指標來評分的基準。他們的關鍵發現是一個警訊：只要把每種方法的設定（比值門檻、RANSAC 參數、關鍵點數量）調好，像 SIFT 這樣的傳統流程仍可能勝過被視為最先進的方法，這暗示部分已發表的進步其實反映了沒調好的基準線。
+
+### 深度學習如何改變特徵擷取
+
+**學習式關鍵點與描述子。** SuperPoint [14] 訓練一個全卷積網路，同時輸出關鍵點熱度圖與稠密描述子。它是自我監督的：先在合成形狀上學會角點，再透過**單應性調適**（homographic adaptation）——把同一張影像做許多次隨機變形並彙整自己的偵測結果——在真實影像上自我改進。DISK [16] 用強化學習（策略梯度）端到端地訓練偵測與描述，獎勵那些能帶來正確配對的關鍵點。它們用學來的函數取代 Harris 與 SIFT 的**公式**，但保留了相同的概念：稀疏、可重複的點，加上描述子。
+
+**學習式配對。** SuperGlue [15] 以圖神經網路取代最近鄰比值測試，讓兩張影像的關鍵點彼此注意（attend），再解一個能回答「沒有配對」的最佳傳輸（optimal transport）指派問題。LightGlue [18] 改寫這個設計，使它更快且能自我調適，在容易的影像對上花較少計算。LoFTR [17] 乾脆拿掉偵測器：以具有自注意力與交叉注意力的 Transformer 在粗特徵圖上做稠密配對，再精修位置，這對偵測器找不到東西的低紋理區域特別有幫助。
+
+**通用深度特徵。** 最深遠的改變是：特徵越來越**不是為某個任務設計的**。像 DINOv2 [19] 這樣的自我監督基礎模型所產生的區塊（patch）特徵，不需微調就能用於分類、分割、深度估計與檢索。RoMa [20] 展示了它對配對的影響：以凍結的 DINOv2 特徵做粗配對，再結合細緻的卷積特徵做精確定位。換句話說，SIFT 核心那個手工設計的描述子，已經被一個在極大量影像上訓練出的網路取代。
+
+**沒有改變的部分。** 本章的**問題拆解方式**依然存在。現代流程仍然是偵測、描述、配對、再做幾何驗證，而且通常仍使用 RANSAC 類的強健估計器 [21]。尺度與旋轉仍然必須處理，不是內建（SIFT 的尺度空間、ORB 的方向），就是透過資料擴增讓模型學會。不變性依然是設計選擇：過度不變的描述子會失去鑑別力，無論它是手工設計還是學出來的。在以量測為主的領域（材料、顯微影像、品質檢測），面積、圓度、尤拉數與 GLCM 統計等區域描述子仍然很受歡迎，因為每個數字都有人可以檢查的物理意義。
+
+## 重點整理
+
+- **偵測器**找出特徵（點、區域、邊界）；**描述子**把每個特徵轉成向量。偵測器應對幾何變化共變，描述子應對任務中無關緊要的變化不變。
+- 邊界要先排序（邊界追蹤）、再簡化（鏈碼、最小周長多邊形、合併與分裂、標記圖、骨架），之後才拿來量測。
+- **傅立葉描述子**用少數係數壓縮封閉輪廓；丟掉 $a(0)$、除以 $|a(1)|$、只取大小，就得到平移、尺度、旋轉與起點不變性。
+- 區域描述子從大小與形狀（面積、圓度、離心率）、拓撲（尤拉數 $E = C - H$）、紋理（直方圖動差、**GLCM** 特徵、頻譜）一路到 **Hu 動差不變量**。
+- **PCA**（Hotelling 轉換）讓量測去相關、把物體轉到主軸方向，並提供精簡的特徵影像描述子；丟掉分量造成的誤差等於被丟掉的特徵值總和。
+- **Harris** 由結構張量找角點；**MSER** 找在多個門檻下都穩定的區域；**SIFT** 加上尺度空間、方向與正規化的 128 維梯度直方圖，再以比值測試配對。
+- 學習式偵測器、配對器與基礎模型特徵如今是多數配對研究的焦點，但仔細調整的傳統流程仍是強勁的基準線，而「偵測—描述—配對—驗證」的架構並未改變。
+
+## 練習
+
+1. **手算鏈碼。** 寫出一個與座標軸對齊、寬 3 節、高 2 節的長方形邊界的 8 方向鏈碼，從左下角出發、逆時針行走。算出它的一階差分與形狀數（最小循環位移）。再把長方形轉 90°，說明形狀數不變。
+
+<details>
+<summary>提示</summary>
+
+從左下角逆時針走（0 = 東、2 = 北）：$0\,0\,0\,2\,2\,4\,4\,4\,6\,6$。一階差分的每個元素是相對前一個方向逆時針轉了幾格：$2\,0\,0\,2\,0\,2\,0\,0\,2\,0$（開頭的 2 來自首尾相接的 $6 \to 0$）。最小循環位移為 $0\,0\,2\,0\,2\,0\,0\,2\,0\,2$。轉 90° 後每個碼都加 2（mod 8），差分不變。
+
+</details>
+
+2. **實測傅立葉描述子的不變性。** 使用本章的 `fourier_descriptor` 函數。(a) 用數值說明它無法分辨形狀與其鏡像。(b) 從轉換效果表解釋原因，並提出一個能分辨鏡像的修改。
+
+<details>
+<summary>提示</summary>
+
+用 `mask[:, ::-1]` 翻轉遮罩，並用 `find_contours` 追蹤兩條輪廓；兩組描述子的差距約在 $10^{-4}$ 以內。追蹤器總是以相同的旋轉方向走過每條邊界，因此鏡像邊界是 $s'(k) = \overline{s(-k)}$（共軛**且**反向），最多差一個位移。它的 DFT 是 $\overline{a(u)}$：大小相同、相位相反，所以只看大小看不出鏡射。改為保留部分相位：複數 $a(u)\,a(2-u)/a(1)^2$（索引取模 $K$）不受平移、旋轉、尺度與起點影響，但在鏡射下會變成共軛，因此它虛部的正負號就能區分形狀與其鏡像。
+
+</details>
+
+3. **格點上的圓度。** 用 `skimage.draw.disk` 與 `regionprops` 計算半徑 5、10、20、50 像素的數位圓盤之 $4\pi A / P^2$。為什麼結果不完全等於 1？它如何隨半徑變化？也試試 `perimeter_crofton`。
+
+<details>
+<summary>提示</summary>
+
+數位周長是階梯狀的，不同估計方法用不同方式修正。小圓盤的相對誤差較大。兩種周長估計都列出來，其中一種應該明顯更接近真正的 $2\pi r$。
+
+</details>
+
+4. **紋理的方向。** 做一張週期 8 像素的水平條紋合成紋理，加一點雜訊。計算 0°、45°、90°、135° 四個角度、位移 1 像素的 GLCM 對比，以及角度頻譜標記 $S(\theta)$。兩者各自哪個角度最突出？為什麼兩種方法的結論一致？
+
+<details>
+<summary>提示</summary>
+
+沿著條紋（0°）移動時強度幾乎不變，對比低；橫越條紋（90°）才會變。頻譜中，水平條紋的能量落在垂直頻率軸上。注意慣例：scikit-image 的角度 0 代表水平方向的像素位移。
+
+</details>
+
+5. **以特徵值理解 PCA。** 對半軸 $a = 40$、$b = 10$ 的實心橢圓，預測座標共變異數特徵值的比 $\lambda_1 / \lambda_2$，再用程式驗證。用你的答案說明 $\lambda_1, \lambda_2$ 與 `regionprops` 回報的離心率之間的關係。
+
+<details>
+<summary>提示</summary>
+
+均勻實心橢圓沿長度為 $a$ 的半軸方向，變異數為 $a^2/4$。所以 $\lambda_1 / \lambda_2 = (a/b)^2 = 16$，而 $e = \sqrt{1 - \lambda_2/\lambda_1} = \sqrt{1 - b^2/a^2} \approx 0.968$。
+
+</details>
+
+6. **比值測試的取捨。** 使用 SIFT 配對程式，把 `max_ratio` 從 0.5 調到 0.95，畫出 (a) 配對數量與 (b) RANSAC 內點比例。接著加上 0.6 倍縮放、30° 旋轉與高斯雜訊（$\sigma = 0.05$）再做一次。你會把門檻設在哪裡？為什麼答案取決於雜訊？
+
+<details>
+<summary>提示</summary>
+
+寬鬆的比值會收進更多配對，但錯的也更多；嚴格的比值只留下少數、多半正確的配對。RANSAC 能容忍大量離群值，但需要最低數量的正確配對，所以最佳門檻落在兩個極端之間，並隨影像品質移動。
+
+</details>
+
+## 參考文獻
+
+1. R. C. Gonzalez and R. E. Woods, *Digital Image Processing*, 4th ed., Pearson, 2018, Ch. 12. [publisher page](https://www.pearson.com/en-us/subject-catalog/p/digital-image-processing/P200000003249/9780133356724)
+2. M.-K. Hu, "Visual pattern recognition by moment invariants," *IRE Transactions on Information Theory*, vol. 8, no. 2, pp. 179–187, 1962. [doi](https://doi.org/10.1109/TIT.1962.1057692)
+3. R. M. Haralick, K. Shanmugam, and I. Dinstein, "Textural features for image classification," *IEEE Transactions on Systems, Man, and Cybernetics*, vol. SMC-3, no. 6, pp. 610–621, 1973. [doi](https://doi.org/10.1109/TSMC.1973.4309314)
+4. C. Harris and M. Stephens, "A combined corner and edge detector," in *Proc. Alvey Vision Conference*, pp. 23.1–23.6, 1988. [doi](https://doi.org/10.5244/C.2.23)
+5. J. Matas, O. Chum, M. Urban, and T. Pajdla, "Robust wide-baseline stereo from maximally stable extremal regions," *Image and Vision Computing*, vol. 22, no. 10, pp. 761–767, 2004. [doi](https://doi.org/10.1016/j.imavis.2004.02.006)
+6. D. G. Lowe, "Distinctive image features from scale-invariant keypoints," *International Journal of Computer Vision*, vol. 60, no. 2, pp. 91–110, 2004. [doi](https://doi.org/10.1023/B:VISI.0000029664.99615.94)
+7. H. Bay, A. Ess, T. Tuytelaars, and L. Van Gool, "Speeded-up robust features (SURF)," *Computer Vision and Image Understanding*, vol. 110, no. 3, pp. 346–359, 2008. [doi](https://doi.org/10.1016/j.cviu.2007.09.014)
+8. E. Rublee, V. Rabaud, K. Konolige, and G. Bradski, "ORB: An efficient alternative to SIFT or SURF," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, pp. 2564–2571, 2011. [doi](https://doi.org/10.1109/ICCV.2011.6126544)
+9. D. Zhang and G. Lu, "Review of shape representation and description techniques," *Pattern Recognition*, vol. 37, no. 1, pp. 1–19, 2004. [doi](https://doi.org/10.1016/j.patcog.2003.07.008)
+10. T. Tuytelaars and K. Mikolajczyk, "Local invariant feature detectors: A survey," *Foundations and Trends in Computer Graphics and Vision*, vol. 3, no. 3, pp. 177–280, 2008. [doi](https://doi.org/10.1561/0600000017)
+11. L. Liu, J. Chen, P. Fieguth, G. Zhao, R. Chellappa, and M. Pietikäinen, "From BoW to CNN: Two decades of texture representation for texture classification," *International Journal of Computer Vision*, vol. 127, pp. 74–109, 2019. [arXiv](https://arxiv.org/abs/1801.10324)
+12. J. Ma, X. Jiang, A. Fan, J. Jiang, and J. Yan, "Image matching from handcrafted to deep features: A survey," *International Journal of Computer Vision*, vol. 129, pp. 23–79, 2021. [doi](https://doi.org/10.1007/s11263-020-01359-2)
+13. Y. Jin, D. Mishkin, A. Mishchuk, J. Matas, P. Fua, K. M. Yi, and E. Trulls, "Image matching across wide baselines: From paper to practice," *International Journal of Computer Vision*, 2021. [doi](https://doi.org/10.1007/s11263-020-01385-0) · [arXiv](https://arxiv.org/abs/2003.01587)
+14. D. DeTone, T. Malisiewicz, and A. Rabinovich, "SuperPoint: Self-supervised interest point detection and description," arXiv:1712.07629, 2017. [arXiv](https://arxiv.org/abs/1712.07629)
+15. P.-E. Sarlin, D. DeTone, T. Malisiewicz, and A. Rabinovich, "SuperGlue: Learning feature matching with graph neural networks," arXiv:1911.11763, 2019. [arXiv](https://arxiv.org/abs/1911.11763)
+16. M. J. Tyszkiewicz, P. Fua, and E. Trulls, "DISK: Learning local features with policy gradient," arXiv:2006.13566, 2020. [arXiv](https://arxiv.org/abs/2006.13566)
+17. J. Sun, Z. Shen, Y. Wang, H. Bao, and X. Zhou, "LoFTR: Detector-free local feature matching with Transformers," arXiv:2104.00680, 2021. [arXiv](https://arxiv.org/abs/2104.00680)
+18. P. Lindenberger, P.-E. Sarlin, and M. Pollefeys, "LightGlue: Local feature matching at light speed," arXiv:2306.13643, 2023. [arXiv](https://arxiv.org/abs/2306.13643)
+19. M. Oquab, T. Darcet, T. Moutakanni, et al., "DINOv2: Learning robust visual features without supervision," arXiv:2304.07193, 2023. [arXiv](https://arxiv.org/abs/2304.07193)
+20. J. Edstedt, Q. Sun, G. Bökman, M. Wadenbäck, and M. Felsberg, "RoMa: Robust dense feature matching," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024. [arXiv](https://arxiv.org/abs/2305.15404)
+21. M. A. Fischler and R. C. Bolles, "Random sample consensus: A paradigm for model fitting with applications to image analysis and automated cartography," *Communications of the ACM*, vol. 24, no. 6, pp. 381–395, 1981. [doi](https://doi.org/10.1145/358669.358692)
