@@ -1,6 +1,6 @@
 # Pixels → Perception
 
-A bilingual (English / 繁體中文) computer vision tutorial site, from basic image processing to modern deep learning.
+A bilingual (English / 繁體中文) tutorial site covering image processing, pattern recognition, machine learning, deep learning for vision, and NLP.
 Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to Cloudflare Pages.
 
 **Live site: <https://blog.shyandram.dev/>** ([English](https://blog.shyandram.dev/en/) · [繁體中文](https://blog.shyandram.dev/zh-tw/))
@@ -8,6 +8,49 @@ Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, an
 - Survey of website systems: [`docs/01-survey.md`](docs/01-survey.md)
 - Site design: [`docs/02-design.md`](docs/02-design.md)
 - Visual mockup: [`design/mockup/index.html`](design/mockup/index.html)
+
+## Curriculum
+
+The curriculum has six tracks in English and Traditional Chinese. Start with
+[Foundations: getting started and textbooks](src/content/tutorials/en/foundations/getting-started.mdx).
+
+| Track | Coverage |
+| --- | --- |
+| 0 · Foundations | Entry paths, textbook selection, and images as arrays |
+| 1 · Image Processing | The existing DIP sequence, from intensity transforms to pattern classification |
+| 2 · Pattern Recognition | A complete course based on Theodoridis/Koutroumbas, *Pattern Recognition* (4th ed.), and Bishop, *Pattern Recognition and Machine Learning* |
+| 3 · ML/DL | ML basics; linear algebra; probability/information; numerical computation; feedforward, convolutional, recurrent and recursive networks; transformers; representation learning; factor models and autoencoders; VAEs/GANs/flows; diffusion/flow matching; autoregression; foundation models; evaluation/deployment |
+| 4 · DL for Vision | Classification, detection, restoration, low-light enhancement, tracking, and world models |
+| 5 · NLP | An introductory chapter with a runnable language model and a further reading roadmap |
+
+ML 03 incorporates the former **Convolution & Image Filtering** tutorial, including its
+interactive kernel and image comparison demos. The old English and Chinese URLs
+redirect to the merged chapter; its existing filtering notebook remains available.
+
+### Books, surveys and current methods
+
+The ML/DL expansion uses Goodfellow/Bengio/Courville's *Deep Learning*, Prince's
+*Understanding Deep Learning*, Bishop/Bishop's *Deep Learning: Foundations and
+Concepts*, *Mathematics for Machine Learning*, and Murphy's probabilistic ML texts
+as complementary readings. Each chapter links its books, surveys and original papers.
+The Foundations chapter explains which book to choose for a particular starting point.
+
+| Reading purpose | Chapter and survey/review |
+| --- | --- |
+| Convolutional architecture | ML 03 · Alzubaidi et al., CNN/deep-learning review (2021) |
+| Attention and visual architecture | ML 04 · Khan et al., *Transformers in Vision: A Survey* (2022); visual Mamba review |
+| Self-supervised objectives | ML 05 · Liu et al., *Self-supervised Learning: Generative or Contrastive* |
+| Explicit density modeling | ML 06 · Papamakarios et al., *Normalizing Flows for Probabilistic Modeling and Inference* (2021) |
+| Noise/velocity-based generation | ML 07 · Yang et al., diffusion survey (2023); Lipman et al., flow matching guide (2024) |
+| Sequential visual generation | ML 08 · Xiong et al., autoregressive vision survey (2024, revised 2025) |
+| Multimodal adaptation | ML 09 · Caffagni et al., multimodal LLM survey (2024) |
+| Efficient deployment | ML 10 · Gou et al., distillation survey (2021); Cheng et al., compression survey (2017) |
+
+This is a curated reading map, not an exhaustive review of every publication.
+Research coverage is dated **2026-10-04** and includes, where relevant, DINOv3,
+SAM 3, Qwen3-VL, V-JEPA 2, VGGT, VAR, MAR and MeanFlow. Text separates a paper's
+reported capabilities from general guarantees. Small CPU experiments and synthetic
+figures teach mechanisms; they do not claim to reproduce those large-model benchmarks.
 
 ## Deploying (Cloudflare Pages)
 
@@ -39,11 +82,11 @@ src/content/tutorials/zh-tw/<track>/<slug>.mdx
 Frontmatter (validated at build time, see `src/content.config.ts`):
 
 ```yaml
-title: Convolution & Image Filtering
+title: ML 03 · Convolution, Image Filtering and CNNs
 description: One sentence shown on cards and in search results.
-track: image-processing   # foundations | image-processing | classical-cv | ml | deep-learning
-order: 3                  # position within the track
-level: beginner           # beginner | intermediate | advanced
+track: ml                 # foundations | image-processing | pattern-recognition | ml | deep-learning | nlp
+order: 30                 # position within the track
+level: intermediate       # beginner | intermediate | advanced
 prereqs: [foundations/images-as-arrays]
 tags: [filtering, opencv]
 notebook: notebooks/image-processing/convolution.ipynb   # optional, adds "Open in Colab"

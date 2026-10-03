@@ -15,19 +15,21 @@ what changes under Quarto.
 ```
 Home
 ├── Learn (curriculum)                     /learn/
-│   ├── 0  Foundations                     /learn/foundations/
-│   │      images as arrays, color spaces, NumPy/OpenCV setup, linear algebra refresher
-│   ├── 1  Image Processing                /learn/image-processing/
+│   ├── 0  Foundations                     /learn/#foundations
+│   │      getting started, textbook selection, images as arrays
+│   ├── 1  Image Processing                /learn/#image-processing
 │   │      histograms, point ops, convolution & filtering, edges, morphology,
 │   │      frequency domain (FFT), geometric transforms, denoising
-│   ├── 2  Classical Computer Vision       /learn/classical-cv/
-│   │      corners & features (Harris, SIFT, ORB), matching, RANSAC, homography,
-│   │      camera model & calibration, stereo, optical flow, segmentation (graph/watershed)
-│   ├── 3  Machine Learning for Vision     /learn/ml/
-│   │      HOG + SVM, k-means / color quantization, PCA / eigenfaces, evaluation metrics
-│   └── 4  Deep Learning for Vision        /learn/deep-learning/
-│          CNN basics, training loop, ResNet, detection (YOLO/DETR), segmentation (U-Net, SAM),
-│          ViT, self-supervised (DINO/CLIP), diffusion, 3D (NeRF / Gaussian splatting)
+│   ├── 2  Pattern Recognition             /learn/#pattern-recognition
+│   │      Bayes decisions, densities, linear/kernel methods, features, context,
+│   │      clustering, inference, ensembles and evaluation; Theodoridis/Koutroumbas + Bishop
+│   ├── 3  ML/DL                           /learn/#ml
+│   │      mathematics, neural networks, merged filtering/CNNs, recurrence, transformers,
+│   │      representations, factor models, VAEs/GANs/flows, diffusion, AR, foundation models
+│   ├── 4  DL for Vision                   /learn/#deep-learning
+│   │      classification, detection, restoration, low light, tracking and world models
+│   └── 5  NLP                             /learn/#nlp
+│          tokenization, language modeling, transformers and a further reading roadmap
 ├── Blog (news, paper notes, opinion)      /blog/
 ├── Playground (all interactive demos)     /playground/
 ├── Tags                                   /tags/<tag>/
@@ -59,12 +61,12 @@ table of contents (right). On mobile, the side columns collapse into drawers.
 ## 4. Frontmatter schema (Astro content collection, Zod-validated)
 
 ```yaml
-# src/content/tutorials/image-processing/convolution.mdx
-title: "Convolution & Image Filtering"
-description: "Blur, sharpen, and detect edges with a 3×3 kernel."
-track: image-processing          # enum of the 5 tracks
-order: 3                          # position in track
-level: beginner                   # beginner | intermediate | advanced
+# src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx
+title: "ML 03 · Convolution, Image Filtering and CNNs"
+description: "From blur and Sobel kernels to learned filters and a small CNN classifier."
+track: ml                        # enum of the 6 tracks
+order: 30                         # position in track
+level: intermediate               # beginner | intermediate | advanced
 prereqs: [foundations/images-as-arrays]
 tags: [filtering, opencv, numpy]
 notebook: notebooks/image-processing/convolution.ipynb   # optional; renders Colab badge
@@ -95,7 +97,7 @@ Built so far: `ImageCompare`, `KernelPlayground`, `Figure`, `Callout`, prerequis
   reserved for code, math, and track identity.
 - **Typography:** Bricolage Grotesque (headings), Source Serif 4 (article prose), system UI font (interface), JetBrains Mono (code), KaTeX fonts (math).
 - **Track colors** (used for badges and progress bars only):
-  Foundations slate · Image Processing teal · Classical CV indigo · ML amber · DL rose.
+  Foundations slate · Image Processing teal · Pattern Recognition indigo · ML/DL amber · DL for Vision rose · NLP green.
 - **Themes:** light and dark via CSS tokens, following the OS setting with a manual toggle. Images get no
   inversion in dark mode, because pixel values matter in this subject.
 - See `design/mockup/` for a clickable prototype of the home page and tutorial page.

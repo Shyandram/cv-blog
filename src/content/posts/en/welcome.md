@@ -9,10 +9,10 @@ This site is a computer vision course you can read in order or dip into. It star
 
 ## How it is organized
 
-The **Learn** section has five tracks: Foundations, Image Processing, Classical Computer Vision, Machine Learning for Vision, and Deep Learning. Each tutorial lists its prerequisites, so you can always see what to read first.
+The **Learn** section has six tracks: Foundations, Image Processing, Pattern Recognition, ML/DL, DL for Vision, and NLP. Each tutorial lists its prerequisites, so you can always see what to read first.
 
 ## Running the code
 
-Every tutorial with code has a matching Jupyter notebook. Click **Open in Colab** at the top of the page to run it in your browser with no setup.
+Some tutorials provide a matching Jupyter notebook; others include standalone code blocks. When a notebook is available, click **Open in Colab** at the top of the page to run it in your browser.
 
 The blog, where this post lives, is for everything outside the curriculum: paper notes, tool reviews and longer essays.

@@ -4,7 +4,7 @@ import { glob } from 'astro/loaders';
 
 import { TRACKS, LEVELS } from './lib/taxonomy';
 
-// Entry ids look like "en/image-processing/convolution"; the first segment is the language.
+// Entry ids look like "en/ml/ml-03-convolutional-networks"; the first segment is the language.
 const tutorials = defineCollection({
   loader: glob({ pattern: '**/[^_]*.{md,mdx}', base: './src/content/tutorials' }),
   schema: ({ image }) =>

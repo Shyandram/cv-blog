@@ -4,6 +4,7 @@
 // frontmatter has the required tutorial/post fields. Exit code 1 on any error.
 import { compile } from '@mdx-js/mdx';
 import remarkMath from 'remark-math';
+import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import { readFileSync } from 'node:fs';
@@ -24,7 +25,7 @@ for (const file of process.argv.slice(2)) {
   try {
     const out = await compile(body, {
       format: file.endsWith('.md') ? 'md' : 'mdx',
-      remarkPlugins: [remarkGfm, remarkMath],
+      remarkPlugins: [remarkGfm, remarkMath, remarkCjkFriendly],
       rehypePlugins: [[rehypeKatex, { throwOnError: true, strict: false }]],
     });
     // rehype-katex reports bad formulas as file messages instead of throwing.

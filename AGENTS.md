@@ -104,7 +104,8 @@ only where they teach.
 
 **Links:** internal links are absolute with a trailing slash, e.g.
 `/en/learn/image-processing/dip-05-restoration-reconstruction/`; the target must exist. When you
-remove or rename a page, add a redirect in `astro.config.mjs` and update every link to it.
+remove or rename a page, add a redirect in **both** `astro.config.mjs` (fallback page) and
+`public/_redirects` (Cloudflare 301), and update every link to it.
 
 ## 4. Language
 
@@ -124,6 +125,9 @@ remove or rename a page, add a redirect in `astro.config.mjs` and update every l
 - Comments are `{/* ... */}`, never `<!-- -->`.
 - Multi-line math uses `\begin{aligned} ... \end{aligned}`.
 - Blank line before and after every component, list, table and display-math block.
+- Chinese bold/italic next to CJK punctuation (`**粗體**（…）`) works because `remark-cjk-friendly` is
+  enabled in both the site and `scripts/check-mdx.mjs`; do not add workaround spaces.
+- No CJK inside `\mathrm{}` or `\operatorname{}` (KaTeX warns); use `\text{位置}`.
 
 ## 6. Validation before committing
 
