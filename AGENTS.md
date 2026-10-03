@@ -104,8 +104,9 @@ only where they teach.
 
 **Links:** internal links are absolute with a trailing slash, e.g.
 `/en/learn/image-processing/dip-05-restoration-reconstruction/`; the target must exist. When you
-remove or rename a page, add a redirect in **both** `astro.config.mjs` (fallback page) and
-`public/_redirects` (Cloudflare 301), and update every link to it.
+remove or rename a page, add a redirect in `astro.config.mjs` (`redirects`) and update every link to
+it. Do **not** also add `public/_redirects`: Cloudflare's deploy step already turns the Astro redirects
+into 301 rules, and duplicate rules make the deploy fail ("Duplicate rule for path").
 
 ## 4. Language
 
