@@ -1,0 +1,768 @@
+---
+title: "ML 01C · Numerical Computation and Gradient Checks"
+description: "Floating point, overflow and underflow, stable softmax, conditioning, gradients, Jacobians and Hessians, Newton-type methods, KKT conditions and mixed precision: make the mathematical model survive actual computation."
+track: ml
+order: 16
+level: beginner
+prereqs: [ml/ml-01b-probability-information]
+tags: [numerical-computation, floating-point, softmax, optimization, hessian, kkt]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import fdError from '../../../../assets/ml/ml-01c-numerical-computation/finite-difference-error.png';
+import gdNewton from '../../../../assets/ml/ml-01c-numerical-computation/gd-vs-newton.png';
+import criticalPoints from '../../../../assets/ml/ml-01c-numerical-computation/critical-points.png';
+import lrStability from '../../../../assets/ml/ml-01c-numerical-computation/learning-rate-stability.png';
+import kktProjection from '../../../../assets/ml/ml-01c-numerical-computation/kkt-projection.png';
+
+## What you'll learn
+
+- How computers store real numbers, what machine epsilon means, and why float16, bfloat16, float32 and float64 behave differently.
+- Why exact formulas overflow, underflow or lose digits, and how to compute softmax, log-sum-exp and logistic losses stably.
+- What a condition number measures, and how ill-conditioning differs from an unstable algorithm.
+- How gradients, Jacobians and Hessians describe a loss surface, why gradient descent zigzags, and what Newton and quasi-Newton methods change.
+- How to handle constraints with projections, the generalized Lagrangian and the KKT conditions.
+- How to check derivatives, debug non-finite values and use mixed precision safely.
+
+## The big picture
+
+Machine learning is written in the language of real numbers, but computers do not have real numbers. They have a finite set of floating-point numbers, and every arithmetic operation rounds its result to one of them. Most of the time this rounding is invisible. Sometimes it is catastrophic: an exponential overflows to infinity, a tiny probability becomes exactly zero and its logarithm becomes minus infinity, or two nearly equal numbers are subtracted and almost all their significant digits disappear.
+
+The second half of the story is optimization. Training a model means minimizing a function of millions or billions of parameters, and we can only do that numerically, by taking many small steps guided by derivatives. How fast and how reliably those steps make progress depends on the shape of the loss surface — its slopes and its curvatures — and on how we take the steps. This chapter follows the "Numerical Computation" chapter of Goodfellow, Bengio and Courville [1], adds the floating-point details that modern low-precision training relies on, and connects each idea to small NumPy experiments.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a calculator that can show only seven digits. If you ask it for one million plus 0.1, it shows one million: the 0.1 fell off the screen. If you then subtract one million, you get zero instead of 0.1. Good numerical code arranges its steps so the important digits never fall off the screen. Optimization is a different game: you are blindfolded on a hilly field and want to reach the lowest point. You can feel the slope under your feet (the gradient) and, with more effort, how the ground curves (the Hessian). Numerical computation is about walking down safely without your calculator lying to you.
+</Callout>
+
+Read [ML 01B](/en/learn/ml/ml-01b-probability-information/) first if softmax and cross-entropy are new, and keep [ML 01A](/en/learn/ml/ml-01a-linear-algebra/) nearby for eigenvalues and the singular value decomposition. [ML 02](/en/learn/ml/ml-02-neural-networks/) then uses everything here to train neural networks.
+
+## Floating-point numbers
+
+**Plain version.** A floating-point number stores a sign, a few significant digits and a power of two. The *relative* spacing between neighbouring numbers is roughly constant, so a big number has a big absolute rounding error and a small number has a small one.
+
+### How a float is stored
+
+The IEEE 754 standard [3] defines binary floating-point formats used by essentially all CPUs and GPUs. A normal (non-special) number is stored as
+
+$$
+x = (-1)^{s}\times\left(1+\sum_{i=1}^{t} b_i\,2^{-i}\right)\times 2^{\,e},
+$$
+
+where $s\in\{0,1\}$ is the sign bit, $b_1,\dots,b_t\in\{0,1\}$ are the $t$ stored fraction bits of the significand (the leading 1 is implicit), and $e$ is an integer exponent restricted to a fixed range. Two numbers matter most:
+
+- **Machine epsilon** $\varepsilon_{\text{mach}}=2^{-t}$ is the gap between 1 and the next larger representable number.
+- **Unit roundoff** $u=\varepsilon_{\text{mach}}/2$ bounds the relative error of rounding to nearest: for any real $x$ in the normal range, the stored value is $\operatorname{fl}(x)=x(1+\delta)$ with $|\delta|\le u$.
+
+The standard also requires that each basic operation ($+,-,\times,\div,\sqrt{\cdot}$) is computed as if exactly and then rounded once: $\operatorname{fl}(a\circ b)=(a\circ b)(1+\delta)$, $|\delta|\le u$. This one rule is the foundation of rounding-error analysis [2], [4].
+
+Below the smallest normal number the format uses **subnormal** numbers, which give up leading precision to fill the gap down to zero gradually. Special values complete the picture: $\pm\infty$ for results that are too large, and **NaN** ("not a number") for invalid operations such as $0/0$, $\infty-\infty$ or $\infty\times0$. Once a NaN appears, almost every operation that touches it returns NaN, which is why a single bad value can poison a whole training run.
+
+### The four formats you will meet
+
+The table below was computed with `numpy.finfo` (and `torch.finfo` for bfloat16, which NumPy lacks). "Bits" lists sign/exponent/fraction.
+
+| Format | Bits | $\varepsilon_{\text{mach}}$ | Largest finite | Smallest normal | Smallest subnormal |
+|---|---|---|---|---|---|
+| float16 (IEEE half) | 1/5/10 | $9.77\times10^{-4}$ | $65504$ | $6.10\times10^{-5}$ | $5.96\times10^{-8}$ |
+| bfloat16 | 1/8/7 | $7.81\times10^{-3}$ | $3.39\times10^{38}$ | $1.18\times10^{-38}$ | $9.18\times10^{-41}$ |
+| float32 (single) | 1/8/23 | $1.19\times10^{-7}$ | $3.40\times10^{38}$ | $1.18\times10^{-38}$ | $1.40\times10^{-45}$ |
+| float64 (double) | 1/11/52 | $2.22\times10^{-16}$ | $1.80\times10^{308}$ | $2.23\times10^{-308}$ | $4.94\times10^{-324}$ |
+
+Read the table in two directions. The **exponent bits** set the *range*: float16 overflows above 65504, while bfloat16 keeps float32's 8 exponent bits and therefore its range. The **fraction bits** set the *precision*: float32 carries about 7 significant decimal digits, float64 about 16, float16 about 3, and bfloat16 only about 2. That trade-off — bfloat16's wide range with coarse precision versus float16's narrow range with finer precision — is the reason the two half-precision formats need different training recipes (see the mixed-precision section below and [5], [12]).
+
+```python
+import numpy as np
+
+for dtype in (np.float16, np.float32, np.float64):
+    info = np.finfo(dtype)
+    print(f"{info.dtype}: eps={float(info.eps):.3e}  max={float(info.max):.3e}  "
+          f"tiny={float(info.tiny):.3e}  subnormal={float(info.smallest_subnormal):.3e}")
+
+# Rounding: 1 + eps/2 rounds back to 1 in float32
+e = np.finfo(np.float32).eps
+print(np.float32(1) + np.float32(e/2) == np.float32(1))   # True
+print(np.float32(1) + np.float32(e) == np.float32(1))     # False
+
+# Addition is not associative
+a, b, c = np.float32(1e8), np.float32(-1e8), np.float32(1.0)
+print((a + b) + c, a + (b + c))                           # 1.0 0.0
+```
+
+The last line is worth pausing on. In exact arithmetic both orders give 1. In float32, $-10^8+1$ rounds back to $-10^8$ because the spacing between float32 numbers near $10^8$ is 8, so the 1 is lost. Consequences in practice: summing the same numbers in a different order — for example on a different number of GPUs, or with a different reduction kernel — can change the result in the last digits. This is a major source of run-to-run nondeterminism, and it is not a bug in your code [13].
+
+## Overflow, underflow and cancellation
+
+**Plain version.** Overflow means a result is too large to store; underflow means it is too small and becomes zero (or loses precision as a subnormal). Cancellation means subtracting nearly equal numbers, which keeps the rounding error but throws away the true signal.
+
+### Overflow and underflow
+
+The exponential is the usual culprit in machine learning. Because $\exp(z)$ exceeds the largest float32 once $z>\ln(3.40\times10^{38})\approx 88.7$, a logit of 100 overflows in float32 (and a logit of about 11.1 already overflows in float16, since $\ln 65504\approx 11.09$). In the other direction, $\exp(-110)\approx 1.7\times10^{-48}$ is below the smallest float32 subnormal and becomes exactly 0. Neither event raises an error by default; they produce `inf` and `0`, and the next operation turns them into `nan` or $-\infty$.
+
+```python
+import numpy as np
+
+with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+    print(np.exp(np.float32(100.0)))        # inf: overflow
+    print(np.exp(np.float32(-110.0)))       # 0.0: underflow
+    big = np.exp(np.float32(100.0))
+    print(big / big)                        # nan: inf / inf
+
+# Catastrophic cancellation and its cure
+x = 1e-10
+print(np.log(1 + x), np.log1p(x))           # roundoff vs accurate
+print(np.exp(x) - 1, np.expm1(x))
+
+# Variance: the one-pass formula cancels badly when the mean is large
+rng = np.random.default_rng(0)
+data = (1e4 + rng.normal(0, 1, 100_000)).astype(np.float32)
+one_pass = np.mean(data**2) - np.mean(data)**2
+two_pass = np.mean((data - data.mean())**2)
+print("one-pass:", one_pass, " two-pass:", two_pass)
+```
+
+On this machine the one-pass variance comes out as $-8.0$ — a negative variance — while the two-pass formula gives the correct value of about 1.0. The data have mean $10^4$ and variance 1, so $\mathbb E[X^2]\approx10^8$ and $(\mathbb E X)^2\approx10^8$; float32 can only resolve differences of about 8 at that magnitude, so the true difference of 1 is pure noise.
+
+### Why subtraction is the dangerous operation
+
+Suppose $\hat a=a(1+\delta_a)$ and $\hat b=b(1+\delta_b)$ are stored with relative errors $|\delta_a|,|\delta_b|\le u$. Even if the subtraction itself is exact,
+
+$$
+\frac{|(\hat a-\hat b)-(a-b)|}{|a-b|}
+=\frac{|a\delta_a-b\delta_b|}{|a-b|}
+\le u\,\frac{|a|+|b|}{|a-b|}.
+$$
+
+Here $a,b$ are the true values and $u$ is the unit roundoff. The factor $(|a|+|b|)/|a-b|$ is huge when $a\approx b$: the subtraction does not create error, it *reveals* the error already present in the inputs by removing the digits they shared. The cures are algebraic: rewrite the formula so the subtraction never happens. Examples you will use:
+
+- `log1p(x)` computes $\log(1+x)$ and `expm1(x)` computes $e^x-1$ accurately for small $x$, where the naive forms lose almost all digits (see the output above).
+- Variance: subtract the mean first (two-pass), or use Welford's streaming update.
+- Softmax and log-sum-exp: subtract the maximum first, as the next section shows.
+- Distances: $\lVert x-y\rVert^2=\lVert x\rVert^2+\lVert y\rVert^2-2x^\top y$ is fast but cancels badly when $x\approx y$; clamp it at zero or compute $x-y$ directly when accuracy matters.
+
+## Stable softmax and log-sum-exp
+
+**Plain version.** Subtract a shared constant before exponentiating, and compute logarithms of probabilities directly instead of first creating tiny probabilities and then taking their logarithm.
+
+The softmax turns a vector of logits $z\in\mathbb R^K$ into probabilities:
+
+$$
+\operatorname{softmax}(z)_i=\frac{\exp(z_i)}{\sum_{j=1}^{K}\exp(z_j)},\qquad i=1,\dots,K.
+$$
+
+It is invariant to adding the same constant $c$ to every logit, because the factor $\exp(c)$ cancels between numerator and denominator. Choose $c=-m$ with $m=\max_i z_i$:
+
+$$
+p_i=\frac{\exp(z_i-m)}{\sum_j\exp(z_j-m)}.
+$$
+
+Now every exponent is $\le0$, so nothing overflows, and the largest term is exactly $\exp(0)=1$, so the denominator is at least 1 and cannot underflow to zero. The same trick stabilizes the **log-sum-exp** function,
+
+$$
+\operatorname{LSE}(z)=\log\sum_j\exp(z_j)=m+\log\sum_j\exp(z_j-m),
+\qquad \log p_i=z_i-\operatorname{LSE}(z).
+$$
+
+LSE is a smooth version of the maximum: $\max_i z_i\le\operatorname{LSE}(z)\le\max_i z_i+\log K$. Its gradient is exactly the softmax, $\partial\operatorname{LSE}/\partial z_i=p_i$.
+
+For a target class $y$, the cross-entropy loss is $-\log p_y=\operatorname{LSE}(z)-z_y$, and its gradient with respect to the logits is the famously simple $p-e_y$, where $e_y$ is the one-hot vector of the target. Computing `softmax` first and then `log` can still fail: if $p_y$ underflows to 0, its logarithm is $-\infty$ even though $\operatorname{LSE}(z)-z_y$ is a perfectly ordinary finite number. This is why frameworks provide fused `log_softmax` and `cross_entropy` functions that take logits.
+
+### Code: logits that overflow naive exponentiation
+
+This standalone NumPy example checks stable probabilities, log probabilities and invariance to shifting logits.
+
+```python
+import numpy as np
+
+def logsumexp(z):
+    m = np.max(z)
+    return m + np.log(np.exp(z-m).sum())
+def logsoftmax(z):
+    return z-logsumexp(z)
+
+z = np.array([1000., 1001., 999.], dtype=np.float64)
+logp = logsoftmax(z)
+p = np.exp(logp)
+assert np.allclose(p.sum(), 1)
+assert np.allclose(logsoftmax(z+12345), logp)
+print("probabilities:", p)
+print("cross-entropy for class 1:", -logp[1])
+with np.errstate(over="ignore", invalid="ignore"):
+    naive = np.exp(z) / np.exp(z).sum()
+print("naive softmax:", naive)
+```
+
+The stable version prints probabilities $[0.245, 0.665, 0.090]$ and a cross-entropy of $0.408$ nats for class 1; the naive version prints `[nan nan nan]`, because $\exp(1000)$ overflows even in float64 (whose limit is $\exp(709.78)$).
+
+### Stable logistic (binary cross-entropy) loss
+
+Binary classification has the same issue in a different form. With logit $z$, label $y\in\{0,1\}$ and sigmoid $\sigma(z)=1/(1+e^{-z})$, the loss $-y\log\sigma(z)-(1-y)\log(1-\sigma(z))$ simplifies algebraically to
+
+$$
+\ell(z,y)=\operatorname{softplus}(z)-yz,\qquad
+\operatorname{softplus}(z)=\log(1+e^{z})=\max(z,0)+\log\!\left(1+e^{-|z|}\right).
+$$
+
+The right-hand form never exponentiates a positive number, and `log1p` keeps the small correction accurate. Prefer `binary_cross_entropy_with_logits` to a hand-built sigmoid followed by a logarithm.
+
+```python
+import numpy as np
+
+def bce_naive(z, y):
+    s = 1 / (1 + np.exp(-z))
+    return -(y*np.log(s) + (1-y)*np.log(1-s))
+
+def bce_stable(z, y):
+    # softplus(z) - y*z, with softplus(z) = max(z,0) + log1p(exp(-|z|))
+    return np.maximum(z, 0) + np.log1p(np.exp(-np.abs(z))) - y*z
+
+z = np.array([-800., -30., 0., 30., 800.])
+y = np.array([1., 1., 0., 0., 0.])
+with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+    print("naive :", bce_naive(z, y))
+print("stable:", bce_stable(z, y))
+```
+
+The naive version returns `inf` for the two confident mistakes ($z=\pm800$) and $30.001$ instead of $30.000$ at $z=30$, because $1-\sigma(30)$ is computed by cancellation. The stable version returns $800$, $30$, $\log 2$, $30$ and $800$ — the correct values.
+
+## Poor conditioning
+
+**Plain version.** Some problems are inherently sensitive: a tiny change in the input produces a large change in the answer, no matter how carefully you compute. The **condition number** measures that sensitivity.
+
+### Condition number of a linear system
+
+Consider solving $Ax=b$ for a square invertible matrix $A$. If the data change to $b+\delta b$, the solution changes to $x+\delta x$ with
+
+$$
+\frac{\lVert\delta x\rVert}{\lVert x\rVert}\le\kappa(A)\,\frac{\lVert\delta b\rVert}{\lVert b\rVert},
+\qquad
+\kappa(A)=\lVert A\rVert\,\lVert A^{-1}\rVert=\frac{\sigma_{\max}(A)}{\sigma_{\min}(A)}\ \text{(2-norm)}.
+$$
+
+Here $\lVert\cdot\rVert$ is the Euclidean vector norm and its induced matrix norm, and $\sigma_{\max},\sigma_{\min}$ are the largest and smallest singular values of $A$. For a symmetric positive-definite matrix, singular values equal eigenvalues and $\kappa=\lambda_{\max}/\lambda_{\min}$. Goodfellow et al. state the same idea for the function $f(x)=A^{-1}x$ with an eigendecomposition: its condition number is $\max_{i,j}|\lambda_i/\lambda_j|$ [1]. A practical rule of thumb: with $\kappa\approx10^{k}$, expect to lose about $k$ decimal digits of accuracy relative to the precision of your inputs [4].
+
+```python
+import numpy as np
+
+A = np.array([[1.0, 1.0],
+              [1.0, 1.0001]])
+print("condition number:", np.linalg.cond(A))
+
+b = np.array([2.0, 2.0001])
+x = np.linalg.solve(A, b)
+db = np.array([0.0, 0.0001])                 # tiny change in the data
+x2 = np.linalg.solve(A, b + db)
+rel_in = np.linalg.norm(db) / np.linalg.norm(b)
+rel_out = np.linalg.norm(x2 - x) / np.linalg.norm(x)
+print("x:", x, " x after perturbation:", x2)
+print(f"relative change in b: {rel_in:.1e}, in x: {rel_out:.1e}, "
+      f"amplification: {rel_out/rel_in:.0f}")
+```
+
+The two columns of $A$ are almost identical, $\kappa(A)\approx 4\times10^{4}$, and a relative change of $3.5\times10^{-5}$ in $b$ moves the solution from $(1,1)$ to $(0,2)$ — a 100% change, an amplification of about 28,000, within the bound $\kappa$. Nothing was computed wrongly. The *problem* is ill-conditioned.
+
+### Ill-conditioned problem versus unstable algorithm
+
+Keep two ideas apart:
+
+- An **ill-conditioned problem** amplifies small changes in its input. No algorithm can fix that; you need better data, regularization (which changes the problem) or a reformulation.
+- An **unstable algorithm** adds avoidable error to a problem that may be perfectly well conditioned. The naive softmax and the one-pass variance are unstable algorithms; changing the algorithm fixes them.
+
+Least squares shows both. If features are nearly collinear, the coefficients are ill-conditioned (the problem). Solving the normal equations $X^\top Xw=X^\top y$ makes things worse than necessary because $\kappa(X^\top X)=\kappa(X)^2$ (the algorithm); a QR- or SVD-based solver works with $X$ directly. Ridge regression, which adds $\lambda\lVert w\rVert^2$, changes the problem to $(X^\top X+\lambda I)w=X^\top y$, whose condition number $(\sigma_{\max}^2+\lambda)/(\sigma_{\min}^2+\lambda)$ is smaller — a theme [ML 01A](/en/learn/ml/ml-01a-linear-algebra/) develops further.
+
+## Gradient-based optimization
+
+**Plain version.** To minimize a function, look at its slope and step downhill. The gradient points uphill most steeply, so step in the opposite direction, with a step size small enough that the slope you measured is still roughly valid.
+
+### Derivatives, gradients and directional derivatives
+
+We minimize an **objective** (also called cost, loss or error) function $f:\mathbb R^n\to\mathbb R$. For one variable, the derivative $f'(x)$ gives the first-order approximation $f(x+\epsilon)\approx f(x)+\epsilon f'(x)$, so moving a small step against the sign of $f'(x)$ decreases $f$. For many variables, the **gradient** $\nabla_x f(x)\in\mathbb R^n$ collects the partial derivatives $\partial f/\partial x_i$. The **directional derivative** in a unit direction $u$ is the slope along $u$:
+
+$$
+\frac{\partial}{\partial\alpha}f(x+\alpha u)\Big|_{\alpha=0}=u^\top\nabla_x f(x)=\lVert\nabla_x f(x)\rVert_2\cos\theta,
+$$
+
+where $\theta$ is the angle between $u$ and the gradient. It is most negative when $\theta=\pi$, that is, when $u$ points along $-\nabla_x f(x)$. This is the **method of steepest descent**, or **gradient descent**:
+
+$$
+x\leftarrow x-\eta\,\nabla_x f(x),
+$$
+
+with **learning rate** (step size) $\eta>0$. You can pick $\eta$ as a small constant, try several values and keep the one with the lowest objective (a **line search**), or follow a schedule. Gradient descent converges when every element of the gradient is (close to) zero.
+
+### Critical points: minima, maxima and saddles
+
+Points where $\nabla_x f(x)=0$ are **critical** or **stationary points**. A **local minimum** is lower than all neighbouring points, a **local maximum** is higher, and a **saddle point** is neither: it is a minimum along some directions and a maximum along others. A **global minimum** has the lowest value anywhere; a function can have several global minima and many local minima that are not global.
+
+For deep networks we rarely find a true global minimum, and we do not need to. We settle for parameters with a low enough loss that generalize well. In high dimensions, saddle points rather than poor local minima are the more common critical points of many random-like functions, and they can slow gradient-based optimizers because the gradient becomes small near them [8]. Figure 1 shows the three kinds of critical point.
+
+<Figure src={criticalPoints} alt="Three surfaces: a bowl (minimum), an upside-down bowl (maximum) and a saddle, each with a red dot at the origin where the gradient is zero." caption="Figure 1 — Three functions with zero gradient at the origin. The Hessian's eigenvalues distinguish them: all positive (minimum), all negative (maximum), mixed signs (saddle)." />
+
+## Jacobian and Hessian matrices
+
+**Plain version.** The Jacobian collects all first derivatives of a vector-valued function. The Hessian collects all second derivatives of a scalar function: it tells you how the slope itself changes, which is curvature.
+
+### Definitions
+
+For a function $f:\mathbb R^m\to\mathbb R^n$, the **Jacobian** $J\in\mathbb R^{n\times m}$ has entries
+
+$$
+J_{ij}=\frac{\partial f_i(x)}{\partial x_j},\qquad i=1,\dots,n,\ j=1,\dots,m.
+$$
+
+Row $i$ is the gradient of output $f_i$. Backpropagation is repeated multiplication by Jacobians; reverse-mode automatic differentiation computes vector–Jacobian products $v^\top J$ without ever forming $J$, which is why a gradient costs only a small constant multiple of one function evaluation [11].
+
+For a scalar function $f:\mathbb R^n\to\mathbb R$, the **Hessian** $H(f)(x)\in\mathbb R^{n\times n}$ is the Jacobian of the gradient:
+
+$$
+H(f)(x)_{ij}=\frac{\partial^2 f(x)}{\partial x_i\,\partial x_j}.
+$$
+
+Wherever the second partial derivatives are continuous, the order of differentiation does not matter, so $H_{ij}=H_{ji}$: the Hessian is symmetric. A real symmetric matrix has real eigenvalues $\lambda_1,\dots,\lambda_n$ and an orthonormal basis of eigenvectors $v_1,\dots,v_n$. The **second derivative in a unit direction** $d$ is $d^\top Hd$. If $d$ is an eigenvector $v_i$, it equals $\lambda_i$; for other directions it is a weighted average $\sum_i\lambda_i(d^\top v_i)^2$ of the eigenvalues, with weights between 0 and 1 that sum to 1. So $\lambda_{\max}$ is the largest curvature in any direction and $\lambda_{\min}$ the smallest.
+
+### What a gradient step really does: second-order Taylor expansion
+
+Write $g=\nabla_x f(x^{(0)})$ and $H=H(f)(x^{(0)})$. The second-order Taylor approximation around $x^{(0)}$ is
+
+$$
+f(x)\approx f(x^{(0)})+(x-x^{(0)})^\top g+\tfrac12(x-x^{(0)})^\top H(x-x^{(0)}).
+$$
+
+Substituting a gradient step $x=x^{(0)}-\eta g$ gives
+
+$$
+f(x^{(0)}-\eta g)\approx f(x^{(0)})-\eta\,g^\top g+\tfrac12\eta^2\,g^\top Hg.
+$$
+
+The three terms are the current value, the improvement predicted by the slope, and a correction for curvature. If $g^\top Hg\le0$, the approximation keeps decreasing as $\eta$ grows (until the approximation itself stops being valid). If $g^\top Hg\gt 0$, the curvature term eventually wins, and the approximation is minimized at
+
+$$
+\eta^*=\frac{g^\top g}{g^\top Hg}.
+$$
+
+In the worst case, $g$ is aligned with the eigenvector of $\lambda_{\max}$ and $\eta^*=1/\lambda_{\max}$. Large curvature forces small steps.
+
+### The second derivative test
+
+At a critical point ($g=0$) the Taylor expansion reduces to the quadratic term, so the Hessian decides what kind of point it is:
+
+- $H$ **positive definite** (all $\lambda_i\gt 0$): local minimum.
+- $H$ **negative definite** (all $\lambda_i\lt 0$): local maximum.
+- $H$ has at least one positive and at least one negative eigenvalue: **saddle point**.
+- Otherwise (some $\lambda_i=0$ and the rest of one sign) the test is inconclusive.
+
+In one dimension a saddle cannot exist; in $n$ dimensions it needs only one eigenvalue of the "wrong" sign, which is why saddles become so common as $n$ grows [8].
+
+### Condition number of the Hessian: why gradient descent zigzags
+
+On the quadratic $f(w)=\tfrac12 w^\top Hw$ with $H$ symmetric positive definite, gradient descent is linear: $w\leftarrow(I-\eta H)w$. Expanding $w$ in the eigenvectors of $H$, the component along $v_i$ is multiplied by $(1-\eta\lambda_i)$ at every step. Therefore:
+
+- The iteration is **stable** only if $|1-\eta\lambda_i|\lt 1$ for every $i$, that is, $0\lt\eta\lt 2/\lambda_{\max}$.
+- The **slowest** direction is the flat one, contracting by $|1-\eta\lambda_{\min}|$ per step.
+- The best fixed step, $\eta=2/(\lambda_{\max}+\lambda_{\min})$, contracts the error by $(\kappa-1)/(\kappa+1)$ per step, with $\kappa=\lambda_{\max}/\lambda_{\min}$ the condition number of the Hessian.
+
+So a large condition number means one direction wants tiny steps (or it diverges) while another direction needs many steps to make progress. Gradient descent wastes its time bouncing across the steep walls of a narrow valley — the zigzag in Figure 2 — while creeping along the valley floor. Badly scaled input features produce exactly this situation, which is one reason standardization and normalization layers speed up training.
+
+<Figure src={gdNewton} alt="Three panels of the same elongated elliptical contours. Top: fixed-step gradient descent zigzags across the valley. Middle: gradient descent with exact line search makes right-angle turns. Bottom: Newton's method reaches the minimum in one straight step." caption="Figure 2 — Minimizing a quadratic with Hessian condition number 20. Gradient descent with a step close to the stability limit oscillates across the steep direction; exact line search makes successive steps orthogonal; Newton's method rescales by the inverse Hessian and reaches the minimum of a quadratic in one step." />
+
+Figure 3 shows the stability limit numerically. Below $2/\lambda_{\max}$ the loss decreases; just above it the steep component grows by a factor $|1-\eta\lambda_{\max}|\gt 1$ every step and the loss explodes.
+
+<Figure src={lrStability} alt="Loss versus iteration on a log scale for four step sizes. Three curves decrease; the curve for 1.02 times the limit grows steadily." caption="Figure 3 — Fixed-step gradient descent on a quadratic with eigenvalues 1 and 10. Step sizes below 2/λmax converge (fastest near 2/(λmax+λmin)); a step just 2% above the limit diverges." />
+
+```python
+import numpy as np
+
+H = np.diag([1.0, 25.0])                     # Hessian: condition number 25
+f = lambda w: 0.5 * w @ H @ w
+grad = lambda w: H @ w
+
+def run_gd(eta, steps=50):
+    w = np.array([10.0, 1.0])
+    for _ in range(steps):
+        w = w - eta * grad(w)
+    return f(w)
+
+lam_max = np.linalg.eigvalsh(H).max()
+for eta in (0.01, 0.07, 0.079, 0.081):       # stability limit 2/25 = 0.08
+    print(f"eta={eta:<6} loss after 50 steps: {run_gd(eta):.3e}")
+
+# Exact line search along -g for a quadratic: eps* = g'g / g'Hg
+w = np.array([10.0, 1.0])
+g = grad(w)
+eps_star = (g @ g) / (g @ H @ g)
+print("optimal step along the gradient:", round(eps_star, 4))
+
+# One Newton step lands on the minimizer of a quadratic
+w_newton = w - np.linalg.solve(H, g)
+print("after one Newton step:", w_newton)
+```
+
+The output shows the whole story: $\eta=0.01$ is stable but slow (loss $18.3$ after 50 steps), $\eta=0.07$ reaches $0.035$, $\eta=0.079$ is barely stable and the steep component still oscillates (loss about $1.0$), and $\eta=0.081$ diverges (loss $148$). The optimal step along the first gradient is $0.046$, and one Newton step lands exactly on $(0,0)$.
+
+## Second-order methods
+
+**Plain version.** Instead of following the slope alone, use the curvature as well: divide the step by how sharply the function curves in each direction, so steep directions get small steps and flat directions get large ones.
+
+### Newton's method
+
+Setting the gradient of the second-order Taylor approximation to zero gives the **Newton step**
+
+$$
+x^{*}=x^{(0)}-H(f)(x^{(0)})^{-1}\,\nabla_x f(x^{(0)}).
+$$
+
+On a positive-definite quadratic this jumps to the minimum in one step (Figure 2, bottom). On a general function that is locally close to a positive-definite quadratic, iterating the update converges much faster than gradient descent — quadratically near the solution, under standard assumptions [6]. The cost is the Hessian: storing it takes $O(n^2)$ memory and solving with it $O(n^3)$ time, impossible for a network with $10^8$ parameters.
+
+There is also a more fundamental problem for non-convex objectives. Newton's method finds a point where the *gradient* vanishes, and it treats a saddle the same way as a minimum: near a saddle, the Newton step points *toward* it. In a landscape full of saddles, plain Newton is attracted to exactly the points we want to escape. Dauphin et al. proposed a "saddle-free Newton" method that rescales by the absolute values of the Hessian eigenvalues to avoid this [8]. Gradient descent, by contrast, is not attracted to saddles in the same way, although it can move slowly near them.
+
+### Quasi-Newton methods and L-BFGS
+
+**Quasi-Newton** methods build an approximation $B_k\approx H$ (or of its inverse) from gradients alone. After a step $s_k=x_{k+1}-x_k$ with gradient change $y_k=\nabla f(x_{k+1})-\nabla f(x_k)$, they require the **secant condition** $B_{k+1}s_k=y_k$, which says the model's curvature along the step matches the observed change in slope. BFGS is the most widely used update of this kind; **L-BFGS** (limited-memory BFGS) stores only the last $m$ pairs $(s_k,y_k)$ and applies the inverse-Hessian approximation implicitly in $O(mn)$ time [6], [10]. L-BFGS is excellent for smooth, deterministic, medium-sized problems (logistic regression, style transfer on one image, fitting a few thousand parameters); its curvature estimates suffer when gradients are noisy mini-batch estimates.
+
+### Hessian-vector products
+
+Many curvature-aware methods never need $H$ itself, only products $Hv$. These can be computed exactly at roughly the cost of a couple of gradient evaluations, because $Hv=\nabla_x\big(\nabla_x f(x)^\top v\big)$ is the gradient of a scalar; Pearlmutter showed how to do this with automatic differentiation [9]. A finite-difference version, $Hv\approx[\nabla f(x+rv)-\nabla f(x-rv)]/(2r)$, is a useful check. Power iteration with Hessian-vector products estimates $\lambda_{\max}$, which is how researchers track the sharpness of the loss during training.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+X = rng.normal(size=(50, 4))
+y = (rng.random(50) < 0.5).astype(float)
+
+def grad(w):                                   # logistic regression, mean loss
+    p = 1 / (1 + np.exp(-(X @ w)))
+    return X.T @ (p - y) / len(y)
+
+def hessian(w):
+    p = 1 / (1 + np.exp(-(X @ w)))
+    return (X.T * (p * (1 - p))) @ X / len(y)
+
+w = rng.normal(size=4)
+v = rng.normal(size=4)
+r = 1e-5
+hvp_fd = (grad(w + r*v) - grad(w - r*v)) / (2*r)   # never forms H
+print("Hv (finite diff):", hvp_fd.round(6))
+print("Hv (explicit)   :", (hessian(w) @ v).round(6))
+print("eigenvalues of H:", np.linalg.eigvalsh(hessian(w)).round(4))
+```
+
+Both products agree to six decimals, and all Hessian eigenvalues are positive: logistic regression is convex, so its Hessian is positive semidefinite everywhere.
+
+### Lipschitz continuity and convexity
+
+Deep-learning objectives come with few guarantees, but two properties explain much of the theory. A function is **Lipschitz continuous** with constant $L$ if $|f(x)-f(y)|\le L\lVert x-y\rVert_2$ for all $x,y$: its rate of change is bounded. When the *gradient* is $L$-Lipschitz (the function is "$L$-smooth"), the curvature is bounded by $L$, and a gradient step with $\eta\le1/L$ is guaranteed not to increase the function:
+
+$$
+f\big(x-\eta\nabla f(x)\big)\le f(x)-\tfrac{\eta}{2}\lVert\nabla f(x)\rVert_2^2\qquad(0\lt\eta\le1/L).
+$$
+
+This is the general form of the "$\eta\lt 2/\lambda_{\max}$" rule above, and it is the starting point of most convergence proofs [7], [14].
+
+A function is **convex** if its Hessian is positive semidefinite everywhere (for twice-differentiable functions). Convex functions have no saddles and no spurious local minima: every local minimum is global. Least squares, logistic regression and support vector machines are convex; deep networks are not. Convex optimization is the source of many tools, such as duality and the KKT conditions below, that deep learning borrows [7].
+
+## Constrained optimization
+
+**Plain version.** Sometimes the answer must lie in an allowed region — weights with bounded norm, probabilities that sum to one, a physical quantity that must be positive. Either step and then project back into the region, or add a penalty for each constraint whose strength is chosen automatically.
+
+### Projected gradient descent
+
+We want to minimize $f(x)$ over a feasible set $\mathbb S\subseteq\mathbb R^n$. When projecting onto $\mathbb S$ is easy, take a normal gradient step and then return to the nearest feasible point:
+
+$$
+x\leftarrow\operatorname{Proj}_{\mathbb S}\big(x-\eta\nabla f(x)\big),\qquad
+\operatorname{Proj}_{\mathbb S}(v)=\arg\min_{x\in\mathbb S}\lVert x-v\rVert_2.
+$$
+
+For the Euclidean ball $\{x:\lVert x\rVert_2\le r\}$ the projection is $v\cdot\min(1,r/\lVert v\rVert_2)$: rescale if too long. Max-norm constraints on weights, clipping parameters into a box, and projecting onto the probability simplex all follow this pattern. Another option is to reparameterize so the constraint holds automatically, for example $x=r\,(\cos\theta,\sin\theta)$ for a vector on a circle, or a softmax to produce probabilities.
+
+### The generalized Lagrangian
+
+A more general approach describes the feasible set with $m$ equality constraints $g^{(i)}(x)=0$ and $k$ inequality constraints $h^{(j)}(x)\le0$:
+
+$$
+\mathbb S=\{x\mid g^{(i)}(x)=0\ \forall i,\ h^{(j)}(x)\le0\ \forall j\}.
+$$
+
+Introduce one **KKT multiplier** for each constraint, $\lambda_i$ for equalities and $\alpha_j$ for inequalities, and define the **generalized Lagrangian**
+
+$$
+L(x,\lambda,\alpha)=f(x)+\sum_{i=1}^{m}\lambda_i\,g^{(i)}(x)+\sum_{j=1}^{k}\alpha_j\,h^{(j)}(x).
+$$
+
+The constrained problem is equivalent to the unconstrained min–max problem
+
+$$
+\min_x\ \max_{\lambda}\ \max_{\alpha,\ \alpha\ge0}\ L(x,\lambda,\alpha).
+$$
+
+Why does this work? If $x$ violates a constraint, the inner maximization can drive $L$ to $+\infty$ by choosing a large multiplier, so infeasible points are never chosen. If $x$ is feasible, the best the inner maximization can do is set the terms to zero (equalities are already 0; for $h^{(j)}(x)\le0$ the best non-negative $\alpha_j$ makes $\alpha_jh^{(j)}(x)=0$), so the value is exactly $f(x)$ [1].
+
+### The KKT conditions
+
+At a solution $x^*$ (under mild regularity conditions called constraint qualifications), there exist multipliers satisfying the **Karush–Kuhn–Tucker (KKT) conditions** [1], [7]:
+
+1. **Stationarity:** $\nabla_x L(x^*,\lambda^*,\alpha^*)=0$.
+2. **Primal feasibility:** all constraints hold at $x^*$.
+3. **Dual feasibility:** $\alpha^*\ge0$.
+4. **Complementary slackness:** $\alpha_j^*\,h^{(j)}(x^*)=0$ for every $j$.
+
+Complementary slackness says each inequality is either **active** ($h^{(j)}(x^*)=0$: the solution sits on the boundary and the constraint pushes back with $\alpha_j\ge0$) or **inactive** ($h^{(j)}(x^*)\lt 0$: the constraint does not matter locally and $\alpha_j=0$). Geometrically, stationarity says that at an active constraint the downhill direction $-\nabla f$ points straight out of the feasible set, parallel to $\nabla h$; any feasible move would go uphill (Figure 4). For convex problems the KKT conditions are also sufficient for optimality [7].
+
+<Figure src={kktProjection} alt="Elliptical contours of a quadratic whose minimum lies outside a shaded unit disk. A projected gradient path moves from inside the disk to the boundary point closest in objective value, where the negative gradient and the constraint normal point in the same direction." caption="Figure 4 — Minimizing a quadratic over the unit disk. The unconstrained minimum (star) is infeasible. Projected gradient descent stops on the boundary at w*, where −∇f is parallel to the outward normal ∇g of the constraint: the KKT stationarity condition with a positive multiplier." />
+
+### Worked example: least squares with a norm constraint
+
+Following the example in [1], minimize the squared error $f(w)=\lVert Aw-b\rVert_2^2$, with $A\in\mathbb R^{N\times n}$ and $b\in\mathbb R^N$, subject to $h(w)=w^\top w-r^2\le0$. The Lagrangian is
+
+$$
+L(w,\alpha)=\lVert Aw-b\rVert_2^2+\alpha\,(w^\top w-r^2).
+$$
+
+Stationarity gives $2A^\top(Aw-b)+2\alpha w=0$, so
+
+$$
+w(\alpha)=(A^\top A+\alpha I)^{-1}A^\top b.
+$$
+
+This is ridge regression with penalty $\alpha$. If the ordinary least-squares solution $w(0)$ already satisfies $\lVert w\rVert\le r$, the constraint is inactive, $\alpha^*=0$, and we are done. Otherwise the constraint is active, and we increase $\alpha$ until $\lVert w(\alpha)\rVert=r$; because $\lVert w(\alpha)\rVert$ decreases monotonically in $\alpha$, a bisection finds it. This is also how the inner maximization over $\alpha$ behaves: the multiplier grows while the constraint is violated and stops when it is just satisfied. The code solves the problem both ways and checks all four KKT conditions.
+
+```python
+import numpy as np
+
+# minimize ||Aw - b||^2  subject to  ||w||^2 <= r^2
+rng = np.random.default_rng(1)
+A = rng.normal(size=(30, 5))
+b = rng.normal(size=30)
+r = 0.2
+
+def w_of(lam):                                # stationarity of the Lagrangian
+    return np.linalg.solve(A.T @ A + lam * np.eye(5), A.T @ b)
+
+w_ls = w_of(0.0)
+print("unconstrained norm:", np.linalg.norm(w_ls).round(3))
+
+lo, hi = 0.0, 1e6                             # find lambda with ||w|| = r
+for _ in range(200):
+    mid = 0.5 * (lo + hi)
+    if np.linalg.norm(w_of(mid)) > r:
+        lo = mid
+    else:
+        hi = mid
+lam = hi
+w = w_of(lam)
+print("lambda:", round(lam, 3), " ||w||:", np.linalg.norm(w).round(6))
+
+# KKT checks
+stationarity = 2 * A.T @ (A @ w - b) + 2 * lam * w
+print("stationarity residual:", np.abs(stationarity).max())
+print("primal feasible:", w @ w <= r**2 + 1e-9, " dual feasible:", lam >= 0)
+print("complementary slackness:", lam * (w @ w - r**2))
+
+# Projected gradient descent reaches the same point
+L = 2 * np.linalg.eigvalsh(A.T @ A).max()     # Lipschitz constant of the gradient
+v = np.zeros(5)
+for _ in range(5000):
+    v = v - (1 / L) * 2 * A.T @ (A @ v - b)
+    n = np.linalg.norm(v)
+    if n > r:
+        v = v * (r / n)                       # projection onto the ball
+print("projected GD matches KKT solution:", np.allclose(v, w, atol=1e-6))
+```
+
+The unconstrained solution has norm $0.219$, larger than $r=0.2$, so the constraint is active. Bisection finds $\alpha^*\approx1.81$, the stationarity residual is about $10^{-15}$, complementary slackness holds, and projected gradient descent with step $1/L$ converges to the same vector. Note how $L$, the Lipschitz constant of the gradient, sets a safe step size, exactly as in the previous section.
+
+## Checking derivatives
+
+**Plain version.** Check that the gradient your code computes matches how the loss actually changes when you nudge the parameters.
+
+A central finite difference estimates a partial derivative,
+
+$$
+\frac{\partial f}{\partial x_j}
+\approx\frac{f(x+\epsilon e_j)-f(x-\epsilon e_j)}{2\epsilon},
+$$
+
+where $e_j$ is the $j$-th standard basis vector and $\epsilon\gt 0$ a small step. Its **truncation error** (from ignoring higher-order Taylor terms) is $O(\epsilon^2)$, better than the $O(\epsilon)$ of the forward difference $[f(x+\epsilon e_j)-f(x)]/\epsilon$. But the numerator subtracts two nearly equal numbers, so its **roundoff error** grows like $u\,|f|/\epsilon$. The total error is smallest at an intermediate step — roughly $\epsilon\approx u^{1/3}$ for central differences and $u^{1/2}$ for forward differences, when $f$ and its derivatives have unit scale. Figure 5 shows the resulting V-shaped curves, and why float32 gradient checks are much less precise than float64 ones.
+
+<Figure src={fdError} alt="Log-log plot of derivative error versus step size for forward and central differences in float32 and float64. Each curve falls with smaller steps, reaches a minimum and then rises again as roundoff dominates; float64 reaches much smaller errors than float32." caption="Figure 5 — Error of finite-difference derivatives of sin(x) at x=1. Right of each minimum, truncation error dominates (slope 1 for forward, 2 for central differences); left of it, roundoff dominates. Central differences bottom out around 1e−6 in float32 but around 1e−11 or lower in float64." />
+
+Practical rules: use float64 for checks; try several step sizes; compare with a relative error such as $|a-n|/\max(|a|,|n|,\text{tiny})$; and test at smooth points. ReLU exactly at zero is not differentiable, so there is no single derivative to match there. For many parameters, a **directional check** is cheaper: choose a random unit vector $v$ and compare $\nabla f(w)^\top v$ with a finite difference along $v$ — one pair of function evaluations instead of $2n$.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+X = rng.normal(size=(20, 5))
+y = rng.normal(size=20)
+w = rng.normal(size=5)
+v = rng.normal(size=5)
+v /= np.linalg.norm(v)
+def loss(w):
+    return .5*np.mean((X@w-y)**2)
+grad = X.T@(X@w-y)/len(y)
+eps = 1e-5
+numeric = (loss(w+eps*v)-loss(w-eps*v))/(2*eps)
+analytic = grad@v
+assert np.allclose(numeric, analytic, rtol=1e-6, atol=1e-8)
+print("directional derivative:", numeric, analytic)
+```
+
+The two numbers agree to about nine significant digits. Remember what a passing check means. Automatic differentiation computes derivatives of the *recorded program*, not of the program you intended [11]. A detached tensor, a wrong reduction, accidental broadcasting or target leakage produces a perfectly differentiable but incorrect objective, and a gradient check will happily confirm its gradient. Check the loss values themselves on cases where you know the answer.
+
+## Mixed precision
+
+**Plain version.** Doing most arithmetic in 16-bit numbers halves memory traffic and uses fast hardware units, but 16 bits are not enough for everything. Keep a few sensitive quantities in 32 bits.
+
+Mixed-precision training, as introduced by Micikevicius et al. [12], combines three ideas:
+
+1. Keep a **float32 master copy of the weights**. An update smaller than about $2^{-11}$ times the weight it is added to rounds away entirely in float16 (the same effect as $1+\varepsilon_{\text{mach}}/2=1$ above), and many updates are that small.
+2. Use **loss scaling** for float16: multiply the loss by a factor $S$ before backpropagation so small gradients do not underflow below float16's smallest subnormal ($6\times10^{-8}$), then divide the gradients by $S$ before the update. Dynamic loss scaling reduces $S$ when an overflow (inf or NaN) appears and skips that step.
+3. **Accumulate** dot products and reductions in float32 even when inputs are float16.
+
+**bfloat16** has the same 8-bit exponent as float32, so it rarely needs loss scaling; Kalamkar et al. found bfloat16 training reached float32 results across a range of models without changing hyperparameters [5]. The price is precision: with $\varepsilon_{\text{mach}}\approx0.0078$, bfloat16 cannot represent $1+0.003$ distinctly from 1, so long sums and weight updates still need float32 accumulation.
+
+Loss scaling protects small float16 gradients; it cannot repair an invalid objective or an overflow elsewhere in the network (an attention logit or a normalization statistic, for example). Changing precision can also change optimization trajectories and outputs, especially for reductions and long training runs. Validate on the target hardware; a smaller dtype does not guarantee that every operation becomes faster [13].
+
+## A debugging order for non-finite values
+
+When a loss becomes `nan` or `inf`, resist the urge to clip everything. Find the *first* operation that produced a non-finite value, then ask which of this chapter's failure modes it is. A useful order:
+
+1. **Inputs:** check shapes, ranges, dtypes and missing values. A single NaN pixel or an un-normalized 0–255 image changes everything downstream.
+2. **Forward pass:** check that activations and the loss are finite. Look for `exp`, `log`, division, `sqrt` and normalization layers with near-zero variance.
+3. **Loss:** use logits-based losses (`cross_entropy`, `binary_cross_entropy_with_logits`) rather than probabilities followed by `log`.
+4. **Gradients:** run a gradient check on a tiny model; inspect per-layer gradient norms.
+5. **Updates:** compare the update size with the weight size; a learning rate above the curvature limit $2/\lambda_{\max}$ causes oscillation and divergence even with perfect arithmetic.
+6. **Precision:** reproduce in float32 (or float64) before adding mixed precision or compilation.
+
+Overfit a tiny batch first to establish that the pipeline can learn. Gradient-norm clipping bounds the gradient passed to the optimizer; it does not directly bound an adaptive optimizer's update, and it does not make NaN gradients meaningful. [ML 02](/en/learn/ml/ml-02-neural-networks/) develops optimizers and normalization in more detail.
+
+## Modern view
+
+The core ideas of this chapter are decades old, but they are at the centre of current research because models are larger, training runs are longer, and hardware keeps pushing precision downward.
+
+**Optimization theory for large-scale learning.** Bottou, Curtis and Nocedal's SIAM Review survey [14] is the standard map of the field. It explains why stochastic gradient methods dominate large-scale machine learning (cheap noisy steps beat expensive exact ones when data are redundant), analyses their convergence under smoothness assumptions like the Lipschitz condition above, and organizes improvements into two families: *noise reduction* (larger or growing batches, variance reduction, iterate averaging) and *second-order* methods (Hessian-free Newton, Gauss–Newton, quasi-Newton, natural gradient and diagonal scaling). Nocedal and Wright [6] and Boyd and Vandenberghe [7] remain the reference textbooks for the deterministic and convex theory, and Baydin et al. [11] survey the automatic differentiation that makes gradients cheap.
+
+**What the loss surface actually looks like.** Dauphin et al. [8] argued that saddle points, not poor local minima, are the main obstacle in high-dimensional non-convex optimization. Later, Cohen et al. [15] observed that full-batch gradient descent on neural networks typically operates at the "edge of stability": the largest Hessian eigenvalue rises until it hovers just above $2/\eta$ — precisely the classical stability limit derived above — while the loss keeps decreasing over long time scales, though not monotonically. The classical quadratic analysis predicts divergence there, so explaining this regime remains an open theoretical problem.
+
+**Curvature-aware optimizers.** Full Newton is impossible at scale, but structured approximations are practical. K-FAC [16] approximates the Fisher information matrix (a positive-semidefinite curvature matrix closely related to the Gauss–Newton approximation of the Hessian) with Kronecker products of small per-layer matrices, so inverting it is cheap. Shampoo [17] keeps one preconditioning matrix per tensor dimension. More recently, Muon applies an approximate orthogonalization to each weight matrix's update; Liu et al. [18] report that, with suitable weight decay and per-parameter update scaling, it trains large language models with roughly twice the computational efficiency of their adaptive-optimizer baseline in their experiments. These methods all revisit the question this chapter asks with the Hessian: how should a step be rescaled direction by direction?
+
+**Lower precision.** The format story continues from float16 with loss scaling [12] and bfloat16 [5] to 8-bit floating point. Micikevicius et al. [19] proposed two FP8 encodings, E4M3 (more precision) and E5M2 (more range), and showed training results comparable to 16-bit baselines across image and language models. The range–precision trade-off in the table above is exactly what these designs balance, and the IEEE 754 rules [3] are what they relax. Per-tensor or per-block scaling factors play the role that loss scaling played for float16.
+
+**Stable softmax at scale.** The max-subtraction trick has a streaming version. Milakov and Gimelshein [20] showed that a softmax normalizer can be computed in one pass by keeping a running maximum and rescaling the running sum whenever the maximum changes. FlashAttention [21] builds on this idea: it computes exact attention block by block in fast on-chip memory, never materializing the full attention matrix, and FlashAttention-3 [22] extends it to FP8 with block quantization and "incoherent processing" to reduce quantization error. The core of the online trick fits in a few lines:
+
+```python
+import numpy as np
+
+def online_logsumexp(chunks):
+    m, s = -np.inf, 0.0                 # running max and rescaled running sum
+    for c in chunks:
+        m_new = max(m, c.max())
+        s = s * np.exp(m - m_new) + np.exp(c - m_new).sum()
+        m = m_new
+    return m + np.log(s)
+
+rng = np.random.default_rng(0)
+z = rng.normal(0, 50, size=10_000)
+chunks = np.array_split(z, 37)          # seen one block at a time
+m = z.max()
+reference = m + np.log(np.exp(z - m).sum())
+print(online_logsumexp(chunks), reference)
+assert np.isclose(online_logsumexp(chunks), reference)
+```
+
+Both values print as $174.0918752579\ldots$, identical to the last digit shown, although the online version never sees all logits at once. [ML 04](/en/learn/ml/ml-04-vision-transformers/) covers attention itself, and [ML 10](/en/learn/ml/ml-10-evaluation-deployment/) covers quantization for deployment.
+
+**Open problems.** Why gradient methods succeed at the edge of stability; how to make low-precision (8-bit and below) training as robust as float32 without hand-tuned scaling; how to make curvature-aware optimizers cheap and robust enough to replace first-order defaults; and how to obtain reproducible results when parallel reductions change summation order.
+
+## Key takeaways
+
+- Floating-point numbers have a fixed relative precision ($\varepsilon_{\text{mach}}$) and a fixed range; exponent bits set range, fraction bits set precision.
+- Overflow, underflow and cancellation are predictable. Fix them algebraically: subtract the max before `exp`, use `log1p`/`expm1`, use logits-based losses, subtract means before squaring.
+- Conditioning is a property of the problem; stability is a property of the algorithm. A condition number of $10^k$ costs about $k$ digits.
+- The Hessian's eigenvalues give curvature. Gradient descent is stable only for $\eta\lt 2/\lambda_{\max}$ and slows down by the condition number $\lambda_{\max}/\lambda_{\min}$.
+- Newton's method rescales by curvature and converges fast near minima, but it is expensive and attracted to saddles; quasi-Newton methods and Hessian-vector products are the practical compromises.
+- Constraints can be handled by projection or by the generalized Lagrangian; the KKT conditions characterize the solution.
+- Gradient checks need float64, sensible step sizes and smooth test points, and they only test the program you wrote.
+- Mixed precision needs float32 master weights and accumulation, and loss scaling for float16; validate rather than assume identical behaviour.
+
+## Exercises
+
+1. **Softmax shift.** Prove that softmax is invariant under $z_i\mapsto z_i+c$, and show that with $c=-\max_i z_i$ the denominator lies in $[1,K]$.
+
+<details>
+<summary>Hint</summary>
+
+The shared factor $\exp(c)$ cancels between numerator and denominator. After the shift, every term $\exp(z_j-m)$ is in $(0,1]$ and the largest equals 1, so the sum of $K$ terms is between 1 and $K$. It can therefore neither overflow nor underflow to 0.
+
+</details>
+
+2. **Finite-difference sweep.** For $f(x)=e^x$ at $x=0$, compute forward and central differences for $\epsilon=10^{-1},\dots,10^{-12}$ in float32 and float64. At which $\epsilon$ is each error smallest? Compare with $u^{1/2}$ and $u^{1/3}$.
+
+<details>
+<summary>Hint</summary>
+
+For float64, $u\approx1.1\times10^{-16}$, so $u^{1/2}\approx10^{-8}$ (forward) and $u^{1/3}\approx5\times10^{-6}$ (central). For float32, $u\approx6\times10^{-8}$, giving about $2\times10^{-4}$ and $4\times10^{-3}$. The observed minima should be within an order of magnitude of these, and the error at the minimum is roughly $u^{1/2}$ and $u^{2/3}$ respectively.
+
+</details>
+
+3. **Stability limit.** For $f(w)=\tfrac12w^\top Hw$ with $H=\operatorname{diag}(2,50)$, find the largest stable fixed learning rate and the step size that minimizes the worst-case contraction factor. How many iterations does that best step need to reduce the error by a factor of $10^6$?
+
+<details>
+<summary>Hint</summary>
+
+Stability requires $\eta\lt 2/50=0.04$. The best step is $2/(\lambda_{\max}+\lambda_{\min})=2/52\approx0.0385$, with contraction $(\kappa-1)/(\kappa+1)=24/26\approx0.923$. Solve $0.923^k\le10^{-6}$: $k\ge\ln10^{6}/(-\ln0.923)\approx173$ iterations. A Newton step would need one.
+
+</details>
+
+4. **Classify critical points.** Find and classify the critical points of $f(x,y)=x^3-3x+y^2$.
+
+<details>
+<summary>Hint</summary>
+
+$\nabla f=(3x^2-3,\ 2y)=0$ gives $(1,0)$ and $(-1,0)$. The Hessian is $\operatorname{diag}(6x,\ 2)$: at $(1,0)$ it is $\operatorname{diag}(6,2)$, positive definite, a local minimum; at $(-1,0)$ it is $\operatorname{diag}(-6,2)$, indefinite, a saddle. Neither is a global minimum because $f\to-\infty$ as $x\to-\infty$. Starting Newton's method near $(-1,0)$ converges to the saddle.
+
+</details>
+
+5. **KKT on the simplex.** Minimize $f(x)=\tfrac12\lVert x-c\rVert_2^2$ subject to $\sum_ix_i=1$ and $x_i\ge0$, for $c=(0.8,0.6,-0.4)$. Write the Lagrangian and the KKT conditions, and find the solution.
+
+<details>
+<summary>Hint</summary>
+
+$L=\tfrac12\lVert x-c\rVert^2+\lambda(\sum_ix_i-1)-\sum_i\alpha_ix_i$ with $\alpha_i\ge0$. Stationarity gives $x_i=c_i-\lambda+\alpha_i$; complementary slackness gives $x_i=\max(c_i-\lambda,0)$. Guess that only the first two are positive: $(0.8-\lambda)+(0.6-\lambda)=1$, so $\lambda=0.2$ and $x=(0.6,0.4,0)$. Check: $c_3-\lambda=-0.6\lt 0$, so $x_3=0$ with $\alpha_3=0.6\ge0$. This is the Euclidean projection onto the probability simplex.
+
+</details>
+
+6. **A correct gradient of the wrong loss.** Change a mean reduction into a sum in the gradient-check example. Does the check still pass? Is autograd wrong? What else changes in training?
+
+<details>
+<summary>Hint</summary>
+
+If you change both the loss and the analytic gradient consistently, the check passes: the derivative is correct for the new objective. Nothing is wrong with autograd. But the gradient is now $N$ times larger, so the largest stable learning rate shrinks by $N$, and in a multi-term loss the balance between terms changes. A gradient check cannot tell you that you chose the wrong objective.
+
+</details>
+
+## References
+
+1. I. Goodfellow, Y. Bengio and A. Courville, *Deep Learning*, MIT Press, 2016, ch. 4 (Numerical Computation) and ch. 8. [Book](https://www.deeplearningbook.org/)
+2. D. Goldberg, "What Every Computer Scientist Should Know About Floating-Point Arithmetic," *ACM Computing Surveys*, vol. 23, no. 1, pp. 5–48, 1991. [DOI](https://doi.org/10.1145/103162.103163)
+3. IEEE, "IEEE Standard for Floating-Point Arithmetic," IEEE Std 754-2019, 2019. [DOI](https://doi.org/10.1109/IEEESTD.2019.8766229)
+4. N. J. Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., SIAM, 2002. [DOI](https://doi.org/10.1137/1.9780898718027)
+5. D. Kalamkar et al., "A Study of BFLOAT16 for Deep Learning Training," arXiv:1905.12322, 2019. [arXiv](https://arxiv.org/abs/1905.12322)
+6. J. Nocedal and S. J. Wright, *Numerical Optimization*, 2nd ed., Springer, 2006. [DOI](https://doi.org/10.1007/978-0-387-40065-5)
+7. S. Boyd and L. Vandenberghe, *Convex Optimization*, Cambridge University Press, 2004. [Book](https://web.stanford.edu/~boyd/cvxbook/)
+8. Y. N. Dauphin, R. Pascanu, C. Gulcehre, K. Cho, S. Ganguli and Y. Bengio, "Identifying and Attacking the Saddle Point Problem in High-Dimensional Non-Convex Optimization," *NeurIPS*, 2014. [Paper](https://papers.nips.cc/paper_files/paper/2014/hash/04192426585542c54b96ba14445be996-Abstract.html)
+9. B. A. Pearlmutter, "Fast Exact Multiplication by the Hessian," *Neural Computation*, vol. 6, no. 1, pp. 147–160, 1994. [DOI](https://doi.org/10.1162/neco.1994.6.1.147)
+10. D. C. Liu and J. Nocedal, "On the Limited Memory BFGS Method for Large Scale Optimization," *Mathematical Programming*, vol. 45, pp. 503–528, 1989. [DOI](https://doi.org/10.1007/BF01589116)
+11. A. G. Baydin, B. A. Pearlmutter, A. A. Radul and J. M. Siskind, "Automatic Differentiation in Machine Learning: a Survey," *Journal of Machine Learning Research*, vol. 18, no. 153, pp. 1–43, 2018. [arXiv](https://arxiv.org/abs/1502.05767)
+12. P. Micikevicius et al., "Mixed Precision Training," *ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.03740)
+13. PyTorch documentation, "Numerical Accuracy." [Documentation](https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html)
+14. L. Bottou, F. E. Curtis and J. Nocedal, "Optimization Methods for Large-Scale Machine Learning," *SIAM Review*, vol. 60, no. 2, pp. 223–311, 2018. [DOI](https://doi.org/10.1137/16M1080173)
+15. J. M. Cohen, S. Kaur, Y. Li, J. Z. Kolter and A. Talwalkar, "Gradient Descent on Neural Networks Typically Occurs at the Edge of Stability," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2103.00065)
+16. J. Martens and R. Grosse, "Optimizing Neural Networks with Kronecker-factored Approximate Curvature," *ICML*, 2015. [Paper](https://proceedings.mlr.press/v37/martens15.html)
+17. V. Gupta, T. Koren and Y. Singer, "Shampoo: Preconditioned Stochastic Tensor Optimization," *ICML*, 2018. [Paper](https://proceedings.mlr.press/v80/gupta18a.html)
+18. J. Liu, J. Su, X. Yao et al., "Muon is Scalable for LLM Training," arXiv:2502.16982, 2025. [arXiv](https://arxiv.org/abs/2502.16982)
+19. P. Micikevicius et al., "FP8 Formats for Deep Learning," arXiv:2209.05433, 2022. [arXiv](https://arxiv.org/abs/2209.05433)
+20. M. Milakov and N. Gimelshein, "Online Normalizer Calculation for Softmax," arXiv:1805.02867, 2018. [arXiv](https://arxiv.org/abs/1805.02867)
+21. T. Dao, D. Y. Fu, S. Ermon, A. Rudra and C. Ré, "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness," *NeurIPS*, 2022. [Paper](https://papers.nips.cc/paper_files/paper/2022/hash/67d57c32e20fd0a7a302cb81d36e40d5-Abstract-Conference.html)
+22. J. Shah, G. Bikshandi, Y. Zhang, V. Thakkar, P. Ramani and T. Dao, "FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision," *NeurIPS*, 2024. [Paper](https://papers.nips.cc/paper_files/paper/2024/hash/7ede97c3e082c6df10a8d6103a2eebd2-Abstract-Conference.html)

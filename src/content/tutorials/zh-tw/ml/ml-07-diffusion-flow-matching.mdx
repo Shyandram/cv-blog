@@ -1,0 +1,765 @@
+---
+title: "ML 07・擴散模型與流匹配"
+description: "推導雜訊預測、DDPM 取樣、分數估計與無分類器引導，再串起潛在擴散、DiT、整流流與少步生成。"
+track: ml
+order: 70
+level: advanced
+prereqs: [ml/ml-06-generative-models, ml/ml-04-vision-transformers]
+tags: [diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, generation]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import noisingFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/forward-noising.png';
+import scheduleFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/noise-schedules.png';
+import samplersFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/ddpm-ddim-samplers.png';
+import guidanceFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/cfg-guidance.png';
+import pathsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/flow-paths.png';
+import stepsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/fm-euler-steps.png';
+
+## 你將學到
+
+- 一個「已知的加噪過程」如何把「生成一張影像」變成普通的監督式迴歸問題。
+- DDPM 的簡化雜訊預測損失如何一步一步從變分下界推導出來。
+- 預測雜訊、預測乾淨影像與預測分布的**分數（score）**其實是同一份資訊的不同單位，以及隨機微分方程（SDE）觀點如何把它們串起來。
+- DDPM、DDIM 與快速 ODE 求解器如何取樣，以及為什麼步數是一個設計選擇。
+- 分類器引導（classifier guidance）與無分類器引導（classifier-free guidance）如何操控取樣器，代價又是什麼。
+- 潛在擴散、擴散 Transformer（DiT）、流匹配（flow matching）、整流流（rectified flow）、一致性模型與一步生成器如何放進同一張地圖，以及生成影像如何評估。
+
+## 先看全貌
+
+擴散模型學的是「把受控的破壞復原」。訓練時，我們拿一個真實樣本，加上已知強度的 Gaussian 雜訊，然後請神經網路告訴我們加了什麼雜訊。因為雜訊是我們自己加的，正確答案永遠拿得到：不需要標籤，也不需要對手，就是迴歸而已。生成時，我們從純雜訊出發，反覆套用學到的「去掉一點雜訊」步驟，直到一個樣本浮現出來。
+
+<Callout type="tip" title="用最簡單的話說">
+想像你慢慢用鉛筆在一張畫上亂塗。你把畫在各種塗鴉程度下都留一份：幾條線、很多線、多到原本的畫完全看不見。模型只練習一件小事：看一張被塗過的紙，猜出哪些線是後來加上去的。練習夠多之後，你給它一張「只有」塗鴉的紙。它擦掉一點、再看一次、再擦掉一點，一張全新的畫就慢慢出現了——而且這張畫從來不在那疊紙裡。
+</Callout>
+
+為什麼重要？從 2021 年起，擴散類模型在影像、影片與音訊合成上拿下了許多最先進的結果，同一套機制也用於影像修補、超解析度、影像編輯、3D 生成與科學資料。擴散模型也解決了 [ML 06](/zh-tw/learn/ml/ml-06-generative-models/) 中較早模型家族的兩個痛點：GAN 需要脆弱的雙人賽局，VAE 的樣本則容易模糊。擴散模型的訓練是穩定的迴歸，而因為生成被拆成許多小而容易的步驟，樣本也很清晰。
+
+代價是取樣成本：經典取樣器每產生一張影像要呼叫網路數百次。2021 年以來的大量研究——DDIM、快速 ODE 求解器、蒸餾、一致性模型、流匹配、整流流——都是在維持品質的同時減少網路呼叫次數。
+
+本章依照幾篇主要綜述的架構安排。Yang 等人 [1] 把領域分成高效取樣、改進概似（likelihood）與特殊結構資料三個方向；Croitoru 等人 [27] 依公式化方式（DDPM、雜訊條件分數網路、SDE）分類；Lipman 等人的流匹配指南 [2] 與 Lai 等人的專書 [29] 則把擴散與流視為同一族「學習出來的傳輸」。Prince 的教科書 [14] 是推導時很好的入門參考。全文**每一節只使用一種明確的時間方向慣例**，換慣例時會特別說明——混用慣例是這個領域最常見的正負號錯誤來源。
+
+## 前向擴散有封閉解
+
+**白話版。** 每一步保留影像的大部分，再加上一點獨立的 Gaussian 雜訊。經過足夠多步之後，影像什麼都不剩——只剩分布已知的雜訊。
+
+這個想法可追溯到 Sohl-Dickstein 等人 [15]：用緩慢的前向擴散破壞結構，再學習把它反轉；DDPM [3] 讓它變得實用。令 $x_0\in\mathbb R^d$ 為一筆資料（把影像攤平成 $d$ 個數字，大致縮放到 $[-1,1]$）。選一組**雜訊排程（noise schedule）** $\beta_1,\ldots,\beta_T$，其中 $0\lt\beta_t\lt1$，並記 $\alpha_t=1-\beta_t$。前向（加噪）過程是一條馬可夫鏈
+
+$$
+q(x_t\mid x_{t-1})=\mathcal N\!\left(\sqrt{\alpha_t}\,x_{t-1},\ \beta_t I\right),\qquad t=1,\ldots,T,
+$$
+
+其中 $\mathcal N(\mu,\Sigma)$ 表示平均為 $\mu$、共變異數為 $\Sigma$ 的 Gaussian，$I$ 是 $d\times d$ 單位矩陣。係數 $\sqrt{\alpha_t}$ 把訊號稍微縮小，讓總變異數維持有界而不會一路變大；這也是這一族被稱為**變異數保持（variance preserving, VP）**的原因。
+
+### 推導一次到位的公式
+
+把一步寫成 $x_t=\sqrt{\alpha_t}x_{t-1}+\sqrt{1-\alpha_t}\,\epsilon_t$，其中 $\epsilon_t\sim\mathcal N(0,I)$。代入前一步，
+
+$$
+\begin{aligned}
+x_t&=\sqrt{\alpha_t}\left(\sqrt{\alpha_{t-1}}x_{t-2}+\sqrt{1-\alpha_{t-1}}\,\epsilon_{t-1}\right)+\sqrt{1-\alpha_t}\,\epsilon_t\\
+&=\sqrt{\alpha_t\alpha_{t-1}}\,x_{t-2}+\underbrace{\sqrt{\alpha_t(1-\alpha_{t-1})}\,\epsilon_{t-1}+\sqrt{1-\alpha_t}\,\epsilon_t}_{\text{獨立 Gaussian 之和}}.
+\end{aligned}
+$$
+
+兩個雜訊項是獨立、平均為零的 Gaussian，所以相加後仍是 Gaussian，變異數為 $\alpha_t(1-\alpha_{t-1})+(1-\alpha_t)=1-\alpha_t\alpha_{t-1}$。把同樣的論證一路推回 $x_0$，令 $\bar\alpha_t=\prod_{s=1}^t\alpha_s$，得到
+
+$$
+q(x_t\mid x_0)=\mathcal N\!\left(\sqrt{\bar\alpha_t}\,x_0,\ (1-\bar\alpha_t)I\right)
+\quad\Longleftrightarrow\quad
+x_t=\sqrt{\bar\alpha_t}\,x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\qquad \epsilon\sim\mathcal N(0,I).
+$$
+
+這裡 $\bar\alpha_t$ 是到第 $t$ 步仍保留的訊號變異數比例，$\epsilon$ 是一個標準 Gaussian 向量。這條公式讓訓練很便宜：我們可以直接跳到任何雜訊程度，不必模擬前面的每一步。
+
+<Figure src={noisingFig} alt="一張合成的矩形影像，以同一組 Gaussian 雜訊在四個逐漸增強的雜訊程度下被破壞。" caption="圖 1 — 封閉形式前向過程在幾個訊號程度下的樣子。這裡共用同一組雜訊以便看出效果；實際訓練時每筆資料、每一步都抽新的雜訊。" />
+
+### 雜訊排程與訊雜比
+
+第 $t$ 步的**訊雜比（signal-to-noise ratio, SNR）**為
+
+$$
+\mathrm{SNR}(t)=\frac{\bar\alpha_t}{1-\bar\alpha_t},
+$$
+
+即訊號變異數與雜訊變異數之比（假設資料變異數為 1）。它從 $t=1$ 時非常大，單調下降到 $t=T$ 時接近零。排程有兩個要求：$\bar\alpha_T$ 必須接近 $0$，讓 $x_T$ 實際上就是標準 Gaussian（取樣器從 $\mathcal N(0,I)$ 出發）；中間各步則應把訓練資源花在網路真的有東西可學的雜訊程度上。
+
+DDPM [3] 使用 $T=1000$ 與**線性排程**，$\beta_t$ 從 $10^{-4}$ 線性增加到 $0.02$。Nichol 與 Dhariwal [19] 觀察到這樣會太快摧毀資訊：鏈的相當一大段裡，影像幾乎已經是純雜訊。他們的**餘弦排程**定義 $\bar\alpha_t=f(t)/f(0)$，其中 $f(t)=\cos^2\!\big(\tfrac{t/T+s}{1+s}\cdot\tfrac{\pi}{2}\big)$，小偏移量 $s=0.008$，並把每個 $\beta_t$ 截在 $0.999$。圖 2 比較兩者。Karras 等人 [20] 後來主張：排程、網路輸入輸出的縮放，以及訓練時雜訊程度的分布，是應該分開調整的獨立設計選擇。
+
+<Figure src={scheduleFig} alt="兩張折線圖，在 1000 步上比較線性與餘弦雜訊排程：累積訊號比例與對數訊雜比。" caption="圖 2 — T = 1000 時的線性排程與餘弦排程。餘弦排程讓訊號保留得更久，對數訊雜比在各步之間分布得更平均。" />
+
+## 反向過程與變分下界
+
+**白話版。** 要生成，就需要反向的一步：「給一個有雜訊的樣本，稍微乾淨一點的樣本長什麼樣？」對真實資料我們無法直接算出來，但如果同時知道乾淨樣本，就*算得出來*——而這正好給出一個簡單的訓練損失。
+
+### 模型與下界
+
+生成模型是一條反向馬可夫鏈，從 $p(x_T)=\mathcal N(0,I)$ 出發，使用學習出來的 Gaussian 轉移
+
+$$
+p_\theta(x_{t-1}\mid x_t)=\mathcal N\!\left(\mu_\theta(x_t,t),\ \sigma_t^2 I\right),
+$$
+
+其中 $\mu_\theta$ 是參數為 $\theta$ 的神經網路，$\sigma_t^2$ 是我們稍後要選的變異數。這是一個以 $x_{1:T}$ 為潛在變數的模型，就像一個編碼器 $q$ 固定而非學習的深層 VAE（見 [ML 06](/zh-tw/learn/ml/ml-06-generative-models/)）。同樣的 Jensen 不等式論證給出證據下界（ELBO）。依照 [3]、[15]，負的下界可以整理成一串 KL 散度的和：
+
+$$
+-\log p_\theta(x_0)\ \le\ \mathbb E_q\Big[
+\underbrace{D_{\mathrm{KL}}\!\big(q(x_T\mid x_0)\,\|\,p(x_T)\big)}_{L_T}
++\sum_{t=2}^{T}\underbrace{D_{\mathrm{KL}}\!\big(q(x_{t-1}\mid x_t,x_0)\,\|\,p_\theta(x_{t-1}\mid x_t)\big)}_{L_{t-1}}
+\underbrace{-\log p_\theta(x_0\mid x_1)}_{L_0}\Big].
+$$
+
+$D_{\mathrm{KL}}$ 是 Kullback–Leibler 散度。$L_T$ 沒有可學參數（當 $\bar\alpha_T\approx0$ 時很小）；$L_0$ 是最後一步的解碼項；每個 $L_{t-1}$ 則把模型的反向一步與**前向後驗分布** $q(x_{t-1}\mid x_t,x_0)$ 相比——也就是「如果知道乾淨樣本 $x_0$，反向一步會是什麼」的精確答案。
+
+### 前向後驗是 Gaussian
+
+由貝氏定理，$q(x_{t-1}\mid x_t,x_0)\propto q(x_t\mid x_{t-1})\,q(x_{t-1}\mid x_0)$。兩個因子對 $x_{t-1}$ 都是 Gaussian，所以乘積也是 Gaussian。把 $x_{t-1}$ 的二次項與一次項收集起來（配方），得到
+
+$$
+q(x_{t-1}\mid x_t,x_0)=\mathcal N\!\left(\tilde\mu_t(x_t,x_0),\ \tilde\beta_t I\right),
+$$
+
+$$
+\tilde\mu_t=\frac{\sqrt{\bar\alpha_{t-1}}\,\beta_t}{1-\bar\alpha_t}\,x_0+\frac{\sqrt{\alpha_t}\,(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}\,x_t,
+\qquad
+\tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\,\beta_t .
+$$
+
+後驗平均是乾淨樣本與目前雜訊樣本的加權平均；後驗變異數 $\tilde\beta_t$ 比 $\beta_t$ 略小。你不必相信代數：下面的程式抽樣前向鏈，並以 $x_t$ 對 $x_{t-1}$ 做迴歸。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+beta = np.linspace(1e-4, 0.02, 1000)
+alpha = 1 - beta
+abar = np.cumprod(alpha)
+t, x0, n = 300, 1.3, 400_000           # check q(x_{t-1} | x_t, x_0) at step t
+
+# Sample the forward chain: x_{t-1} from q(x_{t-1}|x_0), then one more step.
+x_prev = np.sqrt(abar[t-1])*x0 + np.sqrt(1-abar[t-1])*rng.normal(size=n)
+x_t = np.sqrt(alpha[t])*x_prev + np.sqrt(beta[t])*rng.normal(size=n)
+
+# Empirical regression of x_{t-1} on x_t (the posterior mean is linear in x_t).
+slope, intercept = np.polyfit(x_t, x_prev, 1)
+resid_var = np.var(x_prev - (slope*x_t + intercept))
+
+# Closed-form posterior from the derivation.
+c_x0 = np.sqrt(abar[t-1])*beta[t] / (1-abar[t])
+c_xt = np.sqrt(alpha[t])*(1-abar[t-1]) / (1-abar[t])
+var = beta[t]*(1-abar[t-1]) / (1-abar[t])
+print(f"slope     {slope:.4f}  vs  {c_xt:.4f}")
+print(f"intercept {intercept:.4f}  vs  {c_x0*x0:.4f}")
+print(f"variance  {resid_var:.6f}  vs  {var:.6f}")
+```
+
+輸出在小數點後三到四位吻合（斜率 0.9934 對 0.9930，變異數 0.006050 對 0.006052）；微小差距是蒙地卡羅誤差。
+
+### 從下界到簡化損失
+
+現在把前向公式反過來用：$x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon)/\sqrt{\bar\alpha_t}$。代入 $\tilde\mu_t$，再用 $\bar\alpha_t=\alpha_t\bar\alpha_{t-1}$ 化簡，
+
+$$
+\tilde\mu_t=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon\right).
+$$
+
+取樣時網路看得到 $x_t$，卻看不到 $\epsilon$。所以 DDPM 讓模型平均採用完全相同的形式，只是把未知的雜訊換成預測值 $\epsilon_\theta(x_t,t)$：
+
+$$
+\mu_\theta(x_t,t)=\frac1{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon_\theta(x_t,t)\right).
+$$
+
+兩個共變異數同為固定 $\sigma_t^2I$ 的 Gaussian，其 KL 散度就是兩個平均之間平方距離的縮放，因此
+
+$$
+L_{t-1}=\frac{1}{2\sigma_t^2}\big\|\tilde\mu_t-\mu_\theta\big\|^2+C
+=\frac{\beta_t^2}{2\sigma_t^2\,\alpha_t\,(1-\bar\alpha_t)}\,\big\|\epsilon-\epsilon_\theta(x_t,t)\big\|^2+C,
+$$
+
+其中 $C$ 與 $\theta$ 無關。下界的每一項因此都是**加權的雜訊預測誤差**。Ho 等人 [3] 發現，拿掉權重並均勻抽樣 $t$，訓練效果反而更好：
+
+$$
+\mathcal L_{\mathrm{simple}}
+=\mathbb E_{x_0,\ t\sim\mathcal U\{1,\ldots,T\},\ \epsilon\sim\mathcal N(0,I)}
+\Big\|\epsilon-\epsilon_\theta\!\big(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\ t\big)\Big\|^2 .
+$$
+
+把它當成演算法來讀：挑一筆訓練資料、挑一個隨機步數、挑隨機雜訊，用一行算出 $x_t$，然後迴歸這個雜訊。時間 $t$ 會餵給網路（通常透過正弦嵌入），因為同樣的像素值在不同雜訊程度下代表不同意義。
+
+有兩點容易弄錯。第一，$\mathcal L_{\mathrm{simple}}$ *不是*概似下界：拿掉權重相對降低了低雜訊步的比重，這有助於樣本品質，卻會讓報告的對數概似變差。Improved DDPM [19] 用混合損失學習變異數 $\sigma_t^2$（在 $\beta_t$ 與 $\tilde\beta_t$ 之間內插），找回了好的概似。第二，同一個網路也給出**乾淨估計**
+
+$$
+\hat x_0(x_t,t)=\frac{x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta(x_t,t)}{\sqrt{\bar\alpha_t}},
+$$
+
+每個現代取樣器內部都會用到它。當 $\bar\alpha_t$ 非常小時，這個除法會放大預測誤差，所以高雜訊時的 $\hat x_0$ 是一個模糊的平均，而不是一個樣本。
+
+## 雜訊、乾淨資料、速度與分數
+
+**白話版。** 預測雜訊、預測乾淨影像、預測「往哪個方向走會讓這個樣本更典型」，是表達同一份知識的三種方式。差別在縮放，而縮放會改變訓練損失對不同雜訊程度的加權。
+
+### 三種參數化
+
+因為 $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$ 是固定的線性關係，網路可以輸出下列任何一個：
+
+- 雜訊 $\epsilon$（DDPM [3]），
+- 乾淨樣本 $x_0$，
+- **速度** $v=\sqrt{\bar\alpha_t}\,\epsilon-\sqrt{1-\bar\alpha_t}\,x_0$，由 Salimans 與 Ho [22] 為了蒸餾而提出，在排程兩端都維持良好的尺度。
+
+給定 $x_t$ 與 $t$，三者可以彼此精確換算。但是對 $\epsilon$、$x_0$ 或 $v$ 做不加權的 MSE，對各雜訊程度的加權並不相同，所以這個選擇會影響訓練。Karras 等人 [20] 用輸入輸出的「預條件（preconditioning）」係數把這件事講清楚：讓網路在每個雜訊程度下的輸入與目標都維持單位變異數。注意，這裡擴散模型的「速度」是訊號與雜訊的一種重新參數化；它與本章後面流匹配的傳輸速度相關，但不相同。
+
+### 什麼是分數？為什麼去雜訊能估計它？
+
+密度 $p$ 的**分數（score）**是 $\nabla_x\log p(x)$：一個指向更高機率方向的向量場。如果知道分數，就能用 **Langevin 動力學**取樣：沿著分數走一小步、加一點雜訊，反覆進行。Song 與 Ermon [17] 在多個雜訊程度上訓練「雜訊條件分數網路（NCSN）」，並以退火 Langevin 動力學取樣——這是一條與擴散平行的路線，後來證明是同一個想法。
+
+連接兩者的橋梁是**去雜訊分數匹配（denoising score matching）**（Vincent [16]）。對 Gaussian 破壞而言，（在均方誤差意義下）最好的雜訊預測器是一個條件期望值 $\epsilon^*(x_t,t)=\mathbb E[\epsilon\mid x_t]$，而 **Tweedie 公式** [40] 把它連到雜訊邊際分布 $p_t$ 的分數：
+
+$$
+\nabla_{x_t}\log p_t(x_t)=-\frac{\mathbb E[\epsilon\mid x_t]}{\sqrt{1-\bar\alpha_t}}
+\quad\Longrightarrow\quad
+s_\theta(x_t,t)\approx-\frac{\epsilon_\theta(x_t,t)}{\sqrt{1-\bar\alpha_t}},
+$$
+
+其中 $s_\theta$ 是學到的分數。同一個公式用「乾淨」單位寫成 $\mathbb E[x_0\mid x_t]=\big(x_t+(1-\bar\alpha_t)\nabla\log p_t(x_t)\big)/\sqrt{\bar\alpha_t}$。兩個提醒：這是第 $t$ 層*加噪後的邊際分布*的分數，不是任何單張訓練影像的梯度；而且它對最佳預測器成立——訓練出來的網路只是近似。
+
+你可以在一切都已知的情況下驗證 Tweedie 公式：一維 Gaussian 資料，此時最佳雜訊預測器對 $x_t$ 是線性的。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+s, abar, n = 0.7, 0.4, 500_000     # data x0 ~ N(0, s^2); one noise level
+x0 = s*rng.normal(size=n)
+eps = rng.normal(size=n)
+xt = np.sqrt(abar)*x0 + np.sqrt(1-abar)*eps
+
+# "Train" the best linear noise predictor eps_hat = w * x_t by least squares.
+w = (xt @ eps) / (xt @ xt)
+score_from_eps = -w / np.sqrt(1-abar)       # s(x_t) = -eps_hat / sqrt(1-abar)
+
+# Exact: x_t ~ N(0, abar s^2 + 1 - abar), so grad log p_t(x) = -x / var.
+exact = -1 / (abar*s**2 + 1 - abar)
+print(f"score slope from noise predictor: {score_from_eps:.4f}")
+print(f"exact score slope:                {exact:.4f}")
+```
+
+它印出 $-1.2560$ 對 $-1.2563$：對雜訊做迴歸就能找回分數。
+
+### SDE 觀點
+
+Song 等人 [4] 讓步數趨於無窮。用連續時間 $t\in[0,1]$ 與速率 $\beta(t)$，VP 前向過程變成**隨機微分方程（SDE）**
+
+$$
+dx=-\tfrac12\beta(t)\,x\,dt+\sqrt{\beta(t)}\,dw,
+$$
+
+其中 $w$ 是標準 Wiener 過程（布朗運動）。一個經典結果指出：這個過程倒著時間跑，仍然是一條 SDE，而其中唯一未知的量就是分數：
+
+$$
+dx=\Big[-\tfrac12\beta(t)\,x-\beta(t)\,\nabla_x\log p_t(x)\Big]dt+\sqrt{\beta(t)}\,d\bar w,
+$$
+
+此處 $dt$ 為負，$\bar w$ 是反向時間的 Wiener 過程。此外，還存在一條確定性的**機率流 ODE（probability-flow ODE）**，其解在每個時間點的邊際分布 $p_t$ 都相同：
+
+$$
+\frac{dx}{dt}=-\tfrac12\beta(t)\Big[x+\nabla_x\log p_t(x)\Big].
+$$
+
+這把整個領域統一起來。DDPM 的祖先取樣（ancestral sampling）是反向 SDE 的離散化；NCSN [17] 對應到「變異數爆炸（variance exploding）」SDE；而這條 ODE 把擴散模型變成連續正規化流，因此可以用瞬時變數變換公式算出精確的對數概似 [4]。這條 ODE 也解釋了 DDIM 這類確定性取樣器為什麼有效，以及為什麼可以套用一般的 ODE 求解器。
+
+## 取樣是一個反向過程
+
+**白話版。** 在單一隨機雜訊程度上算出的損失並不是生成器。要生成，必須從純雜訊出發，以一致的排程串起許多反向步驟——而你可以選擇要走幾步、每步注入多少新的隨機性。
+
+### DDPM 祖先取樣
+
+DDPM 沿著學到的反向鏈取樣：
+
+$$
+x_{t-1}=\mu_\theta(x_t,t)+\sigma_t z,\qquad z\sim\mathcal N(0,I),\qquad \sigma_t^2\in\{\beta_t,\ \tilde\beta_t\},
+$$
+
+最後一步不再加入雜訊。Ho 等人 [3] 報告 $\sigma_t^2=\beta_t$ 與 $\sigma_t^2=\tilde\beta_t$ 的結果相近；學習出的變異數 [19] 在步數較少時幫助最大。
+
+### 程式：二維分布上的 DDPM
+
+這個完整的 CPU 範例（約 10 秒）使用兩個中心在 $x=\pm1.5$、標準差 $0.25$ 的 Gaussian 群集。它包含影像模型的每個運算——排程、隨機時間訓練、雜訊預測、反向平均——卻不需要影像等級的計算量。在 100 步與這個排程下，到 $t=T$ 時幾乎沒有訊號殘留。
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+torch.set_num_threads(1)
+T = 100
+beta = torch.linspace(.001, .15, T)
+alpha = 1-beta
+abar = alpha.cumprod(0)
+previous = torch.cat([torch.ones(1), abar[:-1]])
+post_var = beta * (1-previous) / (1-abar)
+net = nn.Sequential(nn.Linear(3, 64), nn.SiLU(),
+                    nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, 2))
+opt = torch.optim.Adam(net.parameters(), lr=.002)
+def data(n):
+    side = torch.randint(2, (n, 1))*2-1
+    return torch.cat([side*1.5, torch.zeros(n, 1)], 1) + .25*torch.randn(n, 2)
+for step in range(3000):
+    x0 = data(128)
+    t = torch.randint(T, (len(x0),))
+    eps = torch.randn_like(x0)
+    a = abar[t, None]
+    xt = a.sqrt()*x0 + (1-a).sqrt()*eps
+    predicted = net(torch.cat([xt, t[:, None].float()/(T-1)], 1))
+    loss = F.mse_loss(predicted, eps)
+    opt.zero_grad(); loss.backward(); opt.step()
+net.eval()
+with torch.no_grad():
+    x = torch.randn(512, 2)
+    for t in reversed(range(T)):
+        time = torch.full((len(x), 1), t/(T-1))
+        eps = net(torch.cat([x, time], 1))
+        mean = (x-beta[t]/(1-abar[t]).sqrt()*eps)/alpha[t].sqrt()
+        x = mean + post_var[t].sqrt()*torch.randn_like(x) if t else mean
+    assert torch.isfinite(x).all()
+    print("terminal signal:", round(abar[-1].item(), 6))
+    left = x[x[:, 0] < 0]
+    print("fraction in left cluster:", round((x[:, 0] < 0).float().mean().item(), 3))
+    print("left cluster: mean x", round(left[:, 0].mean().item(), 2),
+          "std", round(left[:, 0].std().item(), 2), "(data: -1.5 and 0.25)")
+```
+
+在我們的機器上，它印出終端訊號 0.000349、左群集比例 0.441，左群集平均與標準差為 $-1.47$ 與 $0.25$。群集的*形狀*是對的；44/56 的分配則顯示這個小網路沒有精確學到各模態的權重。這就是為什麼單一摘要數字永遠不夠：一定要把樣本畫出來，並對照新抽的資料檢查模態涵蓋、模態內離散程度與離群值。
+
+### DDIM：同樣的訓練，不同的取樣器
+
+Song、Meng 與 Ermon [5] 注意到 $\mathcal L_{\mathrm{simple}}$ 只依賴邊際分布 $q(x_t\mid x_0)$，而不依賴產生它們的馬可夫鏈。許多非馬可夫的前向過程擁有相同的邊際分布，每一個都給出不同的反向取樣器——而且全部都能用*同一個*訓練好的 $\epsilon_\theta$。對任何遞減的步數子序列 $\tau_1>\tau_2>\cdots$，**DDIM** 的更新是
+
+$$
+x_{\tau_{i+1}}=\sqrt{\bar\alpha_{\tau_{i+1}}}\;\hat x_0
++\sqrt{1-\bar\alpha_{\tau_{i+1}}-\sigma^2}\;\epsilon_\theta(x_{\tau_i},\tau_i)
++\sigma z,
+\qquad
+\sigma=\eta\sqrt{\frac{1-\bar\alpha_{\tau_{i+1}}}{1-\bar\alpha_{\tau_i}}\Big(1-\frac{\bar\alpha_{\tau_i}}{\bar\alpha_{\tau_{i+1}}}\Big)} ,
+$$
+
+其中 $\hat x_0$ 是在 $x_{\tau_i}$ 的乾淨估計，$\eta\ge0$ 控制隨機性。讀法是：「先估計乾淨樣本，再沿著預測的雜訊方向，把它重新加噪到下一個較低的雜訊程度。」當 $\eta=1$ 且步數連續時，它還原 DDPM 的後驗變異數；當 $\eta=0$ 時，取樣器是**確定性**的，也是機率流 ODE 的一種離散化。確定性有實際影響：同樣的起始雜訊永遠得到同樣的輸出，所以可以在雜訊空間內插，或把真實影像反推回它的雜訊（DDIM inversion），這是許多影像編輯方法的基礎。
+
+接續 DDPM 程式（沿用同樣的 `net`、`abar`、`T`）：
+
+```python
+# Continue from the DDPM snippet: reuse `net`, `abar` and `T`.
+def ddim_sample(n, steps, eta=0.0, seed=1):
+    g = torch.Generator().manual_seed(seed)
+    taus = torch.linspace(T-1, 0, steps).round().long()
+    x = torch.randn(n, 2, generator=g)
+    with torch.no_grad():
+        for i, t in enumerate(taus):
+            time = torch.full((n, 1), t.item()/(T-1))
+            eps = net(torch.cat([x, time], 1))
+            a_t = abar[t]
+            a_prev = abar[taus[i+1]] if i+1 < steps else torch.tensor(1.)
+            x0_hat = (x - (1-a_t).sqrt()*eps) / a_t.sqrt()
+            sigma = eta*((1-a_prev)/(1-a_t)*(1-a_t/a_prev)).sqrt()
+            x = (a_prev.sqrt()*x0_hat + (1-a_prev-sigma**2).sqrt()*eps
+                 + sigma*torch.randn(n, 2, generator=g))
+    return x
+
+for steps in [5, 20, 100]:
+    s = ddim_sample(2000, steps)
+    left = s[s[:, 0] < 0]
+    print(f"{steps:3d} steps: left fraction {(s[:, 0] < 0).float().mean():.3f}, "
+          f"left-cluster mean x {left[:, 0].mean():.2f}, std {left[:, 0].std():.2f}")
+```
+
+輸出呈現典型的規律。用 5 步時，左群集中心在 $-1.11$、標準差 $0.39$——樣本被拉向中間並被抹開，因為大步長是用直線去走一條彎曲的軌跡。用 20 步時是 $-1.37$ 與 $0.30$；100 步時是 $-1.42$ 與 $0.24$，接近資料。改變步數完全不需要重新訓練。
+
+<Figure src={samplersFig} alt="三張散布圖：位在圓上的八成分 Gaussian 混合、1000 步 DDPM 的樣本，以及 10 步確定性 DDIM 的樣本並畫出從雜訊到資料的軌跡。" caption="圖 3 — 取樣器都由八成分混合的精確去雜訊器驅動，所以只有取樣規則不同。1000 步 DDPM 重現了資料；10 步確定性 DDIM 落在模態附近，但群集略寬、被抹開。黑線是從起始雜訊（×）出發的 DDIM 軌跡。" />
+
+### 更快的求解器
+
+一旦取樣等同於「解一條 ODE」，數值分析就派得上用場。Karras 等人（EDM）[20] 使用二階 Heun 求解器搭配仔細選擇的雜訊程度間距，並證明取樣器、排程、預條件與訓練雜訊分布可以分開調整。DPM-Solver [21] 利用擴散 ODE 的半線性結構——線性部分可以精確積分——在大約 10 次網路評估內達到良好品質。隨機取樣器在每一步加一點新雜訊；這需要更多步，但可以修正累積的誤差。無論用哪種求解器，都要報告**函數評估次數（number of function evaluations, NFE）**：網路被呼叫的次數才是真正的取樣成本，而不是「步數」。
+
+## 操控生成：條件與引導
+
+**白話版。** 想生成「一隻貓」而不是「任何東西」，就把條件交給網路。引導則像一個旋鈕：更嚴格地遵循條件，代價是多樣性。
+
+### 條件化
+
+條件模型學習 $\epsilon_\theta(x_t,t,c)$，其中 $c$ 是條件。類別標籤透過嵌入加到時間嵌入上；文字透過**交叉注意力（cross-attention）**，讓影像特徵去關注文字編碼器的 token [7]；影像（用於超解析度、修補、編輯）則串接到輸入通道，或經由額外的編碼器送入。
+
+### 分類器引導
+
+對加噪後的邊際分布套用貝氏定理，得到 $\nabla\log p_t(x_t\mid y)=\nabla\log p_t(x_t)+\nabla\log p_t(y\mid x_t)$。Dhariwal 與 Nichol [18] 在*加噪*影像上另外訓練一個分類器 $p_\phi(y\mid x_t)$，把它的梯度乘上 $w$ 加到無條件模型上。以雜訊單位表示，
+
+$$
+\hat\epsilon=\epsilon_\theta(x_t,t)-w\,\sqrt{1-\bar\alpha_t}\;\nabla_{x_t}\log p_\phi(y\mid x_t).
+$$
+
+尺度 $w\gt1$ 大致是從 $p_t(x_t)\,p_t(y\mid x_t)^w$ 取樣——一個被銳化的分布，用多樣性換取擬真度。加上架構改進，這篇論文展示了擴散模型在 ImageNet [35] 的樣本品質上勝過 GAN [18]。缺點是需要額外的分類器，而且必須在每個雜訊程度的雜訊輸入上訓練。
+
+### 無分類器引導（CFG）
+
+Ho 與 Salimans [6] 拿掉了分類器。訓練時，隨機一部分樣本的條件被換成「空」標記，於是同一個網路同時學到 $\epsilon_\theta(x_t,t,c)$ 與 $\epsilon_\theta(x_t,t,\varnothing)$。貝氏定理告訴我們，分類器梯度等於條件分數與無條件分數之差，所以上式的「隱式分類器」版本是
+
+$$
+\epsilon_{\mathrm{guided}}=
+\epsilon_\theta(x_t,t,\varnothing)
++w\big(\epsilon_\theta(x_t,t,c)-\epsilon_\theta(x_t,t,\varnothing)\big).
+$$
+
+在這個慣例下，$w=0$ 是無條件，$w=1$ 是普通的條件模型，$w\gt1$ 則外插超過它。（有些論文把同一件事寫成 $(1+w')\epsilon_c-w'\epsilon_u$，因此他們的「尺度」是我們記號中的 $w-1$；比較數字之前一定要先確認慣例。）
+
+下面的程式使用四團混合分布的精確雜訊預測器，因此任何奇怪的行為都來自引導本身，而不是網路沒訓練好。類別 1 是 $x\gt0$ 的那兩團。
+
+```python
+import numpy as np
+
+# Data: four Gaussian blobs at the corners of a square; class c is the sign of x.
+MU = np.array([[-1.5, -1.5], [-1.5, 1.5], [1.5, -1.5], [1.5, 1.5]])
+SIG = 0.2
+CLASS = np.array([0, 0, 1, 1])
+
+def eps_exact(x, abar, comps):
+    """Exact E[eps | x_t] for a Gaussian mixture restricted to `comps`."""
+    m = np.sqrt(abar)*MU[comps]
+    var = abar*SIG**2 + 1 - abar
+    logw = -((x[:, None] - m[None])**2).sum(-1) / (2*var)
+    w = np.exp(logw - logw.max(1, keepdims=True))
+    w /= w.sum(1, keepdims=True)
+    score = -(w[..., None]*(x[:, None] - m[None])).sum(1) / var
+    return -np.sqrt(1-abar)*score
+
+abar = np.cumprod(1 - np.linspace(1e-4, 0.02, 1000))
+taus = np.linspace(999, 0, 50).round().astype(int)
+everything, class1 = np.arange(4), np.where(CLASS == 1)[0]
+print("data: mean distance to its mode", round(SIG*np.sqrt(np.pi/2), 3))
+for w in [0, 1, 3, 8]:
+    x = np.random.default_rng(0).normal(size=(4000, 2))
+    for i, t in enumerate(taus):                    # deterministic DDIM
+        e_u, e_c = eps_exact(x, abar[t], everything), eps_exact(x, abar[t], class1)
+        e = e_u + w*(e_c - e_u)                     # classifier-free guidance
+        x0 = (x - np.sqrt(1-abar[t])*e) / np.sqrt(abar[t])
+        a_prev = abar[taus[i+1]] if i+1 < len(taus) else 1.0
+        x = np.sqrt(a_prev)*x0 + np.sqrt(1-a_prev)*e
+    dist = np.linalg.norm(x[:, None] - MU[None], axis=-1).min(1)
+    print(f"w={w}: class-1 fraction {(x[:, 0] > 0).mean():.3f}, "
+          f"mean distance to nearest mode {dist.mean():.3f}")
+```
+
+資料到其模態的平均距離是 0.251。$w=0$ 時約一半樣本（0.490）屬於類別 1；$w=1$ 時全部屬於類別 1，距離為 0.225（50 步 DDIM 略微低估離散程度）。$w=3$ 時距離為 0.259，$w=8$ 時增加到 0.446：強引導不只是「讓它更像類別 1」——它把樣本推*超過*資料，這是影像模型在非常高引導下出現過飽和色彩與變形的玩具版本。圖 4 在八模態混合上呈現同樣的效應。
+
+<Figure src={guidanceFig} alt="四張散布圖，顯示八模態混合在引導權重 0、1、3、8 下的樣本；權重越大，類別 1 的群集被拉成細長條紋。" caption="圖 4 — 在八模態混合上的精確無分類器引導，其中類別 1 有 4 個模態（橘色圓圈）。w = 1 已經把樣本限制在類別 1；更大的 w 讓群集在某些方向收縮、在其他方向拉長——樣本不再服從任何資料分布。" />
+
+引導也有計算成本：每一步都需要一次條件預測*和*一次無條件預測，所以 30 步的引導取樣器需要 60 次網路評估，除非兩者被合併計算。而且 $w$ 是取樣的旋鈕，不是影像與提示詞相符程度的校準指標。
+
+## 潛在擴散與擴散 Transformer
+
+**白話版。** 像素很昂貴。先用自編碼器把影像壓縮成較小的特徵網格，在這個壓縮空間裡做擴散，最後再解碼。另外，去雜訊網路本身也可以是 Transformer，而不是卷積式 U-Net [37]。
+
+### 潛在擴散
+
+Rombach 等人 [7] 先訓練一個自編碼器：編碼器 $z=\mathcal E(x)$ 把 $H\times W\times3$ 影像映射成 $h\times w\times c$ 的潛在表示，空間降取樣倍率為 $f=H/h$；解碼器 $\mathcal D$ 再映射回來。自編碼器以重建、感知與對抗損失，加上輕量的正則化（朝向 Gaussian 的小 KL 項，或向量量化）訓練，讓潛在空間保持良好性質。接著在 $z$ 上照原樣訓練擴散模型，生成最後以 $\hat x=\mathcal D(z_0)$ 結束。當 $f=8$ 時，$512\times512$ 影像變成 $64\times64$ 的潛在表示：每次網路呼叫的空間位置少了 64 倍。
+
+取捨是自編碼器設下了天花板：它無法重建的細節（小字、細紋理、精確的臉部），擴散模型再好也生成不出來。潛在表示的尺度也必須與擴散模型訓練時一致；實作上會把潛在表示重新縮放到大約單位變異數。[7] 的文字條件化在 U-Net 中使用交叉注意力層，這也是 Stable Diffusion 系列背後的設計。
+
+### 擴散 Transformer
+
+DiT（Peebles 與 Xie [8]）把 U-Net 換成在潛在 patch 上運作的 Vision Transformer [41]（見 [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/)）。大小為 $h\times w$ 的潛在表示被切成 $p\times p$ 的 patch，得到 $hw/p^2$ 個 token；$p$ 越小，token 越多、計算量越大、品質越好。時間步與類別標籤透過**自適應層正規化（adaptive layer norm）**為每個區塊提供條件：它們預測每個 LayerNorm 的縮放與平移；在「adaLN-Zero」變體中還預測一個初始化為零的閘控係數，讓每個殘差區塊一開始等於恆等映射。這篇論文的主要發現是一個縮放趨勢：在不同模型大小與 patch 大小之間，Transformer 計算量（GFLOPs）越多，FID 就穩定地越低 [8]。
+
+把三個選擇分開來看很有幫助。**架構**（U-Net 或 Transformer）是函數近似器。**目標**（雜訊、$x_0$、$v$ 或流速度）是它要迴歸的對象。**取樣器**（DDPM、DDIM、ODE 求解器）則決定預測如何變成影像。Stable Diffusion 3 [9] 是一種新組合的例子：一個潛在 Transformer，影像與文字 token 串流使用各自的權重但共同做注意力（「MM-DiT」），以整流流目標訓練，並讓訓練時間步的分布偏向中間雜訊程度。
+
+對影片而言，潛在表示與注意力必須同時涵蓋時間與空間，因此壓縮與注意力模式成為主要的工程問題。Melnik 等人的綜述 [31] 回顧了影片擴散的架構、時間一致性機制與評估。在影片上，逐格品質不夠：物體恆存、動作合理性與長時間一致性都需要各自的評估。
+
+## 流匹配：學習一個傳輸速度
+
+**白話版。** 先把雜訊排程放一邊。抽一個雜訊點和一個資料點，用直線連起來，訓練網路預測沿著這類直線上每一點的行進方向。生成時，丟下一個新的雜訊點，跟著預測的方向走。
+
+**時間慣例改變。** 本節的時間從 **$t=0$ 的雜訊走到 $t=1$ 的資料**，與前面擴散各節相反（前面 $t$ 越大代表雜訊越多）。
+
+### 條件流匹配目標
+
+連續正規化流用一條 ODE $dx_t/dt=v(x_t,t)$ 移動點。如果速度場 $v$ 正確，它會把雜訊分布 $p_0=\mathcal N(0,I)$ 傳輸到資料分布 $p_1$。Lipman 等人 [10]（以及同時期的 Liu 等人 [11]、Albergo 與 Vanden-Eijnden 的隨機內插 [34]）展示了如何在完全不模擬 ODE 的情況下訓練 $v$。
+
+把雜訊 $z\sim\mathcal N(0,I)$ 與資料 $x\sim p_1$ 配對，定義直線的**條件路徑**
+
+$$
+x_t=(1-t)\,z+t\,x,\qquad \frac{dx_t}{dt}=u_t(x_t\mid z,x)=x-z .
+$$
+
+每一對都以等速沿直線移動。我們真正想要的邊際速度，是通過該點的所有配對之條件速度的平均：
+
+$$
+u_t(y)=\mathbb E\big[\,x-z\ \big|\ x_t=y\,\big].
+$$
+
+我們算不出這個平均，但其實也不需要。比較「理想」損失與我們算得出來的損失：
+
+$$
+\mathcal L_{\mathrm{FM}}=\mathbb E_{t,x_t}\big\|v_\theta(x_t,t)-u_t(x_t)\big\|^2,
+\qquad
+\mathcal L_{\mathrm{CFM}}=\mathbb E_{t,z,x}\big\|v_\theta(x_t,t)-(x-z)\big\|^2,
+$$
+
+其中 $t\sim\mathcal U[0,1]$。把兩個平方展開。$\|v_\theta\|^2$ 項完全相同。交叉項也相等，因為由重複期望值定律，$\mathbb E[v_\theta(x_t,t)^\top(x-z)]=\mathbb E\big[v_\theta(x_t,t)^\top\,\mathbb E[x-z\mid x_t]\big]=\mathbb E[v_\theta^\top u_t(x_t)]$。剩下的項都不含 $\theta$。因此
+
+$$
+\nabla_\theta\,\mathcal L_{\mathrm{CFM}}=\nabla_\theta\,\mathcal L_{\mathrm{FM}} ,
+$$
+
+也就是說，迴歸每一對的速度 $x-z$ 就能訓練出邊際速度場。這和擴散模型是同一個技巧：一個對單一樣本而言充滿雜訊的目標，其條件平均卻是對的。生成時用任何 ODE 求解器，從 $t=0$ 到 $t=1$ 解 $dx/dt=v_\theta(x,t)$。
+
+<Figure src={pathsFig} alt="隨機雜訊點以直線段連到圓上的一組資料點。" caption="圖 5 — 條件訓練路徑是直線。不同配對的路徑會交叉，所以交叉點的邊際速度是平均值，學到的軌跡可能彎曲。" />
+
+### 流匹配與擴散的關係
+
+線性路徑是一條 Gaussian 路徑：給定 $x$，$x_t\sim\mathcal N(t\,x,\ (1-t)^2I)$。記 $\hat z=\mathbb E[z\mid x_t]$（一個雜訊預測），並利用 $x=(x_t-(1-t)z)/t$，
+
+$$
+u_t(x_t)=\frac{x_t-\hat z}{t},
+\qquad
+\nabla\log p_t(x_t)=-\frac{\hat z}{1-t},
+\qquad\text{因此}\qquad
+u_t(x_t)=\frac{x_t+(1-t)\,\nabla\log p_t(x_t)}{t}.
+$$
+
+所以對這條路徑而言，流匹配速度、雜訊預測器與分數仍然可以互相換算；不同的是路徑（直線或 VP 曲線）、損失對雜訊程度的加權，以及時間慣例。擴散模型的機率流 ODE 本身就是沿著某條特定 Gaussian 路徑的流。Lipman 等人的指南 [2] 與隨機內插框架 [34] 都把兩者視為同一個建構的特例。實務上的建議與參數化時相同：這些目標是靠推導彼此關聯，而不是改個名字就能互換。
+
+### 程式：兩個群集上的流匹配
+
+這個獨立範例用線性條件路徑學習與 DDPM 程式相同的兩群集分布，再用步長 $1/N$ 的 Euler 法取樣。
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+torch.set_num_threads(1)
+net = nn.Sequential(nn.Linear(3, 64), nn.SiLU(),
+                    nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, 2))
+opt = torch.optim.Adam(net.parameters(), lr=.002)
+for step in range(3000):
+    z = torch.randn(128, 2)
+    side = torch.randint(2, (128, 1))*2-1
+    x = torch.cat([1.5*side, torch.zeros(128, 1)], 1) + .25*torch.randn(128, 2)
+    t = torch.rand(128, 1)
+    xt = (1-t)*z+t*x
+    loss = F.mse_loss(net(torch.cat([xt, t], 1)), x-z)
+    opt.zero_grad(); loss.backward(); opt.step()
+net.eval()
+def euler_sample(n, steps, seed=1):
+    x = torch.randn(n, 2, generator=torch.Generator().manual_seed(seed))
+    with torch.no_grad():
+        for k in range(steps):
+            t = torch.full((n, 1), k/steps)
+            x = x + net(torch.cat([x, t], 1))/steps
+    return x
+
+for steps in [1, 4, 50]:
+    s = euler_sample(2000, steps)
+    assert torch.isfinite(s).all()
+    left = s[s[:, 0] < 0]
+    print(f"{steps:2d} Euler steps: left fraction {(s[:, 0] < 0).float().mean():.3f}, "
+          f"left-cluster mean x {left[:, 0].mean():.2f}, std {left[:, 0].std():.2f}")
+```
+
+對 1、4、50 步，它印出左群集平均 $-0.18$、$-1.20$、$-1.45$，標準差 $0.12$、$0.42$、$0.29$。一步 Euler 幾乎落在整體資料平均：在 $t=0$ 時邊際速度是 $\mathbb E[x]-z$，所以一整步會把*每一個*雜訊點都送到 $\mathbb E[x]$。直線的條件路徑並不會讓學到的邊際流變直。圖 6 用八模態混合的精確速度呈現同樣的效應。
+
+<Figure src={stepsFig} alt="四張散布圖，以八模態混合的精確流匹配速度做 1、2、4、64 步 Euler 取樣；一步塌縮到中心，兩步形成圓盤，四步形成圓環，64 步得到八個群集並畫出彎曲路徑。" caption="圖 6 — 即使使用精確的邊際速度，Euler 取樣仍需要許多步：一步會把所有樣本塌縮到資料平均，64 步的軌跡（黑線）在路徑後段才轉向各模態。" />
+
+### 整流流與 reflow
+
+Liu、Gong 與 Liu [11] 使用同樣的直線內插（「整流流」），並加上 **reflow**：訓練後，從每個 $z$ 解學到的 ODE 產生配對 $(z,\hat x)$，再用這些*已耦合*的配對（而非獨立配對）重新訓練。因為新配對本來就由流相連，它們的直線較少交叉，學到的軌跡變得更直，需要的 Euler 步數也更少；夠直的流還可以再蒸餾成一步模型。Stable Diffusion 3 [9] 證明了整流流訓練的大型潛在 Transformer 在文字生成影像的規模上可行。
+
+## 少步與一步生成
+
+**白話版。** 如果取樣器需要 50 次網路呼叫，就訓練第二個模型，用幾次呼叫沿著軌跡跳躍——或者從頭訓練一個本來就設計成會跳的模型。
+
+主要家族有：
+
+- **漸進式蒸餾** [22]：學生模型學著用一步匹配老師的兩個確定性步驟；重複這個程序，每一輪把步數減半。
+- **一致性模型** [12]：學習一個函數 $f_\theta(x_t,t)$，把機率流 ODE 軌跡上的*任何*一點映射到該軌跡的起點（乾淨點）。它必須滿足邊界條件：在最小時間 $\epsilon$ 時 $f_\theta(x,\epsilon)=x$，作法是寫成 $f_\theta(x,t)=c_{\mathrm{skip}}(t)\,x+c_{\mathrm{out}}(t)\,F_\theta(x,t)$，並令 $c_{\mathrm{skip}}(\epsilon)=1$、$c_{\mathrm{out}}(\epsilon)=0$。訓練要求同一條軌跡上相鄰兩點的輸出一致。在*一致性蒸餾*中，相鄰點來自預訓練擴散模型的一步 ODE 求解；在*一致性訓練*中，則來自同一筆資料在兩個雜訊程度下的加噪版本，不需要老師。取樣只需一步，或幾步「跳到乾淨、重新加噪、再跳」。改進的訓練方法 [32] 簡化了連續時間一致性模型，並在 ImageNet $512\times512$ 上把它擴展到 15 億參數、以兩步取樣。
+- **對抗式蒸餾**：ADD [33] 結合來自大型預訓練擴散老師的分數蒸餾與對抗損失，讓學生模型在一到四步內產生清晰影像。
+- **平均速度模型**：MeanFlow [13] 學習一段區間上的*平均*速度 $u(x_t,r,t)=\frac{1}{t-r}\int_r^t v(x_s,s)\,ds$，而不是瞬時速度 $v$。把 $(t-r)\,u=\int_r^t v\,ds$ 對 $t$ 微分，得到恆等式 $u=v-(t-r)\frac{d}{dt}u$，它不需要老師就能提供訓練目標。之後只要對整個區間呼叫一次網路就能生成一個樣本；論文報告在 ImageNet $256\times256$ 上從頭訓練、一次評估的 FID 為 3.43 [13]。
+
+少步數是學出來的能力，而不是換個漂亮方程式就免費得到的結果。比較時要計算 NFE（包含引導評估）、潛在模型中解碼器的成本、解析度、品質*以及*多樣性——也要記得，一步網路每次呼叫可能比多步網路更大、更慢。
+
+## 評估生成模型
+
+**白話版。** 「看起來好不好？」至少藏了三個問題：單一樣本是否逼真（擬真度）、樣本集合是否涵蓋資料的多樣性（多樣性）、樣本是否符合條件（對齊）。沒有任何單一數字能同時回答三者。
+
+### Fréchet Inception Distance
+
+**FID**（Heusel 等人 [23]）用 Inception-v3 網路 [36] 嵌入真實與生成影像，對兩組特徵各擬合一個 Gaussian，再計算兩個 Gaussian 之間的 Fréchet（2-Wasserstein）距離：
+
+$$
+\mathrm{FID}=\|\mu_r-\mu_g\|^2+\operatorname{tr}\!\Big(\Sigma_r+\Sigma_g-2\big(\Sigma_r\Sigma_g\big)^{1/2}\Big),
+$$
+
+其中 $\mu_r,\Sigma_r$ 與 $\mu_g,\Sigma_g$ 是真實集合與生成集合的特徵平均與共變異數，$\operatorname{tr}$ 是矩陣的跡。越低越好。下面的程式把公式套用在二維「特徵」上。
+
+```python
+import numpy as np
+from scipy import linalg
+
+def frechet_distance(a, b):
+    """Frechet distance between Gaussians fitted to feature sets a and b."""
+    mu1, mu2 = a.mean(0), b.mean(0)
+    c1, c2 = np.cov(a, rowvar=False), np.cov(b, rowvar=False)
+    covmean = linalg.sqrtm(c1 @ c2).real
+    return float(((mu1 - mu2)**2).sum() + np.trace(c1 + c2 - 2*covmean))
+
+rng = np.random.default_rng(0)
+centers = np.array([[-1.5, 0.], [1.5, 0.]])
+real = centers[rng.integers(2, size=5000)] + .25*rng.normal(size=(5000, 2))
+good = centers[rng.integers(2, size=5000)] + .25*rng.normal(size=(5000, 2))
+one_mode = centers[[0]] + .25*rng.normal(size=(5000, 2))      # mode collapse
+blurry = .6*rng.normal(size=(5000, 2))                         # mass in the gap
+print("good     :", round(frechet_distance(real, good), 3))
+print("one mode :", round(frechet_distance(real, one_mode), 3))
+print("blurry   :", round(frechet_distance(real, blurry), 3))
+small = [frechet_distance(real[:50], good[i*50:(i+1)*50]) for i in range(20)]
+print("good, 50 samples: mean", round(np.mean(small), 3), "std", round(np.std(small), 3))
+```
+
+正確的取樣器得到約 0.001，只會產生左邊模態的取樣器得到 3.9，把機率質量放在兩個模態之間的「模糊」取樣器得到 0.976。最後一行顯示一個實務陷阱：只用 50 個樣本時，即使*完美*的取樣器也得到 $0.077\pm0.073$，因為樣本數少時 FID 有向上的偏差。只有在樣本數、參考集合、特徵擷取器與前處理都相同時，才能比較 FID。
+
+### FID 之外
+
+- **精確率與召回率**（Kynkäänniemi 等人 [24]）把擬真度與多樣性分開：在特徵空間用 $k$ 近鄰球估計真實與生成資料的「流形」；精確率是落在真實流形內的生成樣本比例，召回率則是落在生成流形內的真實樣本比例。我們的「單一模態」取樣器會有高精確率、低召回率。
+- **特徵擷取器很重要。** Stein 等人 [25] 做了大規模的人類評估，發現沒有任何常用指標與人類判斷強烈相關；尤其擴散模型的感知真實度沒有反映在 FID 上。他們建議以 DINOv2-ViT-L/14 [39] 的特徵取代 Inception，並指出現有指標無法把記憶（memorization）與欠擬合或模態收縮區分開來。
+- **CMMD**（Jayasumana 等人 [26]）把 Inception 特徵換成 CLIP [38] 嵌入，並把 Gaussian 假設換成使用 Gaussian RBF 核的最大平均差異（MMD），得到一個不偏且更省樣本的估計量。
+- **概似。** 透過機率流 ODE，擴散模型可以報告精確的對數概似（以每維位元數表示）[4]、[19]。概似衡量的東西與視覺品質不同，兩者可能不一致。
+- **條件模型**需要對齊檢查（影像是否呈現提示詞所說的內容？），通常靠人工評分或視覺語言模型；也需要對訓練集做記憶檢查。
+- **成本。** 報告 NFE、引導評估次數、解析度，以及在註明硬體上的實際時間。
+
+評估章節 [ML 10](/zh-tw/learn/ml/ml-10-evaluation-deployment/) 會再回到樣本數效應與誠實比較。
+
+## 現代觀點
+
+**綜述與參考書。** 文獻很多，以下幾篇回顧是很好的地圖。
+
+- Yang 等人 [1]（*ACM Computing Surveys*，2023）把擴散研究組織成三個改進方向——高效取樣、改進概似估計、特殊結構資料（流形、離散資料、不變性）——並涵蓋與 VAE、GAN、流的結合，以及跨領域應用。
+- Croitoru 等人 [27]（*IEEE TPAMI*，2023）聚焦於視覺。他們指出三種通用公式化——DDPM、雜訊條件分數網路與 SDE——並將視覺應用分類，例如生成、超解析度、修補、編輯、轉換與分割。
+- Cao 等人 [28]（*IEEE TKDE*，2024）從方法面切入：基礎公式化、演算法改進（取樣加速、目標設計、條件化），以及從影像到生物與醫療的應用。
+- Lipman 等人 [2]（2024）是一份附程式碼的流匹配指南，涵蓋 Gaussian 與一般機率路徑、與擴散的關係，以及延伸到離散與黎曼資料。
+- Lai、Song、Kim、Mitsufuji 與 Ermon [29]（2025）是一本專書長度的著作，把變分、分數與流三種觀點呈現為通往同一個時間相依速度場的三條路，接著討論引導、快速求解器與流映射（少步）模型。
+- Shen 等人 [30]（*TMLR*，2025）從演算法層面（訓練、取樣、壓縮）、系統層面（硬體與服務部署）與框架層面綜述效率問題。
+- Melnik 等人 [31]（*TMLR*，2024）綜述影片擴散：架構、時間一致性機制、資料集與評估。
+
+**2023–2026 的現況。** 綜合這些回顧與本章的原始論文，可以看到幾個趨勢。(1) *潛在空間中的 Transformer*：DiT 類主幹 [8] 在許多大型系統中取代了 U-Net，而以整流流目標訓練的文字–影像聯合 Transformer [9] 成為文字生成影像的標準配方之一。(2) *流匹配成為預設目標*：直線路徑的流匹配 [10]、[11] 現在與雜訊預測並用或取而代之，擴散則被理解為機率路徑的一種選擇 [2]、[29]。(3) *更少的評估次數*：蒸餾 [22]、[33]、一致性模型 [12]、[32] 與平均速度模型 [13] 把取樣降到一到四次網路呼叫，品質逼近多步取樣器。(4) *更好的評估*：社群正從以 Inception 為基礎的 FID 轉向更豐富的特徵空間、人類研究與對齊指標 [25]、[26]。(5) *影像之外*：影片、3D、音訊與科學資料都重用同一套機制，其中影片的時間一致性與成本是主要的開放挑戰 [31]。
+
+**開放問題。** 高解析度與長影片的取樣成本；不犧牲多樣性、也不造成過飽和的有原則的引導；與人類判斷一致且能偵測記憶的評估指標；理解泛化（為什麼模型會產生新樣本而不是複製訓練資料）；有保證的可控性與編輯；以及資料來源、授權同意與濫用——這些是社會問題，而不只是技術問題。下一章 [ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/) 介紹主要的另一條路線：在像素與 token 上的自迴歸生成，以及它與擴散的混合方法。
+
+## 重點整理
+
+- 前向過程有封閉解 $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$，所以訓練就是「挑一個隨機雜訊程度，迴歸雜訊」。
+- 變分下界的每一項都是加權的雜訊預測誤差；$\mathcal L_{\mathrm{simple}}$ 拿掉權重，樣本變好，但它不是概似。
+- 對 Gaussian 路徑而言，雜訊、乾淨影像、$v$、分數與流速度的預測可以互相換算；差別在損失如何加權各雜訊程度，以及時間慣例。
+- 取樣就是解反向 SDE 或 ODE：DDPM、DDIM 與高階求解器用同一個訓練好的網路，在步數與精確度之間取捨；要計算 NFE，而不是「步數」。
+- 引導用多樣性換取遵循度，CFG 讓每步成本加倍；非常大的權重會把樣本推離資料分布。
+- 潛在空間、架構、目標與取樣器是分開的設計選擇；自編碼器限制了可達到的細節。
+- 條件流匹配透過迴歸每一對的直線速度來訓練邊際速度，但直線的條件路徑不會讓學到的流變直——少步生成需要 reflow、蒸餾、一致性或平均速度訓練。
+- 沒有單一指標能衡量品質：FID 依賴樣本數與特徵擷取器；要搭配精確率／召回率、人類或對齊研究，以及成本。
+
+## 練習
+
+1. **找回乾淨估計。** 從 $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$ 出發，由雜訊預測推導 $\hat x_0$。如果 $\epsilon_\theta$ 有誤差 $\delta$，在 $\bar\alpha_t=0.25$ 與 $\bar\alpha_t=10^{-4}$ 時，$\hat x_0$ 的誤差有多大？
+
+<details>
+<summary>提示</summary>
+
+$\hat x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta)/\sqrt{\bar\alpha_t}$，所以誤差是 $\sqrt{1-\bar\alpha_t}\,\delta/\sqrt{\bar\alpha_t}$：在 $\bar\alpha_t=0.25$ 時約 $1.7\,\delta$，在 $10^{-4}$ 時約 $100\,\delta$。高雜訊時，$\hat x_0$ 是許多可能影像的平均，而不是一張影像。
+
+</details>
+
+2. **後驗平均的兩種形式。** 把 $x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon)/\sqrt{\bar\alpha_t}$ 代入 $\tilde\mu_t$，證明它等於 $\frac{1}{\sqrt{\alpha_t}}\big(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon\big)$。接著把後驗程式中的 `t` 改成 50 與 900，確認公式仍然吻合。
+
+<details>
+<summary>提示</summary>
+
+使用 $\bar\alpha_t=\alpha_t\bar\alpha_{t-1}$ 與 $\beta_t=1-\alpha_t$。$x_t$ 的係數變成 $\frac{\beta_t+\alpha_t(1-\bar\alpha_{t-1})}{\sqrt{\alpha_t}(1-\bar\alpha_t)}=\frac{1}{\sqrt{\alpha_t}}$，因為分子等於 $1-\bar\alpha_t$。
+
+</details>
+
+3. **計算成本。** 一個潛在文字生成影像模型用 30 步 DDIM 取樣，並以分開的條件與無條件前向計算做無分類器引導，最後跑一次解碼器。總共需要幾次去雜訊器評估？若換成一個已把引導「內建」的 4 步蒸餾模型，次數如何變化？
+
+<details>
+<summary>提示</summary>
+
+60 次去雜訊器評估加一次解碼器；把兩個 CFG 分支批次處理可以減少實際時間，但不會減少計算量。內建引導的 4 步蒸餾模型需要 4 次評估加解碼器。要比較品質與多樣性，而不只是次數。
+
+</details>
+
+4. **時間慣例。** 擴散各節使用「$t$ 大＝雜訊多」；流匹配一節使用「$t=0$ 是雜訊、$t=1$ 是資料」。用 $s=1-t$ 重新參數化這個流。$dx/ds$ 是什麼？如果只改時間輸入的標籤，會出什麼錯？
+
+<details>
+<summary>提示</summary>
+
+$dx/ds=-v(x,1-s)$。如果把 $s$ 餵給一個以 $t$ 訓練的網路，卻沒有翻轉正負號與時間輸入，就會朝錯誤方向積分，把樣本推離資料。
+
+</details>
+
+5. **引導掃描。** 在 CFG 程式中加入 $w\in\{0.5,\,1.5,\,5\}$，並記錄類別 1 樣本中落得比較靠近錯誤類別模態的比例。畫出到最近模態的平均距離對 $w$ 的關係。引導從哪裡開始不再有幫助？
+
+<details>
+<summary>提示</summary>
+
+在 $w=1$ 時，精確的條件模型就已把每個樣本放進類別 1，所以更大的 $w$ 在這裡無法提升類別正確率——只會讓群集變形。對一個學習出來、並不完美的條件模型而言，適度的 $w\gt1$ 可以提升遵循度，這也是實務上使用它的原因。
+
+</details>
+
+6. **取樣器消融實驗。** 固定訓練好的流匹配網路。把 1、2、5、20、100 步的 Euler 與二階 Heun 步驟（先用 Euler 預測，再平均兩端的速度）比較。使用相同的起始雜訊，測量群集平均與離散程度。在相同網路呼叫次數下，2 步 Heun 取樣器是否勝過 4 步 Euler？
+
+<details>
+<summary>提示</summary>
+
+Heun 每步需要兩次網路呼叫。要畫出樣本，而不只看數字。對一個以瞬時速度訓練的模型做一步 Euler，並不能檢驗另外訓練的一步模型（例如一致性模型或 MeanFlow）。
+
+</details>
+
+## 參考文獻
+
+1. L. Yang, Z. Zhang, Y. Song, S. Hong, R. Xu, Y. Zhao, W. Zhang, B. Cui and M.-H. Yang, "Diffusion Models: A Comprehensive Survey of Methods and Applications," *ACM Computing Surveys*, 2023. [arXiv](https://arxiv.org/abs/2209.00796)
+2. Y. Lipman, M. Havasi, P. Holderrieth, N. Shaul, M. Le, B. Karrer, R. T. Q. Chen, D. Lopez-Paz, H. Ben-Hamu and I. Gat, "Flow Matching Guide and Code," arXiv:2412.06264, 2024. [arXiv](https://arxiv.org/abs/2412.06264)
+3. J. Ho, A. Jain and P. Abbeel, "Denoising Diffusion Probabilistic Models," *NeurIPS*, 2020. [arXiv](https://arxiv.org/abs/2006.11239)
+4. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon and B. Poole, "Score-Based Generative Modeling through Stochastic Differential Equations," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2011.13456)
+5. J. Song, C. Meng and S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.02502)
+6. J. Ho and T. Salimans, "Classifier-Free Diffusion Guidance," NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications; arXiv:2207.12598, 2022. [arXiv](https://arxiv.org/abs/2207.12598)
+7. R. Rombach, A. Blattmann, D. Lorenz, P. Esser and B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [arXiv](https://arxiv.org/abs/2112.10752)
+8. W. Peebles and S. Xie, "Scalable Diffusion Models with Transformers," *ICCV*, 2023. [arXiv](https://arxiv.org/abs/2212.09748)
+9. P. Esser, S. Kulal, A. Blattmann et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, PMLR 235, 2024. [PMLR](https://proceedings.mlr.press/v235/esser24a.html)
+10. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel and M. Le, "Flow Matching for Generative Modeling," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2210.02747)
+11. X. Liu, C. Gong and Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.03003)
+12. Y. Song, P. Dhariwal, M. Chen and I. Sutskever, "Consistency Models," *ICML*, 2023. [arXiv](https://arxiv.org/abs/2303.01469)
+13. Z. Geng, M. Deng, X. Bai, J. Z. Kolter and K. He, "Mean Flows for One-step Generative Modeling," *NeurIPS*, 2025. [arXiv](https://arxiv.org/abs/2505.13447)
+14. S. J. D. Prince, *Understanding Deep Learning*, MIT Press, 2023. [book site](https://udlbook.github.io/udlbook/)
+15. J. Sohl-Dickstein, E. Weiss, N. Maheswaranathan and S. Ganguli, "Deep Unsupervised Learning using Nonequilibrium Thermodynamics," *ICML*, PMLR 37, 2015. [PMLR](https://proceedings.mlr.press/v37/sohl-dickstein15.html)
+16. P. Vincent, "A Connection Between Score Matching and Denoising Autoencoders," *Neural Computation*, vol. 23, no. 7, pp. 1661–1674, 2011. [doi](https://doi.org/10.1162/NECO_a_00142)
+17. Y. Song and S. Ermon, "Generative Modeling by Estimating Gradients of the Data Distribution," *NeurIPS*, 2019. [arXiv](https://arxiv.org/abs/1907.05600)
+18. P. Dhariwal and A. Nichol, "Diffusion Models Beat GANs on Image Synthesis," *NeurIPS*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/49ad23d1ec9fa4bd8d77d02681df5cfa-Abstract.html)
+19. A. Q. Nichol and P. Dhariwal, "Improved Denoising Diffusion Probabilistic Models," *ICML*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/nichol21a.html)
+20. T. Karras, M. Aittala, T. Aila and S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2206.00364)
+21. C. Lu, Y. Zhou, F. Bao, J. Chen, C. Li and J. Zhu, "DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2206.00927)
+22. T. Salimans and J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2202.00512)
+23. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler and S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS (NIPS)*, 2017. [arXiv](https://arxiv.org/abs/1706.08500)
+24. T. Kynkäänniemi, T. Karras, S. Laine, J. Lehtinen and T. Aila, "Improved Precision and Recall Metric for Assessing Generative Models," *NeurIPS*, 2019. [arXiv](https://arxiv.org/abs/1904.06991)
+25. G. Stein, J. C. Cresswell, R. Hosseinzadeh et al., "Exposing Flaws of Generative Model Evaluation Metrics and Their Unfair Treatment of Diffusion Models," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2306.04675)
+26. S. Jayasumana, S. Ramalingam, A. Veit, D. Glasner, A. Chakrabarti and S. Kumar, "Rethinking FID: Towards a Better Evaluation Metric for Image Generation," *CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Jayasumana_Rethinking_FID_Towards_a_Better_Evaluation_Metric_for_Image_Generation_CVPR_2024_paper.html)
+27. F.-A. Croitoru, V. Hondru, R. T. Ionescu and M. Shah, "Diffusion Models in Vision: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3261988)
+28. H. Cao, C. Tan, Z. Gao, Y. Xu, G. Chen, P.-A. Heng and S. Z. Li, "A Survey on Generative Diffusion Models," *IEEE Transactions on Knowledge and Data Engineering*, vol. 36, no. 7, pp. 2814–2830, 2024. [doi](https://doi.org/10.1109/TKDE.2024.3361474)
+29. C.-H. Lai, Y. Song, D. Kim, Y. Mitsufuji and S. Ermon, "The Principles of Diffusion Models," monograph, arXiv:2510.21890, 2025. [arXiv](https://arxiv.org/abs/2510.21890)
+30. H. Shen, J. Zhang, B. Xiong et al., "Efficient Diffusion Models: A Survey," *Transactions on Machine Learning Research*, 2025. [arXiv](https://arxiv.org/abs/2502.06805)
+31. A. Melnik, M. Ljubljanac, C. Lu, Q. Yan, W. Ren and H. Ritter, "Video Diffusion Models: A Survey," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2405.03150)
+32. C. Lu and Y. Song, "Simplifying, Stabilizing and Scaling Continuous-Time Consistency Models," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.11081)
+33. A. Sauer, D. Lorenz, A. Blattmann and R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [arXiv](https://arxiv.org/abs/2311.17042)
+34. M. S. Albergo and E. Vanden-Eijnden, "Building Normalizing Flows with Stochastic Interpolants," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.15571)
+35. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A Large-Scale Hierarchical Image Database," *CVPR*, 2009, pp. 248–255. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+36. C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens and Z. Wojna, "Rethinking the Inception Architecture for Computer Vision," *CVPR*, 2016, pp. 2818–2826. [arXiv](https://arxiv.org/abs/1512.00567)
+37. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," *MICCAI*, LNCS 9351, pp. 234–241, 2015. [arXiv](https://arxiv.org/abs/1505.04597)
+38. A. Radford, J. W. Kim, C. Hallacy et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, 2021. [arXiv](https://arxiv.org/abs/2103.00020)
+39. M. Oquab, T. Darcet, T. Moutakanni et al., "DINOv2: Learning Robust Visual Features without Supervision," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2304.07193)
+40. B. Efron, "Tweedie's Formula and Selection Bias," *Journal of the American Statistical Association*, vol. 106, no. 496, pp. 1602–1614, 2011. [doi](https://doi.org/10.1198/jasa.2011.tm11181)
+41. A. Dosovitskiy, L. Beyer, A. Kolesnikov et al., "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)

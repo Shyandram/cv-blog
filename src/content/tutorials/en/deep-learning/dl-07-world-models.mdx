@@ -1,0 +1,598 @@
+---
+title: "DL 07 · World Models: Video, Latent Dynamics and Planning"
+description: "What a world model is, how model-based reinforcement learning uses one (World Models, the Dreamer line, MuZero), why video generators are proposed as world simulators, how latent dynamics and JEPA-style predictive representations work, and how to evaluate all of them, with complete CPU experiments."
+track: deep-learning
+order: 70
+level: advanced
+prereqs: [ml/ml-03a-recurrent-recursive-networks, ml/ml-09-foundation-models, deep-learning/dl-06-object-tracking]
+tags: [world-models, model-based-rl, dreamer, muzero, video-prediction, jepa, planning]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import usesFig from '../../../../assets/deep-learning/dl-07-world-models/three-uses.png';
+import rssmFig from '../../../../assets/deep-learning/dl-07-world-models/rssm.png';
+import blurFig from '../../../../assets/deep-learning/dl-07-world-models/mean-vs-sample.png';
+import rolloutFig from '../../../../assets/deep-learning/dl-07-world-models/rollout-error.png';
+import planningFig from '../../../../assets/deep-learning/dl-07-world-models/planning.png';
+import ensembleFig from '../../../../assets/deep-learning/dl-07-world-models/ensemble-exploitation.png';
+
+## What you'll learn
+
+- What a world model is, and the difference between an observation, a hidden state, a belief and an action.
+- How model-based reinforcement learning uses a learned model in three different ways: planning online, learning a policy in imagination, and tree search with a value-equivalent model, with World Models, PlaNet, the Dreamer line, TD-MPC2 and MuZero as examples.
+- Why video prediction and generation are proposed as "world simulators", why squared-error predictors produce blur, and what interactive generators such as Genie can and cannot show.
+- How recurrent state-space models and JEPA-style predictive representations learn latent dynamics without (or with) reconstructing pixels.
+- How to fit a small dynamics model, measure multi-step error, plan with it, and detect when a planner exploits model errors, all on a CPU.
+- How to evaluate a world model, and which problems remain open.
+
+## The big picture
+
+[Tracking](/en/learn/deep-learning/dl-06-object-tracking/) asks where an object went. A world model asks what could happen next, and especially what would happen **if an agent took a particular action**. A robot approaching a cup needs more than an object label: it needs to predict how its gripper and the cup will move, which outcomes are uncertain, and which action is likely to reach its goal.
+
+<Callout type="tip" title="Explain like I'm five">
+Before pushing a toy car, you imagine where it will go. You can imagine a gentle push and a strong push, pick the better one, push, and then look again to see what really happened. A world model is a learned version of that imagination. A planner is the part that tries out pushes in imagination and picks one. Looking again after each push is what keeps small imagination mistakes from piling up.
+</Callout>
+
+The term "world model" covers several research traditions. Ding et al. organize the literature around two functions: building internal representations that capture how the world works, and predicting future states to simulate and guide decisions [1]. This chapter uses an operational definition: **a world model is a learned model that represents enough of an environment to predict relevant changes under specified conditions, usually including the agent's own actions.** Its usefulness depends on the task. A model for rendering a scene, a model for learning representations, and a model for controlling a robot may need very different information.
+
+## Observations, states, beliefs and actions
+
+**Plain version.** A camera image is not the world; it is a partial view of it. A world model has to keep track of what it cannot currently see, like the speed of a ball or an object behind an occluder.
+
+Let $s_t$ denote the underlying environment state at time $t$, $o_t$ the observation and $a_t$ the executed action:
+
+$$
+s_{t+1}\sim p(s_{t+1}\mid s_t,a_t),\qquad
+o_t\sim p(o_t\mid s_t).
+$$
+
+The first distribution is the **transition** (dynamics) model; the second is the **observation** model. The state might contain object positions, velocities and contact conditions. An image shows only a projection, with occlusions and sensor noise; Szeliski covers the geometry and motion side of this observation process [3]. Two identical images can have different futures: a ball at the same position might be moving left or right.
+
+A learned model therefore builds a representation from history:
+
+$$
+z_t=E_\theta(o_{0:t},a_{0:t-1}),\qquad
+p_\theta(z_{t+1}\mid z_t,a_t),
+$$
+
+where $E_\theta$ is an encoder with parameters $\theta$, $o_{0:t}$ is the sequence of observations up to $t$, and $p_\theta(z_{t+1}\mid z_t,a_t)$ is a learned latent transition. An encoder does not automatically make $z_t$ a sufficient state. If it discards velocity, hidden objects or a relevant material property, the transition model cannot recover that information. Recurrent memory or a short video context helps, but must be tested under the actual occlusions and delays.
+
+When the state is only partially observed, the principled object is a **belief**, a probability distribution over possible states given the history. Bishop's treatment of sequential latent-variable models (hidden Markov models and linear dynamical systems) gives the probabilistic background [2]. A compact latent vector can approximate useful aspects of this distribution; it need not map one-to-one onto human-readable physical variables.
+
+### A prediction factorization
+
+For a proposed action sequence, the probability of future observations factorizes as
+
+$$
+p_\theta(o_{t+1:t+H}\mid o_{\leq t},a_{0:t+H-1})
+=\int p_\theta(z_t\mid o_{\leq t},a_{\lt t})
+\prod_{k=t}^{t+H-1}
+p_\theta(z_{k+1}\mid z_k,a_k)\,
+p_\theta(o_{k+1}\mid z_{k+1})
+\,dz_{t:t+H},
+$$
+
+where $H$ is the prediction horizon. The three factors are **inference** (what is the current latent state given the past?), **transition** (how does it evolve under the actions?) and **rendering** (what would the camera see?). A planner may work directly with $z$ and skip the pixel decoder if its goal and cost are defined in latent space. Much of the design space in this chapter consists of choosing which of these factors to learn, and how.
+
+## Model-based reinforcement learning
+
+**Plain version.** Reinforcement learning (RL) learns to act by trial and error. If the agent also learns how the world responds to its actions, it can practice in its head, which needs far fewer real trials.
+
+### The setting
+
+An RL agent interacts with an environment over discrete steps. At each step it observes, chooses $a_t$ from a **policy** $\pi(a_t\mid s_t)$, receives a reward $r_t$, and the environment moves on. The goal is to maximize the expected **return**
+
+$$
+G_t=\sum_{k=0}^{\infty}\gamma^k r_{t+k},
+$$
+
+where $\gamma\in[0,1)$ is a discount factor that weights near rewards more than distant ones. The **value** $V^\pi(s)=\mathbb E_\pi[G_t\mid s_t=s]$ is the expected return from state $s$ when following $\pi$.
+
+**Model-free** methods learn a policy or value directly from real transitions. **Model-based** methods also learn a model of transitions and rewards and use it to reduce real interaction. The idea is old: Sutton's Dyna architecture (1991) already combined learning from real experience with planning on experience simulated by a learned model, using the same value updates for both [4]. Moerland et al. survey the field and organize it along two axes: how the dynamics model is learned (handling stochasticity, uncertainty, partial observability, temporal abstraction) and how planning and learning are integrated (where to start planning, how much budget to give it, how to plan, and how to feed the results back into acting and learning) [5].
+
+### Three ways to use a model
+
+<Figure src={usesFig} alt="Three diagrams. Left: observe state, sample action sequences, roll them through the model, execute the first action, replan; examples PlaNet, PETS, TD-MPC2. Middle: real experience trains a world model, which imagines rollouts that train a policy and value, which acts in the real world and adds data; examples World Models, Dreamer, IRIS, DIAMOND. Right: a search tree over hidden states produced by functions h, g and f; example MuZero." caption="Figure 1 — Three ways to use a learned model. The same model can serve more than one role; the difference is where the decision is computed." />
+
+1. **Plan online (model-predictive control).** At every real step, search for a good action sequence by simulating candidates in the model, execute only the first action, observe, and repeat. PlaNet [7], PETS [29] and TD-MPC2 [11] work this way.
+2. **Learn in imagination.** Train a policy (and usually a value function) on trajectories generated by the model, then act with that policy without searching at run time. World Models [6], the Dreamer line [8], [9], [10], IRIS [12] and DIAMOND [13] work this way.
+3. **Search with a value-equivalent model.** Learn a model that predicts only what planning needs (rewards, values, policy), not observations, and run tree search in its latent space. MuZero [14] is the canonical example.
+
+All three share one danger: the model is wrong somewhere, and an optimizer is very good at finding exactly those places. We return to this in the section on uncertainty and exploitation.
+
+### Why errors compound
+
+Suppose the learned transition $\hat f$ has one-step error at most $\varepsilon$, and the true dynamics $f$ are Lipschitz with constant $L$ (a small change in state changes the next state by at most $L$ times as much). Starting from the same state and applying the same actions, the gap $e_k$ between predicted and true states after $k$ steps obeys $e_{k+1}\le Le_k+\varepsilon$, so
+
+$$
+e_H\le\varepsilon\sum_{k=0}^{H-1}L^k=\varepsilon\,\frac{L^H-1}{L-1}\quad(L\ne1).
+$$
+
+For $L>1$ the bound grows exponentially with the horizon $H$; for $L\lt 1$ it saturates at $\varepsilon/(1-L)$. This is a worst-case bound, but it explains two common design choices: replanning often (MPC) and using short model rollouts. Janner et al. made the second idea concrete: their MBPO algorithm branches short model rollouts from real states rather than imagining long trajectories from the start, and they argue both theoretically and empirically that this keeps the benefit of model data while limiting its bias [30].
+
+## World Models: compress, predict, control
+
+**Plain version.** First learn to summarize each frame in a few numbers, then learn to predict the next summary, then train a tiny controller on top. The controller can even be trained entirely inside the model's "dream".
+
+Ha and Schmidhuber's *World Models* (published at NeurIPS 2018 as "Recurrent World Models Facilitate Policy Evolution", with an interactive online version) made the idea popular in deep learning [6]. Their agent has three parts:
+
+- **V (vision):** a variational autoencoder that compresses each $64\times64$ frame into a small latent vector $z_t$.
+- **M (memory):** a recurrent network with a mixture-density output that predicts a distribution over $z_{t+1}$ given $z_t$, the action and its hidden state $h_t$.
+- **C (controller):** a deliberately tiny linear policy $a_t=W_c[z_t;h_t]+b_c$, trained with an evolution strategy rather than backpropagation.
+
+In a car-racing task, the controller using V and M features solved the task; in a VizDoom task, the controller was trained entirely inside the environment simulated by M and then transferred to the real game [6]. The design separates *perception*, *prediction* and *decision*, and shows that a controller can be very small when the representation already carries the relevant dynamics. It also showed the central risk: a controller trained inside an imperfect dream can learn to exploit the dream's mistakes.
+
+## Latent dynamics: from PlaNet to the Dreamer line
+
+**Plain version.** Instead of predicting future images, predict a compact hidden state and only decode images when training. A hidden state that mixes a deterministic memory with a random part can represent both what the agent remembers and what it is unsure about.
+
+### Recurrent state-space models
+
+Hafner et al.'s PlaNet learned environment dynamics from images and chose actions by fast online planning in latent space; its key modeling idea is a latent dynamics model with both deterministic and stochastic components, the **recurrent state-space model** (RSSM) [7]. The RSSM keeps a deterministic memory $h_t$ and a stochastic state $z_t$:
+
+$$
+h_t=f_\theta(h_{t-1},z_{t-1},a_{t-1}),\qquad
+z_t\sim p_\theta(z_t\mid h_t)\ \ (\text{prior}),\qquad
+z_t\sim q_\theta(z_t\mid h_t,o_t)\ \ (\text{posterior}).
+$$
+
+Here $f_\theta$ is a recurrent cell, the **prior** predicts $z_t$ without seeing the current image (this is what is used when imagining), and the **posterior** also sees the image $o_t$ (used during training and when filtering real observations). Heads read the model state $(h_t,z_t)$ to predict the image $\hat o_t$, the reward $\hat r_t$ and a continuation flag (whether the episode goes on).
+
+<Figure src={rssmFig} alt="Three time steps of a recurrent state-space model. Each deterministic state h feeds the next h together with the action, and generates a stochastic state z; the observation o feeds z through a dashed posterior arrow; heads above h output reward, reconstructed image and continuation." caption="Figure 2 — An unrolled RSSM. Imagination uses only the prior path (solid); training additionally conditions z on the real image (dashed)." />
+
+Training maximizes a variational lower bound on the likelihood of observed sequences. A simplified per-step loss is
+
+$$
+\mathcal L_t=-\log p_\theta(o_t\mid h_t,z_t)-\log p_\theta(r_t\mid h_t,z_t)
++\beta\,D_{\mathrm{KL}}\bigl(q_\theta(z_t\mid h_t,o_t)\,\big\|\,p_\theta(z_t\mid h_t)\bigr),
+$$
+
+with $\beta>0$ weighting the KL term. The reconstruction terms make the state informative; the KL term teaches the prior to predict what the posterior will see, which is exactly the skill needed for imagination. Real implementations add loss balancing and other stabilizers, so treat this as a teaching outline, not the exact loss of any one paper.
+
+### Dreamer: learning behavior in imagination
+
+Dreamer (2020) kept the RSSM but replaced online planning with an actor–critic trained entirely on imagined latent trajectories. Its key move was to propagate analytic gradients of learned state values back through trajectories imagined in the compact latent space [8]. Starting from latent states inferred from real data, the agent imagines $H$ steps with its actor, scores them with a learned critic, and trains the critic on bootstrapped targets such as the $\lambda$-return
+
+$$
+V^\lambda_t=\hat r_t+\gamma\,\hat c_t\Bigl[(1-\lambda)\,v_\psi(s_{t+1})+\lambda\,V^\lambda_{t+1}\Bigr],
+$$
+
+where $\hat r_t$ and $\hat c_t$ are the predicted reward and continuation, $v_\psi$ is the critic, and $\lambda\in[0,1]$ trades off one-step bootstrapping ($\lambda=0$) against longer imagined returns ($\lambda=1$). The actor is updated to increase these values.
+
+The line continued:
+
+- **DreamerV2** (2021) switched to *discrete* (categorical) latent variables and became the first agent to reach human-level performance on the 55-game Atari benchmark by learning behaviors inside a separately trained world model [9].
+- **DreamerV3** (Nature, 2025) used robustness techniques based on normalization, balancing and transformations so that a single configuration outperformed specialized methods across more than 150 tasks, and was the first algorithm to collect diamonds in Minecraft from scratch without human data or curricula [10].
+
+Two related lines show that the RSSM is one choice among several. **TD-MPC2** plans in the latent space of an *implicit*, decoder-free world model (no image reconstruction), reported strong results across 104 online RL tasks with a single set of hyperparameters, and trained a single 317M-parameter agent on 80 tasks [11]. **IRIS** replaced the RSSM with a discrete autoencoder plus an autoregressive Transformer over image tokens and learned from the equivalent of two hours of Atari gameplay [12]. **DIAMOND** went further toward pixels: it trains the agent inside a *diffusion* world model, arguing that discrete latents can drop visual details that matter for control, and also demonstrated the model as an interactive neural game engine for a 3D game [13].
+
+## MuZero: a model that predicts only what planning needs
+
+**Plain version.** You do not have to predict what the screen will look like to play a good game. You only need to predict how good positions are, which moves look promising, and what rewards you will get. MuZero learns exactly that, and then searches.
+
+AlphaZero-style tree search needs a simulator of the game rules. MuZero removes that requirement by learning a model that, applied repeatedly, predicts the quantities most directly relevant to planning: reward, action-selection policy and value [14]. It has three functions:
+
+$$
+s^0=h_\theta(o_1,\dots,o_t),\qquad
+(r^k,s^k)=g_\theta(s^{k-1},a^k),\qquad
+(\mathbf p^k,v^k)=f_\theta(s^k),
+$$
+
+where $h_\theta$ (representation) encodes the observation history into a hidden state $s^0$, $g_\theta$ (dynamics) maps a hidden state and a hypothetical action $a^k$ to a predicted reward $r^k$ and next hidden state, and $f_\theta$ (prediction) outputs a policy vector $\mathbf p^k$ and a value $v^k$. A Monte Carlo tree search unrolls $g_\theta$ to choose actions. Training unrolls the model for $K$ steps along real trajectories and minimizes
+
+$$
+\mathcal L=\sum_{k=0}^{K}\Bigl[\ell^r(u_{t+k},r^k)+\ell^v(z_{t+k},v^k)+\ell^p(\boldsymbol\pi_{t+k},\mathbf p^k)\Bigr]+c\|\theta\|^2,
+$$
+
+where $u$ are observed rewards, $z$ are value targets (bootstrapped returns), $\boldsymbol\pi$ are the visit-count distributions produced by the search, $\ell^r,\ell^v,\ell^p$ are per-quantity losses and $c$ weights an L2 penalty.
+
+The hidden state $s^k$ is never asked to reconstruct an observation. It only has to be **value-equivalent**: planning with it must give the same rewards, values and policies as planning in the real environment would. With this design MuZero reached a new state of the art on 57 Atari games and, without being given the rules, matched AlphaZero's superhuman performance in Go, chess and shogi [14]. The lesson for vision is that a world model's target should be chosen by its use; predicting every pixel is one option, not a requirement.
+
+## Video prediction and generation as world simulators
+
+**Plain version.** If a model can generate realistic future video, perhaps it has learned how the world works. Sometimes it has; often it has only learned what videos usually look like. Testing which is the case is the hard part.
+
+### Action-conditioned video prediction
+
+Finn et al. trained an **action-conditioned video prediction** model on a dataset of 59,000 robot pushing interactions; by predicting pixel motion rather than raw pixels, the model generalized partly to unseen objects, and conditioning on different future actions produced a "visual imagination" of different futures [15]. This is a world model in the most literal sense: image in, action in, image out.
+
+### Why squared-error predictors blur
+
+Real futures are uncertain. Suppose that from the same past, a ball goes left with probability $\tfrac12$ and right with probability $\tfrac12$. For squared error, the best single prediction is the **conditional mean**:
+
+$$
+\hat o^\star=\arg\min_{\hat o}\ \mathbb E\bigl[\|o_{t+1}-\hat o\|^2\mid o_{\le t}\bigr]=\mathbb E[o_{t+1}\mid o_{\le t}],
+$$
+
+which here is two half-bright balls, an image that never happens. A generative model that **samples** one of the two futures produces a realistic image but, on average, a *higher* squared error.
+
+```python
+import numpy as np
+
+x = np.arange(64)
+def frame(center):                      # a 1-D "image" with one bright ball
+    return np.exp(-0.5 * ((x - center) / 2.0) ** 2)
+
+# Same past, two equally likely futures: the ball bounces left or right.
+futures = np.stack([frame(20), frame(44)])
+mean_pred = futures.mean(axis=0)        # what an MSE-trained predictor converges to
+sample_pred = futures[0]                # what a good generative sampler might output
+
+def expected_mse(pred):                 # average over the two possible futures
+    return np.mean([(pred - f) ** 2 for f in futures])
+
+print(f"peak brightness: true future 1.00, mean prediction {mean_pred.max():.2f}")
+print(f"expected MSE of mean prediction:   {expected_mse(mean_pred):.4f}")
+print(f"expected MSE of a sharp sample:    {expected_mse(sample_pred):.4f}")
+```
+
+Output:
+
+```text
+peak brightness: true future 1.00, mean prediction 0.50
+expected MSE of mean prediction:   0.0277
+expected MSE of a sharp sample:    0.0554
+```
+
+The sharp sample has exactly twice the expected error of the blurry mean. This is why pixel MSE rewards blur, why stochastic video models were introduced, and why evaluating a world model with a single squared-error number can prefer the wrong model.
+
+<Figure src={blurFig} alt="Left: two possible futures, a ball at position 20 or at 44. Middle: the mean prediction has two half-height bumps. Right: a sampled future has one full-height bump at position 20." caption="Figure 3 — Output of the code above. The MSE-optimal prediction averages incompatible futures; a sample is plausible but scores worse on MSE." />
+
+Babaeizadeh et al.'s SV2P addressed this by predicting a different possible future for each sample of a latent variable, and found substantially better predictions than the same model without stochasticity [16]. Modern video generators use the same principle at a much larger scale, with autoregressive token models or diffusion and flow models (see [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/) and [ML 08](/en/learn/ml/ml-08-autoregressive-vision/)).
+
+### Large generative world models
+
+- **GAIA-1** casts driving world modeling as next-token prediction over discrete tokens of video, text and action, producing realistic driving scenarios with control over ego-vehicle behavior and scene features [17].
+- **UniSim** learns a "universal simulator" of real-world interaction by combining datasets that are rich along different axes (objects in images, dense actions in robot data, motion in navigation data); it simulates both high-level instructions and low-level controls, and policies trained purely in it were deployed zero-shot on real robots [18].
+- **Genie** is a generative interactive environment trained without action labels on unlabelled Internet video. It consists of a video tokenizer, an autoregressive dynamics model and a *latent action model* that infers actions from changes between frames, so users can act frame by frame in generated worlds even though no action labels were used in training [19]. Such latent actions need not correspond to calibrated physical actuators.
+- **Genie 3**, announced by Google DeepMind in August 2025, generates worlds from text that can be navigated in real time at 24 frames per second and 720p, keeping consistency for a few minutes. The announcement lists limitations: a constrained action space, difficulty modeling several independent agents, inaccurate real-world locations, and interaction limited to minutes rather than hours [20].
+- **Cosmos** is NVIDIA's open platform of "world foundation models": pretrained video models, video tokenizers, a data-curation pipeline and post-training examples meant to be fine-tuned into task-specific world models for robots and vehicles [21].
+
+### Does realistic video mean physical understanding?
+
+Two careful studies say: not necessarily. Motamed et al.'s **Physics-IQ** benchmark tests fluid dynamics, optics, solid mechanics, magnetism and thermodynamics; across current video models (including Sora, Runway, Pika, Lumiere, Stable Video Diffusion and VideoPoet), physical understanding was severely limited and unrelated to visual realism [22]. Kang et al. trained diffusion video models on a 2D simulator governed by classical mechanics and found perfect in-distribution generalization, measurable scaling for combinatorial generalization, but failure out of distribution; the models behaved as if retrieving the closest training example rather than abstracting a rule [23].
+
+For robot control, also ask what an "action" means: force, joint target, gripper command, camera movement or an inferred token. A wrong unit, timing offset or control frequency changes the conditional problem even if the video looks convincing.
+
+## Predictive representations: the JEPA family
+
+**Plain version.** Predicting every pixel wastes effort on details that do not matter, like leaf texture. Instead, predict an abstract *description* of the missing or future part. If the description is good, the prediction is useful for planning.
+
+A **joint-embedding predictive architecture** (JEPA) encodes a visible *context* $x$ and a hidden *target* $y$ with encoders, and trains a predictor to map the context embedding to the target embedding:
+
+$$
+\mathcal L=\bigl\|P_\phi\bigl(E_\theta(x),\,m\bigr)-\operatorname{sg}\bigl[\bar E(y)\bigr]\bigr\|^2,
+$$
+
+where $E_\theta$ is the context encoder, $\bar E$ the target encoder, $P_\phi$ a predictor conditioned on information $m$ about where the target is (for example its position in the image or time), and $\operatorname{sg}$ (stop-gradient) blocks gradients into the target branch. Nothing is reconstructed in pixel space. The danger is **collapse**: if both encoders output a constant, the loss is zero. Asymmetric designs (a predictor on one side only, stop-gradient, and a target encoder that is not trained by the same gradient) are used to prevent it; [ML 05](/en/learn/ml/ml-05-representation-learning/) discusses these self-supervised mechanisms in more detail.
+
+- **I-JEPA** predicts the representations of several large target blocks of an image from one informative context block, and found the masking strategy (large, semantic targets; spatially distributed context) crucial for learning semantic features without hand-crafted augmentations [24].
+- **V-JEPA** applies feature prediction as a stand-alone objective to video, trained on 2 million videos without pretrained image encoders, text, negatives or reconstruction, and produced frozen features that work for both motion- and appearance-based tasks [25].
+- **V-JEPA 2** pretrains an action-free JEPA on over one million hours of Internet video, then post-trains a latent **action-conditioned** world model, V-JEPA 2-AC, on less than 62 hours of unlabeled robot video; planning toward image goals with it enabled zero-shot pick-and-place on Franka arms in two labs without data from those environments, task-specific training or reward [26]. The split between passive video and action data makes the observation/action distinction of this chapter concrete.
+- **V-JEPA 2.1** adds a dense predictive loss in which both visible and masked tokens contribute, deep self-supervision across intermediate layers, and multi-modal tokenizers for images and videos, aiming at spatially structured, temporally consistent dense features [27].
+- **DINO-WM** shows the same idea with an off-the-shelf encoder: it predicts future DINOv2 patch features from offline trajectories and plans by optimizing action sequences toward the features of a goal image, without reconstructing pixels or learning a reward model [28].
+
+Goals in feature space need care. A distance $\|z-z_{\mathrm{goal}}\|^2$ rewards only what the representation preserves. If the representation ignores gripper closure, a planner may reach a visually similar state without actually grasping the object. Better feature quality alone does not establish that an encoder predicts the consequences of arbitrary actions.
+
+### How the families relate
+
+| Family | Prediction target | Main benefit | Question to test |
+|---|---|---|---|
+| Latent dynamics (RSSM, TD-MPC2) | compact state, reward, value | cheap, repeated rollouts | does the latent retain task-relevant dynamics? |
+| Value-equivalent (MuZero) | reward, value, policy only | no effort on irrelevant detail | does it transfer when the reward changes? |
+| Autoregressive video (GAIA-1, Genie, IRIS) | next frame or token | explicit sequential factorization | do errors drift over long rollouts? |
+| Diffusion/flow video (DIAMOND, Cosmos) | jointly generated frames or chunks | expressive, uncertain futures | can actions steer outcomes at control latency? |
+| Predictive embeddings (JEPA, DINO-WM) | target features | structure without pixel reconstruction | are actions represented and goals meaningful? |
+
+These are compatible choices. A Transformer can parameterize any of them; a latent world model can decode through diffusion; a video generator can use an autoregressive outer loop and a diffusion inner loop. Architecture, prediction target, temporal factorization and training objective are separate design decisions.
+
+## Learning dynamics from data
+
+Training examples should retain ordering and action alignment:
+
+$$
+(o_t,\,a_t,\,o_{t+1},\,r_t,\,\mathrm{done}_{t+1}),
+$$
+
+where $\mathrm{done}_{t+1}$ marks the end of an episode. Record whether each action happens before or after each camera timestamp. Split by whole episodes, environment instances and relevant subjects; randomly splitting adjacent frames leaks nearly identical scenes and makes a transition predictor look better than it is (see [ML 10](/en/learn/ml/ml-10-evaluation-deployment/) for leakage in general).
+
+The data-collection policy matters. A model trained on slow, gentle interactions may fail for abrupt motion. Observational correlations are especially problematic when actions are absent: a model may learn that a cup moves when a hand approaches, yet have no evidence about what alternative pushes would do. This is the difference between passive video and interventional data.
+
+A **one-step loss** measures prediction from real history. A **multi-step loss** unrolls the model's own predictions and penalizes their accumulated error. Unrolling changes training difficulty and gradient paths; it does not remove distribution shift outside the observed interactions.
+
+## Complete CPU experiment: fit, predict, plan
+
+We use a two-dimensional state $x_t=(\text{position},\text{velocity})$, a scalar action $u_t$ and a damped linear system:
+
+$$
+x_{t+1}=Ax_t+Bu_t+\epsilon_t,
+$$
+
+where $A$ is the $2\times2$ state-transition matrix, $B$ the action-input vector and $\epsilon_t$ small Gaussian noise. The system is deliberately fully observed. It isolates dynamics and planning before adding image encoders and partial observability. Training and test episodes are generated independently. We fit only on training transitions and evaluate both one-step prediction and open-loop rollouts with the same held-out actions.
+
+The planner uses the **cross-entropy method** (CEM): sample candidate action sequences from a Gaussian, keep the lowest-cost "elite" sequences under the model, refit the Gaussian's mean and spread to them, and repeat. It executes one action, receives a fresh real state and replans. This is model-predictive control.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(7)
+A = np.array([[1.0, 0.1], [0.0, 0.94]])
+B = np.array([0.005, 0.1])
+
+def collect(n, steps=40):
+    x = np.zeros((n, steps + 1, 2))
+    x[:, 0] = rng.normal(size=(n, 2)) * [0.8, 0.3]
+    u = rng.uniform(-1, 1, size=(n, steps))
+    for t in range(steps):
+        x[:, t + 1] = (x[:, t] @ A.T + u[:, t, None] * B
+                       + rng.normal(scale=0.002, size=(n, 2)))
+    return x, u
+
+train, train_u = collect(120)
+test, test_u = collect(80)
+phi = np.column_stack([train[:, :-1].reshape(-1, 2), train_u.ravel()])
+target = train[:, 1:].reshape(-1, 2)
+W = np.linalg.lstsq(phi, target, rcond=None)[0]
+W_no_action = np.linalg.lstsq(phi[:, :2], target, rcond=None)[0]
+
+def predict(x, u):
+    return np.concatenate([x, np.asarray(u)[..., None]], axis=-1) @ W
+
+one_step = predict(test[:, :-1], test_u)
+rollout = np.zeros_like(test)
+rollout[:, 0] = test[:, 0]
+for t in range(test_u.shape[1]):
+    rollout[:, t + 1] = predict(rollout[:, t], test_u[:, t])
+rmse = lambda a, b: np.sqrt(np.mean((a - b) ** 2))
+print("One-step:", rmse(one_step, test[:, 1:]))
+print("Without actions:", rmse(test[:, :-1] @ W_no_action, test[:, 1:]))
+print("Final-horizon rollout:", rmse(rollout[:, -1], test[:, -1]))
+
+def plan(x, mean, horizon=20, population=256):
+    std = np.ones(horizon)
+    for _ in range(4):
+        candidates = np.clip(rng.normal(mean, std, (population, horizon)), -1, 1)
+        imagined = np.broadcast_to(x, (population, 2)).copy()
+        costs = np.zeros(population)
+        for t in range(horizon):
+            imagined = predict(imagined, candidates[:, t])
+            costs += (imagined[:, 0] ** 2 + 0.15 * imagined[:, 1] ** 2
+                      + 0.02 * candidates[:, t] ** 2)
+        costs += 20 * imagined[:, 0] ** 2
+        elite = candidates[np.argsort(costs)[:32]]
+        mean = elite.mean(axis=0)
+        std = elite.std(axis=0) + 0.05
+    return mean
+
+real = np.array([1.5, 0.0])
+mean = np.zeros(20)
+for _ in range(40):
+    sequence = plan(real, mean)
+    real = A @ real + B * sequence[0]  # real system; never used inside plan()
+    mean = np.r_[sequence[1:], 0.0]
+print("Controlled final state:", real)
+assert rmse(one_step, test[:, 1:]) < 0.01
+assert abs(real[0]) < 0.1
+```
+
+Output:
+
+```text
+One-step: 0.0019866110218121832
+Without actions: 0.04106321931941812
+Final-horizon rollout: 0.013772759824274517
+Controlled final state: [-0.00453985 -0.0210205 ]
+```
+
+The one-step RMSE ($0.0020$) is at the noise level; dropping the action input raises it twentyfold ($0.0411$), so the action genuinely matters. The open-loop rollout error at horizon 40 ($0.0138$) is about seven times the one-step error even for this nearly perfect linear model, a mild case of the compounding derived above. MPC drives the position from $1.5$ to about $-0.0045$, compared with $1.5$ under zero action. These are synthetic results from this script, not published comparisons.
+
+<Figure src={rolloutFig} alt="One-step RMSE stays near 0.002 while open-loop RMSE grows toward 0.014 over forty prediction steps." caption="Figure 4 — Independent synthetic test episodes. One-step evaluation receives the true state each time; open-loop evaluation receives only the initial state and the held-out actions." />
+
+<Figure src={planningFig} alt="Model-predictive control moves position from 1.5 toward zero while a zero-action baseline remains at 1.5; applied actions change from braking to stabilization." caption="Figure 5 — CEM plans with the learned transition model. Only its first action is executed in the synthetic environment before replanning from a new observation." />
+
+Replacing $x_t$ with an image embedding does not reproduce Dreamer or V-JEPA 2-AC: it adds an encoder-learning problem, latent uncertainty and the need for a valid goal or reward.
+
+## Planning, uncertainty and model exploitation
+
+**Plain version.** A planner looks for the action the model likes best. If the model is wrong somewhere, the planner will happily go there. Knowing *where* the model is unsure is what keeps it honest.
+
+A finite-horizon planning objective can be written as
+
+$$
+a^*_{t:t+H-1}
+=\arg\min_{a_{t:t+H-1}}
+\mathbb E_\theta\Bigl[
+\sum_{k=1}^{H}c(z_{t+k},a_{t+k-1})
++\lambda_{\mathrm{T}}\,c_{\mathrm{T}}(z_{t+H})
+\Bigr],
+$$
+
+where $c$ is a per-step cost, $c_{\mathrm{T}}$ a terminal cost weighted by $\lambda_{\mathrm{T}}$, and the expectation is over the model's predicted latent states $z$. **Model-predictive control** executes the first action, observes again and replans. Feedback corrects drift, but cannot rescue an action whose immediate consequence was badly modeled.
+
+### Two kinds of uncertainty
+
+**Aleatoric** uncertainty is inherent randomness (a coin flip, the ball that may go left or right); more data does not remove it. **Epistemic** uncertainty comes from lack of data (the model has never seen this situation); more data does remove it. Sampling a generative model can represent aleatoric uncertainty, but sample diversity is not proof of calibration. Epistemic uncertainty is commonly approximated with **ensembles**: several models trained on bootstrap resamples or with different initializations agree where data is dense and tend to disagree where it is not. Chua et al.'s PETS combined probabilistic networks (for aleatoric noise) in an ensemble (for epistemic uncertainty) with sampling-based uncertainty propagation and CEM planning, matching the final performance of strong model-free methods on several benchmarks with far fewer samples [29].
+
+### Code: a planner exploiting a learned model
+
+The agent has logged data only for actions in $[-1,1]$, but its planner may choose any action in $[-3,3]$.
+
+```python
+import numpy as np
+from sklearn.neural_network import MLPRegressor
+
+rng = np.random.default_rng(0)
+true_reward = lambda a: np.sin(3 * a) * np.exp(-0.3 * a ** 2)   # unknown to the agent
+
+# Logged interactions only cover actions in [-1, 1].
+a_data = rng.uniform(-1, 1, 200)
+r_data = true_reward(a_data) + 0.05 * rng.normal(size=200)
+
+ensemble = []
+for k in range(5):                       # bootstrap + different initialization
+    idx = rng.integers(0, 200, 200)
+    m = MLPRegressor(hidden_layer_sizes=(64, 64), max_iter=3000, random_state=k)
+    ensemble.append(m.fit(a_data[idx, None], r_data[idx]))
+
+grid = np.linspace(-3, 3, 601)
+preds = np.stack([m.predict(grid[:, None]) for m in ensemble])
+mean, std = preds.mean(0), preds.std(0)
+
+for name, score in [("single model", preds[0]),
+                    ("ensemble mean", mean),
+                    ("pessimistic: mean - 2 std", mean - 2 * std)]:
+    a_star = grid[np.argmax(score)]       # the "planner": pick the best-looking action
+    print(f"{name:26s} picks a = {a_star:+.2f}, predicted {score.max():.2f}, "
+          f"true {true_reward(a_star):.2f}")
+print(f"mean std inside data {std[np.abs(grid) <= 1].mean():.3f}, "
+      f"outside {std[np.abs(grid) > 1.5].mean():.3f}")
+```
+
+Output:
+
+```text
+single model               picks a = -3.00, predicted 1.79, true -0.03
+ensemble mean              picks a = -3.00, predicted 1.58, true -0.03
+pessimistic: mean - 2 std  picks a = +0.43, predicted 0.87, true 0.91
+mean std inside data 0.025, outside 0.321
+```
+
+Both the single model and the ensemble mean extrapolate a rising line outside the data, and the planner runs to the edge of the action space, where the true reward is about zero. Ensemble disagreement is thirteen times larger outside the data than inside, and a *pessimistic* score (mean minus two standard deviations) keeps the planner inside the data, where it finds an action with true reward $0.91$. Restricting actions, shortening horizons, penalizing disagreement and testing with real feedback are the practical responses. Agreement among ensemble members is not proof of correctness, though: all five can share the same bias.
+
+<Figure src={ensembleFig} alt="Reward versus action. Data points lie between -1 and 1 and follow the true curve. Five ensemble members agree inside that region and fan out outside it. The single model's choice is at a = -3 with high predicted but near-zero true reward; the pessimistic choice is near a = 0.43 on the true peak." caption="Figure 6 — Output of the code above. Optimizing a learned model drives the planner to where the model is least reliable; ensemble spread exposes those regions." />
+
+## How to evaluate a world model
+
+| Question | Measurement | Important control |
+|---|---|---|
+| Does it predict known dynamics? | one-step and horizon-indexed state or feature error | independent episodes; fixed action sequence |
+| Does appearance stay coherent? | reconstruction and video-quality metrics, identity consistency | compare camera motion and occlusions |
+| Do actions matter correctly? | matched initial context with different specified actions | real action-conditioned reference trajectories |
+| Are physical constraints respected? | collisions, object permanence, conservation; benchmarks such as Physics-IQ [22] | task-specific tolerances; out-of-distribution cases [23] |
+| Does it help decisions? | success rate, return, interventions, control latency | test in the real or a trusted environment |
+
+Pixel fidelity and decision usefulness can disagree, as the blur example showed. An averaged prediction can have low squared error while showing an impossible scene; an accurate latent predictor can omit visually irrelevant texture. Report the target, horizon, conditions and output resolution with every metric.
+
+For comparison, include a persistence baseline (predict "nothing changes"), an action-free predictor and a simple task-appropriate dynamics model. Evaluate held-out objects, viewpoints, action ranges and environment properties separately. Report closed-loop control results in addition to imagined ones, and account for encoder and sampler latency: a planner that needs ten seconds per action may be useless for a robot running at 10 Hz.
+
+## Modern view
+
+**Surveys.** Moerland et al. give the most systematic treatment of model-based RL: dynamics-model learning (stochasticity, uncertainty, partial observability, temporal abstraction), a taxonomy of how planning and learning are integrated, and implicit (value-equivalent, MuZero-style) approaches [5]. Ding et al. (ACM Computing Surveys) organize the broader "world model" literature by function, understanding the world versus predicting its future, and review applications in generative games, autonomous driving, robotics and social simulation [1]. Zhu et al. survey "general world models" from the video-generation side, covering video generators, autonomous-driving world models and world models inside autonomous agents, and discuss their limitations [31]. Guan et al. give an initial survey of world models specifically for autonomous driving [32].
+
+**State of the art, 2023–2026.**
+
+- *Model-based RL matured.* DreamerV3 showed a single configuration working across more than 150 tasks and was published in Nature in 2025 [10]; TD-MPC2 showed decoder-free latent planning scaling to a multi-task 317M-parameter agent [11]; IRIS and DIAMOND showed Transformer and diffusion world models competitive on the Atari 100k benchmark [12], [13].
+- *Video generators were reframed as simulators.* GAIA-1, UniSim, Genie, Genie 3 and Cosmos trained large models on video with actions, text or inferred latent actions [17], [18], [19], [20], [21]. The strongest evidence that they help agents is UniSim's zero-shot transfer of policies trained inside the simulator [18]; the strongest caution is that realism does not imply physics [22], [23].
+- *Predictive representations moved toward control.* The JEPA line went from images (I-JEPA) to video (V-JEPA) to action-conditioned planning on real robots (V-JEPA 2-AC) and denser features (V-JEPA 2.1) [24], [25], [26], [27]; DINO-WM showed that frozen self-supervised features can already support zero-shot planning [28].
+
+**Open problems.**
+
+- *Long-horizon consistency.* Errors compound; generated worlds drift; object identity and off-screen state are hard to keep for minutes, let alone hours [20].
+- *Causal and physical correctness.* Models trained on passive video learn correlations; out-of-distribution physics fails [22], [23]. Interventional (action) data is scarce and expensive.
+- *Action interfaces.* Latent actions inferred from video, robot joint commands and text instructions are different things; mapping between them reliably is unsolved.
+- *Exploitation and uncertainty.* Planners and policies trained in imagination exploit model errors; calibrated epistemic uncertainty for large video models is largely missing.
+- *Evaluation.* There is no agreed benchmark that ties prediction quality to downstream decision quality across domains; most papers still report either video metrics or task returns, rarely both.
+- *Cost.* Sampling a large video model can be far slower than real time, which conflicts with closed-loop control.
+
+## Key takeaways
+
+- A world model predicts how an environment changes, usually under the agent's actions; its prediction target and action interface determine what it can support.
+- Observations are not states. Partial observability requires memory or belief estimation.
+- A model can be used to plan online (MPC), to train a policy in imagination (World Models, Dreamer), or to search with a value-equivalent latent (MuZero).
+- RSSMs combine deterministic memory with stochastic latents; the KL term trains the prior to imagine what the posterior will see.
+- Squared-error video prediction averages possible futures into blur; stochastic and generative models trade lower likelihood of blur for realistic samples, but realism is not physical understanding.
+- JEPA-style models predict features instead of pixels; they need anti-collapse design and meaningful goals in feature space.
+- One-step errors compound over long horizons, and optimizers exploit model mistakes; ensembles, pessimism, short rollouts and replanning are the standard defenses.
+- The strongest evidence connects controlled action interventions and held-out predictions to successful behavior in the real environment.
+
+## Exercises
+
+1. **Action ablation.** In the CPU experiment, remove the action column. Compare one-step error, horizon-40 error and control behavior. Why can a short-term action-free predictor still look reasonable?
+
+<details>
+<summary>Hint</summary>
+
+Imagined actions no longer affect the action-free predictor, so a planner cannot rank their consequences at all: every candidate gets the same predicted cost. Over one step the damped dynamics change the state only slightly, so persistence-like predictions still score moderately well, which is why one-step error alone is a weak test.
+
+</details>
+
+2. **Partial observations.** Hide velocity and fit position-to-position dynamics. Then use the last two positions and the previous action as features. When does this history help, and where does observation noise hurt?
+
+<details>
+<summary>Hint</summary>
+
+The difference of two positions estimates velocity (a finite difference), so the two-position model recovers most of the state. Noise in each position is amplified when divided by the time step, so the benefit shrinks as observation noise grows.
+
+</details>
+
+3. **Planning horizon.** Compare horizons 5, 20 and 40, adjusting the initial mean to the chosen length. Measure final distance, action effort and runtime across several independent seeds.
+
+<details>
+<summary>Hint</summary>
+
+Keep the cost definition fixed and count all model calls. Very short horizons cannot "see" that braking early avoids overshoot; very long horizons cost more and accumulate more model error, although for this linear system the error is small.
+
+</details>
+
+4. **Domain shift.** Collect training episodes with velocity damping $0.94$, then execute control in an environment with damping $0.75$. Compare open-loop execution of a plan with replanning at every step. Identify an action range where the training data provide weak coverage.
+
+<details>
+<summary>Hint</summary>
+
+Separate the learned dynamics (fitted on 0.94) from the true execution dynamics (0.75); do not refit on evaluation transitions. Replanning uses fresh observations, so it partially corrects the biased model; open-loop execution cannot.
+
+</details>
+
+5. **Mean versus sample.** Extend the blur example to three equally likely futures at positions 10, 32 and 54. Compute the expected MSE of the mean prediction and of a single sharp sample. Then propose a metric that would prefer the sample.
+
+<details>
+<summary>Hint</summary>
+
+The mean now has three one-third-height bumps; the expected MSEs are about $0.037$ (mean) and $0.074$ (sample), again a factor of two. That factor is general: if $X$ and $Y$ are independent draws from the same distribution, $\mathbb E\|X-Y\|^2=2\,\mathbb E\|X-\mathbb E X\|^2$, so a perfect sampler always has twice the MSE of the mean. A distribution-level metric (for example, comparing sets of generated samples with sets of real futures, as FID-style metrics do for images) or a best-of-$N$ error over several samples would reward sharp, plausible predictions.
+
+</details>
+
+6. **Pessimism trade-off.** In the ensemble code, replace the factor 2 in "mean − 2 std" by 0, 0.5, 1 and 4. Plot the chosen action and its true reward for each. What goes wrong when the factor is too large?
+
+<details>
+<summary>Hint</summary>
+
+At 0 the planner exploits extrapolation; as the factor grows it stays inside the data. Too much pessimism makes the planner avoid any action with even slight disagreement, so it may miss the best action inside the data and, in an RL setting, stop exploring.
+
+</details>
+
+## References
+
+1. J. Ding et al., "Understanding world or predicting future? A comprehensive survey of world models," *ACM Computing Surveys*, vol. 58, no. 3, 2025. [doi](https://doi.org/10.1145/3746449) [arXiv](https://arxiv.org/abs/2411.14499)
+2. C. M. Bishop, *Pattern Recognition and Machine Learning*, Springer, 2006, ch. 13 "Sequential Data". [book](https://www.microsoft.com/en-us/research/publication/pattern-recognition-machine-learning/)
+3. R. Szeliski, *Computer Vision: Algorithms and Applications*, 2nd ed., Springer, 2022. [book](https://szeliski.org/Book/)
+4. R. S. Sutton, "Dyna, an integrated architecture for learning, planning, and reacting," *ACM SIGART Bulletin*, vol. 2, no. 4, 1991. [doi](https://doi.org/10.1145/122344.122377)
+5. T. M. Moerland, J. Broekens, A. Plaat and C. M. Jonker, "Model-based reinforcement learning: a survey," *Foundations and Trends in Machine Learning*, vol. 16, no. 1, 2023. [doi](https://doi.org/10.1561/2200000086) [arXiv](https://arxiv.org/abs/2006.16712)
+6. D. Ha and J. Schmidhuber, "Recurrent world models facilitate policy evolution," NeurIPS, 2018; interactive version "World Models," arXiv:1803.10122. [paper](https://papers.nips.cc/paper/2018/hash/2de5d16682c3c35007e4e92982f1a2ba-Abstract.html) [interactive](https://worldmodels.github.io/)
+7. D. Hafner et al., "Learning latent dynamics for planning from pixels," ICML, 2019. [paper](https://proceedings.mlr.press/v97/hafner19a.html)
+8. D. Hafner, T. Lillicrap, J. Ba and M. Norouzi, "Dream to control: learning behaviors by latent imagination," ICLR, 2020. [arXiv](https://arxiv.org/abs/1912.01603)
+9. D. Hafner, T. Lillicrap, M. Norouzi and J. Ba, "Mastering Atari with discrete world models," ICLR, 2021. [arXiv](https://arxiv.org/abs/2010.02193)
+10. D. Hafner, J. Pasukonis, J. Ba and T. Lillicrap, "Mastering diverse control tasks through world models," *Nature*, vol. 640, 2025. [doi](https://doi.org/10.1038/s41586-025-08744-2) [arXiv](https://arxiv.org/abs/2301.04104)
+11. N. Hansen, H. Su and X. Wang, "TD-MPC2: scalable, robust world models for continuous control," ICLR, 2024. [arXiv](https://arxiv.org/abs/2310.16828)
+12. V. Micheli, E. Alonso and F. Fleuret, "Transformers are sample-efficient world models," ICLR, 2023. [arXiv](https://arxiv.org/abs/2209.00588)
+13. E. Alonso et al., "Diffusion for world modeling: visual details matter in Atari," NeurIPS, 2024. [arXiv](https://arxiv.org/abs/2405.12399)
+14. J. Schrittwieser et al., "Mastering Atari, Go, chess and shogi by planning with a learned model," *Nature*, vol. 588, 2020. [doi](https://doi.org/10.1038/s41586-020-03051-4) [arXiv](https://arxiv.org/abs/1911.08265)
+15. C. Finn, I. Goodfellow and S. Levine, "Unsupervised learning for physical interaction through video prediction," NIPS, 2016. [arXiv](https://arxiv.org/abs/1605.07157)
+16. M. Babaeizadeh, C. Finn, D. Erhan, R. H. Campbell and S. Levine, "Stochastic variational video prediction," arXiv:1710.11252, 2017. [arXiv](https://arxiv.org/abs/1710.11252)
+17. A. Hu et al., "GAIA-1: a generative world model for autonomous driving," technical report, arXiv:2309.17080, 2023. [arXiv](https://arxiv.org/abs/2309.17080)
+18. S. Yang et al., "Learning interactive real-world simulators," arXiv:2310.06114, 2023. [arXiv](https://arxiv.org/abs/2310.06114)
+19. J. Bruce et al., "Genie: generative interactive environments," arXiv:2402.15391, 2024. [arXiv](https://arxiv.org/abs/2402.15391)
+20. Google DeepMind, "Genie 3: a new frontier for world models," blog post, August 5, 2025. [blog](https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/)
+21. NVIDIA (N. Agarwal et al.), "Cosmos world foundation model platform for physical AI," arXiv:2501.03575, 2025. [arXiv](https://arxiv.org/abs/2501.03575)
+22. S. Motamed, L. Culp, K. Swersky, P. Jaini and R. Geirhos, "Do generative video models understand physical principles?," arXiv:2501.09038, 2025. [arXiv](https://arxiv.org/abs/2501.09038)
+23. B. Kang et al., "How far is video generation from world model: a physical law perspective," ICML, 2025. [arXiv](https://arxiv.org/abs/2411.02385)
+24. M. Assran et al., "Self-supervised learning from images with a joint-embedding predictive architecture," CVPR, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.01499) [arXiv](https://arxiv.org/abs/2301.08243)
+25. A. Bardes et al., "Revisiting feature prediction for learning visual representations from video," arXiv:2404.08471, 2024. [arXiv](https://arxiv.org/abs/2404.08471)
+26. M. Assran et al., "V-JEPA 2: self-supervised video models enable understanding, prediction and planning," arXiv:2506.09985, 2025. [arXiv](https://arxiv.org/abs/2506.09985)
+27. L. Mur-Labadia et al., "V-JEPA 2.1: unlocking dense features in video self-supervised learning," arXiv:2603.14482, 2026. [arXiv](https://arxiv.org/abs/2603.14482)
+28. G. Zhou, H. Pan, Y. LeCun and L. Pinto, "DINO-WM: world models on pre-trained visual features enable zero-shot planning," arXiv:2411.04983, 2024. [arXiv](https://arxiv.org/abs/2411.04983)
+29. K. Chua, R. Calandra, R. McAllister and S. Levine, "Deep reinforcement learning in a handful of trials using probabilistic dynamics models," NeurIPS, 2018. [arXiv](https://arxiv.org/abs/1805.12114)
+30. M. Janner, J. Fu, M. Zhang and S. Levine, "When to trust your model: model-based policy optimization," NeurIPS, 2019. [arXiv](https://arxiv.org/abs/1906.08253)
+31. Z. Zhu et al., "Is Sora a world simulator? A comprehensive survey on general world models and beyond," arXiv:2405.03520, 2024. [arXiv](https://arxiv.org/abs/2405.03520)
+32. Y. Guan et al., "World models for autonomous driving: an initial survey," arXiv:2403.02622, 2024. [arXiv](https://arxiv.org/abs/2403.02622)

@@ -1,0 +1,693 @@
+---
+title: "PR 08・近似推論與貝氏模型複雜度"
+description: "後驗積分為何困難，以及兩大類解法：取樣（Monte Carlo、重要性取樣、Metropolis–Hastings、Gibbs、HMC）與最佳化（變分推論、Laplace、EP），並連結到 VAE 與擴散模型。"
+track: pattern-recognition
+order: 80
+level: advanced
+prereqs: [pattern-recognition/pr-07-clustering-mixtures]
+tags: [variational-inference, mcmc, importance-sampling, laplace, bayesian, model-evidence]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import approximationFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/mean-field-correlation.png';
+import logisticFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/logistic-posterior.png';
+import importanceFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/importance-weights.png';
+import mhFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/mh-step-size.png';
+import gibbsFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/gibbs-path.png';
+import klFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/kl-directions.png';
+
+## 你將學到
+
+- 為什麼貝氏後驗在差一個常數的意義下很容易「計算」，卻很難「積分」；以及為什麼網格法在幾個維度之後就失效。
+- 普通 Monte Carlo、拒絕取樣（rejection sampling）與重要性取樣（importance sampling）如何把積分變成平均，以及如何判斷權重已經崩潰。
+- 馬可夫鏈 Monte Carlo（MCMC）如何運作：細緻平衡（detailed balance）、Metropolis–Hastings（含非對稱提議的修正項）、Gibbs 取樣、Hamiltonian Monte Carlo，以及讓你保持誠實的診斷工具（$\hat R$、有效樣本數）。
+- 變分推論（variational inference）如何把積分變成最佳化：用兩種方法推導證據下界（ELBO）、mean-field 座標上升、反向與正向 KL 的差別，以及搭配重參數化技巧（reparameterization trick）的隨機梯度。
+- Laplace 近似與期望傳播（expectation propagation）的定位、模型證據如何懲罰複雜度，以及同樣的想法如何驅動 VAE 與擴散模型。
+
+## 先看全貌
+
+前面的章節都在找一組「最好」的參數：最大概似、MAP，或混合模型的 EM。貝氏辨識系統問的是更大的問題：看過資料之後，*每一組參數各有多可信*？把它們全部考慮進來，*平均*會預測什麼？回答這個問題需要對所有未知量積分，而幾乎所有實用模型的積分都沒有閉式解。本章介紹兩大類替代方案：**抽樣**，產生行為像後驗的樣本；或**擬合**一個較簡單、但盡量貼近後驗的分布。
+
+<Callout type="tip" title="用最簡單的話說">
+想像一大片漆黑的田地，到處埋著多寡不一的寶藏，而你想知道寶藏的*總量*。找到最富的那一點很容易：一直往上坡走就好，這就是最佳化。要知道總量就難多了。一種做法是隨機但聰明地四處走動，在寶藏多的地方多停留，邊走邊記錄，這就是**取樣**。另一種做法是在田上蓋一條簡單平滑的毯子，盡量讓毯子的形狀像藏寶圖，然後改量毯子，這就是**變分推論**。走路慢但老實；毯子快，卻可能把它沒被設計來表現的起伏藏起來。
+</Callout>
+
+為什麼對辨識很重要：不確定性告訴系統何時該拒絕判斷（見 [PR 01](/zh-tw/learn/pattern-recognition/pr-01-bayes-decisions/)）；積分後的證據可以在沒有保留驗證集的情況下比較模型；而本章的工具，尤其是 ELBO 與 Langevin 式取樣，正是現代生成模型所用的方法。本章依循 Bishop 關於近似推論與取樣的章節 [1]；Theodoridis 與 Koutroumbas 則提供估計與最佳化的背景（第 2 章與附錄 C），並非與本章方法一一對應 [2]。
+
+## 為什麼精確推論很難
+
+**白話版。** 貝氏定理說：後驗等於「先驗乘以概似，再除以一個正規化的數」。分子對任何單一猜測通常都好算；分母卻是對*所有可能*猜測的總和，麻煩就從這裡開始。
+
+**精確版。** 把所有未知量（潛在變數與參數）合記為 $z$，觀測資料記為 $D$，則
+
+$$
+p(z\mid D)=\frac{p(D,z)}{p(D)},\qquad
+p(D)=\int p(D,z)\,dz,
+$$
+
+其中 $p(D,z)=p(D\mid z)\,p(z)$ 是聯合密度（概似乘以先驗），$p(D)$ 是**證據**（evidence），又稱邊際概似。我們想要的幾乎都是後驗下的期望值：
+
+$$
+\mathbb E_{p(z\mid D)}[f(z)]=\int f(z)\,p(z\mid D)\,dz,
+$$
+
+例如後驗平均（$f(z)=z$）、預測機率（$f(z)=p(y^\ast\mid x^\ast,z)$），或某參數為正的機率（$f(z)=\mathbf 1[z>0]$）。以下記 $\tilde p(z)=p(D,z)$ 為**未正規化**後驗：逐點計算很便宜，但正規化常數 $Z=p(D)$ 未知。
+
+積分困難有三個原因：
+
+1. **維度。** 每軸 $G$ 個點的網格在 $d$ 維需要 $G^d$ 次計算。$G=201$、$d=50$ 時約為 $10^{115}$，遠超任何電腦的能力。
+2. **集中。** 資料多時，後驗只占廣大空間中極小的區域，隨機猜測幾乎永遠落不進去。
+3. **離散結構。** 有 $K$ 個成分、$N$ 個點的混合模型，潛在指派有 $K^N$ 種組合；即使每一項都很簡單，也無法精確加總。
+
+MAP 估計藉由最大化 $\tilde p$ 繞過這些困難，但最大值不是積分。後驗的最高點可能位於一個很窄、質量很少的尖峰上，而單一點完全不帶有分散程度的資訊。[PR 07](/zh-tw/learn/pattern-recognition/pr-07-clustering-mixtures/) 的 EM 介於兩者之間：它在 E step 對潛在指派積分（高斯混合可以精確做到），但最後仍回傳參數的點估計。
+
+### 實例：貝氏邏輯斯迴歸
+
+考慮二類問題，輸入 $x_n\in\mathbb R^2$（一個偏差特徵與一個量測值），標籤 $y_n\in\{0,1\}$，權重 $w$，模型為
+
+$$
+p(y_n=1\mid x_n,w)=\sigma(w^\top x_n),\qquad \sigma(s)=\frac1{1+e^{-s}},\qquad p(w)=\mathcal N(0,\,4I).
+$$
+
+對數聯合密度為 $\sum_n\big[y_n w^\top x_n-\log(1+e^{w^\top x_n})\big]-\tfrac18\|w\|^2$ 加上常數。高斯先驗與邏輯斯概似不共軛，因此後驗*不是*高斯，正規化常數也沒有公式。只有兩個權重時，我們仍可以用網格暴力計算，得到一個可以拿來檢驗所有近似方法的標準答案。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+n = 40
+X = np.c_[np.ones(n), rng.normal(size=n)]
+w_true = np.array([-0.5, 1.5])
+y = rng.random(n) < 1 / (1 + np.exp(-X @ w_true))
+
+def log_joint(w):                       # log p(y | X, w) + log p(w), w ~ N(0, 2^2 I)
+    s = X @ w
+    return np.sum(y * s - np.logaddexp(0, s)) - 0.5 * np.sum(w**2) / 4.0
+
+# Brute-force normalization on a grid: fine in 2-D, hopeless in 50-D.
+g = np.linspace(-4, 4, 201)
+W0, W1 = np.meshgrid(g, g, indexing="ij")
+logp = np.array([[log_joint(np.array([a, b])) for b in g] for a in g])
+cell = (g[1] - g[0])**2
+log_evidence = np.log(np.sum(np.exp(logp - logp.max())) * cell) + logp.max()
+post = np.exp(logp - log_evidence)
+mean = np.array([np.sum(W0 * post), np.sum(W1 * post)]) * cell
+sd = np.sqrt(np.array([np.sum((W0 - mean[0])**2 * post),
+                       np.sum((W1 - mean[1])**2 * post)]) * cell)
+print("log evidence:", round(log_evidence, 3))
+print("posterior mean:", mean.round(3), " sd:", sd.round(3))
+print("grid points for 201 per axis in 50-D:", f"{201.0**50:.2e}")
+```
+
+輸出的對數證據為 $-22.117$，後驗平均為 $(-0.303,\,1.631)$，標準差為 $(0.366,\,0.578)$。注意取指數前先減去 `logp.max()`：真實資料的對數密度是很大的負數，在對數空間運算（log-sum-exp 技巧）是每位實作者的第一個習慣。稍後我們會用同一個模型來評估 Laplace 與變分近似。
+
+## Monte Carlo：把積分變成平均
+
+**白話版。** 如果能從某個分布抽出隨機樣本，那麼某個量在這些樣本上的平均，就能估計它的期望值。樣本越多估計越準，而誤差縮小的速度可以預測，而且與維度無關。
+
+**精確版。** 給定獨立樣本 $z^{(1)},\dots,z^{(S)}\sim p$，$I=\mathbb E_p[f(z)]$ 的 Monte Carlo 估計量為
+
+$$
+\hat I_S=\frac1S\sum_{s=1}^S f\big(z^{(s)}\big),\qquad
+\mathbb E[\hat I_S]=I,\qquad
+\operatorname{Var}[\hat I_S]=\frac{\operatorname{Var}_p[f(z)]}{S}.
+$$
+
+其中 $S$ 是樣本數，$\operatorname{Var}_p[f]$ 是 $f$ 在 $p$ 下的變異數。這個估計量是**不偏**的，標準誤以 $1/\sqrt S$ 下降：誤差要減半，樣本要變四倍。最驚人的是式中沒有 $d$。Monte Carlo 把隨維度指數成長的網格，換成只取決於 $f$ 變異數的成本。
+
+問題在於「從 $p$ 抽樣」這個假設。後驗通常無法直接抽樣。本章取樣部分的其餘內容，就是在製造這樣的樣本，或修正從錯誤分布抽出的樣本。
+
+### 拒絕取樣
+
+假設我們能從簡單的**提議分布**（proposal）$q(z)$ 抽樣，並知道常數 $M$ 使得對所有 $z$ 都有 $M\,q(z)\geq\tilde p(z)$。抽 $z\sim q$ 與 $u\sim\mathrm{Uniform}(0,1)$，若 $u\lt\tilde p(z)/(M q(z))$ 就保留 $z$。保留下來的點正是來自 $p$ 的精確樣本，因為包絡 $Mq$ 底下被接受的區域形狀恰好就是 $\tilde p$。接受機率為 $Z/M$，其中 $Z=\int\tilde p$。在高維空間，可用的包絡必須比目標大上許多，幾乎所有樣本都會被拒絕。因此拒絕取樣是處理一維條件分布（例如在 Gibbs 取樣器內部）的積木，而不是通用的後驗引擎 [1]。
+
+## 重要性取樣
+
+**白話版。** 從一個方便的分布抽樣，再給每個樣本一個權重，說明它在你真正關心的分布下比較可能（或比較不可能）多少。當方便的分布涵蓋重要區域時效果很好；涵蓋不到時，它會默默地失敗。
+
+**精確版。** 對任何在 $p(z)f(z)\neq0$ 之處都滿足 $q(z)\gt0$ 的 $q$，
+
+$$
+\mathbb E_p[f(z)]=\int f(z)\,\frac{p(z)}{q(z)}\,q(z)\,dz
+\approx\frac1S\sum_{s=1}^S w_s\,f\big(z^{(s)}\big),\qquad
+w_s=\frac{p(z^{(s)})}{q(z^{(s)})},\quad z^{(s)}\sim q.
+$$
+
+比值 $w_s$ 稱為**重要性權重**。若只有 $\tilde p$ 可用，把權重正規化就能消去未知的 $Z$：
+
+$$
+\hat I_{\mathrm{SN}}=\sum_{s=1}^S \bar w_s\,f\big(z^{(s)}\big),\qquad
+\bar w_s=\frac{\tilde w_s}{\sum_{t}\tilde w_t},\qquad
+\tilde w_s=\frac{\tilde p(z^{(s)})}{q(z^{(s)})}.
+$$
+
+這個**自我正規化**（self-normalized）估計量在 $S$ 有限時略有偏差，但當 $S\to\infty$ 時一致。附帶的好處是 $\frac1S\sum_s\tilde w_s$ 是證據 $Z$ 的不偏估計，這就是重要性取樣用於模型比較的方式。
+
+估計的品質取決於權重有多不均勻。常用的摘要是權重的**有效樣本數**（effective sample size, ESS）：
+
+$$
+\mathrm{ESS}=\frac{1}{\sum_s\bar w_s^2},
+$$
+
+所有權重相等時為 $S$，一個權重獨占全部時為 $1$。有兩種失敗模式值得注意：
+
+- **提議分布太窄或放錯位置。** $p$ 有質量而 $q$ 很小的區域，會產生罕見但巨大的權重。估計被少數樣本主導，變異數甚至可能是無限大。
+- **尾部太輕。** 比值 $p/q$ 在尾部必須有界。經驗法則是讓 $q$ 的尾部比 $p$ *更重*（用 Student-$t$ 取代高斯，或用更寬的高斯）。
+
+```python
+import numpy as np
+from scipy.stats import norm
+
+rng = np.random.default_rng(1)
+N = 10_000
+exact = norm.sf(3.0)                      # P(X > 3) for X ~ N(0, 1)
+
+# Plain Monte Carlo: most samples never reach the tail.
+x = rng.normal(0, 1, N)
+plain = np.mean(x > 3)
+
+# Importance sampling with a proposal centered on the tail, q = N(3, 1).
+z = rng.normal(3, 1, N)
+w = norm.pdf(z) / norm.pdf(z, loc=3)      # p(z) / q(z)
+is_est = np.mean(w * (z > 3))
+print(f"exact {exact:.6f}  plain MC {plain:.6f}  importance {is_est:.6f}")
+
+# Self-normalized IS for an unnormalized target, with effective sample size.
+def log_p_tilde(t):                       # N(1.5, 0.7^2) without its constant
+    return -0.5 * ((t - 1.5) / 0.7) ** 2
+
+for scale in [1.0, 3.0, 0.3]:
+    t = rng.normal(0, scale, N)
+    log_w = log_p_tilde(t) - norm.logpdf(t, scale=scale)
+    wn = np.exp(log_w - log_w.max())
+    wn /= wn.sum()
+    ess = 1.0 / np.sum(wn**2)
+    print(f"proposal N(0,{scale}^2): mean {np.sum(wn * t):.3f}  ESS {ess:7.1f} of {N}")
+```
+
+稀有事件的估計說明了重要性取樣存在的理由：精確的尾端機率是 $0.001350$；10,000 個樣本的普通 Monte Carlo 給出 $0.001900$（只有 19 個樣本落在尾端），平移後的提議分布則給出 $0.001372$。第二部分的目標平均為 $1.5$。兩個寬的提議分布給出 $1.509$ 與 $1.492$，ESS 約為 1,870 與 2,830；窄的提議分布 $\mathcal N(0,0.3^2)$ 給出 $0.921$，ESS 只有 13，看起來很有把握，答案卻是錯的。ESS 極小就是警鈴。
+
+<Figure src={importanceFig} alt="左：中心在 1.5 的目標高斯，以及三個中心在 0、寬度分別為 1、3、0.3 的提議分布。右：各提議分布中，最大的若干權重占總權重的累積比例。" caption="圖 1 — 每個提議分布抽 4,000 個樣本的重要性取樣。窄的提議分布（橘色）幾乎碰不到目標，因此最大的單一權重就占了總權重的 40% 以上，ESS 約為 5。寬的提議分布則把權重分散到數百個樣本。由本篇的圖形腳本計算。" />
+
+即使不是主要引擎，重要性取樣仍然很重要：它能把舊模型的樣本重新加權到新模型、能估計證據，也是**序列 Monte Carlo**（粒子濾波器）的核心；在序列 Monte Carlo 中，權重隨資料到來逐步更新並重新取樣。
+
+## 馬可夫鏈 Monte Carlo
+
+**白話版。** 不再抽獨立樣本，而是進行一場隨機漫步，並設計規則讓它長期下來在每個區域停留的時間比例，恰好等於該區域的後驗機率。這樣沿路的時間平均就能估計後驗期望值。相鄰步驟彼此相關，所以一段長漫步的價值少於同樣數量的獨立樣本。
+
+**精確版。** 若轉移核 $T(z'\mid z)$ 滿足
+
+$$
+\int T(z'\mid z)\,p(z)\,dz=p(z'),
+$$
+
+則 $p$ 是此馬可夫鏈的**穩態**（不變）分布。一個簡單的充分條件是**細緻平衡**（可逆性）：
+
+$$
+p(z)\,T(z'\mid z)=p(z')\,T(z\mid z')\quad\text{for all }z,z'.
+$$
+
+兩邊對 $z$ 積分即得穩態條件。若鏈還能到達每個區域（不可約）且不會週期循環（非週期），則無論從哪裡出發，狀態的分布都會收斂到 $p$，遍歷平均 $\frac1S\sum_s f(z^{(s)})$ 也會收斂到 $\mathbb E_p[f]$。重點是細緻平衡只涉及*比值* $p(z')/p(z)$，因此未知的正規化常數會消去。
+
+### Metropolis–Hastings
+
+Metropolis 演算法 [3] 經 Hastings 推廣 [4]，可以從任何提議分布 $q(z'\mid z)$ 建構出這樣的轉移核：
+
+1. 從目前狀態 $z$ 提議 $z'\sim q(z'\mid z)$。
+2. 以下列機率接受：
+$$
+A(z',z)=\min\left(1,\;\frac{\tilde p(z')\,q(z\mid z')}{\tilde p(z)\,q(z'\mid z)}\right).
+$$
+3. 若接受就移到 $z'$；否則**停在 $z$，並再記錄一次 $z$**。
+
+其中 $q(z\mid z')$ 是提議反向移動的密度。因子 $q(z\mid z')/q(z'\mid z)$ 稱為 **Hastings 修正**：它抵銷提議分布對某些方向的偏好。對稱提議（例如高斯隨機漫步）滿足 $q(z'\mid z)=q(z\mid z')$，規則就化簡為 Metropolis 原本的 $\min(1,\tilde p(z')/\tilde p(z))$。
+
+為什麼行得通？取 $z'\neq z$，並假設 $\tilde p(z')q(z\mid z')\le\tilde p(z)q(z'\mid z)$。則 $p(z)T(z'\mid z)=p(z)\,q(z'\mid z)\,\frac{p(z')q(z\mid z')}{p(z)q(z'\mid z)}=p(z')q(z\mid z')$；反方向的接受率為 1，所以 $p(z')T(z\mid z')=p(z')q(z\mid z')$。兩邊相等，細緻平衡成立。
+
+忘了第 3 步（只記錄被接受的狀態）是經典錯誤：它會高估鏈容易穿過的區域，讓所有估計都產生偏差。
+
+已知動差的高斯目標可以用來檢查隨機漫步鏈。斷言刻意設得寬鬆：這是數值上的基本檢查，不是收斂證明。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(12)
+def log_target(x):
+    return -0.5 * ((x - 1.5) / 0.7)**2
+x, accepted = -3.0, 0
+samples = []
+for step in range(18000):
+    proposal = x + rng.normal(0, 0.8)
+    if np.log(rng.random()) < min(0.0, log_target(proposal) - log_target(x)):
+        x = proposal
+        accepted += 1
+    if step >= 2000:                      # discard warm-up, keep repeats
+        samples.append(x)
+samples = np.asarray(samples)
+rho1 = np.corrcoef(samples[:-1], samples[1:])[0, 1]
+print("mean, std:", samples.mean(), samples.std())
+print("acceptance:", accepted / 18000, "lag-one correlation:", rho1)
+assert abs(samples.mean() - 1.5) < 0.12
+assert abs(samples.std() - 0.7) < 0.12
+```
+
+這條鏈得到平均 $1.50$、標準差 $0.69$，接受率 $0.67$，lag-1 自相關 $0.74$。步長是主要的調整旋鈕，而光看接受率無法判斷步長好不好。極小的步長幾乎全被接受，卻像在爬行；極大的步長大多被拒絕，鏈停在原地。兩者都會產生高度相關的樣本。
+
+<Figure src={mhFig} alt="上排：步長標準差為 0.02、0.8、8，從 -3 出發的隨機漫步 Metropolis 鏈軌跡。下排：對應的自相關函數。" caption="圖 2 — 對 N(1.5, 0.7²) 執行隨機漫步 Metropolis，起點為 −3。步長 0.02（接受率 0.97）在 4,000 步後仍未抵達目標，自相關幾乎不衰減。步長 0.8 混合良好。步長 8（接受率 0.12）長時間停在同一處。由本篇的圖形腳本計算。" />
+
+### Gibbs 取樣
+
+**白話版。** 一次只更新一個變數（或一個區塊），從「給定其他所有變數」的分布中抽它。如果這些條件分布很容易抽（共軛模型常是如此），每一步都會被接受。
+
+**精確版。** Gibbs 取樣由 Geman 與 Geman 為了以馬可夫隨機場做影像復原而提出 [5]。它依序走過區塊 $j=1,\dots,J$，並抽
+
+$$
+z_j\sim p\big(z_j\mid z_{-j},D\big),
+$$
+
+其中 $z_{-j}$ 表示除了 $j$ 以外的所有區塊。它是 Metropolis–Hastings 的特例：提議為 $q(z'\mid z)=p(z'_j\mid z_{-j})$ 且 $z'_{-j}=z_{-j}$，代入接受比恰好等於 1 [1]。以高斯混合為例，可以交替地依 responsibility 為每個點抽成分標籤，再從共軛後驗抽成分參數，這是 EM 的隨機版親戚。
+
+對平均為零、變異數為一、相關係數為 $\rho$ 的二維高斯，條件分布為 $z_1\mid z_2\sim\mathcal N(\rho z_2,\,1-\rho^2)$，$z_2$ 亦同。下面的程式從四個分散的角落各跑一條鏈，並計算下一小節介紹的 **split-$\hat R$** 收斂診斷。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(3)
+rho = 0.85                     # target: zero-mean bivariate Gaussian, unit variances
+sd = np.sqrt(1 - rho**2)       # conditional standard deviation
+
+def gibbs(n_steps, start):
+    z = np.array(start, dtype=float)
+    out = np.empty((n_steps, 2))
+    for t in range(n_steps):
+        z[0] = rng.normal(rho * z[1], sd)   # z1 | z2 ~ N(rho z2, 1 - rho^2)
+        z[1] = rng.normal(rho * z[0], sd)   # z2 | z1 ~ N(rho z1, 1 - rho^2)
+        out[t] = z
+    return out
+
+def split_rhat(chains):        # chains: (m, n) draws of one scalar quantity
+    m, n = chains.shape
+    halves = chains[:, : n // 2 * 2].reshape(2 * m, n // 2)
+    W = halves.var(axis=1, ddof=1).mean()          # within-chain variance
+    B = (n // 2) * halves.mean(axis=1).var(ddof=1) # between-chain variance
+    var_plus = (n // 2 - 1) / (n // 2) * W + B / (n // 2)
+    return np.sqrt(var_plus / W)
+
+starts = [(-4, -4), (4, 4), (-4, 4), (4, -4)]
+chains = np.stack([gibbs(3000, s)[500:] for s in starts])   # drop warm-up
+draws = chains.reshape(-1, 2)
+print("sample correlation:", np.corrcoef(draws.T)[0, 1].round(3))
+print("sample variances:", draws.var(axis=0).round(3))
+lag1 = np.mean([np.corrcoef(c[:-1, 0], c[1:, 0])[0, 1] for c in chains])
+print("lag-1 autocorrelation of z1:", lag1.round(3), " (theory rho^2 =", rho**2, ")")
+print("split R-hat for z1:", split_rhat(chains[:, :, 0]).round(4))
+```
+
+輸出：樣本相關 $0.849$，變異數約 $0.98$，lag-1 自相關 $0.717$（理論值 $\rho^2=0.7225$），split-$\hat R$ 為 $1.0009$。自相關是沿座標軸移動的代價：目標是一條細長的斜脊時，每個座標只能走一小段就撞到「牆」。當 $\rho\to1$，鏈會慢到幾乎不動。重新參數化（旋轉或白化變數），或把相關的變數當成一個區塊一起更新，就能解決這個問題。
+
+<Figure src={gibbsFig} alt="左：Gibbs 更新從角落以階梯狀路徑走進相關高斯的橢圓。右：1,800 個樣本填滿橢圓的散布圖。" caption="圖 3 — 對相關係數 0.85 的高斯進行 Gibbs 取樣。每半步都平行於座標軸移動（左），所以沿斜脊前進很慢；但暖機之後，樣本仍正確地填滿目標（右）。由本篇的圖形腳本計算。" />
+
+### Hamiltonian Monte Carlo
+
+**白話版。** 隨機漫步把力氣浪費在來回踱步上。Hamiltonian Monte Carlo（HMC）利用對數後驗的*梯度*，像一顆在曲面上無摩擦滑行的冰球一樣沿著分布滑行，做出又長又有方向的移動，同時仍以很高的機率被接受。
+
+**精確版。** 定義位能 $U(z)=-\log\tilde p(z)$，加入輔助動量 $r\sim\mathcal N(0,M)$（$M$ 為質量矩陣），組成 Hamiltonian
+
+$$
+H(z,r)=U(z)+\tfrac12 r^\top M^{-1}r.
+$$
+
+Hamiltonian 動力學保持 $H$ 守恆並保持體積。實作上以步長 $\epsilon$ 的 $L$ 個 **leapfrog** 步驟模擬：
+
+$$
+r\leftarrow r-\tfrac\epsilon2\nabla U(z),\qquad
+z\leftarrow z+\epsilon M^{-1}r,\qquad
+r\leftarrow r-\tfrac\epsilon2\nabla U(z).
+$$
+
+leapfrog 積分器可逆且保持體積，但不完全守恆能量，因此終點 $(z',r')$ 以 $\min\big(1,\exp(H(z,r)-H(z',r'))\big)$ 的機率被接受，也就是在聯合空間上的一步 Metropolis [6]。軌跡順著目標的幾何走，因此 HMC 能穿越會困住 Gibbs 或隨機漫步的相關斜脊。它的調整參數 $\epsilon$ 與 $L$ 很敏感；**No-U-Turn Sampler**（NUTS）在路徑開始折返時停止，自動決定軌跡長度，並在暖機期間調整 $\epsilon$ [7]。Betancourt 的概念性導論以**典型集合**（typical set，後驗質量實際所在的那層薄殼）解釋 HMC 為何能擴展到高維 [8]。HMC 需要可微、連續的目標；離散潛在變數必須先加總掉，或用其他移動方式處理。
+
+一個近親是 **Langevin** 更新
+
+$$
+z\leftarrow z+\tfrac\epsilon2\nabla\log\tilde p(z)+\sqrt\epsilon\,\xi,\qquad \xi\sim\mathcal N(0,I),
+$$
+
+它相當於重新抽動量後只走一步 leapfrog。沒有接受/拒絕步驟時，有限的 $\epsilon$ 只是近似正確；加上 Metropolis 修正就成為 Metropolis-adjusted Langevin algorithm。請記住這個更新，它會在擴散模型中再次出現。
+
+### 診斷：這條鏈說的是實話嗎？
+
+有限次的執行不可能*證明*收斂，診斷只能揭露問題。標準做法：
+
+- **從分散的起點跑多條鏈**，並捨棄每條鏈開頭的暖機部分。
+- **用 $\hat R$ 比較各鏈。** 有 $m$ 條（切成兩半的）長度為 $n$ 的鏈，令 $W$ 為鏈內變異數的平均、$B/n$ 為各鏈平均的變異數，則
+
+$$
+\hat R=\sqrt{\frac{\frac{n-1}{n}W+\frac1nB}{W}}.
+$$
+
+若所有鏈探索的是同一個分布，$\hat R\approx1$；明顯大於 1 表示各鏈意見不一。Vehtari 等人指出傳統版本會漏掉重尾與尺度差異，並提出秩正規化（rank-normalized）、折疊的 split-$\hat R$，以及 bulk 與 tail 有效樣本數；這就是目前軟體所回報的版本 [9]。
+
+- **回報有效樣本數。** 對於穩態鏈，若目標量的 lag-$\ell$ 自相關為 $\rho_\ell$，
+
+$$
+N_{\mathrm{eff}}\approx\frac{N}{1+2\sum_{\ell\geq1}\rho_\ell},
+$$
+
+當估計的自相關變得雜亂時就截斷總和。Monte Carlo 標準誤大約是 $\mathrm{sd}/\sqrt{N_{\mathrm{eff}}}$，而不是 $\mathrm{sd}/\sqrt N$。對上面的 Gibbs 鏈，$\rho_\ell=\rho^{2\ell}$，所以 $N_{\mathrm{eff}}/N=(1-\rho^2)/(1+\rho^2)\approx0.16$：儲存的 10,000 個樣本約只值 1,600 個獨立樣本。
+
+- **檢查軌跡圖**；對梯度式取樣器，也要注意 divergence 警告，它標示出積分器跟不上的高曲率區域。
+
+不同的量混合速度不同：平均看起來沒問題，尾端分位數卻可能還沒收斂。而且即使鏈混合得完美，它描述的也只是*你寫下的模型*的後驗，完全無法說明模型本身是否正確。
+
+## 變分推論
+
+**白話版。** 選一族簡單的分布（例如彼此獨立的高斯），在其中尋找最接近後驗的那一個。積分變成最佳化，速度快、能處理巨量資料，代價是一種無法靠跑更久來消除的偏差。
+
+**精確版。** 選擇一族可處理的密度 $\mathcal Q$，以**變分參數** $\phi$ 編號。變分推論（VI）[10] 求解
+
+$$
+q^\ast=\arg\min_{q\in\mathcal Q}\;D_{\mathrm{KL}}\big(q(z)\,\|\,p(z\mid D)\big),\qquad
+D_{\mathrm{KL}}(q\|p)=\mathbb E_q\!\left[\log\frac{q(z)}{p(z)}\right].
+$$
+
+這個 KL 含有未知的 $p(D)$，無法直接計算。訣竅就是 ELBO。
+
+### 用兩種方法推導 ELBO
+
+**推導一：分解。** 把 $\log p(z\mid D)=\log p(D,z)-\log p(D)$ 代入 KL：
+
+$$
+D_{\mathrm{KL}}(q\|p(\cdot\mid D))=\mathbb E_q[\log q(z)]-\mathbb E_q[\log p(D,z)]+\log p(D).
+$$
+
+移項得到
+
+$$
+\log p(D)=\mathcal L(q)+D_{\mathrm{KL}}\big(q(z)\,\|\,p(z\mid D)\big),\qquad
+\mathcal L(q)=\mathbb E_q[\log p(D,z)]-\mathbb E_q[\log q(z)].
+$$
+
+$\log p(D)$ 與 $q$ 無關，所以最大化 $\mathcal L$ *恰好*等於最小化 KL。KL 非負，所以 $\mathcal L(q)\le\log p(D)$：它是**證據下界**（evidence lower bound），簡稱 ELBO。
+
+**推導二：Jensen 不等式。** 在證據積分中同乘同除 $q$，再利用 $\log$ 的凹性：
+
+$$
+\log p(D)=\log\mathbb E_q\!\left[\frac{p(D,z)}{q(z)}\right]\geq\mathbb E_q\!\left[\log\frac{p(D,z)}{q(z)}\right]=\mathcal L(q).
+$$
+
+Jensen 不等式的差距正是推導一中的 KL。ELBO 有一個好用的讀法：$\mathcal L=\mathbb E_q[\log p(D\mid z)]-D_{\mathrm{KL}}(q(z)\|p(z))$，也就是要擬合資料，但不要離先驗太遠。EM 是一個特例：在 E step 把潛在變數的 $q$ 設為精確後驗（讓下界變緊），再於 M step 對參數最大化下界 [1]。
+
+### Mean field 與座標上升（CAVI）
+
+最常見的分布族是 **mean field**：$q(z)=\prod_j q_j(z_j)$，即 $z$ 各區塊上彼此獨立的因子。固定 $q_j$ 以外的所有因子，對 $q_j$ 最大化 ELBO，得到
+
+$$
+\log q_j^\ast(z_j)=\mathbb E_{q_{-j}}\big[\log p(D,z)\big]+\text{const},
+$$
+
+其中 $\mathbb E_{q_{-j}}$ 對其他所有因子取平均，常數讓 $q_j^\ast$ 正規化。（推導方式：把 $\mathcal L$ 寫成只含 $q_j$ 的函數，它等於 $-D_{\mathrm{KL}}(q_j\|\tilde q_j)$ 加上常數，其中 $\log\tilde q_j=\mathbb E_{q_{-j}}[\log p(D,z)]$。）依序輪流更新各個 $j$，就是**座標上升變分推論**（CAVI）。每次更新都不會降低 ELBO，所以 CAVI 會收斂，但只收斂到局部最佳 [11]。對條件共軛的模型，每個 $q_j^\ast$ 會與先驗同族，更新有閉式解。
+
+**實例：平均與精確度都未知的高斯。** 觀測 $x_n\sim\mathcal N(\mu,\tau^{-1})$，先驗 $\mu\mid\tau\sim\mathcal N(\mu_0,(\lambda_0\tau)^{-1})$、$\tau\sim\mathrm{Gamma}(a_0,b_0)$。精確後驗已知（Normal–Gamma），因此可以為近似打分數。取 $q(\mu,\tau)=q(\mu)q(\tau)$，mean-field 更新規則給出 $q(\mu)=\mathcal N(\mu_N,\lambda_N^{-1})$ 與 $q(\tau)=\mathrm{Gamma}(a_N,b_N)$，其中 [1]
+
+$$
+\begin{aligned}
+\mu_N&=\frac{\lambda_0\mu_0+N\bar x}{\lambda_0+N},\qquad
+\lambda_N=(\lambda_0+N)\,\mathbb E[\tau],\\
+a_N&=a_0+\frac{N+1}{2},\qquad
+b_N=b_0+\tfrac12\,\mathbb E_\mu\!\Big[\textstyle\sum_n(x_n-\mu)^2+\lambda_0(\mu-\mu_0)^2\Big],
+\end{aligned}
+$$
+
+$\bar x$ 為樣本平均，$\mathbb E[\tau]=a_N/b_N$。兩個因子透過 $\mathbb E[\tau]$ 以及 $\mathbb E[\mu]$、$\mathbb E[\mu^2]$ 互相依賴，所以要反覆迭代。
+
+```python
+import numpy as np
+
+# Data x_n ~ N(mu, 1/tau); prior mu | tau ~ N(mu0, 1/(lam0 tau)), tau ~ Gamma(a0, b0).
+rng = np.random.default_rng(4)
+x = rng.normal(2.0, 0.5, size=30)
+N, xbar = len(x), x.mean()
+mu0, lam0, a0, b0 = 0.0, 1.0, 1.0, 1.0
+
+# Mean field q(mu, tau) = q(mu) q(tau) with q(mu) = N(mu_N, 1/lam_N), q(tau) = Gamma(a_N, b_N).
+E_tau = a0 / b0
+for it in range(50):
+    mu_N = (lam0 * mu0 + N * xbar) / (lam0 + N)
+    lam_N = (lam0 + N) * E_tau
+    a_N = a0 + (N + 1) / 2
+    E_mu, E_mu2 = mu_N, mu_N**2 + 1 / lam_N
+    b_N = b0 + 0.5 * (np.sum(x**2) - 2 * E_mu * np.sum(x) + N * E_mu2
+                      + lam0 * (E_mu2 - 2 * mu0 * E_mu + mu0**2))
+    E_tau = a_N / b_N
+
+# Exact posterior is Normal-Gamma: compare the marginal moments of mu.
+lam_post = lam0 + N
+mu_post = (lam0 * mu0 + N * xbar) / lam_post
+a_post = a0 + N / 2
+b_post = b0 + 0.5 * (np.sum((x - xbar) ** 2) + lam0 * N * (xbar - mu0) ** 2 / lam_post)
+var_mu_exact = b_post / ((a_post - 1) * lam_post)       # Student-t marginal variance
+print("E[mu]   VI %.4f  exact %.4f" % (mu_N, mu_post))
+print("Var[mu] VI %.5f  exact %.5f" % (1 / lam_N, var_mu_exact))
+print("E[tau]  VI %.3f   exact %.3f" % (a_N / b_N, a_post / b_post))
+```
+
+平均一致（皆為 $1.8668$），$\mathbb E[\tau]$ 也一致（$2.146$），但 $\mu$ 的變異數在 VI 下是 $0.01503$，精確值是 $0.01603$：小了約 6%。在精確後驗中，$\mu$ 與 $\tau$ 相依（$\mu$ 的分散程度隨 $1/\tau$ 縮放），其邊際分布是尾部較重的 Student-$t$；因子化的高斯無法表達這兩種性質。
+
+這種低估是系統性的。對精確度矩陣為 $\Lambda$ 的高斯目標，最佳的 mean-field 因子 $q_j$ 的變異數是 $1/\Lambda_{jj}$，也就是*條件*變異數，永遠不大於邊際變異數。圖 4 顯示極端情況。
+
+<Figure src={approximationFig} alt="相關高斯的細長等高線，以及因子化近似的圓形等高線。" caption="圖 4 — 原創解析示意：目標的邊際變異數為一，相關係數為 0.85。在 reverse KL 下，最佳高斯 mean-field 的各因子變異數為 1 − 0.85² ≈ 0.28，展示相關性的遺失與邊際不確定性的低估。等高線表示相對密度，不是模型效能。" />
+
+### 用哪個 KL？找峰與覆蓋質量
+
+KL 不對稱，方向不同答案就不同。標準 VI 使用的**反向 KL** $D_{\mathrm{KL}}(q\|p)$ 在 $q$ 下取期望：它重罰把 $q$ 的質量放在 $p$ 極小的地方，卻不在意 $q$ 忽略 $p$ 的某些部分。結果是**找峰**（mode seeking）且**分散不足**。**正向 KL** $D_{\mathrm{KL}}(p\|q)$ 在 $p$ 下取期望：它重罰漏掉 $p$ 有質量的任何區域，因此 $q$ 會伸展開來涵蓋一切，即**覆蓋質量**（mass covering），也可能把質量放在峰與峰之間的低谷。在高斯這類指數族之內，最小化正向 KL 恰好就是**動差匹配**：$q$ 取 $p$ 的平均與共變異數。
+
+<Figure src={klFig} alt="一個雙峰目標密度、一個落在右峰上的窄高斯，以及一個中心位於兩峰之間的寬高斯。" caption="圖 5 — 以單一高斯擬合 N(−2, 0.7²) 與 N(2, 0.7²) 的等權混合。最小化反向 KL(q‖p) 會鎖定其中一個峰（藍色；鎖定哪個峰取決於初始值）。最小化正向 KL(p‖q) 則匹配混合分布的平均與變異數、涵蓋兩個峰，卻把峰值放在目標幾乎沒有質量之處（橘色虛線）。由本篇的圖形腳本以數值計算。" />
+
+兩個方向都不是「唯一正確」的。反向 KL 好計算，答案銳利好用，但低估不確定性。正向 KL 是期望傳播背後的目標，也是以最大概似把模型擬合到資料時的目標；當漏掉一個峰的代價很高時，它比較安全。
+
+### 隨機與黑箱 VI
+
+CAVI 需要共軛性，而且每次更新都要掃過整個資料集。現代 VI 改用 ELBO 的**隨機梯度**，幾乎適用於任何模型，也能透過小批次（minibatch）抽樣處理大量資料 [11, 12]。$\nabla_\phi\mathcal L(\phi)$ 主要有兩種梯度估計量：
+
+- **Score function（REINFORCE）估計量**，黑箱 VI 採用此法 [13]：
+$$
+\nabla_\phi\mathcal L=\mathbb E_{q_\phi}\!\Big[\nabla_\phi\log q_\phi(z)\,\big(\log p(D,z)-\log q_\phi(z)\big)\Big].
+$$
+它只需要計算 $\log p(D,z)$，也適用於離散的 $z$，但變異數高，需要控制變量（control variates）。
+- **重參數化（pathwise）估計量。** 把 $z$ 寫成 $z=g_\phi(\varepsilon)$，其中雜訊 $\varepsilon$ 來自固定分布，例如 $z=m+\sigma\odot\varepsilon$、$\varepsilon\sim\mathcal N(0,I)$。則
+$$
+\nabla_\phi\mathcal L=\mathbb E_{\varepsilon}\!\Big[\nabla_\phi\big(\log p(D,g_\phi(\varepsilon))-\log q_\phi(g_\phi(\varepsilon))\big)\Big].
+$$
+它需要 $\log p$ 可微、$z$ 連續，但變異數通常低得多。VAE 讓這個估計量廣為人知 [15]。
+
+對參數為 $\phi=(m,s)$、$\sigma=e^{s}$ 的對角高斯，熵項等於 $\sum_j s_j$ 加上常數，所以它對 $s$ 的梯度就是 1。套用到邏輯斯迴歸後驗：
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+n = 40
+X = np.c_[np.ones(n), rng.normal(size=n)]
+y = (rng.random(n) < 1 / (1 + np.exp(-X @ np.array([-0.5, 1.5])))).astype(float)
+prior_var = 4.0
+
+def grad_log_joint(W):                  # W: (S, 2) -> gradients (S, 2)
+    p = 1 / (1 + np.exp(-W @ X.T))      # (S, n)
+    return (y - p) @ X - W / prior_var
+
+# Laplace: Newton's method to the MAP, then invert the Hessian.
+w = np.zeros(2)
+for _ in range(25):
+    p = 1 / (1 + np.exp(-X @ w))
+    H = X.T @ (X * (p * (1 - p))[:, None]) + np.eye(2) / prior_var
+    w = w + np.linalg.solve(H, grad_log_joint(w[None])[0])
+print("Laplace mean:", w.round(3), " sd:", np.sqrt(np.diag(np.linalg.inv(H))).round(3))
+
+# Mean-field Gaussian VI with reparameterization: w = m + exp(s) * eps.
+m, s = np.zeros(2), np.full(2, -1.0)
+lr, S = 0.02, 64
+for step in range(3000):
+    eps = rng.normal(size=(S, 2))
+    W = m + np.exp(s) * eps
+    g = grad_log_joint(W)
+    grad_m = g.mean(axis=0)                                # d ELBO / d m
+    grad_s = (g * eps).mean(axis=0) * np.exp(s) + 1.0      # + entropy term
+    m += lr * grad_m
+    s += lr * grad_s
+print("VI mean:     ", m.round(3), " sd:", np.exp(s).round(3))
+```
+
+與網格的標準答案比較：平均 $(-0.303,\,1.631)$、標準差 $(0.366,\,0.578)$。程式輸出 Laplace 平均 $(-0.291,\,1.500)$、標準差 $(0.355,\,0.556)$；VI 平均 $(-0.303,\,1.630)$、標準差 $(0.358,\,0.562)$。VI 幾乎完全找回後驗平均，因為它對偏斜的後驗取了平均；Laplace 回報的是*眾數*，後驗偏斜時與平均不同。兩者都略為低估分散程度。40 個資料點時後驗接近高斯，差異不大；資料更少或類別可分時，差異會迅速擴大。
+
+<Figure src={logisticFig} alt="三幅以偏差與斜率權重為座標的等高線圖：精確網格後驗、Laplace 近似與 mean-field VI，每幅都以虛線畫出精確等高線。" caption="圖 6 — 以 40 個合成資料點做兩權重的貝氏邏輯斯迴歸。灰色虛線：網格算出的精確後驗等高線。藍色：Laplace（以 MAP 為中心，往較小的斜率偏移）與 mean-field 高斯 VI（中心接近真正的後驗平均，略微太窄）。由本篇的圖形腳本計算。" />
+
+## Laplace 近似與期望傳播
+
+### Laplace：在峰頂放一個高斯
+
+**白話版。** 找到後驗的最高點，然後擬合一個在該處曲率相同的高斯。
+
+**精確版。** 在梯度為零的眾數 $\hat z$ 附近，把 $\log\tilde p(z)$ 展開到二階。令 $H=-\nabla^2\log\tilde p(\hat z)$ 為負對數後驗的 Hessian，
+
+$$
+q(z)=\mathcal N\big(z\mid\hat z,\,H^{-1}\big),\qquad
+\log p(D)\approx\log\tilde p(\hat z)+\frac d2\log 2\pi-\frac12\log|H|,
+$$
+
+其中 $d$ 是 $z$ 的維度。第二個式子是 **Laplace 證據近似**；只保留隨 $N$ 成長的項，就得到 [PR 07](/zh-tw/learn/pattern-recognition/pr-07-clustering-mixtures/) 中用來選擇混合成分數的 BIC 準則 [1]。Laplace 很便宜（一次最佳化加一個 Hessian），而且資料越多越準確，因為正則模型的後驗會越來越接近高斯。它在下列情況會失敗：後驗偏斜、眾數位於邊界上（例如變異數趨近零）、Hessian 奇異，以及多峰後驗（它只描述其中一個峰）。現代的「深度網路 Laplace」方法只對最後一層使用 Laplace，或採用結構化的 Hessian 近似，為訓練好的神經網路提供便宜的不確定性估計。
+
+### 期望傳播
+
+期望傳播（EP）[14] 處理可分解為 $p(z\mid D)\propto\prod_i f_i(z)$ 的後驗，例如每個資料點一個因子。它用指數族中的簡單**站點**（site）$\tilde f_i(z)$ 近似每個因子，使 $q(z)\propto\prod_i\tilde f_i(z)$，並逐一修正站點：
+
+1. 移除站點 $i$，形成**空腔**（cavity）分布 $q^{\setminus i}(z)\propto q(z)/\tilde f_i(z)$。
+2. 形成**傾斜**（tilted）分布 $\hat p_i(z)\propto f_i(z)\,q^{\setminus i}(z)$，即空腔乘上*精確*的因子。
+3. 把新的 $q$ 設為分布族中與 $\hat p_i$ 動差相同的成員，也就是最小化*正向* KL $D_{\mathrm{KL}}(\hat p_i\|q)$。
+4. 更新站點：$\tilde f_i\propto q^{\text{new}}/q^{\setminus i}$。
+
+由於每一步在局部使用正向 KL，EP 傾向於覆蓋質量，變異數往往比 mean-field VI 校準得更好，例如在高斯過程分類中。代價是它沒有保證會改善的全域目標函數，可能不收斂，也可能產生無效（負變異數）的站點，需要阻尼（damping）[1, 14]。
+
+## 證據與複雜度：貝氏版奧坎剃刀
+
+**白話版。** 一個什麼都能解釋的模型，把先驗的賭注分散得很薄，所以解釋你實際看到的資料時拿不到多少功勞。一個押注在這類資料上的較簡單模型，反而能拿到較多功勞。
+
+**精確版。** 模型 $\mathcal M$ 的證據是把概似對先驗積分：
+
+$$
+p(D\mid\mathcal M)=\int p(D\mid\theta,\mathcal M)\,p(\theta\mid\mathcal M)\,d\theta.
+$$
+
+彈性大的模型可以達到很高的峰值概似，但如果它大部分的先驗質量都落在擬合很差的參數上，積分仍然很小。Laplace 公式讓這一點一目了然：證據等於峰值乘上一個比較後驗體積與先驗體積的「奧坎因子」（Occam factor）。由此有兩點提醒。第一，證據取決於先驗，甚至取決於幾乎不影響後驗的面向，例如模糊先驗有多寬。第二，它回答的是「哪個模型最能預料到這份資料？」，這與「哪個模型最能預測*新*資料？」相關但不相同，後者由保留驗證回答（[PR 09](/zh-tw/learn/pattern-recognition/pr-09-ensembles-validation/)）。跨模型比較 ELBO 也要小心：每個 ELBO 與其證據的差距是不同且未知的 KL。
+
+## 從 ELBO 到 VAE 與擴散模型
+
+本章的工具是 ML 系列中兩類深度生成模型的骨幹。
+
+**VAE 是攤銷式（amortized）變分推論。** 變分自編碼器以潛在碼 $z$、先驗 $p(z)$ 與神經網路解碼器 $p_\theta(x\mid z)$ 為影像 $x$ 建模。它不為每張影像各自最佳化一組變分參數，而是讓編碼器網路直接輸出這些參數：$q_\phi(z\mid x)=\mathcal N(\mu_\phi(x),\mathrm{diag}\,\sigma^2_\phi(x))$。這就是**攤銷式推論**：一個網路學會對任何輸入做推論。每張影像的目標函數正是 ELBO：
+
+$$
+\mathcal L(\theta,\phi;x)=\mathbb E_{q_\phi(z\mid x)}[\log p_\theta(x\mid z)]-D_{\mathrm{KL}}\big(q_\phi(z\mid x)\,\|\,p(z)\big),
+$$
+
+並以重參數化梯度對 $\theta$ 與 $\phi$ 聯合訓練 [15, 16]。它已知的弱點正是上面談過的：**攤銷差距**（編碼器的答案比逐張最佳化差）、反向 KL 的分散不足，以及會造成模糊的高斯解碼器。完整說明與程式碼見 [ML 06](/zh-tw/learn/ml/ml-06-generative-models/)。
+
+**擴散模型以 ELBO 訓練，並以 Langevin 式動力學取樣。** 去噪擴散機率模型固定一個逐步加入高斯雜訊的前向過程 $x_0\to x_1\to\dots\to x_T$，並學習反向過程 $p_\theta(x_{t-1}\mid x_t)$。前向的含雜訊狀態扮演潛在變數的角色，前向過程則是*固定的*變分後驗；訓練目標是 $-\log p_\theta(x_0)$ 的變分上界，常用的雜訊預測損失函數則是此上界的重新加權版本 [17]。Score-based 觀點 [18] 改為學習 $s_\theta(x,t)\approx\nabla_x\log p_t(x)$，也就是含雜訊資料對數密度的梯度，並透過積分反向時間的隨機微分方程來產生樣本；其 predictor–corrector 取樣器明確地穿插 Langevin MCMC 步驟，以 $s_\theta$ 取代 $\nabla\log\tilde p$。與本章前面的 Langevin 更新相比，唯一的差別是 score 是*從資料學來的*，而不是由公式算出來的。見 [ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/)。
+
+## 如何選擇方法
+
+| 方法 | 回傳什麼 | 優點 | 主要失敗模式 |
+|---|---|---|---|
+| 網格／數值積分 | 精確數值 | 標準答案 | 隨維度指數成長 |
+| 重要性取樣 | 加權樣本、證據 | 簡單、可平行、能給出 $p(D)$ | $q$ 漏掉 $p$ 時權重崩潰 |
+| 隨機漫步 MH | 相關樣本 | 只需要 $\tilde p$ | 高維時很慢；需調參 |
+| Gibbs | 相關樣本 | 條件分布容易時不需調參 | 變數相關時很慢 |
+| HMC／NUTS | 相關樣本 | 能擴展到大量連續參數 | 需要梯度；離散變數；divergence |
+| Mean-field VI | 分布 $q$ | 快速、可擴展、適合小批次 | 分散不足；局部最佳 |
+| Laplace | 眾數上的高斯 | 便宜；可估計證據 | 偏斜、邊界、多峰 |
+| EP | 高斯／指數族 | 變異數常較準 | 可能不收斂 |
+
+合理的工作流程是：先用最佳化方法（MAP 或 VI）求速度，在較小版本的問題上用謹慎的取樣器對照檢查，再用已知參數模擬資料，確認整條流程能還原它應該還原的東西。
+
+## 現代觀點
+
+**值得一讀的綜述。** Blei、Kucukelbir 與 McAuliffe 寫給統計學者的綜述 [11] 是 VI 的標準入門：它推導 ELBO 與 CAVI、完整走過高斯混合的例子、介紹隨機 VI，並明確指出 VI 以犧牲 MCMC 的漸近精確性換取速度，且傾向低估後驗變異數。Zhang、Bütepage、Kjellström 與 Mandt [12] 把後續文獻整理成四個方向：可擴展的 VI（隨機與分散式）、適用於非共軛模型的通用 VI（黑箱與重參數化梯度）、更準確的 VI（反向 KL 以外的散度、更豐富的分布族），以及攤銷式 VI（推論網路、VAE）。Jordan、Ghahramani、Jaakkola 與 Saul [10] 是圖模型變分方法的經典導論，至今仍是凸對偶觀點最清楚的來源。取樣方面，Neal 的專章 [6] 是 HMC 的標準推導，Betancourt [8] 提供 HMC 在高維為何有效的幾何圖像，Hoffman 與 Gelman [7] 描述 NUTS，也就是現代機率程式系統的預設取樣器。Vehtari 等人 [9] 訂定了目前收斂診斷的標準。Kingma 與 Welling 的專書 [16] 把 VAE 當作攤銷式 VI 加以綜述，Yang 等人 [19] 則綜述擴散模型，包括其變分與 score-based 表述。
+
+**2023–2026 的現況。** 有三個明顯趨勢。
+
+1. *機器學習進入貝氏計算。* Winter、Campbell、Lin、Srivastava 與 Dunson [20] 回顧了正規化流（normalizing flows）、貝氏 coreset、分散式推論與變分方法如何被用來加速後驗計算，以及這些方法的理論保證在哪些地方仍弱於傳統 MCMC。
+2. *擴散的想法被用於取樣，而不只是生成。* 即使只有未正規化的密度（沒有資料），仍然可以訓練擴散式的取樣器。Denoising Diffusion Samplers [21] 學習反轉一個加雜訊的過程，使其終點落在只知道差一個常數的目標上，得到近似樣本與正規化常數的估計；它與最佳控制及 Schrödinger bridge 有所連結，是快速成長的學習式取樣器家族中具代表性的一員。
+3. *重視工作流程而非單一演算法。* 實務上已轉向預設執行 NUTS、回報秩正規化 $\hat R$ 與 bulk／tail ESS [9] 的機率程式系統，並把 VI 或 Laplace 當作快速的第一步，而不是最終答案。
+
+**開放問題。** 為非常大的模型提供可靠的不確定性仍然困難：全批次 MCMC 太昂貴，而便宜的近似（mean-field VI、最後一層 Laplace、集成）彼此結論不一。多峰後驗會同時擊敗局部 VI 與單一鏈。在沒有標準答案時評估近似的品質，大體上仍靠經驗法則；透過 ELBO 比較模型，也會受到未知近似差距的干擾。
+
+## 重點整理
+
+- 後驗在差一個常數的意義下容易計算、卻難以積分；網格成本是 $G^d$，超過幾個維度就非近似不可。
+- Monte Carlo 誤差以 $1/\sqrt S$ 下降且與維度無關，但前提是能從正確的分布抽樣。重要性取樣修正錯誤的分布，權重的 ESS 告訴你修正何時已經崩潰。
+- Metropolis–Hastings 只需要 $\tilde p$ 的比值，非對稱提議則需加上 Hastings 修正。Gibbs 是接受率為 1 的 MH。HMC 利用梯度走得更遠。一定要記錄被拒絕時的狀態、跑多條鏈，並檢查 $\hat R$ 與 ESS。
+- VI 最大化 ELBO，等同最小化對後驗的反向 KL。它快速、可擴展、會找峰，並傾向低估變異數，在 mean field 下尤其如此。
+- Laplace 在眾數上擬合高斯，提供便宜的證據估計（以及 BIC）；EP 在局部匹配動差，變異數常較準，但可能不收斂。
+- 證據實現了奧坎剃刀，但取決於先驗，回答的問題也與保留資料上的預測不同。
+- VAE 是搭配重參數化梯度的攤銷式 VI；擴散模型以變分上界訓練，並以學習到的 score 驅動類似 Langevin 的動力學來取樣。
+
+## 練習
+
+1. **手推 ELBO。** 從 $D_{\mathrm{KL}}(q(z)\|p(z\mid D))$ 出發，推導 $\log p(D)=\mathcal L(q)+D_{\mathrm{KL}}$。再證明 $q(z)=p(z\mid D)$ 時下界是緊的，並說明這如何讓 EM 成為最大化 ELBO 的特例。
+
+<details>
+<summary>提示</summary>
+
+代入 $\log p(z\mid D)=\log p(D,z)-\log p(D)$，並因為 $\log p(D)$ 與 $z$ 無關而把它移出期望值。$q$ 等於後驗時 KL 為零。EM 的 E step 把 $q$ 設為目前參數下潛在變數的後驗（下界變緊）；M step 固定 $q$，對參數最大化 $\mathcal L$。
+
+</details>
+
+2. **Hastings 修正。** 你對一個正值參數使用對數常態隨機漫步提議：$z'=z\,e^{\eta}$，$\eta\sim\mathcal N(0,s^2)$。計算 $q(z'\mid z)$ 與比值 $q(z\mid z')/q(z'\mid z)$。若直接使用 Metropolis 原本的規則，會出什麼問題？
+
+<details>
+<summary>提示</summary>
+
+$q(z'\mid z)=\frac{1}{z'\,s\sqrt{2\pi}}\exp\!\big(-(\log z'-\log z)^2/(2s^2)\big)$。指數部分對稱，所以比值為 $z'/z$。省略它會讓鏈從正比於 $\tilde p(z)/z$ 的密度取樣，偏向較小的值。
+
+</details>
+
+3. **步長與混合。** 在 Metropolis 程式中，把提議標準差改為 $0.02$，再改為 $8$。對每種情況回報接受率、lag-1 自相關，並用診斷小節的公式估計 $N_{\mathrm{eff}}$（在第一個負的自相關處截斷總和）。哪個步長每次迭代得到的有效樣本最多？
+
+<details>
+<summary>提示</summary>
+
+對照圖 2。極小的步長接受率接近 1，但自相關也接近 1，所以 $N_{\mathrm{eff}}$ 非常小，鏈甚至可能還沒到達目標。極大的步長接受率低，會長時間重複同一個值。中間的步長（約為目標的標準差）能得到多得多的有效樣本。
+
+</details>
+
+4. **斜脊上的 Gibbs。** 以 $\rho=0.99$ 重新執行 Gibbs 取樣器。先預測 $z_1$ 的 lag-1 自相關與 $N_{\mathrm{eff}}/N$，再用模擬驗證。提出並實作一個修正方法。
+
+<details>
+<summary>提示</summary>
+
+$z_1$ 鏈是係數為 $\rho^2\approx0.98$ 的自迴歸過程，所以 $N_{\mathrm{eff}}/N=(1-\rho^2)/(1+\rho^2)\approx0.01$。修正方法：把 $(z_1,z_2)$ 當成一個區塊一起抽，或旋轉到 $u=(z_1+z_2)/\sqrt2$、$v=(z_1-z_2)/\sqrt2$，兩者在目標下彼此獨立。
+
+</details>
+
+5. **Mean field 低估變異數。** 對高斯目標 $\mathcal N(0,\Sigma)$，精確度 $\Lambda=\Sigma^{-1}$，用 mean-field 更新規則證明最佳的 $q_j$ 是變異數為 $1/\Lambda_{jj}$ 的高斯。證明 $1/\Lambda_{jj}\le\Sigma_{jj}$，並在變異數為一、相關係數 $0.85$ 時計算兩者。
+
+<details>
+<summary>提示</summary>
+
+$\log p=-\tfrac12 z^\top\Lambda z+$ 常數；對 $q_{-j}$ 取期望，保留含 $z_j$ 的項：$-\tfrac12\Lambda_{jj}z_j^2-z_j\sum_{k\neq j}\Lambda_{jk}\mathbb E[z_k]$，這是精確度為 $\Lambda_{jj}$ 的高斯。$1/\Lambda_{jj}$ 是給定其餘變數時 $z_j$ 的條件變異數，由 Schur 補數可知它等於 $\Sigma_{jj}$ 減去一個非負項。$\rho=0.85$ 時：約 $0.28$ 對 $1$。
+
+</details>
+
+6. **用重要性取樣估計證據。** 對兩權重邏輯斯迴歸，分別以 (a) 先驗作為提議分布、(b) 共變異數放大 1.5 倍的 Laplace 高斯作為提議分布，以重要性取樣估計 $\log p(D)$。把兩者與網格值 $-22.117$ 及權重 ESS 比較。在 50 維時你會信任哪一個？為什麼？
+
+<details>
+<summary>提示</summary>
+
+估計值為 $\log\frac1S\sum_s\tilde p(z_s)/q(z_s)$，用 log-sum-exp 計算。先驗比後驗寬得多，大部分樣本權重微不足道，ESS 只占 $S$ 的一小部分；以 Laplace 為基礎的提議分布落在後驗上，ESS 大得多。在高維時，先驗與後驗的落差呈指數擴大，以先驗為提議分布會變得毫無用處，而擬合良好、尾部略重的提議分布仍然可行。
+
+</details>
+
+## 參考文獻
+
+1. C. M. Bishop, *Pattern Recognition and Machine Learning*, Springer, 2006, Sections 4.4 (Laplace), 10.1–10.2 and 10.7 (variational inference, EP) and 11.1–11.5 (sampling). [官方書籍頁面與 PDF](https://www.microsoft.com/en-us/research/people/cmbishop/prml-book/)
+2. S. Theodoridis and K. Koutroumbas, *Pattern Recognition*, 4th ed., Academic Press, 2009, Chapter 2 (Bayes decision theory and parameter estimation) and Appendix C (cost function optimization)。這些是先備知識，並非與本章內容完全相同。[doi](https://doi.org/10.1016/B978-1-59749-272-0.X0001-2)
+3. N. Metropolis, A. W. Rosenbluth, M. N. Rosenbluth, A. H. Teller and E. Teller, "Equation of state calculations by fast computing machines," *The Journal of Chemical Physics*, vol. 21, no. 6, pp. 1087–1092, 1953. [doi](https://doi.org/10.1063/1.1699114)
+4. W. K. Hastings, "Monte Carlo sampling methods using Markov chains and their applications," *Biometrika*, vol. 57, no. 1, pp. 97–109, 1970. [doi](https://doi.org/10.1093/biomet/57.1.97)
+5. S. Geman and D. Geman, "Stochastic relaxation, Gibbs distributions, and the Bayesian restoration of images," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. PAMI-6, no. 6, pp. 721–741, 1984. [doi](https://doi.org/10.1109/TPAMI.1984.4767596)
+6. R. M. Neal, "MCMC using Hamiltonian dynamics," in S. Brooks, A. Gelman, G. Jones and X.-L. Meng (eds.), *Handbook of Markov Chain Monte Carlo*, Chapman and Hall/CRC, 2011 (arXiv:1206.1901). [arXiv](https://arxiv.org/abs/1206.1901)
+7. M. D. Hoffman and A. Gelman, "The No-U-Turn Sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo," *Journal of Machine Learning Research*, vol. 15, pp. 1593–1623, 2014. [JMLR](https://jmlr.org/papers/v15/hoffman14a.html)
+8. M. Betancourt, "A conceptual introduction to Hamiltonian Monte Carlo," arXiv:1701.02434, 2017. [arXiv](https://arxiv.org/abs/1701.02434)
+9. A. Vehtari, A. Gelman, D. Simpson, B. Carpenter and P.-C. Bürkner, "Rank-normalization, folding, and localization: An improved $\hat R$ for assessing convergence of MCMC (with discussion)," *Bayesian Analysis*, vol. 16, no. 2, 2021. [doi](https://doi.org/10.1214/20-BA1221)
+10. M. I. Jordan, Z. Ghahramani, T. S. Jaakkola and L. K. Saul, "An introduction to variational methods for graphical models," *Machine Learning*, vol. 37, no. 2, pp. 183–233, 1999. [doi](https://doi.org/10.1023/A:1007665907178)
+11. D. M. Blei, A. Kucukelbir and J. D. McAuliffe, "Variational inference: A review for statisticians," *Journal of the American Statistical Association*, vol. 112, no. 518, pp. 859–877, 2017. [doi](https://doi.org/10.1080/01621459.2017.1285773)
+12. C. Zhang, J. Bütepage, H. Kjellström and S. Mandt, "Advances in variational inference," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 41, no. 8, pp. 2008–2026, 2019. [doi](https://doi.org/10.1109/TPAMI.2018.2889774)
+13. R. Ranganath, S. Gerrish and D. M. Blei, "Black box variational inference," in *Proc. International Conference on Artificial Intelligence and Statistics (AISTATS)*, PMLR vol. 33, 2014. [PMLR](https://proceedings.mlr.press/v33/ranganath14.html)
+14. T. P. Minka, "Expectation propagation for approximate Bayesian inference," in *Proc. Conference on Uncertainty in Artificial Intelligence (UAI)*, 2001 (arXiv:1301.2294). [arXiv](https://arxiv.org/abs/1301.2294)
+15. D. P. Kingma and M. Welling, "Auto-encoding variational Bayes," arXiv:1312.6114, 2013. [arXiv](https://arxiv.org/abs/1312.6114)
+16. D. P. Kingma and M. Welling, "An introduction to variational autoencoders," *Foundations and Trends in Machine Learning*, vol. 12, no. 4, pp. 307–392, 2019. [arXiv](https://arxiv.org/abs/1906.02691)
+17. J. Ho, A. Jain and P. Abbeel, "Denoising diffusion probabilistic models," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2020 (arXiv:2006.11239). [arXiv](https://arxiv.org/abs/2006.11239)
+18. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon and B. Poole, "Score-based generative modeling through stochastic differential equations," in *Proc. International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2011.13456)
+19. L. Yang, Z. Zhang, Y. Song, S. Hong, R. Xu, Y. Zhao, W. Zhang, B. Cui and M.-H. Yang, "Diffusion models: A comprehensive survey of methods and applications," *ACM Computing Surveys*, vol. 56, no. 4, 2023. [doi](https://doi.org/10.1145/3626235)
+20. S. Winter, T. Campbell, L. Lin, S. Srivastava and D. B. Dunson, "Machine learning and the future of Bayesian computation," arXiv:2304.11251, 2023. [arXiv](https://arxiv.org/abs/2304.11251)
+21. F. Vargas, W. Grathwohl and A. Doucet, "Denoising diffusion samplers," in *Proc. International Conference on Learning Representations (ICLR)*, 2023 (arXiv:2302.13834). [arXiv](https://arxiv.org/abs/2302.13834)

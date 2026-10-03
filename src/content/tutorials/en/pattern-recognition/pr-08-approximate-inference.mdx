@@ -1,0 +1,693 @@
+---
+title: "PR 08 · Approximate Inference and Bayesian Model Complexity"
+description: "Why posterior integrals are hard, and the two big families of answers: sampling (Monte Carlo, importance sampling, Metropolis–Hastings, Gibbs, HMC) and optimization (variational inference, Laplace, EP), with links to VAEs and diffusion models."
+track: pattern-recognition
+order: 80
+level: advanced
+prereqs: [pattern-recognition/pr-07-clustering-mixtures]
+tags: [variational-inference, mcmc, importance-sampling, laplace, bayesian, model-evidence]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import approximationFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/mean-field-correlation.png';
+import logisticFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/logistic-posterior.png';
+import importanceFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/importance-weights.png';
+import mhFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/mh-step-size.png';
+import gibbsFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/gibbs-path.png';
+import klFig from '../../../../assets/pattern-recognition/pr-08-approximate-inference/kl-directions.png';
+
+## What you'll learn
+
+- Why Bayesian posteriors are easy to *evaluate* up to a constant but hard to *integrate*, and why grids fail beyond a handful of dimensions.
+- How plain Monte Carlo, rejection sampling and importance sampling turn integrals into averages, and how to tell when their weights have collapsed.
+- How Markov chain Monte Carlo works: detailed balance, Metropolis–Hastings (including the asymmetric-proposal correction), Gibbs sampling, Hamiltonian Monte Carlo, and the diagnostics ($\hat R$, effective sample size) that keep you honest.
+- How variational inference turns integration into optimization: the evidence lower bound (ELBO) derived two ways, mean-field coordinate ascent, reverse versus forward KL, and stochastic gradients with the reparameterization trick.
+- Where Laplace approximation and expectation propagation fit, how model evidence penalizes complexity, and how the same ideas power VAEs and diffusion models.
+
+## The big picture
+
+Earlier chapters fitted one "best" parameter setting: maximum likelihood, MAP, or EM for mixtures. A Bayesian recognizer asks a bigger question. After seeing the data, *how plausible is every parameter setting*, and what do they predict *on average*? Answering it requires integrals over all unknowns. For almost every useful model those integrals have no closed form. This chapter is about the two families of workarounds: **draw samples** that behave like the posterior, or **fit a simpler distribution** that sits close to it.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a huge dark field with treasure buried everywhere in different amounts, and you want to know the *total* treasure. Finding the single richest spot is easy: walk uphill. That is optimization. Knowing the total is harder. One way is to walk around randomly but cleverly, spending more time where treasure is rich, and count what you see: that is **sampling**. Another way is to lay a simple, smooth blanket over the field shaped as much like the treasure map as possible, then measure the blanket instead: that is **variational inference**. Walking is slow but honest. The blanket is fast but can hide bumps it was not shaped to show.
+</Callout>
+
+Why it matters for recognition: uncertainty tells a system when to abstain (see [PR 01](/en/learn/pattern-recognition/pr-01-bayes-decisions/)), integrated evidence compares models without a held-out set, and the machinery of this chapter, especially the ELBO and Langevin-style sampling, is exactly what modern generative models use. We follow Bishop's chapters on approximate inference and sampling [1]; Theodoridis and Koutroumbas supply the estimation and optimization background (Chapter 2 and Appendix C) rather than a one-to-one treatment of these methods [2].
+
+## Why exact inference is hard
+
+**Plain version.** Bayes' rule says the posterior is "prior times likelihood, divided by a normalizing number". The top is usually easy to compute for any single guess. The bottom is a sum over *every possible* guess, and that is where the trouble starts.
+
+**Precise version.** Collect all unknowns, latent variables and parameters, into $z$, and write $D$ for the observed data. Then
+
+$$
+p(z\mid D)=\frac{p(D,z)}{p(D)},\qquad
+p(D)=\int p(D,z)\,dz,
+$$
+
+where $p(D,z)=p(D\mid z)\,p(z)$ is the joint density (likelihood times prior) and $p(D)$ is the **evidence** or marginal likelihood. Almost everything we want is an expectation under the posterior:
+
+$$
+\mathbb E_{p(z\mid D)}[f(z)]=\int f(z)\,p(z\mid D)\,dz,
+$$
+
+for example the posterior mean ($f(z)=z$), a predictive probability ($f(z)=p(y^\ast\mid x^\ast,z)$) or the probability that a parameter is positive ($f(z)=\mathbf 1[z>0]$). We write $\tilde p(z)=p(D,z)$ for the **unnormalized** posterior: it is cheap to evaluate pointwise, but its normalizer $Z=p(D)$ is unknown.
+
+Three things make the integral hard:
+
+1. **Dimension.** A grid with $G$ points per axis needs $G^d$ evaluations in $d$ dimensions. For $G=201$ and $d=50$ that is about $10^{115}$, far beyond any computer.
+2. **Concentration.** With a lot of data the posterior occupies a tiny region of a huge space. Random guesses almost never land in it.
+3. **Discrete structure.** For a mixture with $K$ components and $N$ points, the latent assignments have $K^N$ configurations; summing over them exactly is hopeless even when each term is simple.
+
+MAP estimation sidesteps all of this by maximizing $\tilde p$, but a maximum is not an integral. The highest point of the posterior can sit in a narrow spike that carries little mass, and a single point carries no information about spread. EM, from [PR 07](/en/learn/pattern-recognition/pr-07-clustering-mixtures/), sits in between: it integrates over latent assignments in its E step (which is tractable for Gaussian mixtures) but still returns a point estimate of the parameters.
+
+### A worked example: Bayesian logistic regression
+
+Take a two-class problem with inputs $x_n\in\mathbb R^2$ (a bias feature and one measurement), labels $y_n\in\{0,1\}$, weights $w$ and the model
+
+$$
+p(y_n=1\mid x_n,w)=\sigma(w^\top x_n),\qquad \sigma(s)=\frac1{1+e^{-s}},\qquad p(w)=\mathcal N(0,\,4I).
+$$
+
+The log joint is $\sum_n\big[y_n w^\top x_n-\log(1+e^{w^\top x_n})\big]-\tfrac18\|w\|^2$ plus a constant. The Gaussian prior is not conjugate to the logistic likelihood, so the posterior is *not* Gaussian and its normalizer has no formula. With only two weights we can still brute-force it on a grid, which gives us a ground truth to compare every approximation against.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+n = 40
+X = np.c_[np.ones(n), rng.normal(size=n)]
+w_true = np.array([-0.5, 1.5])
+y = rng.random(n) < 1 / (1 + np.exp(-X @ w_true))
+
+def log_joint(w):                       # log p(y | X, w) + log p(w), w ~ N(0, 2^2 I)
+    s = X @ w
+    return np.sum(y * s - np.logaddexp(0, s)) - 0.5 * np.sum(w**2) / 4.0
+
+# Brute-force normalization on a grid: fine in 2-D, hopeless in 50-D.
+g = np.linspace(-4, 4, 201)
+W0, W1 = np.meshgrid(g, g, indexing="ij")
+logp = np.array([[log_joint(np.array([a, b])) for b in g] for a in g])
+cell = (g[1] - g[0])**2
+log_evidence = np.log(np.sum(np.exp(logp - logp.max())) * cell) + logp.max()
+post = np.exp(logp - log_evidence)
+mean = np.array([np.sum(W0 * post), np.sum(W1 * post)]) * cell
+sd = np.sqrt(np.array([np.sum((W0 - mean[0])**2 * post),
+                       np.sum((W1 - mean[1])**2 * post)]) * cell)
+print("log evidence:", round(log_evidence, 3))
+print("posterior mean:", mean.round(3), " sd:", sd.round(3))
+print("grid points for 201 per axis in 50-D:", f"{201.0**50:.2e}")
+```
+
+It prints a log evidence of $-22.117$, a posterior mean of $(-0.303,\,1.631)$ and standard deviations of $(0.366,\,0.578)$. Note the subtraction of `logp.max()` before exponentiating: log densities of real data are large negative numbers, and working in log space (the "log-sum-exp" trick) is the first habit of every practitioner. We will reuse this model to judge the Laplace and variational approximations later in the chapter.
+
+## Monte Carlo: integrals as averages
+
+**Plain version.** If you can draw random examples from a distribution, the average of a quantity over those examples estimates its expected value. More draws give a better estimate, and the error shrinks in a predictable way that does not depend on the dimension.
+
+**Precise version.** Given independent draws $z^{(1)},\dots,z^{(S)}\sim p$, the Monte Carlo estimator of $I=\mathbb E_p[f(z)]$ is
+
+$$
+\hat I_S=\frac1S\sum_{s=1}^S f\big(z^{(s)}\big),\qquad
+\mathbb E[\hat I_S]=I,\qquad
+\operatorname{Var}[\hat I_S]=\frac{\operatorname{Var}_p[f(z)]}{S}.
+$$
+
+Here $S$ is the number of samples and $\operatorname{Var}_p[f]$ is the variance of $f$ under $p$. The estimator is **unbiased**, and its standard error falls as $1/\sqrt S$: to halve the error you need four times as many samples. The striking part is that $d$ does not appear. Monte Carlo replaces an exponential-in-dimension grid by a cost that depends on the variance of $f$.
+
+The catch is the assumption "draws from $p$". For a posterior we usually cannot sample directly. The rest of the sampling half of this chapter is about manufacturing such draws, or correcting for draws from the wrong distribution.
+
+### Rejection sampling
+
+Suppose we can sample from a simple **proposal** $q(z)$ and know a constant $M$ with $M\,q(z)\geq\tilde p(z)$ for all $z$. Draw $z\sim q$ and $u\sim\mathrm{Uniform}(0,1)$, and keep $z$ if $u\lt\tilde p(z)/(M q(z))$. The kept points are exact draws from $p$, because the accepted region under the envelope $Mq$ has exactly the shape of $\tilde p$. The acceptance probability is $Z/M$, where $Z=\int\tilde p$. In high dimensions a usable envelope must be enormous compared with the target, so almost everything is rejected. Rejection sampling is a building block for one-dimensional conditionals (for example inside Gibbs samplers), not a general posterior engine [1].
+
+## Importance sampling
+
+**Plain version.** Draw from a convenient distribution, then correct each draw with a weight that says how much more (or less) likely it is under the distribution you actually care about. Works well when the convenient distribution covers the important region; fails quietly when it does not.
+
+**Precise version.** For any $q$ with $q(z)\gt0$ wherever $p(z)f(z)\neq0$,
+
+$$
+\mathbb E_p[f(z)]=\int f(z)\,\frac{p(z)}{q(z)}\,q(z)\,dz
+\approx\frac1S\sum_{s=1}^S w_s\,f\big(z^{(s)}\big),\qquad
+w_s=\frac{p(z^{(s)})}{q(z^{(s)})},\quad z^{(s)}\sim q.
+$$
+
+The ratio $w_s$ is the **importance weight**. When only $\tilde p$ is available, the unknown $Z$ cancels if we normalize the weights:
+
+$$
+\hat I_{\mathrm{SN}}=\sum_{s=1}^S \bar w_s\,f\big(z^{(s)}\big),\qquad
+\bar w_s=\frac{\tilde w_s}{\sum_{t}\tilde w_t},\qquad
+\tilde w_s=\frac{\tilde p(z^{(s)})}{q(z^{(s)})}.
+$$
+
+This **self-normalized** estimator is slightly biased for finite $S$ but consistent as $S\to\infty$. As a by-product, $\frac1S\sum_s\tilde w_s$ is an unbiased estimate of the evidence $Z$, which is how importance sampling is used for model comparison.
+
+The quality of the estimate depends on how uneven the weights are. A widely used summary is the **effective sample size** of the weights,
+
+$$
+\mathrm{ESS}=\frac{1}{\sum_s\bar w_s^2},
+$$
+
+which equals $S$ when all weights are equal and $1$ when one weight takes everything. Two failure modes matter:
+
+- **Proposal too narrow or misplaced.** Regions where $p$ has mass but $q$ is tiny produce rare, gigantic weights. The estimate is dominated by a handful of draws and its variance can even be infinite.
+- **Light tails.** The ratio $p/q$ must stay bounded in the tails. A rule of thumb is to make $q$ *heavier-tailed* than $p$ (a Student-$t$ instead of a Gaussian, or a wider Gaussian).
+
+```python
+import numpy as np
+from scipy.stats import norm
+
+rng = np.random.default_rng(1)
+N = 10_000
+exact = norm.sf(3.0)                      # P(X > 3) for X ~ N(0, 1)
+
+# Plain Monte Carlo: most samples never reach the tail.
+x = rng.normal(0, 1, N)
+plain = np.mean(x > 3)
+
+# Importance sampling with a proposal centered on the tail, q = N(3, 1).
+z = rng.normal(3, 1, N)
+w = norm.pdf(z) / norm.pdf(z, loc=3)      # p(z) / q(z)
+is_est = np.mean(w * (z > 3))
+print(f"exact {exact:.6f}  plain MC {plain:.6f}  importance {is_est:.6f}")
+
+# Self-normalized IS for an unnormalized target, with effective sample size.
+def log_p_tilde(t):                       # N(1.5, 0.7^2) without its constant
+    return -0.5 * ((t - 1.5) / 0.7) ** 2
+
+for scale in [1.0, 3.0, 0.3]:
+    t = rng.normal(0, scale, N)
+    log_w = log_p_tilde(t) - norm.logpdf(t, scale=scale)
+    wn = np.exp(log_w - log_w.max())
+    wn /= wn.sum()
+    ess = 1.0 / np.sum(wn**2)
+    print(f"proposal N(0,{scale}^2): mean {np.sum(wn * t):.3f}  ESS {ess:7.1f} of {N}")
+```
+
+The rare-event estimate shows why importance sampling exists: the exact tail probability is $0.001350$; plain Monte Carlo with 10,000 draws gives $0.001900$ (only 19 draws landed in the tail), while the shifted proposal gives $0.001372$. In the second part the target mean is $1.5$. The wide proposals give $1.509$ and $1.492$ with ESS of about 1,870 and 2,830. The narrow proposal $\mathcal N(0,0.3^2)$ gives $0.921$ with an ESS of 13, a confident-looking but wrong answer. A tiny ESS is the alarm bell.
+
+<Figure src={importanceFig} alt="Left: a target Gaussian centered at 1.5 and three zero-centered proposals of widths 1, 3 and 0.3. Right: cumulative share of total weight held by the largest weights for each proposal." caption="Figure 1 — Importance sampling with 4,000 draws per proposal. The narrow proposal (orange) barely reaches the target, so its largest single weight already holds over 40% of the total and the ESS is about 5. The wide proposals spread the weight over hundreds of draws. Computed by this tutorial's figure script." />
+
+Importance sampling stays important even when it is not the main engine: it re-weights samples from an old model to a new one, it estimates evidence, and it powers **sequential Monte Carlo** (particle filters), where weights are refreshed and resampled step by step as data arrive.
+
+## Markov chain Monte Carlo
+
+**Plain version.** Instead of drawing independent samples, take a random walk whose rules are designed so that, in the long run, the fraction of time spent in each region equals the posterior probability of that region. Then time averages along the walk estimate posterior expectations. Successive steps are correlated, so a long walk is worth fewer independent draws than its length suggests.
+
+**Precise version.** A Markov chain with transition kernel $T(z'\mid z)$ has $p$ as a **stationary** (invariant) distribution if
+
+$$
+\int T(z'\mid z)\,p(z)\,dz=p(z').
+$$
+
+A simple sufficient condition is **detailed balance** (reversibility):
+
+$$
+p(z)\,T(z'\mid z)=p(z')\,T(z\mid z')\quad\text{for all }z,z'.
+$$
+
+Integrating both sides over $z$ gives stationarity. If the chain can also reach every region (irreducibility) and does not cycle (aperiodicity), the distribution of the state converges to $p$ from any starting point, and the ergodic average $\frac1S\sum_s f(z^{(s)})$ converges to $\mathbb E_p[f]$. Importantly, detailed balance involves only *ratios* $p(z')/p(z)$, so the unknown normalizer cancels.
+
+### Metropolis–Hastings
+
+The Metropolis algorithm [3], generalized by Hastings [4], builds such a kernel from any proposal $q(z'\mid z)$:
+
+1. From the current state $z$, propose $z'\sim q(z'\mid z)$.
+2. Accept with probability
+$$
+A(z',z)=\min\left(1,\;\frac{\tilde p(z')\,q(z\mid z')}{\tilde p(z)\,q(z'\mid z)}\right).
+$$
+3. If accepted, move to $z'$; otherwise **stay at $z$ and record $z$ again**.
+
+Here $q(z\mid z')$ is the density of proposing the reverse move. The factor $q(z\mid z')/q(z'\mid z)$ is the **Hastings correction**: it cancels any bias the proposal has toward certain directions. For a symmetric proposal such as a Gaussian random walk, $q(z'\mid z)=q(z\mid z')$ and the rule reduces to Metropolis's original $\min(1,\tilde p(z')/\tilde p(z))$.
+
+To see why it works, take $z'\neq z$ and suppose $\tilde p(z')q(z\mid z')\le\tilde p(z)q(z'\mid z)$. Then $p(z)T(z'\mid z)=p(z)\,q(z'\mid z)\,\frac{p(z')q(z\mid z')}{p(z)q(z'\mid z)}=p(z')q(z\mid z')$, and in the reverse direction the acceptance is 1, so $p(z')T(z\mid z')=p(z')q(z\mid z')$. Both sides match: detailed balance holds.
+
+Forgetting step 3 (only recording accepted states) is a classic bug: it over-represents regions the chain moves through easily and biases every estimate.
+
+A Gaussian target with known moments lets us check a random-walk chain. The assertions are deliberately loose: a numerical sanity check, not a convergence proof.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(12)
+def log_target(x):
+    return -0.5 * ((x - 1.5) / 0.7)**2
+x, accepted = -3.0, 0
+samples = []
+for step in range(18000):
+    proposal = x + rng.normal(0, 0.8)
+    if np.log(rng.random()) < min(0.0, log_target(proposal) - log_target(x)):
+        x = proposal
+        accepted += 1
+    if step >= 2000:                      # discard warm-up, keep repeats
+        samples.append(x)
+samples = np.asarray(samples)
+rho1 = np.corrcoef(samples[:-1], samples[1:])[0, 1]
+print("mean, std:", samples.mean(), samples.std())
+print("acceptance:", accepted / 18000, "lag-one correlation:", rho1)
+assert abs(samples.mean() - 1.5) < 0.12
+assert abs(samples.std() - 0.7) < 0.12
+```
+
+The chain recovers mean $1.50$ and standard deviation $0.69$, with acceptance $0.67$ and lag-one correlation $0.74$. The step size is the main tuning knob, and acceptance alone does not tell you whether it is good. Tiny steps are almost always accepted but crawl; huge steps are mostly rejected and the chain sits still. Both produce strongly correlated samples.
+
+<Figure src={mhFig} alt="Top row: traces of random-walk Metropolis chains with step standard deviations 0.02, 0.8 and 8, starting at -3. Bottom row: their autocorrelation functions." caption="Figure 2 — Random-walk Metropolis on N(1.5, 0.7²) started at −3. With step 0.02 (acceptance 0.97) the chain has not even reached the target after 4,000 steps and its autocorrelation barely decays. Step 0.8 mixes well. Step 8 (acceptance 0.12) gets stuck for long flat stretches. Computed by this tutorial's figure script." />
+
+### Gibbs sampling
+
+**Plain version.** Update one variable (or block) at a time by drawing it from its distribution *given all the others*. If those conditional distributions are easy, as they often are in conjugate models, every move is accepted.
+
+**Precise version.** Gibbs sampling, introduced for image restoration with Markov random fields by Geman and Geman [5], cycles through blocks $j=1,\dots,J$ and draws
+
+$$
+z_j\sim p\big(z_j\mid z_{-j},D\big),
+$$
+
+where $z_{-j}$ denotes all blocks except $j$. It is a special case of Metropolis–Hastings with proposal $q(z'\mid z)=p(z'_j\mid z_{-j})$ and $z'_{-j}=z_{-j}$; plugging into the acceptance ratio gives exactly 1 [1]. In a Gaussian mixture, for example, one alternates between sampling each point's component label from its responsibilities and sampling the component parameters from their conjugate posteriors: a stochastic cousin of EM.
+
+For a zero-mean bivariate Gaussian with unit variances and correlation $\rho$, the conditionals are $z_1\mid z_2\sim\mathcal N(\rho z_2,\,1-\rho^2)$ and symmetrically for $z_2$. The code below runs four chains from dispersed corners and computes the **split-$\hat R$** convergence diagnostic described in the next subsection.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(3)
+rho = 0.85                     # target: zero-mean bivariate Gaussian, unit variances
+sd = np.sqrt(1 - rho**2)       # conditional standard deviation
+
+def gibbs(n_steps, start):
+    z = np.array(start, dtype=float)
+    out = np.empty((n_steps, 2))
+    for t in range(n_steps):
+        z[0] = rng.normal(rho * z[1], sd)   # z1 | z2 ~ N(rho z2, 1 - rho^2)
+        z[1] = rng.normal(rho * z[0], sd)   # z2 | z1 ~ N(rho z1, 1 - rho^2)
+        out[t] = z
+    return out
+
+def split_rhat(chains):        # chains: (m, n) draws of one scalar quantity
+    m, n = chains.shape
+    halves = chains[:, : n // 2 * 2].reshape(2 * m, n // 2)
+    W = halves.var(axis=1, ddof=1).mean()          # within-chain variance
+    B = (n // 2) * halves.mean(axis=1).var(ddof=1) # between-chain variance
+    var_plus = (n // 2 - 1) / (n // 2) * W + B / (n // 2)
+    return np.sqrt(var_plus / W)
+
+starts = [(-4, -4), (4, 4), (-4, 4), (4, -4)]
+chains = np.stack([gibbs(3000, s)[500:] for s in starts])   # drop warm-up
+draws = chains.reshape(-1, 2)
+print("sample correlation:", np.corrcoef(draws.T)[0, 1].round(3))
+print("sample variances:", draws.var(axis=0).round(3))
+lag1 = np.mean([np.corrcoef(c[:-1, 0], c[1:, 0])[0, 1] for c in chains])
+print("lag-1 autocorrelation of z1:", lag1.round(3), " (theory rho^2 =", rho**2, ")")
+print("split R-hat for z1:", split_rhat(chains[:, :, 0]).round(4))
+```
+
+Output: sample correlation $0.849$, variances near $0.98$, lag-one autocorrelation $0.717$ (theory $\rho^2=0.7225$) and split-$\hat R$ $1.0009$. The autocorrelation is the price of axis-aligned moves: when the target is a long diagonal ridge, each coordinate can only move a short distance before hitting the walls. As $\rho\to1$ the chain slows to a crawl. Reparameterizing (rotating or whitening the variables) or updating correlated variables together as a block fixes this.
+
+<Figure src={gibbsFig} alt="Left: a staircase path of Gibbs updates moving from a corner into a correlated Gaussian ellipse. Right: a scatter of 1,800 draws filling the ellipse." caption="Figure 3 — Gibbs sampling on a Gaussian with correlation 0.85. Each half-step moves parallel to an axis (left), so progress along the diagonal ridge is slow, yet after warm-up the draws fill the target correctly (right). Computed by this tutorial's figure script." />
+
+### Hamiltonian Monte Carlo
+
+**Plain version.** Random walks waste effort going back and forth. Hamiltonian Monte Carlo (HMC) uses the *gradient* of the log posterior to glide along the distribution like a frictionless puck on a curved surface, making long, informed moves that are still accepted with high probability.
+
+**Precise version.** Define potential energy $U(z)=-\log\tilde p(z)$, add an auxiliary momentum $r\sim\mathcal N(0,M)$ with mass matrix $M$, and form the Hamiltonian
+
+$$
+H(z,r)=U(z)+\tfrac12 r^\top M^{-1}r.
+$$
+
+Hamiltonian dynamics conserve $H$ and preserve volume. In practice we simulate them with $L$ **leapfrog** steps of size $\epsilon$:
+
+$$
+r\leftarrow r-\tfrac\epsilon2\nabla U(z),\qquad
+z\leftarrow z+\epsilon M^{-1}r,\qquad
+r\leftarrow r-\tfrac\epsilon2\nabla U(z).
+$$
+
+The leapfrog integrator is reversible and volume-preserving but not exactly energy-conserving, so the endpoint $(z',r')$ is accepted with probability $\min\big(1,\exp(H(z,r)-H(z',r'))\big)$, a Metropolis step on the joint space [6]. Because the trajectory follows the geometry of the target, HMC can traverse a correlated ridge that would trap Gibbs or a random walk. Its tuning parameters, $\epsilon$ and $L$, are delicate; the **No-U-Turn Sampler** (NUTS) chooses the trajectory length automatically by stopping when the path starts to double back, and adapts $\epsilon$ during warm-up [7]. Betancourt's conceptual introduction explains why HMC scales to high dimensions in terms of the **typical set**, the thin shell where posterior mass actually lives [8]. HMC needs differentiable, continuous targets; discrete latent variables must be summed out or handled by other moves.
+
+A close relative is the **Langevin** update
+
+$$
+z\leftarrow z+\tfrac\epsilon2\nabla\log\tilde p(z)+\sqrt\epsilon\,\xi,\qquad \xi\sim\mathcal N(0,I),
+$$
+
+which is one leapfrog step with freshly drawn momentum. Without an accept/reject step it is only approximately correct for finite $\epsilon$; with the Metropolis correction it becomes the Metropolis-adjusted Langevin algorithm. Keep this update in mind: it reappears in diffusion models.
+
+### Diagnostics: is the chain telling the truth?
+
+No finite run *proves* convergence. Diagnostics can only reveal problems. Standard practice:
+
+- **Run several chains from dispersed starting points** and discard an initial warm-up portion of each.
+- **Compare chains with $\hat R$.** With $m$ chains (split in halves) of length $n$, let $W$ be the average within-chain variance and $B/n$ the variance of the chain means. Then
+
+$$
+\hat R=\sqrt{\frac{\frac{n-1}{n}W+\frac1nB}{W}}.
+$$
+
+If all chains explore the same distribution, $\hat R\approx1$; values noticeably above 1 mean the chains disagree. Vehtari et al. showed that the classic version misses heavy tails and differences in scale, and proposed a rank-normalized, folded split-$\hat R$ together with bulk and tail effective sample sizes; this is the version current software reports [9].
+
+- **Report effective sample size.** For a stationary chain with lag-$\ell$ autocorrelation $\rho_\ell$ of the quantity of interest,
+
+$$
+N_{\mathrm{eff}}\approx\frac{N}{1+2\sum_{\ell\geq1}\rho_\ell},
+$$
+
+where the sum is truncated once estimated autocorrelations become noisy. The Monte Carlo standard error is roughly $\mathrm{sd}/\sqrt{N_{\mathrm{eff}}}$, not $\mathrm{sd}/\sqrt N$. For the Gibbs chain above, $\rho_\ell=\rho^{2\ell}$, so $N_{\mathrm{eff}}/N=(1-\rho^2)/(1+\rho^2)\approx0.16$: 10,000 stored draws are worth about 1,600 independent ones.
+
+- **Look at traces** and, for gradient-based samplers, at divergence warnings, which flag regions of high curvature the integrator cannot follow.
+
+Different quantities mix at different speeds: a mean can look fine while a tail quantile has not converged. And a perfectly mixing chain still only describes the posterior of the *model you wrote down*; it says nothing about whether that model is right.
+
+## Variational inference
+
+**Plain version.** Pick a family of simple distributions (for example, independent Gaussians), and search within it for the member closest to the posterior. Integration becomes optimization, which is fast and scales to huge datasets, at the cost of a bias you cannot remove by running longer.
+
+**Precise version.** Choose a family $\mathcal Q$ of tractable densities $q(z)$, indexed by **variational parameters** $\phi$. Variational inference (VI) [10] solves
+
+$$
+q^\ast=\arg\min_{q\in\mathcal Q}\;D_{\mathrm{KL}}\big(q(z)\,\|\,p(z\mid D)\big),\qquad
+D_{\mathrm{KL}}(q\|p)=\mathbb E_q\!\left[\log\frac{q(z)}{p(z)}\right].
+$$
+
+We cannot evaluate this KL directly because it contains the unknown $p(D)$. The trick is the ELBO.
+
+### The ELBO, derived two ways
+
+**Derivation 1: decomposition.** Substitute $\log p(z\mid D)=\log p(D,z)-\log p(D)$ into the KL:
+
+$$
+D_{\mathrm{KL}}(q\|p(\cdot\mid D))=\mathbb E_q[\log q(z)]-\mathbb E_q[\log p(D,z)]+\log p(D).
+$$
+
+Rearranging,
+
+$$
+\log p(D)=\mathcal L(q)+D_{\mathrm{KL}}\big(q(z)\,\|\,p(z\mid D)\big),\qquad
+\mathcal L(q)=\mathbb E_q[\log p(D,z)]-\mathbb E_q[\log q(z)].
+$$
+
+Because $\log p(D)$ does not depend on $q$, maximizing $\mathcal L$ is *exactly* minimizing the KL. Because KL is nonnegative, $\mathcal L(q)\le\log p(D)$: it is the **evidence lower bound**, ELBO.
+
+**Derivation 2: Jensen's inequality.** Multiply and divide by $q$ inside the evidence integral and use the concavity of $\log$:
+
+$$
+\log p(D)=\log\mathbb E_q\!\left[\frac{p(D,z)}{q(z)}\right]\geq\mathbb E_q\!\left[\log\frac{p(D,z)}{q(z)}\right]=\mathcal L(q).
+$$
+
+The gap in Jensen's inequality is exactly the KL from derivation 1. A useful reading of the ELBO is $\mathcal L=\mathbb E_q[\log p(D\mid z)]-D_{\mathrm{KL}}(q(z)\|p(z))$: fit the data, but do not stray too far from the prior. EM is the special case where $q$ over latent variables is set to the exact posterior in the E step (making the bound tight) and the bound is then maximized over parameters in the M step [1].
+
+### Mean field and coordinate ascent (CAVI)
+
+The most common family is **mean field**: $q(z)=\prod_j q_j(z_j)$, independent factors over blocks of $z$. Holding all factors except $q_j$ fixed and maximizing the ELBO over $q_j$ gives
+
+$$
+\log q_j^\ast(z_j)=\mathbb E_{q_{-j}}\big[\log p(D,z)\big]+\text{const},
+$$
+
+where $\mathbb E_{q_{-j}}$ averages over all other factors and the constant normalizes $q_j^\ast$. (To derive it, write $\mathcal L$ as a function of $q_j$ only; it equals $-D_{\mathrm{KL}}(q_j\|\tilde q_j)$ plus a constant, where $\log\tilde q_j=\mathbb E_{q_{-j}}[\log p(D,z)]$.) Cycling through $j$ is **coordinate ascent variational inference** (CAVI). Each update cannot decrease the ELBO, so CAVI converges, but only to a local optimum [11]. For conditionally conjugate models each $q_j^\ast$ stays in the same family as the prior and the updates are closed-form.
+
+**Worked example: a Gaussian with unknown mean and precision.** Observations $x_n\sim\mathcal N(\mu,\tau^{-1})$, prior $\mu\mid\tau\sim\mathcal N(\mu_0,(\lambda_0\tau)^{-1})$, $\tau\sim\mathrm{Gamma}(a_0,b_0)$. The exact posterior is known (Normal–Gamma), so we can grade the approximation. With $q(\mu,\tau)=q(\mu)q(\tau)$ the mean-field update rule gives $q(\mu)=\mathcal N(\mu_N,\lambda_N^{-1})$ and $q(\tau)=\mathrm{Gamma}(a_N,b_N)$ with [1]
+
+$$
+\begin{aligned}
+\mu_N&=\frac{\lambda_0\mu_0+N\bar x}{\lambda_0+N},\qquad
+\lambda_N=(\lambda_0+N)\,\mathbb E[\tau],\\
+a_N&=a_0+\frac{N+1}{2},\qquad
+b_N=b_0+\tfrac12\,\mathbb E_\mu\!\Big[\textstyle\sum_n(x_n-\mu)^2+\lambda_0(\mu-\mu_0)^2\Big],
+\end{aligned}
+$$
+
+where $\bar x$ is the sample mean and $\mathbb E[\tau]=a_N/b_N$. The two factors depend on each other through $\mathbb E[\tau]$ and $\mathbb E[\mu],\mathbb E[\mu^2]$, so we iterate.
+
+```python
+import numpy as np
+
+# Data x_n ~ N(mu, 1/tau); prior mu | tau ~ N(mu0, 1/(lam0 tau)), tau ~ Gamma(a0, b0).
+rng = np.random.default_rng(4)
+x = rng.normal(2.0, 0.5, size=30)
+N, xbar = len(x), x.mean()
+mu0, lam0, a0, b0 = 0.0, 1.0, 1.0, 1.0
+
+# Mean field q(mu, tau) = q(mu) q(tau) with q(mu) = N(mu_N, 1/lam_N), q(tau) = Gamma(a_N, b_N).
+E_tau = a0 / b0
+for it in range(50):
+    mu_N = (lam0 * mu0 + N * xbar) / (lam0 + N)
+    lam_N = (lam0 + N) * E_tau
+    a_N = a0 + (N + 1) / 2
+    E_mu, E_mu2 = mu_N, mu_N**2 + 1 / lam_N
+    b_N = b0 + 0.5 * (np.sum(x**2) - 2 * E_mu * np.sum(x) + N * E_mu2
+                      + lam0 * (E_mu2 - 2 * mu0 * E_mu + mu0**2))
+    E_tau = a_N / b_N
+
+# Exact posterior is Normal-Gamma: compare the marginal moments of mu.
+lam_post = lam0 + N
+mu_post = (lam0 * mu0 + N * xbar) / lam_post
+a_post = a0 + N / 2
+b_post = b0 + 0.5 * (np.sum((x - xbar) ** 2) + lam0 * N * (xbar - mu0) ** 2 / lam_post)
+var_mu_exact = b_post / ((a_post - 1) * lam_post)       # Student-t marginal variance
+print("E[mu]   VI %.4f  exact %.4f" % (mu_N, mu_post))
+print("Var[mu] VI %.5f  exact %.5f" % (1 / lam_N, var_mu_exact))
+print("E[tau]  VI %.3f   exact %.3f" % (a_N / b_N, a_post / b_post))
+```
+
+The means agree ($1.8668$ both) and so does $\mathbb E[\tau]$ ($2.146$), but the variance of $\mu$ is $0.01503$ under VI against $0.01603$ exactly: about 6% too small. Under the exact posterior, $\mu$ and $\tau$ are dependent (the spread of $\mu$ scales with $1/\tau$) and its marginal is a heavier-tailed Student-$t$; a factorized Gaussian cannot represent either property.
+
+This underestimation is systematic. For a Gaussian target with precision matrix $\Lambda$, the optimal mean-field factor $q_j$ has variance $1/\Lambda_{jj}$, the *conditional* variance, which is never larger than the marginal variance. Figure 4 shows the extreme case.
+
+<Figure src={approximationFig} alt="Elongated correlated Gaussian contours and circular factorized approximation contours." caption="Figure 4 — Original analytical illustration with unit marginal target variances and correlation 0.85. The optimal Gaussian mean-field factors under reverse KL have variance 1 − 0.85² ≈ 0.28 each, illustrating lost correlation and underestimated marginal uncertainty. Contours show relative density, not measured model performance." />
+
+### Which KL? Mode seeking versus mass covering
+
+KL is not symmetric, and the direction changes the answer. **Reverse KL**, $D_{\mathrm{KL}}(q\|p)$, used by standard VI, takes expectations under $q$: it heavily penalizes putting $q$-mass where $p$ is tiny, but does not mind if $q$ ignores some of $p$. The result is **mode seeking** and **under-dispersed**. **Forward KL**, $D_{\mathrm{KL}}(p\|q)$, takes expectations under $p$: it heavily penalizes missing any region where $p$ has mass, so $q$ stretches to cover everything, which is **mass covering** and can put mass in the valleys between modes. Within an exponential family such as the Gaussians, minimizing forward KL is exactly **moment matching**: $q$ takes the mean and covariance of $p$.
+
+<Figure src={klFig} alt="A two-mode target density, a narrow Gaussian sitting on the right mode, and a wide Gaussian centered between the modes." caption="Figure 5 — One Gaussian fitted to an equal mixture of N(−2, 0.7²) and N(2, 0.7²). Minimizing reverse KL(q‖p) locks onto one mode (blue; which mode depends on initialization). Minimizing forward KL(p‖q) matches the mixture's mean and variance and covers both modes, placing its peak where the target has almost no mass (orange, dashed). Computed numerically by this tutorial's figure script." />
+
+Neither direction is "right". Reverse KL is tractable and gives sharp, usable answers but understates uncertainty. Forward KL is the objective behind expectation propagation and behind maximum-likelihood fitting of a model to data, and it is safer when missing a mode is costly.
+
+### Stochastic and black-box VI
+
+CAVI needs conjugacy and passes over the whole dataset per update. Modern VI instead takes **stochastic gradients** of the ELBO, which works for almost any model and scales to large data by subsampling minibatches [11, 12]. There are two main gradient estimators for $\nabla_\phi\mathcal L(\phi)$:
+
+- **Score-function (REINFORCE) estimator**, used by black-box VI [13]:
+$$
+\nabla_\phi\mathcal L=\mathbb E_{q_\phi}\!\Big[\nabla_\phi\log q_\phi(z)\,\big(\log p(D,z)-\log q_\phi(z)\big)\Big].
+$$
+It needs only evaluations of $\log p(D,z)$ and works for discrete $z$, but has high variance and needs control variates.
+- **Reparameterization (pathwise) estimator.** Write $z=g_\phi(\varepsilon)$ with noise $\varepsilon$ from a fixed distribution, for example $z=m+\sigma\odot\varepsilon$ with $\varepsilon\sim\mathcal N(0,I)$. Then
+$$
+\nabla_\phi\mathcal L=\mathbb E_{\varepsilon}\!\Big[\nabla_\phi\big(\log p(D,g_\phi(\varepsilon))-\log q_\phi(g_\phi(\varepsilon))\big)\Big].
+$$
+It requires differentiable $\log p$ and continuous $z$ but typically has much lower variance. This is the estimator the VAE made famous [15].
+
+For a diagonal Gaussian with $\phi=(m,s)$, $\sigma=e^{s}$, the entropy term is $\sum_j s_j$ plus a constant, so its gradient with respect to $s$ is simply 1. Applied to the logistic-regression posterior:
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+n = 40
+X = np.c_[np.ones(n), rng.normal(size=n)]
+y = (rng.random(n) < 1 / (1 + np.exp(-X @ np.array([-0.5, 1.5])))).astype(float)
+prior_var = 4.0
+
+def grad_log_joint(W):                  # W: (S, 2) -> gradients (S, 2)
+    p = 1 / (1 + np.exp(-W @ X.T))      # (S, n)
+    return (y - p) @ X - W / prior_var
+
+# Laplace: Newton's method to the MAP, then invert the Hessian.
+w = np.zeros(2)
+for _ in range(25):
+    p = 1 / (1 + np.exp(-X @ w))
+    H = X.T @ (X * (p * (1 - p))[:, None]) + np.eye(2) / prior_var
+    w = w + np.linalg.solve(H, grad_log_joint(w[None])[0])
+print("Laplace mean:", w.round(3), " sd:", np.sqrt(np.diag(np.linalg.inv(H))).round(3))
+
+# Mean-field Gaussian VI with reparameterization: w = m + exp(s) * eps.
+m, s = np.zeros(2), np.full(2, -1.0)
+lr, S = 0.02, 64
+for step in range(3000):
+    eps = rng.normal(size=(S, 2))
+    W = m + np.exp(s) * eps
+    g = grad_log_joint(W)
+    grad_m = g.mean(axis=0)                                # d ELBO / d m
+    grad_s = (g * eps).mean(axis=0) * np.exp(s) + 1.0      # + entropy term
+    m += lr * grad_m
+    s += lr * grad_s
+print("VI mean:     ", m.round(3), " sd:", np.exp(s).round(3))
+```
+
+Compare with the grid truth, mean $(-0.303,\,1.631)$ and sd $(0.366,\,0.578)$. The code prints a Laplace mean of $(-0.291,\,1.500)$ with sd $(0.355,\,0.556)$, and a VI mean of $(-0.303,\,1.630)$ with sd $(0.358,\,0.562)$. VI recovers the posterior mean almost exactly, because it averages over the skewed posterior; Laplace reports the *mode*, which differs from the mean when the posterior is skewed. Both slightly understate the spread. With 40 data points the posterior is nearly Gaussian, so the differences are small; with fewer points or separable classes they grow quickly.
+
+<Figure src={logisticFig} alt="Three panels of contour plots over bias and slope weights: exact grid posterior, Laplace approximation and mean-field VI, with exact contours dashed in each." caption="Figure 6 — Two-weight Bayesian logistic regression on 40 synthetic points. Dashed gray: exact posterior contours from the grid. Blue: Laplace (centered at the MAP, shifted toward smaller slope) and mean-field Gaussian VI (centered near the true posterior mean, slightly too narrow). Computed by this tutorial's figure script." />
+
+## Laplace approximation and expectation propagation
+
+### Laplace: a Gaussian at the peak
+
+**Plain version.** Find the highest point of the posterior and fit a Gaussian whose curvature matches the curvature there.
+
+**Precise version.** Expand $\log\tilde p(z)$ to second order around a mode $\hat z$, where the gradient is zero. With $H=-\nabla^2\log\tilde p(\hat z)$ the Hessian of the negative log posterior,
+
+$$
+q(z)=\mathcal N\big(z\mid\hat z,\,H^{-1}\big),\qquad
+\log p(D)\approx\log\tilde p(\hat z)+\frac d2\log 2\pi-\frac12\log|H|,
+$$
+
+where $d$ is the dimension of $z$. The second formula is the **Laplace evidence approximation**; keeping only the terms that grow with $N$ gives the BIC criterion used for choosing the number of mixture components in [PR 07](/en/learn/pattern-recognition/pr-07-clustering-mixtures/) [1]. Laplace is cheap (one optimization and one Hessian) and becomes accurate as data accumulate, because posteriors of regular models become increasingly Gaussian. It fails for skewed posteriors, for modes on a boundary (such as a variance near zero), when the Hessian is singular, and for multi-modal posteriors, where it describes only one mode. Modern "Laplace for deep networks" methods apply it to the last layer or with structured Hessian approximations to obtain cheap uncertainty for trained neural networks.
+
+### Expectation propagation
+
+Expectation propagation (EP) [14] targets posteriors that factor as $p(z\mid D)\propto\prod_i f_i(z)$, for example one factor per data point. It approximates each factor by a simple **site** $\tilde f_i(z)$ from an exponential family, so $q(z)\propto\prod_i\tilde f_i(z)$, and refines sites one at a time:
+
+1. Remove site $i$ to form the **cavity** $q^{\setminus i}(z)\propto q(z)/\tilde f_i(z)$.
+2. Form the **tilted** distribution $\hat p_i(z)\propto f_i(z)\,q^{\setminus i}(z)$, the cavity times the *exact* factor.
+3. Set the new $q$ to the member of the family that matches the moments of $\hat p_i$, i.e. minimizes the *forward* KL $D_{\mathrm{KL}}(\hat p_i\|q)$.
+4. Update the site: $\tilde f_i\propto q^{\text{new}}/q^{\setminus i}$.
+
+Because each step uses forward KL locally, EP tends to cover mass and often gives better-calibrated variances than mean-field VI, for example in Gaussian-process classification. In exchange, it has no global objective that is guaranteed to improve, can fail to converge, and may produce invalid (negative-variance) sites that need damping [1, 14].
+
+## Evidence and complexity: Bayesian Occam's razor
+
+**Plain version.** A model that can explain *anything* spreads its prior bets thin, so it gets little credit for explaining the data you actually saw. A simpler model that bet on this kind of data gets more credit.
+
+**Precise version.** The evidence of model $\mathcal M$ integrates the likelihood against the prior,
+
+$$
+p(D\mid\mathcal M)=\int p(D\mid\theta,\mathcal M)\,p(\theta\mid\mathcal M)\,d\theta.
+$$
+
+A flexible model can reach a high peak likelihood, yet if most of its prior mass sits on parameters that fit badly, the integral is small. The Laplace formula makes this explicit: the evidence is the peak value times an "Occam factor" that compares posterior volume with prior volume. Two cautions follow. First, the evidence depends on the prior, even on aspects that barely affect the posterior, such as how wide a vague prior is. Second, it answers "which model would have predicted this data set?", which is related to but not identical to "which model will predict *new* data best?". Held-out validation ([PR 09](/en/learn/pattern-recognition/pr-09-ensembles-validation/)) answers the second. Comparing ELBOs across models is also delicate: each ELBO undershoots its evidence by a different, unknown KL gap.
+
+## From the ELBO to VAEs and diffusion models
+
+The machinery in this chapter is the backbone of two families of deep generative models covered in the ML track.
+
+**VAEs are amortized variational inference.** A variational autoencoder models images $x$ with a latent code $z$, a prior $p(z)$, and a neural decoder $p_\theta(x\mid z)$. Instead of optimizing separate variational parameters for every image, an encoder network outputs them: $q_\phi(z\mid x)=\mathcal N(\mu_\phi(x),\mathrm{diag}\,\sigma^2_\phi(x))$. This is **amortized inference**: one network learns to perform inference for any input. The per-image objective is exactly the ELBO,
+
+$$
+\mathcal L(\theta,\phi;x)=\mathbb E_{q_\phi(z\mid x)}[\log p_\theta(x\mid z)]-D_{\mathrm{KL}}\big(q_\phi(z\mid x)\,\|\,p(z)\big),
+$$
+
+trained jointly over $\theta$ and $\phi$ with the reparameterization gradient [15, 16]. Its known weaknesses are the ones above: an **amortization gap** (the encoder's answer is worse than per-image optimization), the under-dispersion of reverse KL, and a Gaussian decoder that blurs. See [ML 06](/en/learn/ml/ml-06-generative-models/) for a full treatment and code.
+
+**Diffusion models are trained with an ELBO and sampled with Langevin-style dynamics.** A denoising diffusion probabilistic model fixes a forward process that gradually adds Gaussian noise, $x_0\to x_1\to\dots\to x_T$, and learns a reverse process $p_\theta(x_{t-1}\mid x_t)$. The forward noisy states play the role of latent variables, with the forward process as a *fixed* variational posterior; the training objective is a variational bound on $-\log p_\theta(x_0)$, and the popular noise-prediction loss is a reweighted form of that bound [17]. The score-based view [18] instead learns $s_\theta(x,t)\approx\nabla_x\log p_t(x)$, the gradient of the log density of noisy data, and generates samples by integrating a reverse-time stochastic differential equation; its predictor–corrector samplers explicitly interleave Langevin MCMC steps that use $s_\theta$ in place of $\nabla\log\tilde p$. The only change from the Langevin update earlier in this chapter is that the score is *learned from data* rather than computed from a formula. See [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/).
+
+## Choosing a method
+
+| Method | What it returns | Strengths | Main failure mode |
+|---|---|---|---|
+| Grid / quadrature | exact numbers | ground truth | exponential in dimension |
+| Importance sampling | weighted samples, evidence | simple, parallel, gives $p(D)$ | weight collapse when $q$ misses $p$ |
+| Random-walk MH | correlated samples | needs only $\tilde p$ | slow in high dimension; tuning |
+| Gibbs | correlated samples | no tuning when conditionals are easy | slow on correlated variables |
+| HMC / NUTS | correlated samples | scales to many continuous parameters | needs gradients; discrete variables; divergences |
+| Mean-field VI | a distribution $q$ | fast, scalable, minibatch-friendly | under-dispersion; local optima |
+| Laplace | Gaussian at the mode | cheap; evidence estimate | skew, boundaries, multiple modes |
+| EP | Gaussian / exponential family | often good variances | may not converge |
+
+A sensible workflow is to start with an optimizer (MAP or VI) for speed, check it against a careful sampler on a smaller version of the problem, and use simulation from known parameters to verify that the whole pipeline recovers what it should.
+
+## Modern view
+
+**Surveys worth reading.** Blei, Kucukelbir and McAuliffe's review for statisticians [11] is the standard entry point to VI: it derives the ELBO and CAVI, works through Gaussian mixtures, introduces stochastic VI, and is explicit that VI trades MCMC's asymptotic exactness for speed, tending to underestimate posterior variance. Zhang, Bütepage, Kjellström and Mandt [12] organize the later literature into four axes: scalable VI (stochastic and distributed), generic VI for nonconjugate models (black-box and reparameterization gradients), accurate VI (alternative divergences beyond reverse KL, richer families) and amortized VI (inference networks, VAEs). Jordan, Ghahramani, Jaakkola and Saul [10] is the classic introduction to variational methods for graphical models and remains the clearest source for the convex-duality view. On the sampling side, Neal's chapter [6] is the canonical derivation of HMC, Betancourt [8] gives the geometric picture of why it works in high dimensions, and Hoffman and Gelman [7] describe NUTS, the default sampler in modern probabilistic programming systems. Vehtari et al. [9] set the current standard for convergence diagnostics. Kingma and Welling's monograph [16] surveys VAEs as amortized VI, and Yang et al. [19] survey diffusion models, including their variational and score-based formulations.
+
+**State of the art, 2023–2026.** Three trends stand out.
+
+1. *Machine learning inside Bayesian computation.* Winter, Campbell, Lin, Srivastava and Dunson [20] review how normalizing flows, Bayesian coresets, distributed inference and variational methods are being used to speed up posterior computation, and where the guarantees are still weaker than for classical MCMC.
+2. *Diffusion ideas used for sampling, not just generation.* When only an unnormalized density is available (no data), one can still train a diffusion-style sampler. Denoising Diffusion Samplers [21] learn to reverse a noising process so that it ends at a target known only up to a constant, giving approximate samples and an estimate of the normalizing constant; they connect to optimal control and Schrödinger bridges and are a representative member of a growing family of learned samplers for Bayesian and physics problems.
+3. *Workflows over single algorithms.* Practice has moved toward probabilistic programming systems that run NUTS by default, report rank-normalized $\hat R$ and bulk/tail ESS [9], and use VI or Laplace as fast first passes rather than final answers.
+
+**Open problems.** Reliable uncertainty for very large models remains hard: full-batch MCMC is too expensive, and cheap approximations (mean-field VI, last-layer Laplace, ensembles) disagree. Multi-modal posteriors defeat both local VI and single chains. Evaluating the quality of an approximation without ground truth is still largely heuristic, and comparing models through ELBOs is confounded by unknown approximation gaps.
+
+## Key takeaways
+
+- Posteriors are easy to evaluate up to a constant and hard to integrate; grids cost $G^d$, so approximation is unavoidable beyond a few dimensions.
+- Monte Carlo error falls as $1/\sqrt S$ regardless of dimension, but only if you can draw from the right distribution. Importance sampling corrects for the wrong one, and the weight ESS tells you when the correction has collapsed.
+- Metropolis–Hastings needs only ratios of $\tilde p$ and a Hastings correction for asymmetric proposals. Gibbs is MH with acceptance 1. HMC uses gradients to move far. Always record rejected states, run several chains, and check $\hat R$ and ESS.
+- VI maximizes the ELBO, which equals minimizing reverse KL to the posterior. It is fast and scalable, mode seeking, and tends to underestimate variance, especially under mean field.
+- Laplace fits a Gaussian at the mode and gives a cheap evidence estimate (and BIC); EP matches moments locally and often gives better variances but may not converge.
+- The evidence implements Occam's razor but depends on priors and answers a different question from held-out prediction.
+- VAEs are amortized VI with the reparameterization gradient; diffusion models are trained with a variational bound and sampled with Langevin-like dynamics driven by a learned score.
+
+## Exercises
+
+1. **ELBO by hand.** Starting from $D_{\mathrm{KL}}(q(z)\|p(z\mid D))$, derive $\log p(D)=\mathcal L(q)+D_{\mathrm{KL}}$. Then show that when $q(z)=p(z\mid D)$ the bound is tight, and explain how this makes EM a special case of maximizing the ELBO.
+
+<details>
+<summary>Hint</summary>
+
+Substitute $\log p(z\mid D)=\log p(D,z)-\log p(D)$ and pull $\log p(D)$ out of the expectation because it does not depend on $z$. With $q$ equal to the posterior, the KL is zero. EM's E step sets $q$ to the posterior of the latent variables at the current parameters (tight bound); its M step maximizes $\mathcal L$ over the parameters with $q$ fixed.
+
+</details>
+
+2. **The Hastings correction.** You propose from a log-normal random walk on a positive parameter, $z'=z\,e^{\eta}$ with $\eta\sim\mathcal N(0,s^2)$. Compute $q(z'\mid z)$ and the ratio $q(z\mid z')/q(z'\mid z)$. What goes wrong if you use the plain Metropolis rule?
+
+<details>
+<summary>Hint</summary>
+
+$q(z'\mid z)=\frac{1}{z'\,s\sqrt{2\pi}}\exp\!\big(-(\log z'-\log z)^2/(2s^2)\big)$. The exponential parts are symmetric, so the ratio is $z'/z$. Omitting it makes the chain sample from a density proportional to $\tilde p(z)/z$, biased toward small values.
+
+</details>
+
+3. **Step size and mixing.** In the Metropolis code, change the proposal standard deviation to $0.02$ and then to $8$. For each, report acceptance, lag-one autocorrelation and an estimate of $N_{\mathrm{eff}}$ using the formula in the diagnostics section (truncate the sum at the first negative autocorrelation). Which step size gives the most effective samples per iteration?
+
+<details>
+<summary>Hint</summary>
+
+Compare with Figure 2. Very small steps give acceptance near 1 but autocorrelations near 1, so $N_{\mathrm{eff}}$ is tiny and the chain may not even reach the target. Very large steps give low acceptance and long runs of repeated values. An intermediate value, around the target's standard deviation, gives far more effective samples.
+
+</details>
+
+4. **Gibbs on a ridge.** Re-run the Gibbs sampler with $\rho=0.99$. Predict the lag-one autocorrelation of $z_1$ and $N_{\mathrm{eff}}/N$, then check by simulation. Propose and implement a fix.
+
+<details>
+<summary>Hint</summary>
+
+The $z_1$ chain is autoregressive with coefficient $\rho^2\approx0.98$, so $N_{\mathrm{eff}}/N=(1-\rho^2)/(1+\rho^2)\approx0.01$. Fixes: sample $(z_1,z_2)$ jointly as one block, or rotate to $u=(z_1+z_2)/\sqrt2$, $v=(z_1-z_2)/\sqrt2$, which are independent under the target.
+
+</details>
+
+5. **Mean field underestimates variance.** For a Gaussian target $\mathcal N(0,\Sigma)$ with precision $\Lambda=\Sigma^{-1}$, use the mean-field update rule to show that the optimal $q_j$ is Gaussian with variance $1/\Lambda_{jj}$. Prove $1/\Lambda_{jj}\le\Sigma_{jj}$ and evaluate both for unit variances and correlation $0.85$.
+
+<details>
+<summary>Hint</summary>
+
+$\log p=-\tfrac12 z^\top\Lambda z+$ const; take the expectation over $q_{-j}$ and keep terms in $z_j$: $-\tfrac12\Lambda_{jj}z_j^2-z_j\sum_{k\neq j}\Lambda_{jk}\mathbb E[z_k]$, a Gaussian with precision $\Lambda_{jj}$. $1/\Lambda_{jj}$ is the conditional variance of $z_j$ given the rest, which by the Schur complement is $\Sigma_{jj}$ minus a nonnegative term. For $\rho=0.85$: $1-\rho^2\approx0.28$ versus $1$.
+
+</details>
+
+6. **Importance sampling the evidence.** For the two-weight logistic regression, estimate $\log p(D)$ by importance sampling with (a) the prior as proposal and (b) the Laplace Gaussian (with its covariance inflated by 1.5) as proposal. Compare both with the grid value $-22.117$ and with the weight ESS. Which proposal would you trust in 50 dimensions, and why?
+
+<details>
+<summary>Hint</summary>
+
+The estimate is $\log\frac1S\sum_s\tilde p(z_s)/q(z_s)$, computed with log-sum-exp. The prior is much wider than the posterior, so most draws get negligible weight and the ESS is a small fraction of $S$; the Laplace-based proposal sits on the posterior and gives a much larger ESS. In high dimensions the mismatch between prior and posterior grows exponentially, so the prior proposal becomes useless while a well-fitted, slightly heavy-tailed proposal can still work.
+
+</details>
+
+## References
+
+1. C. M. Bishop, *Pattern Recognition and Machine Learning*, Springer, 2006, Sections 4.4 (Laplace), 10.1–10.2 and 10.7 (variational inference, EP) and 11.1–11.5 (sampling). [Official book page and PDF](https://www.microsoft.com/en-us/research/people/cmbishop/prml-book/)
+2. S. Theodoridis and K. Koutroumbas, *Pattern Recognition*, 4th ed., Academic Press, 2009, Chapter 2 (Bayes decision theory and parameter estimation) and Appendix C (cost function optimization). These are prerequisites rather than identical coverage of this chapter. [doi](https://doi.org/10.1016/B978-1-59749-272-0.X0001-2)
+3. N. Metropolis, A. W. Rosenbluth, M. N. Rosenbluth, A. H. Teller and E. Teller, "Equation of state calculations by fast computing machines," *The Journal of Chemical Physics*, vol. 21, no. 6, pp. 1087–1092, 1953. [doi](https://doi.org/10.1063/1.1699114)
+4. W. K. Hastings, "Monte Carlo sampling methods using Markov chains and their applications," *Biometrika*, vol. 57, no. 1, pp. 97–109, 1970. [doi](https://doi.org/10.1093/biomet/57.1.97)
+5. S. Geman and D. Geman, "Stochastic relaxation, Gibbs distributions, and the Bayesian restoration of images," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. PAMI-6, no. 6, pp. 721–741, 1984. [doi](https://doi.org/10.1109/TPAMI.1984.4767596)
+6. R. M. Neal, "MCMC using Hamiltonian dynamics," in S. Brooks, A. Gelman, G. Jones and X.-L. Meng (eds.), *Handbook of Markov Chain Monte Carlo*, Chapman and Hall/CRC, 2011 (arXiv:1206.1901). [arXiv](https://arxiv.org/abs/1206.1901)
+7. M. D. Hoffman and A. Gelman, "The No-U-Turn Sampler: Adaptively setting path lengths in Hamiltonian Monte Carlo," *Journal of Machine Learning Research*, vol. 15, pp. 1593–1623, 2014. [JMLR](https://jmlr.org/papers/v15/hoffman14a.html)
+8. M. Betancourt, "A conceptual introduction to Hamiltonian Monte Carlo," arXiv:1701.02434, 2017. [arXiv](https://arxiv.org/abs/1701.02434)
+9. A. Vehtari, A. Gelman, D. Simpson, B. Carpenter and P.-C. Bürkner, "Rank-normalization, folding, and localization: An improved $\hat R$ for assessing convergence of MCMC (with discussion)," *Bayesian Analysis*, vol. 16, no. 2, 2021. [doi](https://doi.org/10.1214/20-BA1221)
+10. M. I. Jordan, Z. Ghahramani, T. S. Jaakkola and L. K. Saul, "An introduction to variational methods for graphical models," *Machine Learning*, vol. 37, no. 2, pp. 183–233, 1999. [doi](https://doi.org/10.1023/A:1007665907178)
+11. D. M. Blei, A. Kucukelbir and J. D. McAuliffe, "Variational inference: A review for statisticians," *Journal of the American Statistical Association*, vol. 112, no. 518, pp. 859–877, 2017. [doi](https://doi.org/10.1080/01621459.2017.1285773)
+12. C. Zhang, J. Bütepage, H. Kjellström and S. Mandt, "Advances in variational inference," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 41, no. 8, pp. 2008–2026, 2019. [doi](https://doi.org/10.1109/TPAMI.2018.2889774)
+13. R. Ranganath, S. Gerrish and D. M. Blei, "Black box variational inference," in *Proc. International Conference on Artificial Intelligence and Statistics (AISTATS)*, PMLR vol. 33, 2014. [PMLR](https://proceedings.mlr.press/v33/ranganath14.html)
+14. T. P. Minka, "Expectation propagation for approximate Bayesian inference," in *Proc. Conference on Uncertainty in Artificial Intelligence (UAI)*, 2001 (arXiv:1301.2294). [arXiv](https://arxiv.org/abs/1301.2294)
+15. D. P. Kingma and M. Welling, "Auto-encoding variational Bayes," arXiv:1312.6114, 2013. [arXiv](https://arxiv.org/abs/1312.6114)
+16. D. P. Kingma and M. Welling, "An introduction to variational autoencoders," *Foundations and Trends in Machine Learning*, vol. 12, no. 4, pp. 307–392, 2019. [arXiv](https://arxiv.org/abs/1906.02691)
+17. J. Ho, A. Jain and P. Abbeel, "Denoising diffusion probabilistic models," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2020 (arXiv:2006.11239). [arXiv](https://arxiv.org/abs/2006.11239)
+18. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon and B. Poole, "Score-based generative modeling through stochastic differential equations," in *Proc. International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2011.13456)
+19. L. Yang, Z. Zhang, Y. Song, S. Hong, R. Xu, Y. Zhao, W. Zhang, B. Cui and M.-H. Yang, "Diffusion models: A comprehensive survey of methods and applications," *ACM Computing Surveys*, vol. 56, no. 4, 2023. [doi](https://doi.org/10.1145/3626235)
+20. S. Winter, T. Campbell, L. Lin, S. Srivastava and D. B. Dunson, "Machine learning and the future of Bayesian computation," arXiv:2304.11251, 2023. [arXiv](https://arxiv.org/abs/2304.11251)
+21. F. Vargas, W. Grathwohl and A. Doucet, "Denoising diffusion samplers," in *Proc. International Conference on Learning Representations (ICLR)*, 2023 (arXiv:2302.13834). [arXiv](https://arxiv.org/abs/2302.13834)

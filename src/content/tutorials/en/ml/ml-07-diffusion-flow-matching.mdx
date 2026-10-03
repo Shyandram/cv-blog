@@ -1,0 +1,765 @@
+---
+title: "ML 07 · Diffusion Models and Flow Matching"
+description: "Derive noise prediction, DDPM sampling, score estimation and classifier-free guidance, then connect latent diffusion, DiT, rectified flows and few-step generation."
+track: ml
+order: 70
+level: advanced
+prereqs: [ml/ml-06-generative-models, ml/ml-04-vision-transformers]
+tags: [diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, generation]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import noisingFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/forward-noising.png';
+import scheduleFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/noise-schedules.png';
+import samplersFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/ddpm-ddim-samplers.png';
+import guidanceFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/cfg-guidance.png';
+import pathsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/flow-paths.png';
+import stepsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/fm-euler-steps.png';
+
+## What you'll learn
+
+- How a known noise process turns "generate an image" into an ordinary supervised regression problem.
+- How the simplified noise-prediction loss of DDPM falls out of a variational bound, step by step.
+- How noise prediction, clean-image prediction and the **score** of a distribution are the same information in different units, and how the SDE view ties them together.
+- How DDPM, DDIM and fast ODE solvers sample, and why the number of steps is a design choice.
+- How classifier guidance and classifier-free guidance steer a sampler, and what they cost.
+- How latent diffusion, diffusion transformers (DiT), flow matching, rectified flow, consistency models and one-step generators fit into one map, and how generated images are evaluated.
+
+## The big picture
+
+A diffusion model learns to undo controlled corruption. During training we take a real example, add a known amount of Gaussian noise, and ask a network to tell us what noise we added. Because we added the noise ourselves, the correct answer is always available: no labels, no adversary, just regression. During generation we start from pure noise and apply the learned "denoise a little" step many times until an example appears.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine slowly covering a drawing with pencil scribbles. You keep copies of the drawing at many scribble levels: a few lines, lots of lines, so many that the drawing is gone. A model practices one small job: look at a scribbled page, and guess which scribbles were added. After lots of practice you hand it a page that is *only* scribbles. It erases a little, looks again, erases a little more, and a brand-new drawing slowly appears — one that was never in the pile.
+</Callout>
+
+Why does this matter? Since 2021, diffusion-style models have produced many of the state-of-the-art results in image, video and audio synthesis, and the same machinery is used for inpainting, super-resolution, image editing, 3-D generation and scientific data. Diffusion also replaced two pain points of earlier families covered in [ML 06](/en/learn/ml/ml-06-generative-models/): GANs need a fragile two-player game, and VAEs tend to produce blurry samples. Diffusion training is a stable regression, and its samples are sharp because generation is spread over many small, easy steps.
+
+The price is sampling cost: a classic sampler calls the network hundreds of times per image. Much of the research since 2021 — DDIM, fast ODE solvers, distillation, consistency models, flow matching, rectified flow — is about keeping the quality while cutting the number of network calls.
+
+The chapter follows the organization of the major surveys. Yang et al. [1] group the field into efficient sampling, improved likelihood and data with special structure; Croitoru et al. [27] group it by formulation (DDPM, noise-conditioned score networks, SDEs); Lipman et al.'s flow-matching guide [2] and the monograph by Lai et al. [29] present diffusion and flows as one family of learned transport. Prince's textbook [14] is a gentle companion for the derivations. Throughout, we use **one explicit time convention per section** and say when it changes — mixing conventions is the most common source of sign errors in this area.
+
+## Forward diffusion has a closed form
+
+**Plain version.** At each step, keep most of the image and add a little independent Gaussian noise. After enough steps, nothing of the image is left — only noise with a known distribution.
+
+The idea goes back to Sohl-Dickstein et al. [15], who proposed destroying structure with a slow forward diffusion and learning to reverse it; DDPM [3] made it practical. Let $x_0\in\mathbb R^d$ be a data example (an image flattened into $d$ numbers, scaled to roughly $[-1,1]$). Pick a **noise schedule** $\beta_1,\ldots,\beta_T$ with $0\lt\beta_t\lt1$ and write $\alpha_t=1-\beta_t$. The forward (noising) process is a Markov chain
+
+$$
+q(x_t\mid x_{t-1})=\mathcal N\!\left(\sqrt{\alpha_t}\,x_{t-1},\ \beta_t I\right),\qquad t=1,\ldots,T,
+$$
+
+where $\mathcal N(\mu,\Sigma)$ is a Gaussian with mean $\mu$ and covariance $\Sigma$, and $I$ is the $d\times d$ identity. The factor $\sqrt{\alpha_t}$ shrinks the signal slightly so that the total variance stays bounded instead of growing; this is why this family is called **variance preserving (VP)**.
+
+### Deriving the one-shot formula
+
+Write one step as $x_t=\sqrt{\alpha_t}x_{t-1}+\sqrt{1-\alpha_t}\,\epsilon_t$ with $\epsilon_t\sim\mathcal N(0,I)$. Substituting the previous step,
+
+$$
+\begin{aligned}
+x_t&=\sqrt{\alpha_t}\left(\sqrt{\alpha_{t-1}}x_{t-2}+\sqrt{1-\alpha_{t-1}}\,\epsilon_{t-1}\right)+\sqrt{1-\alpha_t}\,\epsilon_t\\
+&=\sqrt{\alpha_t\alpha_{t-1}}\,x_{t-2}+\underbrace{\sqrt{\alpha_t(1-\alpha_{t-1})}\,\epsilon_{t-1}+\sqrt{1-\alpha_t}\,\epsilon_t}_{\text{sum of independent Gaussians}}.
+\end{aligned}
+$$
+
+The two noise terms are independent zero-mean Gaussians, so their sum is Gaussian with variance $\alpha_t(1-\alpha_{t-1})+(1-\alpha_t)=1-\alpha_t\alpha_{t-1}$. Repeating the argument down to $x_0$ gives, with $\bar\alpha_t=\prod_{s=1}^t\alpha_s$,
+
+$$
+q(x_t\mid x_0)=\mathcal N\!\left(\sqrt{\bar\alpha_t}\,x_0,\ (1-\bar\alpha_t)I\right)
+\quad\Longleftrightarrow\quad
+x_t=\sqrt{\bar\alpha_t}\,x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\qquad \epsilon\sim\mathcal N(0,I).
+$$
+
+Here $\bar\alpha_t$ is the fraction of signal variance that survives to step $t$, and $\epsilon$ is a single standard Gaussian vector. This formula is what makes training cheap: we can jump straight to any noise level without simulating the earlier steps.
+
+<Figure src={noisingFig} alt="A synthetic rectangular image corrupted with a fixed Gaussian noise realization at four increasing noise strengths." caption="Figure 1 — The closed-form forward process at several signal levels. A shared noise realization makes the effect visible; training draws fresh noise for every example and every step." />
+
+### Noise schedules and the signal-to-noise ratio
+
+The **signal-to-noise ratio** at step $t$ is
+
+$$
+\mathrm{SNR}(t)=\frac{\bar\alpha_t}{1-\bar\alpha_t},
+$$
+
+the ratio of signal variance to noise variance (for unit-variance data). It decreases monotonically from very large at $t=1$ to nearly zero at $t=T$. Two requirements constrain the schedule: $\bar\alpha_T$ must be close to $0$, so that $x_T$ is practically a standard Gaussian (the sampler starts from $\mathcal N(0,I)$); and the steps in between should spend the training budget on noise levels where the network has something useful to learn.
+
+DDPM [3] used $T=1000$ and a **linear schedule** $\beta_t$ from $10^{-4}$ to $0.02$. Nichol and Dhariwal [19] observed that this destroys information quickly: for a large part of the chain the image is already nearly pure noise. Their **cosine schedule** defines $\bar\alpha_t=f(t)/f(0)$ with $f(t)=\cos^2\!\big(\tfrac{t/T+s}{1+s}\cdot\tfrac{\pi}{2}\big)$ and a small offset $s=0.008$, and clips each $\beta_t$ at $0.999$. Figure 2 compares the two. Karras et al. [20] later argued that the schedule, the network's input/output scaling and the distribution of training noise levels are separate design choices that are best tuned independently.
+
+<Figure src={scheduleFig} alt="Two line plots over 1000 steps comparing the linear and cosine noise schedules: cumulative signal fraction and log signal-to-noise ratio." caption="Figure 2 — Linear versus cosine schedule for T = 1000. The cosine schedule keeps more signal for longer and spreads the log-SNR more evenly over the steps." />
+
+## The reverse process and the variational bound
+
+**Plain version.** To generate, we need the reverse step: "given a noisy example, what did the slightly less noisy example look like?" We cannot compute this directly for real data, but we *can* compute it if we also know the clean example — and that turns out to give a simple training loss.
+
+### The model and the bound
+
+The generative model is a reverse Markov chain that starts at $p(x_T)=\mathcal N(0,I)$ and uses learned Gaussian transitions
+
+$$
+p_\theta(x_{t-1}\mid x_t)=\mathcal N\!\left(\mu_\theta(x_t,t),\ \sigma_t^2 I\right),
+$$
+
+where $\mu_\theta$ is a neural network (with parameters $\theta$) and $\sigma_t^2$ is a variance we will choose. This is a latent-variable model with latents $x_{1:T}$, exactly like a deep VAE whose encoder $q$ is fixed rather than learned (see [ML 06](/en/learn/ml/ml-06-generative-models/)). The same Jensen-inequality argument gives an evidence lower bound. Following [3], [15], the negative bound can be rearranged into a sum of KL divergences:
+
+$$
+-\log p_\theta(x_0)\ \le\ \mathbb E_q\Big[
+\underbrace{D_{\mathrm{KL}}\!\big(q(x_T\mid x_0)\,\|\,p(x_T)\big)}_{L_T}
++\sum_{t=2}^{T}\underbrace{D_{\mathrm{KL}}\!\big(q(x_{t-1}\mid x_t,x_0)\,\|\,p_\theta(x_{t-1}\mid x_t)\big)}_{L_{t-1}}
+\underbrace{-\log p_\theta(x_0\mid x_1)}_{L_0}\Big].
+$$
+
+$D_{\mathrm{KL}}$ is the Kullback–Leibler divergence. $L_T$ has no learnable parameters (it is small when $\bar\alpha_T\approx0$); $L_0$ is a decoder term for the last step; and each $L_{t-1}$ compares the model's reverse step with the **forward posterior** $q(x_{t-1}\mid x_t,x_0)$ — the reverse step that would be exact if the clean example $x_0$ were known.
+
+### The forward posterior is Gaussian
+
+By Bayes' rule, $q(x_{t-1}\mid x_t,x_0)\propto q(x_t\mid x_{t-1})\,q(x_{t-1}\mid x_0)$. Both factors are Gaussian in $x_{t-1}$, so their product is Gaussian. Collecting the quadratic and linear terms in $x_{t-1}$ (completing the square) gives
+
+$$
+q(x_{t-1}\mid x_t,x_0)=\mathcal N\!\left(\tilde\mu_t(x_t,x_0),\ \tilde\beta_t I\right),
+$$
+
+$$
+\tilde\mu_t=\frac{\sqrt{\bar\alpha_{t-1}}\,\beta_t}{1-\bar\alpha_t}\,x_0+\frac{\sqrt{\alpha_t}\,(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}\,x_t,
+\qquad
+\tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\,\beta_t .
+$$
+
+The posterior mean is a weighted average of the clean example and the current noisy one; the posterior variance $\tilde\beta_t$ is slightly smaller than $\beta_t$. You do not have to trust the algebra: the snippet below samples the forward chain and fits a regression of $x_{t-1}$ on $x_t$.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+beta = np.linspace(1e-4, 0.02, 1000)
+alpha = 1 - beta
+abar = np.cumprod(alpha)
+t, x0, n = 300, 1.3, 400_000           # check q(x_{t-1} | x_t, x_0) at step t
+
+# Sample the forward chain: x_{t-1} from q(x_{t-1}|x_0), then one more step.
+x_prev = np.sqrt(abar[t-1])*x0 + np.sqrt(1-abar[t-1])*rng.normal(size=n)
+x_t = np.sqrt(alpha[t])*x_prev + np.sqrt(beta[t])*rng.normal(size=n)
+
+# Empirical regression of x_{t-1} on x_t (the posterior mean is linear in x_t).
+slope, intercept = np.polyfit(x_t, x_prev, 1)
+resid_var = np.var(x_prev - (slope*x_t + intercept))
+
+# Closed-form posterior from the derivation.
+c_x0 = np.sqrt(abar[t-1])*beta[t] / (1-abar[t])
+c_xt = np.sqrt(alpha[t])*(1-abar[t-1]) / (1-abar[t])
+var = beta[t]*(1-abar[t-1]) / (1-abar[t])
+print(f"slope     {slope:.4f}  vs  {c_xt:.4f}")
+print(f"intercept {intercept:.4f}  vs  {c_x0*x0:.4f}")
+print(f"variance  {resid_var:.6f}  vs  {var:.6f}")
+```
+
+The output matches to three or four decimals (slope 0.9934 vs 0.9930, variance 0.006050 vs 0.006052); the small gaps are Monte Carlo error.
+
+### From the bound to the simplified loss
+
+Now use the forward formula backwards: $x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon)/\sqrt{\bar\alpha_t}$. Substituting into $\tilde\mu_t$ and simplifying with $\bar\alpha_t=\alpha_t\bar\alpha_{t-1}$,
+
+$$
+\tilde\mu_t=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon\right).
+$$
+
+At sampling time the network sees $x_t$ but not $\epsilon$. So DDPM parameterizes the model mean in exactly the same form, with the unknown noise replaced by a prediction $\epsilon_\theta(x_t,t)$:
+
+$$
+\mu_\theta(x_t,t)=\frac1{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\,\epsilon_\theta(x_t,t)\right).
+$$
+
+The KL between two Gaussians with the same fixed covariance $\sigma_t^2I$ is a scaled squared distance between their means, so
+
+$$
+L_{t-1}=\frac{1}{2\sigma_t^2}\big\|\tilde\mu_t-\mu_\theta\big\|^2+C
+=\frac{\beta_t^2}{2\sigma_t^2\,\alpha_t\,(1-\bar\alpha_t)}\,\big\|\epsilon-\epsilon_\theta(x_t,t)\big\|^2+C,
+$$
+
+where $C$ does not depend on $\theta$. Every term of the bound is therefore a **weighted noise-prediction error**. Ho et al. [3] found that dropping the weight, and sampling $t$ uniformly, trains better:
+
+$$
+\mathcal L_{\mathrm{simple}}
+=\mathbb E_{x_0,\ t\sim\mathcal U\{1,\ldots,T\},\ \epsilon\sim\mathcal N(0,I)}
+\Big\|\epsilon-\epsilon_\theta\!\big(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\ t\big)\Big\|^2 .
+$$
+
+Read it as an algorithm: pick a training example, pick a random step, pick random noise, build $x_t$ in one line, and regress the noise. The time $t$ is fed to the network (usually through a sinusoidal embedding) because the same pixel values mean different things at different noise levels.
+
+Two points are easy to get wrong. First, $\mathcal L_{\mathrm{simple}}$ is *not* the likelihood bound: removing the weights relatively down-weights the low-noise steps, which helps sample quality but hurts the reported log-likelihood. Improved DDPM [19] recovered good likelihoods by learning the variances $\sigma_t^2$ (as an interpolation between $\beta_t$ and $\tilde\beta_t$) with a hybrid loss. Second, the same network also yields a **clean estimate**,
+
+$$
+\hat x_0(x_t,t)=\frac{x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta(x_t,t)}{\sqrt{\bar\alpha_t}},
+$$
+
+which every modern sampler uses internally. When $\bar\alpha_t$ is tiny, the division amplifies prediction errors, so $\hat x_0$ at very high noise is a blurry average, not a sample.
+
+## Noise, clean data, velocity and the score
+
+**Plain version.** Predicting the noise, predicting the clean image and predicting "which direction makes this example more typical" are three ways to express the same knowledge. They differ in scaling, and scaling changes how the training loss weights different noise levels.
+
+### Three parameterizations
+
+Because $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$ is a fixed linear relation, a network can output any one of
+
+- the noise $\epsilon$ (DDPM [3]),
+- the clean example $x_0$,
+- the **velocity** $v=\sqrt{\bar\alpha_t}\,\epsilon-\sqrt{1-\bar\alpha_t}\,x_0$, introduced by Salimans and Ho [22] for distillation, which stays well scaled at both ends of the schedule.
+
+Given $x_t$ and $t$, each converts to the others exactly. However, an unweighted MSE on $\epsilon$, on $x_0$ or on $v$ weights the noise levels differently, so the choice affects training. Karras et al. [20] made this explicit with input/output "preconditioning" coefficients that keep the network's inputs and targets at unit variance for every noise level. Note that this diffusion "velocity" is a reparameterization of signal and noise; it is related to, but not identical with, the transport velocity of flow matching later in this chapter.
+
+### What is a score, and why does denoising estimate it?
+
+The **score** of a density $p$ is $\nabla_x\log p(x)$: a vector field that points toward higher probability. If you know the score, you can sample with **Langevin dynamics**: repeatedly step a little along the score and add a little noise. Song and Ermon [17] trained "noise-conditional score networks" at many noise levels and sampled with annealed Langevin dynamics — a parallel route to diffusion that turned out to be the same idea.
+
+The bridge is **denoising score matching** (Vincent [16]). For Gaussian corruption, the best possible noise predictor (in mean squared error) is a conditional expectation, $\epsilon^*(x_t,t)=\mathbb E[\epsilon\mid x_t]$, and **Tweedie's formula** [40] links it to the score of the noisy marginal $p_t$:
+
+$$
+\nabla_{x_t}\log p_t(x_t)=-\frac{\mathbb E[\epsilon\mid x_t]}{\sqrt{1-\bar\alpha_t}}
+\quad\Longrightarrow\quad
+s_\theta(x_t,t)\approx-\frac{\epsilon_\theta(x_t,t)}{\sqrt{1-\bar\alpha_t}},
+$$
+
+with $s_\theta$ the learned score. The same formula in "clean" units reads $\mathbb E[x_0\mid x_t]=\big(x_t+(1-\bar\alpha_t)\nabla\log p_t(x_t)\big)/\sqrt{\bar\alpha_t}$. Two warnings: this is the score of the *noisy marginal distribution* at level $t$, not the gradient for any single training image; and it holds for the optimal predictor — a trained network approximates it.
+
+You can verify Tweedie's formula where everything is known: one-dimensional Gaussian data, for which the best noise predictor is linear in $x_t$.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+s, abar, n = 0.7, 0.4, 500_000     # data x0 ~ N(0, s^2); one noise level
+x0 = s*rng.normal(size=n)
+eps = rng.normal(size=n)
+xt = np.sqrt(abar)*x0 + np.sqrt(1-abar)*eps
+
+# "Train" the best linear noise predictor eps_hat = w * x_t by least squares.
+w = (xt @ eps) / (xt @ xt)
+score_from_eps = -w / np.sqrt(1-abar)       # s(x_t) = -eps_hat / sqrt(1-abar)
+
+# Exact: x_t ~ N(0, abar s^2 + 1 - abar), so grad log p_t(x) = -x / var.
+exact = -1 / (abar*s**2 + 1 - abar)
+print(f"score slope from noise predictor: {score_from_eps:.4f}")
+print(f"exact score slope:                {exact:.4f}")
+```
+
+It prints $-1.2560$ versus $-1.2563$: a regression on noise recovers the score.
+
+### The SDE view
+
+Song et al. [4] took the step count to infinity. With continuous time $t\in[0,1]$ and a rate $\beta(t)$, the VP forward process becomes the **stochastic differential equation (SDE)**
+
+$$
+dx=-\tfrac12\beta(t)\,x\,dt+\sqrt{\beta(t)}\,dw,
+$$
+
+where $w$ is a standard Wiener process (Brownian motion). A classical result says that this process run backwards in time is again an SDE, and that the only unknown in it is the score:
+
+$$
+dx=\Big[-\tfrac12\beta(t)\,x-\beta(t)\,\nabla_x\log p_t(x)\Big]dt+\sqrt{\beta(t)}\,d\bar w,
+$$
+
+with $dt$ negative and $\bar w$ a reverse-time Wiener process. Moreover, there is a deterministic **probability-flow ODE** whose solutions have the same marginal distributions $p_t$ at every time:
+
+$$
+\frac{dx}{dt}=-\tfrac12\beta(t)\Big[x+\nabla_x\log p_t(x)\Big].
+$$
+
+This unifies the field. DDPM's ancestral sampler is a discretization of the reverse SDE; NCSN [17] corresponds to a "variance exploding" SDE; and the ODE turns a diffusion model into a continuous normalizing flow, so exact log-likelihoods can be computed with the instantaneous change-of-variables formula [4]. The ODE also explains why deterministic samplers such as DDIM work, and why general-purpose ODE solvers can be applied.
+
+## Sampling is a reverse process
+
+**Plain version.** A loss evaluated at one random noise level is not a generator. To generate, you must chain many reverse steps with a consistent schedule, starting from pure noise — and you can choose how many steps and how much fresh randomness to inject.
+
+### DDPM ancestral sampling
+
+DDPM samples by following the learned reverse chain:
+
+$$
+x_{t-1}=\mu_\theta(x_t,t)+\sigma_t z,\qquad z\sim\mathcal N(0,I),\qquad \sigma_t^2\in\{\beta_t,\ \tilde\beta_t\},
+$$
+
+with no noise added at the final step. Ho et al. [3] report similar results for $\sigma_t^2=\beta_t$ and $\sigma_t^2=\tilde\beta_t$; learned variances [19] help most when using fewer steps.
+
+### Code: DDPM on a two-dimensional distribution
+
+This complete CPU example (about 10 seconds) uses two Gaussian clusters centered at $x=\pm1.5$ with standard deviation $0.25$. It contains every operation of an image model — schedule, random-time training, noise prediction, reverse mean — without an image-scale budget. With 100 steps and this schedule, almost no signal survives to $t=T$.
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+torch.set_num_threads(1)
+T = 100
+beta = torch.linspace(.001, .15, T)
+alpha = 1-beta
+abar = alpha.cumprod(0)
+previous = torch.cat([torch.ones(1), abar[:-1]])
+post_var = beta * (1-previous) / (1-abar)
+net = nn.Sequential(nn.Linear(3, 64), nn.SiLU(),
+                    nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, 2))
+opt = torch.optim.Adam(net.parameters(), lr=.002)
+def data(n):
+    side = torch.randint(2, (n, 1))*2-1
+    return torch.cat([side*1.5, torch.zeros(n, 1)], 1) + .25*torch.randn(n, 2)
+for step in range(3000):
+    x0 = data(128)
+    t = torch.randint(T, (len(x0),))
+    eps = torch.randn_like(x0)
+    a = abar[t, None]
+    xt = a.sqrt()*x0 + (1-a).sqrt()*eps
+    predicted = net(torch.cat([xt, t[:, None].float()/(T-1)], 1))
+    loss = F.mse_loss(predicted, eps)
+    opt.zero_grad(); loss.backward(); opt.step()
+net.eval()
+with torch.no_grad():
+    x = torch.randn(512, 2)
+    for t in reversed(range(T)):
+        time = torch.full((len(x), 1), t/(T-1))
+        eps = net(torch.cat([x, time], 1))
+        mean = (x-beta[t]/(1-abar[t]).sqrt()*eps)/alpha[t].sqrt()
+        x = mean + post_var[t].sqrt()*torch.randn_like(x) if t else mean
+    assert torch.isfinite(x).all()
+    print("terminal signal:", round(abar[-1].item(), 6))
+    left = x[x[:, 0] < 0]
+    print("fraction in left cluster:", round((x[:, 0] < 0).float().mean().item(), 3))
+    print("left cluster: mean x", round(left[:, 0].mean().item(), 2),
+          "std", round(left[:, 0].std().item(), 2), "(data: -1.5 and 0.25)")
+```
+
+On our machine it prints a terminal signal of 0.000349, a left-cluster fraction of 0.441, and a left-cluster mean and standard deviation of $-1.47$ and $0.25$. The cluster *shapes* are right; the 44/56 split shows the small network has not learned the mode weights exactly. This is why a single summary number is never enough: always plot samples, and check mode coverage, within-mode spread and outliers against fresh data.
+
+### DDIM: same training, different sampler
+
+Song, Meng and Ermon [5] noticed that $\mathcal L_{\mathrm{simple}}$ only depends on the marginals $q(x_t\mid x_0)$, not on the Markov chain that produced them. Many non-Markovian forward processes share those marginals, and each gives a different reverse sampler — all usable with the *same* trained $\epsilon_\theta$. The **DDIM** update, for any decreasing subsequence of steps $\tau_1>\tau_2>\cdots$, is
+
+$$
+x_{\tau_{i+1}}=\sqrt{\bar\alpha_{\tau_{i+1}}}\;\hat x_0
++\sqrt{1-\bar\alpha_{\tau_{i+1}}-\sigma^2}\;\epsilon_\theta(x_{\tau_i},\tau_i)
++\sigma z,
+\qquad
+\sigma=\eta\sqrt{\frac{1-\bar\alpha_{\tau_{i+1}}}{1-\bar\alpha_{\tau_i}}\Big(1-\frac{\bar\alpha_{\tau_i}}{\bar\alpha_{\tau_{i+1}}}\Big)} ,
+$$
+
+where $\hat x_0$ is the clean estimate at $x_{\tau_i}$ and $\eta\ge0$ controls stochasticity. Read it as: "estimate the clean example, then re-noise it to the next, lower noise level using the predicted noise direction." With $\eta=1$ and consecutive steps, this recovers DDPM's posterior variance; with $\eta=0$ the sampler is **deterministic** and is a discretization of the probability-flow ODE. Determinism has practical consequences: the same starting noise always gives the same output, so you can interpolate in noise space or invert a real image to its noise (DDIM inversion), which is the basis of many editing methods.
+
+Continuing from the DDPM snippet (same `net`, `abar`, `T`):
+
+```python
+# Continue from the DDPM snippet: reuse `net`, `abar` and `T`.
+def ddim_sample(n, steps, eta=0.0, seed=1):
+    g = torch.Generator().manual_seed(seed)
+    taus = torch.linspace(T-1, 0, steps).round().long()
+    x = torch.randn(n, 2, generator=g)
+    with torch.no_grad():
+        for i, t in enumerate(taus):
+            time = torch.full((n, 1), t.item()/(T-1))
+            eps = net(torch.cat([x, time], 1))
+            a_t = abar[t]
+            a_prev = abar[taus[i+1]] if i+1 < steps else torch.tensor(1.)
+            x0_hat = (x - (1-a_t).sqrt()*eps) / a_t.sqrt()
+            sigma = eta*((1-a_prev)/(1-a_t)*(1-a_t/a_prev)).sqrt()
+            x = (a_prev.sqrt()*x0_hat + (1-a_prev-sigma**2).sqrt()*eps
+                 + sigma*torch.randn(n, 2, generator=g))
+    return x
+
+for steps in [5, 20, 100]:
+    s = ddim_sample(2000, steps)
+    left = s[s[:, 0] < 0]
+    print(f"{steps:3d} steps: left fraction {(s[:, 0] < 0).float().mean():.3f}, "
+          f"left-cluster mean x {left[:, 0].mean():.2f}, std {left[:, 0].std():.2f}")
+```
+
+The output shows the typical pattern. With 5 steps the left cluster is centered at $-1.11$ with standard deviation $0.39$ — the samples are pulled toward the middle and smeared, because large steps follow a curved trajectory with straight lines. With 20 steps it is $-1.37$ and $0.30$; with 100 steps $-1.42$ and $0.24$, close to the data. No retraining was needed to change the step count.
+
+<Figure src={samplersFig} alt="Three scatter plots: an eight-component Gaussian mixture on a circle, samples from 1000-step DDPM, and samples from 10-step deterministic DDIM with trajectories drawn from noise to data." caption="Figure 3 — Samplers driven by the exact denoiser of an 8-component mixture, so only the sampling rule differs. DDPM with 1000 steps reproduces the data; deterministic DDIM with 10 steps lands near the modes but with slightly wider, smeared clusters. Black lines are DDIM trajectories from starting noise (×)." />
+
+### Faster solvers
+
+Once sampling is "solve an ODE," numerical analysis applies. Karras et al. (EDM) [20] used a second-order Heun solver with a carefully chosen spacing of noise levels and showed that sampler, schedule, preconditioning and training noise distribution can be tuned separately. DPM-Solver [21] exploits the semi-linear structure of the diffusion ODE — the linear part can be integrated exactly — to reach good quality in around 10 network evaluations. Stochastic samplers add a little fresh noise at each step; that costs more steps but can correct accumulated errors. Whatever the solver, report the **number of function evaluations (NFE)**: the number of network calls, which, rather than "steps," is the true sampling cost.
+
+## Steering generation: conditioning and guidance
+
+**Plain version.** To generate "a cat" instead of "anything," give the network the condition. Guidance then turns a dial: follow the condition more strictly, at the cost of variety.
+
+### Conditioning
+
+A conditional model learns $\epsilon_\theta(x_t,t,c)$ for a condition $c$. Class labels enter through embeddings added to the time embedding; text enters through **cross-attention** from image features to text-encoder tokens [7]; images (for super-resolution, inpainting, editing) are concatenated to the input channels or fed through extra encoders.
+
+### Classifier guidance
+
+Bayes' rule for the noisy marginals gives $\nabla\log p_t(x_t\mid y)=\nabla\log p_t(x_t)+\nabla\log p_t(y\mid x_t)$. Dhariwal and Nichol [18] trained a separate classifier $p_\phi(y\mid x_t)$ on *noisy* images and added its gradient, scaled by $w$, to an unconditional model. In noise units,
+
+$$
+\hat\epsilon=\epsilon_\theta(x_t,t)-w\,\sqrt{1-\bar\alpha_t}\;\nabla_{x_t}\log p_\phi(y\mid x_t).
+$$
+
+A scale $w\gt1$ samples roughly from $p_t(x_t)\,p_t(y\mid x_t)^w$, a sharpened distribution that trades diversity for fidelity. Together with architecture improvements, this was the work that showed diffusion models beating GANs on ImageNet [35] sample quality [18]. Its drawback is the extra classifier, which must be trained on noisy inputs for every noise level.
+
+### Classifier-free guidance (CFG)
+
+Ho and Salimans [6] removed the classifier. During training, the condition is replaced by a "null" token for a random fraction of examples, so one network learns both $\epsilon_\theta(x_t,t,c)$ and $\epsilon_\theta(x_t,t,\varnothing)$. Bayes' rule says the classifier gradient equals the difference of the conditional and unconditional scores, so the implicit-classifier version of the formula above is
+
+$$
+\epsilon_{\mathrm{guided}}=
+\epsilon_\theta(x_t,t,\varnothing)
++w\big(\epsilon_\theta(x_t,t,c)-\epsilon_\theta(x_t,t,\varnothing)\big).
+$$
+
+In this convention $w=0$ is unconditional, $w=1$ is the ordinary conditional model, and $w\gt1$ extrapolates past it. (Some papers write the same thing as $(1+w')\epsilon_c-w'\epsilon_u$, so their "scale" is $w-1$ in our notation; always check the convention before comparing numbers.)
+
+The snippet below uses the exact noise predictor of a four-blob mixture, so any odd behaviour is due to guidance itself, not to a badly trained network. Class 1 is the two blobs with $x\gt0$.
+
+```python
+import numpy as np
+
+# Data: four Gaussian blobs at the corners of a square; class c is the sign of x.
+MU = np.array([[-1.5, -1.5], [-1.5, 1.5], [1.5, -1.5], [1.5, 1.5]])
+SIG = 0.2
+CLASS = np.array([0, 0, 1, 1])
+
+def eps_exact(x, abar, comps):
+    """Exact E[eps | x_t] for a Gaussian mixture restricted to `comps`."""
+    m = np.sqrt(abar)*MU[comps]
+    var = abar*SIG**2 + 1 - abar
+    logw = -((x[:, None] - m[None])**2).sum(-1) / (2*var)
+    w = np.exp(logw - logw.max(1, keepdims=True))
+    w /= w.sum(1, keepdims=True)
+    score = -(w[..., None]*(x[:, None] - m[None])).sum(1) / var
+    return -np.sqrt(1-abar)*score
+
+abar = np.cumprod(1 - np.linspace(1e-4, 0.02, 1000))
+taus = np.linspace(999, 0, 50).round().astype(int)
+everything, class1 = np.arange(4), np.where(CLASS == 1)[0]
+print("data: mean distance to its mode", round(SIG*np.sqrt(np.pi/2), 3))
+for w in [0, 1, 3, 8]:
+    x = np.random.default_rng(0).normal(size=(4000, 2))
+    for i, t in enumerate(taus):                    # deterministic DDIM
+        e_u, e_c = eps_exact(x, abar[t], everything), eps_exact(x, abar[t], class1)
+        e = e_u + w*(e_c - e_u)                     # classifier-free guidance
+        x0 = (x - np.sqrt(1-abar[t])*e) / np.sqrt(abar[t])
+        a_prev = abar[taus[i+1]] if i+1 < len(taus) else 1.0
+        x = np.sqrt(a_prev)*x0 + np.sqrt(1-a_prev)*e
+    dist = np.linalg.norm(x[:, None] - MU[None], axis=-1).min(1)
+    print(f"w={w}: class-1 fraction {(x[:, 0] > 0).mean():.3f}, "
+          f"mean distance to nearest mode {dist.mean():.3f}")
+```
+
+The data's mean distance to its mode is 0.251. With $w=0$ about half the samples (0.490) are class 1; with $w=1$ all of them are, at distance 0.225 (50 DDIM steps slightly under-disperse). At $w=3$ the distance is 0.259 and at $w=8$ it grows to 0.446: strong guidance does not just "make it more class 1" — it pushes samples *past* the data, a toy version of the over-saturated colours and distorted shapes seen with very high guidance in image models. Figure 4 shows the same effect on the 8-mode mixture.
+
+<Figure src={guidanceFig} alt="Four scatter plots of guided samples from an eight-mode mixture for guidance weights 0, 1, 3 and 8; higher weights stretch the class-1 clusters into elongated streaks." caption="Figure 4 — Exact classifier-free guidance on an 8-mode mixture whose class 1 has 4 modes (orange circles). w = 1 already restricts samples to class 1; larger w shrinks clusters along some directions and stretches them along others — the samples no longer follow any data distribution." />
+
+Guidance has a compute cost too: each step needs a conditional *and* an unconditional prediction, so a 30-step guided sampler costs 60 network evaluations unless the two are fused. And $w$ is a sampling knob, not a calibrated measure of how well the image matches the prompt.
+
+## Latent diffusion and diffusion transformers
+
+**Plain version.** Pixels are expensive. Compress the image into a smaller grid of features with an autoencoder, run diffusion in that compressed space, then decode. Separately, the denoising network itself can be a transformer instead of a convolutional U-Net [37].
+
+### Latent diffusion
+
+Rombach et al. [7] train an autoencoder first: an encoder $z=\mathcal E(x)$ maps an $H\times W\times3$ image to an $h\times w\times c$ latent with a spatial downsampling factor $f=H/h$, and a decoder $\mathcal D$ maps back. The autoencoder is trained with reconstruction, perceptual and adversarial losses plus a light regularizer (a small KL term toward a Gaussian, or vector quantization) so that the latent space stays well behaved. Diffusion is then trained on $z$ exactly as before, and generation ends with $\hat x=\mathcal D(z_0)$. With $f=8$, a $512\times512$ image becomes a $64\times64$ latent: 64 times fewer spatial positions for every network call.
+
+The trade-off is that the autoencoder sets a ceiling: details it cannot reconstruct (small text, fine textures, exact faces) cannot be generated, however good the diffusion model is. The latent's scale must also match what the diffusion model was trained on; implementations rescale latents to roughly unit variance. Text conditioning in [7] uses cross-attention layers in the U-Net, the design behind the Stable Diffusion family.
+
+### Diffusion transformers
+
+DiT (Peebles and Xie [8]) replaces the U-Net with a Vision Transformer [41] (see [ML 04](/en/learn/ml/ml-04-vision-transformers/)) over latent patches. A latent of size $h\times w$ is cut into $p\times p$ patches, giving $hw/p^2$ tokens; smaller $p$ means more tokens, more compute and better quality. The timestep and class label condition every block through **adaptive layer norm**: they predict the scale and shift of each LayerNorm, and in the "adaLN-Zero" variant also a gating factor initialized to zero, so each residual block starts as the identity. The paper's main finding is a scaling trend: across model sizes and patch sizes, more transformer compute (GFLOPs) gave consistently lower FID [8].
+
+It helps to keep three choices separate. The **architecture** (U-Net or transformer) is the function approximator. The **objective** (noise, $x_0$, $v$, or flow velocity) is what it regresses. The **sampler** (DDPM, DDIM, ODE solver) is how predictions become an image. Stable Diffusion 3 [9] is an example of a new combination: a latent transformer with separate weights for the image and text token streams that attend jointly ("MM-DiT"), trained with a rectified-flow objective and a timestep distribution biased toward intermediate noise levels.
+
+For video, the latent and the attention must cover time as well as space, so compression and attention patterns become the main engineering problem. Melnik et al.'s survey [31] reviews architectures, temporal-consistency mechanisms and evaluation for video diffusion. Per-frame quality is not enough there: object permanence, motion plausibility and long-duration consistency need their own evaluation.
+
+## Flow matching: learn a transport velocity
+
+**Plain version.** Forget noise schedules for a moment. Draw a noise point and a data point, connect them by a straight line, and train a network to predict the direction of travel at every point along such lines. To generate, drop a fresh noise point and follow the predicted directions.
+
+**Time convention change.** In this section time runs from **noise at $t=0$ to data at $t=1$**, the opposite of the diffusion sections above (where large $t$ meant more noise).
+
+### The conditional flow-matching objective
+
+A continuous normalizing flow moves points with an ODE $dx_t/dt=v(x_t,t)$. If the velocity field $v$ is right, it transports the noise distribution $p_0=\mathcal N(0,I)$ to the data distribution $p_1$. Lipman et al. [10] (and, concurrently, Liu et al. [11] and Albergo and Vanden-Eijnden's stochastic interpolants [34]) showed how to train $v$ without ever simulating the ODE.
+
+Pair noise $z\sim\mathcal N(0,I)$ with a data example $x\sim p_1$ and define the straight **conditional path**
+
+$$
+x_t=(1-t)\,z+t\,x,\qquad \frac{dx_t}{dt}=u_t(x_t\mid z,x)=x-z .
+$$
+
+Every pair moves at constant speed in a straight line. The marginal velocity we actually want is the average of these conditional velocities over all pairs that pass through the point:
+
+$$
+u_t(y)=\mathbb E\big[\,x-z\ \big|\ x_t=y\,\big].
+$$
+
+We cannot compute this average, but we do not need to. Compare the "ideal" loss with the one we can compute:
+
+$$
+\mathcal L_{\mathrm{FM}}=\mathbb E_{t,x_t}\big\|v_\theta(x_t,t)-u_t(x_t)\big\|^2,
+\qquad
+\mathcal L_{\mathrm{CFM}}=\mathbb E_{t,z,x}\big\|v_\theta(x_t,t)-(x-z)\big\|^2,
+$$
+
+with $t\sim\mathcal U[0,1]$. Expand both squares. The $\|v_\theta\|^2$ terms are identical. The cross terms are equal because, by the tower rule, $\mathbb E[v_\theta(x_t,t)^\top(x-z)]=\mathbb E\big[v_\theta(x_t,t)^\top\,\mathbb E[x-z\mid x_t]\big]=\mathbb E[v_\theta^\top u_t(x_t)]$. The remaining terms do not involve $\theta$. Therefore
+
+$$
+\nabla_\theta\,\mathcal L_{\mathrm{CFM}}=\nabla_\theta\,\mathcal L_{\mathrm{FM}} ,
+$$
+
+so regressing the per-pair velocity $x-z$ trains the marginal velocity field. This is the same trick as in diffusion: a target that is noisy for any single example has the right conditional mean. Generation solves $dx/dt=v_\theta(x,t)$ from $t=0$ to $t=1$ with any ODE solver.
+
+<Figure src={pathsFig} alt="Random noise points connected by straight line segments to a set of data points on a circle." caption="Figure 5 — Conditional training paths are straight. Paths of different pairs cross, so the marginal velocity at a crossing point is an average, and the learned trajectories can curve." />
+
+### How flow matching relates to diffusion
+
+The linear path is a Gaussian path: given $x$, $x_t\sim\mathcal N(t\,x,\ (1-t)^2I)$. Writing $\hat z=\mathbb E[z\mid x_t]$ (a noise prediction) and using $x=(x_t-(1-t)z)/t$,
+
+$$
+u_t(x_t)=\frac{x_t-\hat z}{t},
+\qquad
+\nabla\log p_t(x_t)=-\frac{\hat z}{1-t},
+\qquad\text{so}\qquad
+u_t(x_t)=\frac{x_t+(1-t)\,\nabla\log p_t(x_t)}{t}.
+$$
+
+So a flow-matching velocity, a noise predictor and a score are again interchangeable for this path; what differs is the path (straight lines versus the VP curve), the weighting of noise levels in the loss, and the time convention. Diffusion's probability-flow ODE is itself a flow along a particular Gaussian path. Lipman et al.'s guide [2] and the stochastic-interpolant framework [34] treat both as special cases of one construction. The practical advice is the same as for parameterizations: the targets are related by derivation, not interchangeable by renaming.
+
+### Code: flow matching on two clusters
+
+This standalone example learns the same two-cluster distribution as the DDPM snippet with linear conditional paths, then samples with Euler steps of size $1/N$.
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+torch.set_num_threads(1)
+net = nn.Sequential(nn.Linear(3, 64), nn.SiLU(),
+                    nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, 2))
+opt = torch.optim.Adam(net.parameters(), lr=.002)
+for step in range(3000):
+    z = torch.randn(128, 2)
+    side = torch.randint(2, (128, 1))*2-1
+    x = torch.cat([1.5*side, torch.zeros(128, 1)], 1) + .25*torch.randn(128, 2)
+    t = torch.rand(128, 1)
+    xt = (1-t)*z+t*x
+    loss = F.mse_loss(net(torch.cat([xt, t], 1)), x-z)
+    opt.zero_grad(); loss.backward(); opt.step()
+net.eval()
+def euler_sample(n, steps, seed=1):
+    x = torch.randn(n, 2, generator=torch.Generator().manual_seed(seed))
+    with torch.no_grad():
+        for k in range(steps):
+            t = torch.full((n, 1), k/steps)
+            x = x + net(torch.cat([x, t], 1))/steps
+    return x
+
+for steps in [1, 4, 50]:
+    s = euler_sample(2000, steps)
+    assert torch.isfinite(s).all()
+    left = s[s[:, 0] < 0]
+    print(f"{steps:2d} Euler steps: left fraction {(s[:, 0] < 0).float().mean():.3f}, "
+          f"left-cluster mean x {left[:, 0].mean():.2f}, std {left[:, 0].std():.2f}")
+```
+
+It prints, for 1, 4 and 50 steps, left-cluster means of $-0.18$, $-1.20$ and $-1.45$ with standard deviations $0.12$, $0.42$ and $0.29$. One Euler step lands almost at the overall data mean: at $t=0$ the marginal velocity is $\mathbb E[x]-z$, so a single full step sends *every* noise point to $\mathbb E[x]$. Straight conditional paths do not make the learned marginal flow straight. Figure 6 shows the same effect with the exact velocity of an 8-mode mixture.
+
+<Figure src={stepsFig} alt="Four scatter plots of Euler samples for 1, 2, 4 and 64 steps using the exact flow-matching velocity of an eight-mode mixture; one step collapses to the center, two steps form a disc, four steps a ring, 64 steps eight clusters with curved paths." caption="Figure 6 — Even with the exact marginal velocity, Euler sampling needs many steps: one step collapses every sample to the data mean, and the 64-step trajectories (black) bend toward the modes late in the path." />
+
+### Rectified flow and reflow
+
+Liu, Gong and Liu [11] use the same straight interpolation ("rectified flow") and add **reflow**: after training, generate pairs $(z,\hat x)$ by solving the learned ODE from each $z$, then retrain on these *coupled* pairs instead of independent ones. Because the new pairs are already connected by the flow, their straight lines cross less, the learned trajectories become straighter, and fewer Euler steps are needed; a straight enough flow can then be distilled into a one-step model. Stable Diffusion 3 [9] showed that rectified-flow training of a large latent transformer works at text-to-image scale.
+
+## Few-step and one-step generation
+
+**Plain version.** If a sampler needs 50 network calls, train a second model that jumps along the trajectory in a few calls — or train one from scratch that is designed to jump.
+
+The main families are:
+
+- **Progressive distillation** [22]: a student learns to match two deterministic teacher steps with one step; repeating the procedure halves the step count each round.
+- **Consistency models** [12]: learn a function $f_\theta(x_t,t)$ that maps *any* point on a probability-flow ODE trajectory to that trajectory's starting (clean) point. It must satisfy the boundary condition $f_\theta(x,\epsilon)=x$ at the smallest time $\epsilon$, enforced by writing $f_\theta(x,t)=c_{\mathrm{skip}}(t)\,x+c_{\mathrm{out}}(t)\,F_\theta(x,t)$ with $c_{\mathrm{skip}}(\epsilon)=1$ and $c_{\mathrm{out}}(\epsilon)=0$. Training asks outputs at adjacent points of a trajectory to agree. In *consistency distillation*, adjacent points come from one ODE-solver step of a pretrained diffusion model; in *consistency training*, from the same data example noised at two levels, with no teacher. Sampling takes one step, or a few steps of "jump to clean, re-noise, jump again." Improved training recipes [32] simplified continuous-time consistency models and scaled them to 1.5 billion parameters on ImageNet $512\times512$ with two-step sampling.
+- **Adversarial distillation**: ADD [33] combines score distillation from a large pretrained diffusion teacher with an adversarial loss so that a student produces sharp images in one to four steps.
+- **Average-velocity models**: MeanFlow [13] learns the *average* velocity $u(x_t,r,t)=\frac{1}{t-r}\int_r^t v(x_s,s)\,ds$ over an interval instead of the instantaneous velocity $v$. Differentiating $(t-r)\,u=\int_r^t v\,ds$ with respect to $t$ gives the identity $u=v-(t-r)\frac{d}{dt}u$, which supplies a training target without a teacher. One network call over the whole interval then generates a sample; the paper reports an FID of 3.43 with one evaluation on ImageNet $256\times256$, trained from scratch [13].
+
+A small step count is a learned capability, not a free consequence of a nicer equation. When comparing, count NFE including guidance evaluations, the decoder's cost in latent models, resolution, quality *and* diversity — and remember that a one-step network can be larger and slower per call than a multi-step one.
+
+## Evaluating generative models
+
+**Plain version.** "Does it look good?" hides at least three questions: are individual samples realistic (fidelity), does the set of samples cover the variety of the data (diversity), and does the sample match the condition (alignment)? No single number answers all three.
+
+### Fréchet Inception Distance
+
+**FID** (Heusel et al. [23]) embeds real and generated images with an Inception-v3 network [36], fits a Gaussian to each set of features, and computes the Fréchet (2-Wasserstein) distance between the two Gaussians:
+
+$$
+\mathrm{FID}=\|\mu_r-\mu_g\|^2+\operatorname{tr}\!\Big(\Sigma_r+\Sigma_g-2\big(\Sigma_r\Sigma_g\big)^{1/2}\Big),
+$$
+
+where $\mu_r,\Sigma_r$ and $\mu_g,\Sigma_g$ are the feature mean and covariance of the real and generated sets and $\operatorname{tr}$ is the matrix trace. Lower is better. The snippet applies the formula to two-dimensional "features."
+
+```python
+import numpy as np
+from scipy import linalg
+
+def frechet_distance(a, b):
+    """Frechet distance between Gaussians fitted to feature sets a and b."""
+    mu1, mu2 = a.mean(0), b.mean(0)
+    c1, c2 = np.cov(a, rowvar=False), np.cov(b, rowvar=False)
+    covmean = linalg.sqrtm(c1 @ c2).real
+    return float(((mu1 - mu2)**2).sum() + np.trace(c1 + c2 - 2*covmean))
+
+rng = np.random.default_rng(0)
+centers = np.array([[-1.5, 0.], [1.5, 0.]])
+real = centers[rng.integers(2, size=5000)] + .25*rng.normal(size=(5000, 2))
+good = centers[rng.integers(2, size=5000)] + .25*rng.normal(size=(5000, 2))
+one_mode = centers[[0]] + .25*rng.normal(size=(5000, 2))      # mode collapse
+blurry = .6*rng.normal(size=(5000, 2))                         # mass in the gap
+print("good     :", round(frechet_distance(real, good), 3))
+print("one mode :", round(frechet_distance(real, one_mode), 3))
+print("blurry   :", round(frechet_distance(real, blurry), 3))
+small = [frechet_distance(real[:50], good[i*50:(i+1)*50]) for i in range(20)]
+print("good, 50 samples: mean", round(np.mean(small), 3), "std", round(np.std(small), 3))
+```
+
+It prints about 0.001 for a correct sampler, 3.9 for a sampler that only produces the left mode, and 0.976 for a "blurry" sampler that puts its mass between the modes. The last line shows a practical trap: with 50 samples, even a *perfect* sampler scores $0.077\pm0.073$, because FID is biased upward for small sample sizes. Compare FIDs only with the same number of samples, the same reference set and the same feature extractor and preprocessing.
+
+### Beyond FID
+
+- **Precision and recall** (Kynkäänniemi et al. [24]) separate fidelity from diversity: estimate the real and generated "manifolds" with $k$-nearest-neighbour balls in feature space; precision is the fraction of generated samples inside the real manifold, and recall the fraction of real samples inside the generated one. Our "one mode" sampler would have high precision and low recall.
+- **Feature extractor matters.** Stein et al. [25] ran a large human study and found that no common metric correlated strongly with human judgments; in particular, the perceptual realism of diffusion models was not reflected in FID. They recommend features from DINOv2-ViT-L/14 [39] instead of Inception, and show that current metrics cannot separate memorization from underfitting or mode shrinkage.
+- **CMMD** (Jayasumana et al. [26]) replaces Inception features with CLIP [38] embeddings and the Gaussian assumption with a maximum mean discrepancy using a Gaussian RBF kernel, giving an unbiased estimator that is more sample-efficient.
+- **Likelihood.** Through the probability-flow ODE, diffusion models can report exact log-likelihoods (in bits per dimension) [4], [19]. Likelihood measures something different from visual quality and the two can disagree.
+- **Conditional models** need alignment checks (does the image show what the prompt says?), usually by human rating or by vision–language models, and memorization checks against the training set.
+- **Cost.** Report NFE, guidance evaluations, resolution and wall-clock time on stated hardware.
+
+The evaluation chapter [ML 10](/en/learn/ml/ml-10-evaluation-deployment/) returns to sample-size effects and honest comparisons.
+
+## Modern view
+
+**Surveys and reference texts.** The literature is large; these reviews are good maps.
+
+- Yang et al. [1] (*ACM Computing Surveys*, 2023) organize diffusion research into three improvement directions — efficient sampling, improved likelihood estimation, and data with special structure (manifolds, discrete data, invariances) — and also cover combinations with VAEs, GANs and flows and applications across domains.
+- Croitoru et al. [27] (*IEEE TPAMI*, 2023) focus on vision. They identify three generic formulations — DDPMs, noise-conditioned score networks and SDEs — and categorize vision applications such as generation, super-resolution, inpainting, editing, translation and segmentation.
+- Cao et al. [28] (*IEEE TKDE*, 2024) take a methods angle: fundamental formulation, algorithmic enhancements (sampling acceleration, objective design, conditioning) and applications from images to biology and healthcare.
+- Lipman et al. [2] (2024) is a guide-with-code to flow matching that covers Gaussian and general probability paths, the link to diffusion and extensions to discrete and Riemannian data.
+- Lai, Song, Kim, Mitsufuji and Ermon [29] (2025) is a book-length monograph presenting the variational, score-based and flow-based views as three routes to the same time-dependent velocity field, followed by guidance, fast solvers and flow-map (few-step) models.
+- Shen et al. [30] (*TMLR*, 2025) survey efficiency at the algorithm level (training, sampling, compression), system level (hardware and serving) and framework level.
+- Melnik et al. [31] (*TMLR*, 2024) survey video diffusion: architectures, temporal-consistency mechanisms, datasets and evaluation.
+
+**State of the art, 2023–2026.** Several trends are visible across these reviews and the primary papers in this chapter. (1) *Transformers in latent space*: DiT-style backbones [8] replaced U-Nets in many large systems, and joint text–image transformers trained with rectified-flow objectives [9] became a standard text-to-image recipe. (2) *Flow matching as the default objective*: straight-path flow matching [10], [11] is now used alongside or instead of noise prediction, with diffusion understood as one choice of probability path [2], [29]. (3) *Fewer evaluations*: distillation [22], [33], consistency models [12], [32] and average-velocity models [13] bring sampling down to one to four network calls with quality approaching multi-step samplers. (4) *Better evaluation*: the community is moving from Inception-based FID toward richer feature spaces, human studies and alignment metrics [25], [26]. (5) *Beyond images*: video, 3-D, audio and scientific data reuse the same machinery, with video's temporal consistency and cost the main open challenges [31].
+
+**Open problems.** Sampling cost at high resolution and long video duration; principled guidance that does not trade away diversity or produce over-saturation; evaluation metrics that agree with people and detect memorization; understanding generalization (why models produce new samples rather than copies of training data); controllability and editing with guarantees; and data provenance, consent and misuse, which are social rather than purely technical questions. The next chapter, [ML 08](/en/learn/ml/ml-08-autoregressive-vision/), covers the main alternative route: autoregressive generation over pixels and tokens, and its hybrids with diffusion.
+
+## Key takeaways
+
+- The forward process has a closed form $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$, so training reduces to "pick a random noise level and regress the noise."
+- Every term of the variational bound is a weighted noise-prediction error; $\mathcal L_{\mathrm{simple}}$ drops the weights, which improves samples but is not the likelihood.
+- Noise, clean-image, $v$, score and flow-velocity predictions are interconvertible for Gaussian paths; they differ in how the loss weights noise levels and in time convention.
+- Sampling is solving a reverse SDE or ODE: DDPM, DDIM and higher-order solvers trade steps for accuracy with the same trained network; count NFE, not "steps."
+- Guidance trades diversity for adherence and doubles the per-step cost for CFG; very large weights push samples off the data distribution.
+- Latent space, architecture, objective and sampler are separate design choices; the autoencoder caps achievable detail.
+- Conditional flow matching trains the marginal velocity by regressing per-pair straight-line velocities, but straight conditional paths do not make the learned flow straight — few-step generation needs reflow, distillation, consistency or average-velocity training.
+- No single metric measures quality: FID depends on sample size and feature extractor; pair it with precision/recall, human or alignment studies and cost.
+
+## Exercises
+
+1. **Recover the clean estimate.** Starting from $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$, derive $\hat x_0$ from a noise prediction. If $\epsilon_\theta$ has an error $\delta$, how large is the error in $\hat x_0$ at $\bar\alpha_t=0.25$ and at $\bar\alpha_t=10^{-4}$?
+
+<details>
+<summary>Hint</summary>
+
+$\hat x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta)/\sqrt{\bar\alpha_t}$, so the error is $\sqrt{1-\bar\alpha_t}\,\delta/\sqrt{\bar\alpha_t}$: about $1.7\,\delta$ at $\bar\alpha_t=0.25$ and about $100\,\delta$ at $10^{-4}$. At high noise, $\hat x_0$ is an average over many plausible images, not one image.
+
+</details>
+
+2. **Posterior mean in two forms.** Substitute $x_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon)/\sqrt{\bar\alpha_t}$ into $\tilde\mu_t$ and show that it equals $\frac{1}{\sqrt{\alpha_t}}\big(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon\big)$. Then change `t` in the posterior snippet to 50 and 900 and check that the formula still matches.
+
+<details>
+<summary>Hint</summary>
+
+Use $\bar\alpha_t=\alpha_t\bar\alpha_{t-1}$ and $\beta_t=1-\alpha_t$. The coefficient of $x_t$ becomes $\frac{\beta_t+\alpha_t(1-\bar\alpha_{t-1})}{\sqrt{\alpha_t}(1-\bar\alpha_t)}=\frac{1}{\sqrt{\alpha_t}}$ because the numerator equals $1-\bar\alpha_t$.
+
+</details>
+
+3. **Count compute.** A latent text-to-image model samples with 30 DDIM steps and classifier-free guidance using separate conditional and unconditional passes, then runs the decoder once. How many denoiser evaluations are needed? How does the count change for a 4-step distilled model that has guidance "baked in"?
+
+<details>
+<summary>Hint</summary>
+
+60 denoiser evaluations plus one decoder pass; batching both CFG branches reduces wall-clock time but not the work. A guidance-distilled 4-step model needs 4 evaluations plus the decoder. Compare quality and diversity, not just the counts.
+
+</details>
+
+4. **Time convention.** Diffusion sections use "large $t$ = noisy"; the flow-matching section uses "$t=0$ noise, $t=1$ data." Reparameterize the flow with $s=1-t$. What is $dx/ds$, and what goes wrong if you only relabel the time input?
+
+<details>
+<summary>Hint</summary>
+
+$dx/ds=-v(x,1-s)$. If you feed $s$ to a network trained on $t$ without flipping the sign and the time input, you integrate in the wrong direction and move samples away from the data.
+
+</details>
+
+5. **Guidance sweep.** In the CFG snippet, add $w\in\{0.5,\,1.5,\,5\}$ and also record the fraction of class-1 samples that land closer to the wrong-class modes. Plot mean distance to the nearest mode against $w$. Where does guidance stop helping?
+
+<details>
+<summary>Hint</summary>
+
+Already at $w=1$ the exact conditional model puts every sample in class 1, so larger $w$ cannot improve class accuracy here — it only distorts the clusters. With a learned, imperfect conditional model, moderate $w\gt1$ can help adherence, which is why it is used in practice.
+
+</details>
+
+6. **Sampler ablation.** Hold the trained flow-matching network fixed. Compare Euler with 1, 2, 5, 20 and 100 steps against a second-order Heun step (predict with Euler, then average the velocities at both ends). Use the same starting noise and measure cluster means and spreads. Does the 2-step Heun sampler beat 4-step Euler at the same number of network calls?
+
+<details>
+<summary>Hint</summary>
+
+Heun uses two network calls per step. Plot samples, not only numbers. One Euler step of a model trained for instantaneous velocity does not test a separately trained one-step model such as a consistency or MeanFlow model.
+
+</details>
+
+## References
+
+1. L. Yang, Z. Zhang, Y. Song, S. Hong, R. Xu, Y. Zhao, W. Zhang, B. Cui and M.-H. Yang, "Diffusion Models: A Comprehensive Survey of Methods and Applications," *ACM Computing Surveys*, 2023. [arXiv](https://arxiv.org/abs/2209.00796)
+2. Y. Lipman, M. Havasi, P. Holderrieth, N. Shaul, M. Le, B. Karrer, R. T. Q. Chen, D. Lopez-Paz, H. Ben-Hamu and I. Gat, "Flow Matching Guide and Code," arXiv:2412.06264, 2024. [arXiv](https://arxiv.org/abs/2412.06264)
+3. J. Ho, A. Jain and P. Abbeel, "Denoising Diffusion Probabilistic Models," *NeurIPS*, 2020. [arXiv](https://arxiv.org/abs/2006.11239)
+4. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon and B. Poole, "Score-Based Generative Modeling through Stochastic Differential Equations," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2011.13456)
+5. J. Song, C. Meng and S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.02502)
+6. J. Ho and T. Salimans, "Classifier-Free Diffusion Guidance," NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications; arXiv:2207.12598, 2022. [arXiv](https://arxiv.org/abs/2207.12598)
+7. R. Rombach, A. Blattmann, D. Lorenz, P. Esser and B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [arXiv](https://arxiv.org/abs/2112.10752)
+8. W. Peebles and S. Xie, "Scalable Diffusion Models with Transformers," *ICCV*, 2023. [arXiv](https://arxiv.org/abs/2212.09748)
+9. P. Esser, S. Kulal, A. Blattmann et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, PMLR 235, 2024. [PMLR](https://proceedings.mlr.press/v235/esser24a.html)
+10. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel and M. Le, "Flow Matching for Generative Modeling," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2210.02747)
+11. X. Liu, C. Gong and Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.03003)
+12. Y. Song, P. Dhariwal, M. Chen and I. Sutskever, "Consistency Models," *ICML*, 2023. [arXiv](https://arxiv.org/abs/2303.01469)
+13. Z. Geng, M. Deng, X. Bai, J. Z. Kolter and K. He, "Mean Flows for One-step Generative Modeling," *NeurIPS*, 2025. [arXiv](https://arxiv.org/abs/2505.13447)
+14. S. J. D. Prince, *Understanding Deep Learning*, MIT Press, 2023. [book site](https://udlbook.github.io/udlbook/)
+15. J. Sohl-Dickstein, E. Weiss, N. Maheswaranathan and S. Ganguli, "Deep Unsupervised Learning using Nonequilibrium Thermodynamics," *ICML*, PMLR 37, 2015. [PMLR](https://proceedings.mlr.press/v37/sohl-dickstein15.html)
+16. P. Vincent, "A Connection Between Score Matching and Denoising Autoencoders," *Neural Computation*, vol. 23, no. 7, pp. 1661–1674, 2011. [doi](https://doi.org/10.1162/NECO_a_00142)
+17. Y. Song and S. Ermon, "Generative Modeling by Estimating Gradients of the Data Distribution," *NeurIPS*, 2019. [arXiv](https://arxiv.org/abs/1907.05600)
+18. P. Dhariwal and A. Nichol, "Diffusion Models Beat GANs on Image Synthesis," *NeurIPS*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/49ad23d1ec9fa4bd8d77d02681df5cfa-Abstract.html)
+19. A. Q. Nichol and P. Dhariwal, "Improved Denoising Diffusion Probabilistic Models," *ICML*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/nichol21a.html)
+20. T. Karras, M. Aittala, T. Aila and S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2206.00364)
+21. C. Lu, Y. Zhou, F. Bao, J. Chen, C. Li and J. Zhu, "DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2206.00927)
+22. T. Salimans and J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2202.00512)
+23. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler and S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS (NIPS)*, 2017. [arXiv](https://arxiv.org/abs/1706.08500)
+24. T. Kynkäänniemi, T. Karras, S. Laine, J. Lehtinen and T. Aila, "Improved Precision and Recall Metric for Assessing Generative Models," *NeurIPS*, 2019. [arXiv](https://arxiv.org/abs/1904.06991)
+25. G. Stein, J. C. Cresswell, R. Hosseinzadeh et al., "Exposing Flaws of Generative Model Evaluation Metrics and Their Unfair Treatment of Diffusion Models," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2306.04675)
+26. S. Jayasumana, S. Ramalingam, A. Veit, D. Glasner, A. Chakrabarti and S. Kumar, "Rethinking FID: Towards a Better Evaluation Metric for Image Generation," *CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Jayasumana_Rethinking_FID_Towards_a_Better_Evaluation_Metric_for_Image_Generation_CVPR_2024_paper.html)
+27. F.-A. Croitoru, V. Hondru, R. T. Ionescu and M. Shah, "Diffusion Models in Vision: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3261988)
+28. H. Cao, C. Tan, Z. Gao, Y. Xu, G. Chen, P.-A. Heng and S. Z. Li, "A Survey on Generative Diffusion Models," *IEEE Transactions on Knowledge and Data Engineering*, vol. 36, no. 7, pp. 2814–2830, 2024. [doi](https://doi.org/10.1109/TKDE.2024.3361474)
+29. C.-H. Lai, Y. Song, D. Kim, Y. Mitsufuji and S. Ermon, "The Principles of Diffusion Models," monograph, arXiv:2510.21890, 2025. [arXiv](https://arxiv.org/abs/2510.21890)
+30. H. Shen, J. Zhang, B. Xiong et al., "Efficient Diffusion Models: A Survey," *Transactions on Machine Learning Research*, 2025. [arXiv](https://arxiv.org/abs/2502.06805)
+31. A. Melnik, M. Ljubljanac, C. Lu, Q. Yan, W. Ren and H. Ritter, "Video Diffusion Models: A Survey," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2405.03150)
+32. C. Lu and Y. Song, "Simplifying, Stabilizing and Scaling Continuous-Time Consistency Models," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.11081)
+33. A. Sauer, D. Lorenz, A. Blattmann and R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [arXiv](https://arxiv.org/abs/2311.17042)
+34. M. S. Albergo and E. Vanden-Eijnden, "Building Normalizing Flows with Stochastic Interpolants," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.15571)
+35. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A Large-Scale Hierarchical Image Database," *CVPR*, 2009, pp. 248–255. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+36. C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens and Z. Wojna, "Rethinking the Inception Architecture for Computer Vision," *CVPR*, 2016, pp. 2818–2826. [arXiv](https://arxiv.org/abs/1512.00567)
+37. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," *MICCAI*, LNCS 9351, pp. 234–241, 2015. [arXiv](https://arxiv.org/abs/1505.04597)
+38. A. Radford, J. W. Kim, C. Hallacy et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, 2021. [arXiv](https://arxiv.org/abs/2103.00020)
+39. M. Oquab, T. Darcet, T. Moutakanni et al., "DINOv2: Learning Robust Visual Features without Supervision," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2304.07193)
+40. B. Efron, "Tweedie's Formula and Selection Bias," *Journal of the American Statistical Association*, vol. 106, no. 496, pp. 1602–1614, 2011. [doi](https://doi.org/10.1198/jasa.2011.tm11181)
+41. A. Dosovitskiy, L. Beyer, A. Kolesnikov et al., "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)

@@ -1,0 +1,612 @@
+---
+title: "ML 05 · Representation Learning and Self-Supervision"
+description: "What a representation is, why distributed features transfer, and how SimCLR, MoCo, BYOL, SimSiam, DINO, MAE, JEPA and CLIP learn them without labels, with honest linear-probe and fine-tuning evaluation."
+track: ml
+order: 50
+level: intermediate
+prereqs: [ml/ml-04-vision-transformers]
+tags: [representation-learning, self-supervised, contrastive, transfer-learning, clip, mae]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import onehotFig from '../../../../assets/ml/ml-05-representation-learning/one-hot-vs-distributed.png';
+import pipelineFig from '../../../../assets/ml/ml-05-representation-learning/transfer-pipeline.png';
+import simFig from '../../../../assets/ml/ml-05-representation-learning/similarity-matrix.png';
+import alignFig from '../../../../assets/ml/ml-05-representation-learning/alignment-uniformity.png';
+import knnFig from '../../../../assets/ml/ml-05-representation-learning/digits-knn-shift.png';
+import collapseFig from '../../../../assets/ml/ml-05-representation-learning/collapse.png';
+import maskedFig from '../../../../assets/ml/ml-05-representation-learning/masked-prediction.png';
+import labelFig from '../../../../assets/ml/ml-05-representation-learning/label-efficiency.png';
+
+## What you'll learn
+
+- What a **representation** is, why **distributed** representations generalize better than one-hot codes, and which invariances a good representation should (and should not) have.
+- How **transfer learning** works: pretrain an encoder once, then reuse it through $k$-NN, a linear probe or fine-tuning.
+- How the main **self-supervised learning** families build a training signal from unlabeled data: contrastive (SimCLR, MoCo, with the InfoNCE loss), teacher–student without negatives (BYOL, SimSiam, DINO), redundancy reduction (Barlow Twins, VICReg), masked modeling (BEiT, MAE) and feature prediction (I-JEPA, V-JEPA 2).
+- Why "make two views agree" can **collapse**, and how alignment and uniformity make that precise.
+- How **CLIP** uses captions as supervision and enables zero-shot classification.
+- How to evaluate a representation honestly, including why fine-tuning can underperform a linear probe and what LP-FT does about it.
+
+## The big picture
+
+Suppose you have a million unlabeled images but only 500 labeled examples for the task you care about. Training a large network from scratch on those 500 examples ignores almost all the available data. **Representation learning** splits the job in two. First, learn an encoder $h=f_\theta(x)$ from a broad signal that does not need your labels. Second, train a small task-specific head on top of $h$ using the few labels you have.
+
+<Callout type="tip" title="Explain like I'm five">
+Before a child learns the names of every bird, they already notice wings, beaks, colors and how things move. Later, a parent points at three robins and two crows, and that is enough: the child can tell robins from crows from then on. The "noticing" was learned for free, just by looking at the world. A representation is that reusable way of noticing things, and self-supervised learning is the "just looking" part.
+</Callout>
+
+Why it matters: almost every modern vision system starts from a pretrained encoder. Image classifiers, detectors, segmentation models, image–text models and the image encoders inside generative models are built on representations learned this way. The quality of that starting point often matters more than the details of the task head.
+
+This chapter starts with what a representation is and why transfer works, then walks through the self-supervised objectives that dominate practice, and ends with how to measure whether a representation is any good. It assumes you know neural networks ([ML 02](/en/learn/ml/ml-02-neural-networks/)), CNNs ([ML 03](/en/learn/ml/ml-03-convolutional-networks/)) and vision transformers ([ML 04](/en/learn/ml/ml-04-vision-transformers/)). Linear factor models and autoencoders, the classical route to representations, have their own chapter: [ML 05A](/en/learn/ml/ml-05a-factor-models-autoencoders/).
+
+## What is a representation?
+
+**Plain version.** A representation is the list of numbers a model uses to describe an input. A good one makes the things you care about easy to read off, and hides the things you do not care about.
+
+**Precise version.** An encoder is a function $f_\theta:\mathcal X\to\mathbb R^D$ from inputs $x$ (here, images) to feature vectors $h=f_\theta(x)$, where $\theta$ are the learnable parameters and $D$ is the feature dimension. A task head $g$ maps $h$ to a prediction, so the full model is $g\circ f_\theta$. We call $h$ a good representation for a task when a *simple* head, such as a linear classifier, can solve the task from $h$ using *few* labeled examples. Bengio, Courville and Vincent's review [1] is the classic statement of this view; it lists the "priors" that make representations useful, such as smoothness, multiple explanatory factors, a hierarchy of increasingly abstract features, and shared factors across tasks.
+
+### Local versus distributed representations
+
+The simplest representation of a category is **one-hot**: one unit per concept, with exactly one unit on. It is easy to read but it cannot generalize. Knowing about "red car" says nothing about "red truck", because they share no active units. A **distributed** representation describes each input with many features that are each shared by many inputs: "red", "blue", "car", "truck". Now "red truck" reuses the "red" unit learned from red cars.
+
+<Figure src={onehotFig} alt="Two 4 by 4 grids. Left: one-hot codes with a single active unit per concept. Right: distributed codes where red car, blue car, red truck and blue truck each activate one color unit and one vehicle unit." caption="Figure 1 — Local (one-hot) versus distributed codes for four concepts. With distributed codes, a new combination such as a red truck reuses features learned from other examples." />
+
+The counting argument is striking. With $D$ binary features, a one-hot code distinguishes $D$ concepts, while a distributed code can in principle distinguish $2^D$ configurations [1]. Deep networks learn distributed codes automatically: each hidden unit responds to many inputs, and each input activates many units. Most of the practical value of representation learning comes from this sharing.
+
+### Invariance and equivariance
+
+A useful representation keeps differences relevant to the task and suppresses differences that distract from it.
+
+- A feature is **invariant** to a transformation $T$ if $f(T(x))=f(x)$: shifting a cat by two pixels should not change "this is a cat".
+- A feature is **equivariant** if it changes in a predictable way, $f(T(x))=T'(f(x))$: shifting the cat should shift its segmentation mask by the same amount.
+
+"Useful" always depends on the downstream task. Color invariance helps object recognition but hurts fruit-ripeness estimation. Rotation invariance helps for textures but confuses 6 and 9. Dense prediction (segmentation, depth) needs spatially equivariant patch features, not a single invariant vector per image. We will see that self-supervised objectives choose their invariances mostly through the **data augmentations** they use, so this choice is a modeling decision, not a detail.
+
+### Learning distances: metric learning
+
+PCA, introduced in [ML 01](/en/learn/ml/ml-01-introduction/) and developed in [ML 05A](/en/learn/ml/ml-05a-factor-models-autoencoders/), keeps the directions of highest variance. But high variance may come from lighting rather than object identity. Supervised learning shapes features around labels; **metric learning** shapes distances around pairs that should match. For an anchor $a$, a positive $p$ (same identity) and a negative $n$ (different identity), the triplet loss is
+
+$$
+\mathcal{L}_{\mathrm{triplet}}=
+\max\big(0,\ \|h_a-h_p\|^2-\|h_a-h_n\|^2+m\big),
+$$
+
+where $h_a, h_p, h_n$ are the three feature vectors and $m>0$ is a margin. The loss is zero once the positive is closer than the negative by at least $m$. An easy negative gives zero loss and teaches nothing, so choosing informative ("hard") negatives matters. Contrastive self-supervised learning, below, is metric learning in which the positives are created by augmentation instead of by labels.
+
+## Transfer learning: pretrain once, reuse many times
+
+**Plain version.** Train a network on a big task, keep its feature extractor, and reuse it for a small task. You can freeze the features and only train a new head, or let the whole network keep learning.
+
+**Precise version.** Pretraining finds encoder parameters $\theta^\star$ on a source dataset or objective. Transfer to a target task with labeled set $\{(x_i,y_i)\}_{i=1}^{n}$ uses one of three protocols:
+
+1. **$k$-nearest neighbors ($k$-NN):** no training. Classify a test feature $f_{\theta^\star}(x)$ by the labels of its $k$ most similar training features.
+2. **Linear probe:** keep $\theta^\star$ frozen and fit a linear classifier $\hat y=\operatorname{softmax}(Wh+b)$ on $h=f_{\theta^\star}(x)$, where $W$ and $b$ are the only trained parameters.
+3. **Fine-tuning:** start from $\theta^\star$ and update the encoder together with the head, usually with a small learning rate.
+
+<Figure src={pipelineFig} alt="Diagram. Stage 1: large unlabeled data feeds a pretext objective that produces an encoder f. Stage 2: small labeled data and the encoder feed either a k-NN or linear probe with f frozen, or fine-tuning with f updated, producing task predictions." caption="Figure 2 — The two-stage pattern of representation learning. Pretraining is expensive and done once; transfer is cheap and done per task." />
+
+Why does transfer work at all? Yosinski et al. [2] measured it layer by layer on ImageNet-trained CNNs. First-layer features (edge and color detectors much like Gabor filters) were general: they transferred well between tasks. Features became progressively more specific to the source task in higher layers, and transferability decreased as the source and target tasks became more different. They also found that initializing from transferred features and fine-tuning improved generalization even on the target task, compared with training from random initialization.
+
+For years, the default pretraining source was supervised ImageNet classification. Labels are expensive, though, and a label like "dog" tells the network nothing about the dog's pose, the grass or the lighting. Self-supervised learning removes the label bottleneck by making the data supervise itself.
+
+## Self-supervised learning: let the data make the labels
+
+**Plain version.** Invent a task whose answer you can compute from the data itself: "are these two crops from the same photo?", "what was under this mask?", "which caption goes with this image?". Solving such a **pretext task** forces the network to learn useful features.
+
+**Precise version.** A self-supervised objective is a loss $\mathcal L(\theta;x)$ computed from unlabeled inputs alone (or from naturally paired data such as image–caption pairs). The surveys by Liu et al. [3] and Gui et al. [4] and the practical "cookbook" by Balestriero et al. [5] organize the field into the families summarized here:
+
+| Family | Training signal | Representative methods | Main risk |
+|---|---|---|---|
+| Contrastive | Pull positive pairs together, push other samples apart | SimCLR, MoCo | Needs many negatives; false negatives |
+| Self-distillation (no negatives) | Student matches a teacher on another view | BYOL, SimSiam, DINO | Collapse without asymmetry or centering |
+| Redundancy reduction | Agreement plus decorrelated, non-constant feature dimensions | Barlow Twins, VICReg | Extra hyperparameters for the regularizers |
+| Masked modeling | Predict hidden pixels or tokens | BEiT, MAE | Features may focus on low-level detail |
+| Feature prediction | Predict features of hidden regions | I-JEPA, V-JEPA 2 | Needs anti-collapse design like distillation |
+| Language supervision | Match images with their captions | CLIP, SigLIP | Inherits web-data biases and noise |
+
+The families are learning objectives, not architectures: each can train a CNN or a transformer. Modern systems often combine several of them. The sections below take them in turn.
+
+## Contrastive learning and the InfoNCE loss
+
+**Plain version.** Make two augmented versions of the same image agree, and make them disagree with every other image in the batch. It is a multiple-choice question: "out of these $N$ candidates, which one is my partner?"
+
+### InfoNCE
+
+Van den Oord, Li and Vinyals introduced the **InfoNCE** loss in Contrastive Predictive Coding (CPC) [6]. Take a query $q$, one positive key $k^+$ that "belongs" to it, and $N-1$ negative keys $k^-_1,\ldots,k^-_{N-1}$. With a similarity score $s(\cdot,\cdot)$ and a temperature $\tau>0$,
+
+$$
+\mathcal L_{\mathrm{InfoNCE}}=
+-\log\frac{\exp\big(s(q,k^+)/\tau\big)}
+{\exp\big(s(q,k^+)/\tau\big)+\sum_{j=1}^{N-1}\exp\big(s(q,k^-_j)/\tau\big)}.
+$$
+
+This is exactly softmax cross-entropy for an $N$-way classification problem whose correct class is the positive. Two consequences follow.
+
+- **A lower bound on mutual information.** CPC shows that $I(q;k^+)\ge\log N-\mathcal L_{\mathrm{InfoNCE}}$, where $I$ is mutual information. Minimizing the loss raises this lower bound, and more negatives (larger $N$) allow a higher bound. In practice this bound is loose, and the quality of the features depends heavily on the encoder and augmentations, so read it as motivation rather than as the explanation of why the features are good.
+- **The temperature controls hardness.** Dividing by a small $\tau$ sharpens the softmax, so the loss concentrates on the negatives most similar to the query (the hard negatives).
+
+### SimCLR
+
+SimCLR [7] is InfoNCE in its simplest form. Take a batch of $B$ images and produce two augmented views of each (random crop and resize, color distortion, blur), giving $2B$ views. A backbone $f$ maps each view to $h$, a small MLP **projection head** $g$ maps $h$ to $z=g(h)$, and the similarity is cosine similarity $s(z_i,z_j)=z_i^\top z_j/(\|z_i\|\|z_j\|)$. For view $i$ with partner $j$,
+
+$$
+\ell_{i,j}=-\log
+\frac{\exp(z_i^\top z_j/\tau)}
+{\sum_{k\ne i}\exp(z_i^\top z_k/\tau)},
+$$
+
+where the $z$ are $\ell_2$-normalized and the sum runs over all $2B-1$ other views. Every other image in the batch is a negative, so no memory bank is needed, but the method benefits from large batches. The total loss averages $\ell_{i,j}$ over both orderings of every positive pair; the paper calls this the NT-Xent loss (normalized temperature-scaled cross-entropy).
+
+Three findings from the SimCLR paper are worth remembering [7]. The *composition* of augmentations matters a lot, with random cropping plus color distortion being especially important. The projection head helps: features *before* the head ($h$) transfer better than those after it ($z$), so the head is discarded after pretraining. And contrastive learning benefits from larger batches and longer training than supervised learning.
+
+### Code: check the loss and its collapse value
+
+This standalone PyTorch example uses synthetic paired vectors to verify the loss, the self-mask and the gradients. It does not train an encoder.
+
+```python
+import torch
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+B, D = 8, 16
+base = torch.randn(B, D)
+views = torch.cat([base + .1*torch.randn_like(base),
+                   base + .1*torch.randn_like(base)]).requires_grad_()
+z = F.normalize(views, dim=-1)
+logits = z @ z.T / .2
+self_mask = torch.eye(2*B, dtype=torch.bool)
+logits = logits.masked_fill(self_mask, float("-inf"))
+positive = (torch.arange(2*B) + B) % (2*B)
+loss = F.cross_entropy(logits, positive)
+loss.backward()
+assert torch.isfinite(views.grad).all()
+print("paired loss:", round(loss.item(), 4))
+
+collapsed = F.normalize(torch.ones(2*B, D), dim=-1)
+scores = (collapsed @ collapsed.T / .2).masked_fill(self_mask, float("-inf"))
+collapsed_loss = F.cross_entropy(scores, positive)
+print("collapsed loss:", round(collapsed_loss.item(), 4))
+print("expected:", round(torch.log(torch.tensor(2*B-1.)).item(), 4))
+```
+
+It prints a paired loss of 0.1423 and a collapsed loss of 2.7081, equal to $\log 15$. If every representation is identical, the positive gets probability $1/(2B-1)$ and the loss is $\log(2B-1)$, the worst value a uniform guess can get. Contrastive discrimination therefore makes complete collapse a bad solution, although optimization and negative selection can still be difficult.
+
+<Figure src={simFig} alt="A 16 by 16 heatmap of cosine similarities. Bright yellow appears on the main diagonal and on the two off-diagonals that pair view a with view b of the same image; most other entries are near zero." caption="Figure 3 — Cosine similarities between 16 views (8 digit images, two augmentations each) after training the small SimCLR encoder used later in this chapter. The bright off-diagonal stripes are the positive pairs; InfoNCE pushes them up and everything else down." />
+
+### MoCo: a queue of negatives and a momentum encoder
+
+InfoNCE prefers many negatives, but SimCLR gets them only from the current batch. **Momentum Contrast (MoCo)** [8] decouples the number of negatives from the batch size with two ideas.
+
+1. **A queue.** Keys encoded in recent batches are stored in a first-in, first-out queue of length $K$ and reused as negatives. The query sees $K$ negatives no matter how small the batch is.
+2. **A momentum encoder.** Keys in the queue were produced by slightly older networks. If the key encoder changed quickly, old and new keys would be inconsistent. MoCo therefore computes keys with a separate encoder whose parameters $\theta_k$ follow the query encoder's parameters $\theta_q$ slowly:
+
+$$
+\theta_k\leftarrow m\,\theta_k+(1-m)\,\theta_q,
+$$
+
+where $m\in[0,1)$ is the momentum, close to 1 (the paper's default is 0.999). Only $\theta_q$ receives gradients. This **exponential moving average (EMA)** teacher idea reappears in BYOL, DINO and JEPA.
+
+```python
+import torch
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+B, D, K = 8, 16, 32          # batch, embedding size, queue length
+
+# --- MoCo-style InfoNCE: one positive key per query, negatives from a queue
+q = F.normalize(torch.randn(B, D), dim=1)                 # queries (online encoder)
+k = F.normalize(q + 0.1 * torch.randn(B, D), dim=1)       # keys (momentum encoder)
+queue = F.normalize(torch.randn(K, D), dim=1)             # keys from past batches
+l_pos = (q * k).sum(1, keepdim=True)                      # B x 1
+l_neg = q @ queue.T                                       # B x K
+logits = torch.cat([l_pos, l_neg], dim=1) / 0.07
+loss_moco = F.cross_entropy(logits, torch.zeros(B, dtype=torch.long))
+queue = torch.cat([k, queue])[:K]                         # enqueue new, drop oldest
+print("MoCo logits:", tuple(logits.shape), "loss:", round(loss_moco.item(), 3))
+
+# momentum (EMA) update of the key encoder's parameters
+theta_q, theta_k, m = torch.randn(5), torch.zeros(5), 0.999
+theta_k = m * theta_k + (1 - m) * theta_q
+print("key params moved by:", round((theta_k.norm() / theta_q.norm()).item(), 4))
+```
+
+Each query gets a $1+K$-way classification problem whose correct answer is always column 0, hence the all-zero targets. The output shows logits of shape `(8, 33)`, and the EMA step moves the key encoder only 0.1% of the way toward the query encoder (from zero, after one step). In a real implementation, $q$ and $k$ come from the two encoders applied to two augmentations of the same images.
+
+### Alignment and uniformity
+
+Wang and Isola [9] gave a clean geometric reading of what contrastive losses do on the unit sphere. With normalized features, the loss asymptotically optimizes two properties:
+
+$$
+\mathcal L_{\mathrm{align}}=\mathbb E_{(x,x^+)}\big\|f(x)-f(x^+)\big\|_2^2,
+\qquad
+\mathcal L_{\mathrm{unif}}=\log\mathbb E_{x,y}\,e^{-t\|f(x)-f(y)\|_2^2},
+$$
+
+where $(x,x^+)$ is a positive pair, $x,y$ are independent samples, and $t>0$ (commonly $t=2$). **Alignment** is low when positive pairs map to nearby points. **Uniformity** is low when features spread out over the sphere, so they keep as much information about the input as possible. A collapsed encoder has perfect alignment (0) and the worst uniformity (0); a useful encoder has both small.
+
+```python
+import torch
+from torch.nn import functional as F
+
+def alignment(z1, z2):            # mean squared distance between positive pairs
+    return (z1 - z2).square().sum(1).mean()
+
+def uniformity(z, t=2.0):         # log of mean Gaussian potential over all pairs
+    return torch.pdist(z).square().mul(-t).exp().mean().log()
+
+torch.manual_seed(0)
+n, D = 512, 16
+collapsed = F.normalize(torch.ones(n, D), dim=1)
+spread = F.normalize(torch.randn(n, D), dim=1)
+noisy_view = F.normalize(spread + 0.1 * torch.randn(n, D), dim=1)
+print("collapsed: align", alignment(collapsed, collapsed).item(),
+      "uniform", round(uniformity(collapsed).item(), 3))
+print("spread:    align", round(alignment(spread, noisy_view).item(), 3),
+      "uniform", round(uniformity(spread).item(), 3))
+```
+
+The collapsed set scores alignment 0.0 and uniformity 0.0; the spread set scores about 0.138 and −3.51. Figure 4 tracks the same two quantities while training the digit encoder below. At step 0 the random network maps every view to almost the same point, so alignment is near zero only because everything has collapsed. Training first spreads the features out (uniformity drops sharply), then gradually pulls positives back together.
+
+<Figure src={alignFig} alt="Two line plots over 800 training steps. Left: alignment starts near zero, jumps to about 0.7, then trends down noisily to about 0.2. Right: uniformity falls from about 0 to about minus 3.3." caption="Figure 4 — Alignment and uniformity of the projection features during SimCLR training on 8×8 digits. Low alignment alone is meaningless (a constant encoder has it); the useful regime is low alignment together with low uniformity." />
+
+## A worked example: SimCLR on 8×8 digits
+
+**Plain version.** Train a tiny SimCLR encoder on scikit-learn's digits without using any labels, then check whether its features make a nearest-neighbor classifier more robust.
+
+The augmentation here is a random shift of up to one pixel, a random brightness change and pixel noise. We therefore expect the learned features to be roughly invariant to small shifts, something raw pixels are not. The evaluation uses the same labeled training set for every feature type and tests on clean digits and on digits shifted by up to one pixel.
+
+```python
+import copy
+import numpy as np
+import torch
+from torch import nn
+from torch.nn import functional as F
+from sklearn.datasets import load_digits
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+
+torch.manual_seed(0); np.random.seed(0); torch.set_num_threads(1)
+d = load_digits()
+Xtr, Xte, ytr, yte = train_test_split(d.data / 16., d.target, test_size=.3,
+                                      random_state=0, stratify=d.target)
+Xtr_t = torch.tensor(Xtr, dtype=torch.float32)
+
+def augment(x):                      # the augmentations define the invariances
+    img = F.pad(x.view(-1, 1, 8, 8), (1, 1, 1, 1))
+    i, j = np.random.randint(0, 3, size=2)               # shift by up to 1 px
+    img = img[:, :, i:i + 8, j:j + 8]
+    img = img * (0.7 + 0.6 * torch.rand(len(img), 1, 1, 1))  # brightness
+    return (img + 0.1 * torch.randn_like(img)).reshape(len(x), 64)  # noise
+
+backbone = nn.Sequential(nn.Unflatten(1, (1, 8, 8)),
+                         nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
+                         nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+                         nn.AdaptiveAvgPool2d(2), nn.Flatten())  # h: 256-d
+random_backbone = copy.deepcopy(backbone)                    # baseline
+head = nn.Sequential(nn.ReLU(), nn.Linear(256, 64))          # projection g
+opt = torch.optim.Adam([*backbone.parameters(), *head.parameters()], lr=1e-3)
+
+def nt_xent(z1, z2, tau=0.2):
+    z = F.normalize(torch.cat([z1, z2]), dim=-1)
+    n = len(z1)
+    logits = (z @ z.T / tau).fill_diagonal_(float("-inf"))
+    return F.cross_entropy(logits, (torch.arange(2 * n) + n) % (2 * n))
+
+for step in range(800):                                 # about a minute on CPU
+    x = Xtr_t[torch.randint(len(Xtr_t), (256,))]
+    loss = nt_xent(head(backbone(augment(x))), head(backbone(augment(x))))
+    opt.zero_grad(); loss.backward(); opt.step()
+
+def shift(x, dy, dx):                   # move one 8x8 image, fill with zeros
+    img = np.zeros((10, 10)); img[1:9, 1:9] = x.reshape(8, 8)
+    return img[1 - dy:9 - dy, 1 - dx:9 - dx].ravel()
+
+moves = np.random.default_rng(0).integers(-1, 2, size=(len(Xte), 2))
+Xte_shift = np.stack([shift(x, *m) for x, m in zip(Xte, moves)])
+enc = lambda net: (lambda A: net(torch.tensor(A, dtype=torch.float32)).detach().numpy())
+pca = PCA(32, random_state=0).fit(Xtr)
+for name, f in [("raw pixels", lambda A: A), ("PCA-32", pca.transform),
+                ("random CNN", enc(random_backbone)), ("SimCLR CNN", enc(backbone))]:
+    knn = KNeighborsClassifier(5, metric="cosine").fit(f(Xtr), ytr)
+    print(f"{name:11s} clean {knn.score(f(Xte), yte):.3f}  "
+          f"shifted {knn.score(f(Xte_shift), yte):.3f}")
+```
+
+On our machine this prints:
+
+```text
+raw pixels  clean 0.978  shifted 0.524
+PCA-32      clean 0.978  shifted 0.507
+random CNN  clean 0.974  shifted 0.524
+SimCLR CNN  clean 0.987  shifted 0.919
+```
+
+Exact numbers vary slightly across PyTorch versions and hardware. The pattern is the lesson. On clean digits, raw pixels are already excellent: this dataset is easy, and a fancy encoder adds little. On shifted digits, raw pixels, PCA and an untrained CNN of the same architecture all drop to about 50%, while the self-supervised features keep most of their accuracy. The network learned the invariance we asked for through the augmentations, and nothing more: had we tested on rotated digits, which the augmentations never showed, we should not expect the same robustness.
+
+<Figure src={knnFig} alt="Bar chart of 5-NN accuracy for raw pixels, PCA, random CNN and SimCLR CNN. All are about 0.97 to 0.98 on clean digits. On shifted digits the first three fall to about 0.51 to 0.52, while SimCLR CNN stays at 0.93." caption="Figure 5 — Same labels, same classifier, different features. The figure script uses a separate random stream, so its numbers differ from the printed output by up to 0.01. The random CNN rules out the explanation that convolution alone produces the robustness." />
+
+## Without negatives: why matching alone can collapse
+
+**Plain version.** If the only instruction is "make the two outputs agree", returning the same constant for every image solves it perfectly. Methods without negatives need some other mechanism to stop this.
+
+Minimizing $\|f_\theta(v_1)-f_\theta(v_2)\|^2$ over two views $v_1,v_2$ has the trivial solution $f_\theta(x)=c$ for a constant $c$. Agreement alone does not require the features to carry any information. **Complete collapse** maps everything to one point; **dimensional collapse** is subtler: the features vary, but only along a few directions, wasting most of the $D$ dimensions.
+
+<Figure src={collapseFig} alt="Three synthetic embedding diagrams: all samples at one point, paired views crowded together, and paired views spread around a circle." caption="Figure 6 — Schematic of collapse, alignment without spread, and alignment with spread. The points are constructed illustrations, not embeddings learned by a published model." />
+
+### BYOL: an online network chases a slow target
+
+BYOL [10] uses two networks. The **online** network (encoder, projector and an extra **predictor** $q_\phi$) is trained to predict the **target** network's projection of a different view of the same image. The target is not trained by gradients; it is an EMA of the online weights, as in MoCo:
+
+$$
+\theta_{\mathrm{target}}\leftarrow
+m\,\theta_{\mathrm{target}}+(1-m)\,\theta_{\mathrm{online}}.
+$$
+
+The loss is the squared distance between the normalized prediction and the normalized target projection, symmetrized over the two views. The target output is treated as a constant (**stop-gradient**). There are no negatives, yet BYOL does not collapse in practice. The asymmetry (predictor on one side, stop-gradient and EMA on the other) and the full training recipe matter; EMA alone does not prove collapse impossible.
+
+### SimSiam: stop-gradient is the key ingredient
+
+Chen and He's SimSiam [11] stripped BYOL down further: one shared encoder for both views, a predictor $h$ on one branch, **no** momentum encoder, **no** negatives and no large batches. With $p_1=h(f(v_1))$ and $z_2=f(v_2)$,
+
+$$
+\mathcal L=\tfrac12\,\mathcal D\big(p_1,\operatorname{sg}(z_2)\big)+\tfrac12\,\mathcal D\big(p_2,\operatorname{sg}(z_1)\big),
+\qquad
+\mathcal D(p,z)=-\frac{p^\top z}{\|p\|\,\|z\|},
+$$
+
+where $\operatorname{sg}$ is stop-gradient and $\mathcal D$ is negative cosine similarity. The paper's experiments show that removing the stop-gradient makes the model collapse quickly, while the predictor is also needed. The authors interpret the method as an alternating, expectation-maximization-like optimization. The practical lesson: very small architectural asymmetries decide whether these methods learn or collapse.
+
+### DINO: self-distillation with centering and sharpening
+
+DINO [12] turns the agreement problem into classification with soft labels. Teacher and student both output a probability vector over $K$ "prototype" dimensions via a temperature-scaled softmax. The student, seeing a view $x'$, is trained to match the teacher's distribution on another view $x$:
+
+$$
+\mathcal L=-\sum_{k=1}^{K}P_t(x)_k\,\log P_s(x')_k,
+\qquad
+P_t(x)=\operatorname{softmax}\!\Big(\frac{g_t(x)-c}{\tau_t}\Big),
+$$
+
+where $g_t$ is the teacher network (an EMA of the student), $c$ is a running mean of teacher outputs (**centering**) and $\tau_t$ is a low teacher temperature (**sharpening**). Centering stops one dimension from dominating; sharpening stops the output from becoming uniform. Each alone collapses in a different way; together they balance. DINO also uses **multi-crop**: the teacher sees only large global crops, while the student also sees small local crops, so the student must infer global content from local evidence. With vision transformers, DINO's attention maps were notable for highlighting object boundaries without any segmentation labels.
+
+### Barlow Twins and VICReg: regularize the statistics directly
+
+A different route is to forbid collapse explicitly in the loss. **Barlow Twins** [13] computes the $D\times D$ cross-correlation matrix $C$ between the (batch-standardized) embeddings of the two views and pushes it toward the identity:
+
+$$
+\mathcal L_{\mathrm{BT}}=\sum_i(1-C_{ii})^2+\lambda\sum_i\sum_{j\ne i}C_{ij}^2,
+$$
+
+where the first term makes each dimension agree across views and the second, weighted by $\lambda>0$, decorrelates different dimensions so they do not carry redundant information. **VICReg** [14] splits the same idea into three named terms: **invariance** (mean squared distance between the two embeddings), **variance** (a hinge loss keeping the standard deviation of every dimension above a threshold, which directly forbids constant outputs) and **covariance** (penalizing off-diagonal covariance entries). "No negatives" does not mean "no anti-collapse design"; these methods simply put the design in the loss instead of in the architecture.
+
+## Masked modeling: learn by filling gaps
+
+**Plain version.** Hide part of the input and predict what is missing. This is how BERT learned language, and it works for images too, once you choose the right amount of hiding.
+
+**BEiT** [15] brought BERT-style pretraining to vision transformers. An image is split into patches; some are masked, and the network predicts discrete **visual tokens** for the masked positions, where the tokens come from a separately trained image tokenizer.
+
+**MAE** [16] predicts raw pixels instead. It masks a large fraction of the patches, sends only the visible ones through the encoder, and reconstructs the missing pixels with a lightweight decoder. With the set of masked patch indices $\mathcal M$,
+
+$$
+\mathcal{L}_{\mathrm{mask}}
+=\frac{1}{|\mathcal M|}\sum_{i\in\mathcal M}
+\|\hat{x}_i-x_i\|^2,
+$$
+
+where $x_i$ is the true pixel vector of patch $i$ and $\hat x_i$ is the prediction. MAE's design choices are deliberate. A high masking ratio (75% by default) makes the task hard enough that the network cannot simply interpolate from neighbors. The encoder only processes visible patches, which cuts pretraining cost. Normalizing each target patch by its own mean and variance improves the features. After pretraining, the decoder is discarded.
+
+<Figure src={maskedFig} alt="A checkerboard target, a mostly masked version, and a binary map indicating the visible positions." caption="Figure 7 — Masked prediction creates its own targets from the input. The checkerboard illustrates the masking operation, not semantic understanding." />
+
+Reconstruction is not the same as generation. A model that predicts masked pixels from visible ones is not trained to sample complete images from scratch. Low reconstruction loss does not guarantee the best semantic features either: background texture can dominate pixel error. Masked-modeling features are typically weaker than contrastive or distillation features under a linear probe but strong after fine-tuning, which is one reason the evaluation protocol must be stated.
+
+### Predicting features instead of pixels: JEPA
+
+**Plain version.** Instead of painting in every uncertain pixel, predict a *description* of the hidden region.
+
+I-JEPA [17] (Image Joint-Embedding Predictive Architecture) encodes a visible **context** block and predicts the encoder features of several **target** blocks from it. The target encoder is an EMA of the context encoder, and a predictor receives the context features plus the positions of the targets. A simplified objective is
+
+$$
+\mathcal{L}_{\mathrm{pred}}=
+\left\|g_\phi\big(f_\theta(x_{\mathrm{context}}),\mathrm{positions}\big)
+-\operatorname{sg}\big(f_{\bar\theta}(x_{\mathrm{target}})\big)\right\|^2,
+$$
+
+where $f_\theta$ is the context encoder, $f_{\bar\theta}$ the EMA target encoder, $g_\phi$ the predictor and $\operatorname{sg}$ stop-gradient. The formula summarizes the idea; the masking strategy (large, semantic-scale target blocks) and the architecture are part of the method, not optional details.
+
+V-JEPA 2 [18] extends feature prediction to video at scale. Its report separates action-free pretraining on video from an action-conditioned model, trained afterward on a small amount of robot data, that is used for planning. Predicting future latent states, recognizing actions and generating photorealistic frames are different capabilities, and a "world model" claim should say which one it makes.
+
+## Language as supervision: CLIP
+
+**Plain version.** The internet is full of images with captions. Train an image encoder and a text encoder so that each image lands next to its own caption. Afterwards you can classify images by writing the class names as sentences.
+
+CLIP [19] trains on image–text pairs collected from the web. In a batch of $N$ pairs, the image encoder gives normalized embeddings $u_1,\ldots,u_N$ and the text encoder gives $v_1,\ldots,v_N$. The $N\times N$ similarity matrix $S_{ij}=u_i^\top v_j/\tau$, with a learned temperature $\tau$, has the correct pairs on its diagonal. The loss is the average of two InfoNCE losses, one over rows (which caption fits this image?) and one over columns (which image fits this caption?):
+
+$$
+\mathcal L_{\mathrm{CLIP}}=\frac12\Big[\frac1N\sum_{i}-\log\frac{e^{S_{ii}}}{\sum_j e^{S_{ij}}}
++\frac1N\sum_{j}-\log\frac{e^{S_{jj}}}{\sum_i e^{S_{ij}}}\Big].
+$$
+
+**Zero-shot classification** follows directly. Embed one prompt per class, such as "a photo of a dog", and assign an image to the class whose prompt embedding is most similar. No task-specific labels are needed, although prompt wording affects accuracy.
+
+SigLIP [20] replaces the softmax with an independent **sigmoid** loss on every image–text pair: each entry of the matrix becomes a yes/no question, "do these match?". This removes the need to normalize over the whole batch, which simplifies large-scale distributed training.
+
+```python
+import torch
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+D = 16
+
+# --- CLIP-style symmetric loss on N matched image-text pairs
+N = 6
+img = F.normalize(torch.randn(N, D), dim=1)
+txt = F.normalize(img + 0.3 * torch.randn(N, D), dim=1)   # caption i matches image i
+logit_scale = torch.tensor(1 / 0.07)
+sim = logit_scale * img @ txt.T                           # N x N, diagonal = matches
+labels = torch.arange(N)
+loss_clip = (F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels)) / 2
+print("CLIP loss:", round(loss_clip.item(), 3))
+
+# zero-shot classification: embed one prompt per class, pick the most similar
+class_prompts = txt[:3]                                   # stand-ins for "a photo of a {class}"
+pred = (img @ class_prompts.T).argmax(1)
+print("zero-shot predictions for images 0-2:", pred[:3].tolist())
+
+# SigLIP-style alternative: an independent yes/no decision for every pair
+t, b = 10.0, -10.0                                        # learnable in practice
+signs = 2 * torch.eye(N) - 1                              # +1 on matches, -1 elsewhere
+loss_sig = -F.logsigmoid(signs * (t * img @ txt.T + b)).sum() / N
+print("sigmoid loss:", round(loss_sig.item(), 3))
+```
+
+The synthetic captions are noisy copies of the image embeddings, so the CLIP loss is small (0.054) and the zero-shot step recovers the right "classes" `[0, 1, 2]`. In real CLIP the two encoders are a vision transformer or CNN and a text transformer, and the hard part is the data: what the captions describe, and what they leave out, determines what the representation knows. The sigmoid loss value (3.473) is not comparable to the softmax loss; it uses different units and a bias term $b$.
+
+## DINOv2 and DINOv3: features as a product
+
+**Plain version.** With enough curated data and compute, pretraining can produce an encoder that you freeze and reuse for many different tasks, from classification to depth estimation.
+
+DINOv2 [21] combines image-level self-distillation (as in DINO) with a patch-level masked objective, and pays close attention to **data curation**: building a large, diverse, deduplicated pretraining set from uncurated images by retrieval against curated ones. The result is a family of frozen encoders whose global and patch features work well with simple heads. DINOv3 [22], released in 2025, scales this further and adds **Gram anchoring** to counter the degradation of dense (patch) features during long training. Rather than only matching each feature independently, Gram anchoring constrains the matrix of similarities among patch features toward that of an earlier model. The report also distills a very large teacher into smaller models for deployment.
+
+The practical question is whether frozen global or dense features solve **your** task. A model strong at semantic retrieval may miss a small scratch on a manufactured part. Increasing the input resolution and using patch features can help, but it changes the compute budget and the comparison protocol.
+
+## Evaluate transfer honestly
+
+**Plain version.** A representation has earned its name only when it helps on data and tasks that were not used to build or choose it. How you test it changes the answer.
+
+| Protocol | What is trained | What it measures |
+|---|---|---|
+| $k$-NN | Nothing; similarity to labeled reference features | Local structure of the representation |
+| Linear probe | Linear head; encoder frozen | Information accessible through a simple readout |
+| Fine-tuning | Head plus some or all encoder layers | Adaptability under a stated label and compute budget |
+| Dense transfer | Spatial head on patch maps | Suitability for pixel or region outputs |
+
+### Linear probing versus fine-tuning
+
+Fine-tuning has more freedom, so it usually wins when the target data is plentiful and similar to the pretraining data. It is not always better. Kumar et al. [23] showed theoretically and empirically that full fine-tuning can **distort** good pretrained features: while a randomly initialized head is still wrong, its large gradients flow into the encoder and change features in directions that suit the training distribution but hurt **out-of-distribution** (OOD) inputs. A linear probe cannot distort the features. Their remedy, **LP-FT**, is two-step: first train the linear head with the encoder frozen, then fine-tune everything starting from that head.
+
+We reproduced the qualitative effect on the digits example. The encoder is the SimCLR CNN from above; the labeled training digits are clean; the test digits are shifted, a mild distribution shift. For each label budget, we average three random draws of the labeled examples.
+
+<Figure src={labelFig} alt="Line plot of accuracy on shifted test digits versus labeled examples per class (1 to 50, log scale). Raw pixels and PCA stay near 0.3 to 0.35. The SimCLR linear probe rises from about 0.66 to 0.85. Plain fine-tuning sits lower, about 0.43 to 0.58. LP-FT is highest, about 0.68 to 0.92." caption="Figure 8 — Label efficiency on shifted test digits. Self-supervised features are far more label-efficient than pixels or PCA. With one fixed recipe, plain fine-tuning from a random head hurt the shifted-test accuracy, while LP-FT improved on the probe. A toy result: with a tuned learning rate or more labels, plain fine-tuning can do better." />
+
+Read Figure 8 for its shape, not its exact values. The frozen SSL features with a linear head need only a handful of labels per class to beat raw pixels with 50 labels per class. Plain fine-tuning with a randomly initialized head did worse than the frozen probe here, and LP-FT did better than both, the same ordering Kumar et al. report under distribution shift. Fine-tuning needs its own hyperparameter search, and the head initialization matters.
+
+### Rules against leakage
+
+- Normalize features consistently for similarity comparisons (cosine $k$-NN needs normalized vectors).
+- Fit scalers, PCA and classifier hyperparameters on training and validation data only.
+- A frozen encoder still has a training history: overlap between pretraining data and evaluation data can inflate results, especially for web-scale models.
+- Report the number of labels, backbone, checkpoint, input resolution, augmentations, head, tuning budget and protocol. Choosing the best of many encoders on the test set is test leakage, even if none of them is fine-tuned.
+
+## Modern view
+
+**Surveys and review papers.** Four reviews map the field from complementary angles.
+
+- **Bengio, Courville and Vincent (TPAMI 2013) [1]** frame the whole enterprise. They ask what makes one representation better than another and answer with a list of generic priors: distributed codes, depth and abstraction, disentangling of explanatory factors, manifolds and natural clustering. They review probabilistic models, autoencoders and manifold learning. It predates modern SSL but remains the best statement of *why* we learn representations.
+- **Liu et al. (TKDE 2023) [3]** classify self-supervised methods into **generative** (autoencoding and autoregressive reconstruction), **contrastive** (context–instance and instance–instance) and **generative-contrastive** (adversarial) groups across vision, language and graphs, and discuss why contrastive objectives were winning on vision benchmarks at the time.
+- **Gui et al. (TPAMI 2024) [4]** survey algorithms more recently, covering contrastive, self-distillation, redundancy-reduction and masked image modeling methods, and discuss applications and open problems such as theory, the choice of pretext task and multimodal SSL.
+- **Balestriero et al. (2023) [5]** is a practitioner's guide written by many of the field's authors. It groups methods into a deep-metric-learning family (SimCLR and relatives), a self-distillation family (BYOL, SimSiam, DINO), a canonical-correlation-analysis family (VICReg, Barlow Twins) and masked image modeling, and collects the "tricks" (augmentations, projectors, EMA schedules, batch-size effects) that the papers often bury. Prince's textbook [24] gives a gentle, figure-rich introduction to the same ideas with notebooks.
+
+**State of practice (2023–2026).** The trends visible in the papers cited above are:
+
+- **Combined objectives.** Leading image encoders mix image-level distillation with patch-level masked prediction (DINOv2 [21], DINOv3 [22]) rather than relying on one pretext task.
+- **Data as a first-class design choice.** DINOv2's curation pipeline and the web-scale pair collection behind CLIP [19] and SigLIP [20] show that what goes into pretraining matters as much as the loss.
+- **Dense features.** Segmentation, depth and correspondence need good patch features, which motivated objectives like Gram anchoring [22].
+- **Prediction in latent space and video.** I-JEPA [17] and V-JEPA 2 [18] predict features instead of pixels, and extend to video and action-conditioned prediction.
+- **Language-aligned encoders as the default backbone** for multimodal models (see [ML 09](/en/learn/ml/ml-09-foundation-models/)).
+
+**Open problems.** We still lack a predictive theory of which pretext task suits which downstream task; collapse is prevented by recipes more than by guarantees; evaluation depends heavily on protocol and on overlap between pretraining and test data; and web-scale pretraining inherits biases and gaps from its data. Our reading of [3], [4], [5], [21], [22] is that data and target design deserve as much attention as architecture. That is an interpretation of the literature, not a theorem that one objective wins everywhere.
+
+The next chapters change the question: instead of *describing* an image, how can a model describe and **sample** its whole distribution? See [ML 05A](/en/learn/ml/ml-05a-factor-models-autoencoders/) for autoencoders and [ML 06](/en/learn/ml/ml-06-generative-models/) for generative models.
+
+## Key takeaways
+
+- A representation is useful when a simple head can solve the task from it with few labels. Distributed codes generalize because features are shared across examples.
+- The invariances you want depend on the task. In self-supervised learning, the augmentations choose them, as the shifted-digits example showed.
+- Contrastive methods (SimCLR, MoCo) are InfoNCE classification: find your positive among negatives. Collapse costs them $\log(2B-1)$.
+- Methods without negatives (BYOL, SimSiam, DINO) avoid collapse through asymmetry: predictors, stop-gradient, EMA teachers, centering and sharpening. Barlow Twins and VICReg put the anti-collapse term in the loss.
+- Masked modeling (BEiT, MAE) reconstructs hidden content; JEPA predicts hidden *features*. CLIP aligns images with captions and enables zero-shot classification.
+- $k$-NN, linear probes and fine-tuning answer different questions. Fine-tuning can distort features under distribution shift; LP-FT is a simple fix.
+
+## Exercises
+
+1. **Temperature and collapse.** In the first code block, change the temperature from 0.2 to 0.05 and to 1.0. Does the collapsed loss change? Does the paired loss?
+
+<details>
+<summary>Hint</summary>
+
+The collapsed loss stays $\log 15$: all non-self logits are equal, so dividing them by any $\tau$ leaves the softmax uniform. The paired loss changes, because temperature rescales the *differences* between scores, and with real differences a smaller $\tau$ gives a sharper softmax.
+
+</details>
+
+2. **Augmentations are assumptions.** You want features for (a) counting cells in microscopy, (b) recognizing bird species, (c) reading street-sign text. For each, name one standard SimCLR augmentation you would remove and why.
+
+<details>
+<summary>Hint</summary>
+
+(a) Random cropping can change the number of cells in view, so the "same" label is no longer the same. (b) Strong color jitter can remove plumage color, a key species cue. (c) Horizontal flips turn text into mirror text. Decide what must be preserved before choosing invariances.
+
+</details>
+
+3. **MAE compute.** An image has 196 patches and MAE masks 75%. How many patches enter the encoder? By what factor does the number of pairwise attention scores in the encoder shrink?
+
+<details>
+<summary>Hint</summary>
+
+49 visible patches enter the encoder. Attention scores scale with the square of the token count: $(49/196)^2=1/16$. The decoder still processes all 196 positions, but it is small.
+
+</details>
+
+4. **Break the digits experiment.** Modify the SimCLR digits code so that `augment` only adds noise (no shift). Retrain and compare the shifted-test $k$-NN accuracy with the original. What does this tell you?
+
+<details>
+<summary>Hint</summary>
+
+Replace the random `i, j` with `i, j = 1, 1`. On our machine the shifted-test accuracy fell from 0.919 to 0.743, while clean accuracy stayed at 0.981. Without the shift augmentation, nothing in the objective asks for shift invariance; the robustness that remains comes from what a trained convolution-and-pooling encoder learns anyway (the untrained one in the main example had none). The augmentations, not the word "self-supervised", decide most of what is learned.
+
+</details>
+
+5. **SimSiam ablation, on paper.** In SimSiam, suppose you remove the stop-gradient so both branches receive gradients. Explain in two sentences why a constant output becomes an easy minimizer, and why the predictor alone is not enough to prevent it.
+
+<details>
+<summary>Hint</summary>
+
+With gradients on both sides, the loss $-\cos(p_1,z_2)$ is minimized whenever $p_1$ and $z_2$ point the same way, which a constant encoder plus a predictor that outputs that same constant direction achieves for every input. The stop-gradient changes the optimization dynamics so that the target is held fixed during each step; the SimSiam paper reports rapid collapse without it.
+
+</details>
+
+6. **Fair probe.** Design an experiment comparing a frozen pretrained encoder with PCA plus logistic regression at 10, 50 and 100 labels per class. List three things you must hold fixed and two things you must report.
+
+<details>
+<summary>Hint</summary>
+
+Hold fixed: the labeled subsets (same examples for both), the held-out test split, and the procedure for choosing regularization (on validation data only). Report: the pretrained encoder's training data (and any overlap with your test set) and the number of random label draws with their spread.
+
+</details>
+
+## References
+
+1. Y. Bengio, A. Courville and P. Vincent, "Representation Learning: A Review and New Perspectives," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 35, no. 8, 2013. [Paper](https://doi.org/10.1109/TPAMI.2013.50) · [arXiv](https://arxiv.org/abs/1206.5538)
+2. J. Yosinski, J. Clune, Y. Bengio and H. Lipson, "How transferable are features in deep neural networks?" NeurIPS, 2014. [Paper](https://arxiv.org/abs/1411.1792)
+3. X. Liu et al., "Self-supervised Learning: Generative or Contrastive," *IEEE Transactions on Knowledge and Data Engineering*, vol. 35, 2023 (online 2021). [Paper](https://doi.org/10.1109/TKDE.2021.3090866) · [arXiv](https://arxiv.org/abs/2006.08218)
+4. J. Gui et al., "A Survey on Self-Supervised Learning: Algorithms, Applications, and Future Trends," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2024. [Paper](https://doi.org/10.1109/TPAMI.2024.3415112) · [arXiv](https://arxiv.org/abs/2301.05712)
+5. R. Balestriero et al., "A Cookbook of Self-Supervised Learning," arXiv:2304.12210, 2023. [Paper](https://arxiv.org/abs/2304.12210)
+6. A. van den Oord, Y. Li and O. Vinyals, "Representation Learning with Contrastive Predictive Coding," arXiv:1807.03748, 2018. [Paper](https://arxiv.org/abs/1807.03748)
+7. T. Chen, S. Kornblith, M. Norouzi and G. Hinton, "A Simple Framework for Contrastive Learning of Visual Representations," ICML, 2020. [Paper](https://arxiv.org/abs/2002.05709)
+8. K. He, H. Fan, Y. Wu, S. Xie and R. Girshick, "Momentum Contrast for Unsupervised Visual Representation Learning," CVPR, 2020. [Paper](https://arxiv.org/abs/1911.05722)
+9. T. Wang and P. Isola, "Understanding Contrastive Representation Learning through Alignment and Uniformity on the Hypersphere," ICML, 2020. [Paper](https://arxiv.org/abs/2005.10242)
+10. J.-B. Grill et al., "Bootstrap Your Own Latent: A New Approach to Self-Supervised Learning," NeurIPS, 2020. [Paper](https://arxiv.org/abs/2006.07733)
+11. X. Chen and K. He, "Exploring Simple Siamese Representation Learning," CVPR, 2021. [Paper](https://arxiv.org/abs/2011.10566)
+12. M. Caron et al., "Emerging Properties in Self-Supervised Vision Transformers," ICCV, 2021. [Paper](https://arxiv.org/abs/2104.14294)
+13. J. Zbontar, L. Jing, I. Misra, Y. LeCun and S. Deny, "Barlow Twins: Self-Supervised Learning via Redundancy Reduction," ICML, 2021. [Paper](https://arxiv.org/abs/2103.03230)
+14. A. Bardes, J. Ponce and Y. LeCun, "VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning," ICLR, 2022. [Paper](https://arxiv.org/abs/2105.04906)
+15. H. Bao, L. Dong, S. Piao and F. Wei, "BEiT: BERT Pre-Training of Image Transformers," ICLR, 2022. [Paper](https://arxiv.org/abs/2106.08254)
+16. K. He et al., "Masked Autoencoders Are Scalable Vision Learners," CVPR, 2022. [Paper](https://arxiv.org/abs/2111.06377)
+17. M. Assran et al., "Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture," CVPR, 2023. [Paper](https://arxiv.org/abs/2301.08243)
+18. M. Assran et al., "V-JEPA 2: Self-Supervised Video Models Enable Understanding, Prediction and Planning," technical report, 2025. [Report](https://arxiv.org/abs/2506.09985)
+19. A. Radford et al., "Learning Transferable Visual Models From Natural Language Supervision," ICML, 2021. [Paper](https://proceedings.mlr.press/v139/radford21a.html)
+20. X. Zhai, B. Mustafa, A. Kolesnikov and L. Beyer, "Sigmoid Loss for Language Image Pre-Training," ICCV, 2023. [Paper](https://arxiv.org/abs/2303.15343)
+21. M. Oquab et al., "DINOv2: Learning Robust Visual Features without Supervision," *Transactions on Machine Learning Research*, 2024. [Paper](https://arxiv.org/abs/2304.07193)
+22. O. Siméoni et al., "DINOv3," technical report, 2025. [Report](https://arxiv.org/abs/2508.10104)
+23. A. Kumar, A. Raghunathan, R. Jones, T. Ma and P. Liang, "Fine-Tuning can Distort Pretrained Features and Underperform Out-of-Distribution," ICLR, 2022. [Paper](https://arxiv.org/abs/2202.10054)
+24. S. J. D. Prince, *Understanding Deep Learning*, MIT Press, 2023. [Book and notebooks](https://udlbook.github.io/udlbook/)
