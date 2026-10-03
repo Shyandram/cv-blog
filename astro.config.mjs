@@ -10,12 +10,14 @@ import * as pagefind from 'pagefind';
 
 // Build the Pagefind search index as part of `astro build`, so search works no matter
 // which build command the host runs (`astro build`, `npm run build`, …).
+/** @returns {import('astro').AstroIntegration} */
 const pagefindIndex = () => ({
   name: 'pagefind-index',
   hooks: {
     'astro:build:done': async ({ dir, logger }) => {
       const out = fileURLToPath(dir);
-      const { index } = await pagefind.createIndex();
+      const { index, errors } = await pagefind.createIndex();
+      if (!index) throw new Error(`Pagefind failed to start: ${errors.join('; ')}`);
       const { page_count } = await index.addDirectory({ path: out });
       await index.writeFiles({ outputPath: `${out}pagefind` });
       await pagefind.close();
