@@ -6,7 +6,7 @@ import { TRACKS, LEVELS } from './lib/taxonomy';
 
 // Entry ids look like "en/image-processing/convolution"; the first segment is the language.
 const tutorials = defineCollection({
-  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/tutorials' }),
+  loader: glob({ pattern: '**/[^_]*.{md,mdx}', base: './src/content/tutorials' }),
   schema: ({ image }) =>
     z.object({
       title: z.string(),
@@ -25,7 +25,7 @@ const tutorials = defineCollection({
 });
 
 const posts = defineCollection({
-  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/posts' }),
+  loader: glob({ pattern: '**/[^_]*.{md,mdx}', base: './src/content/posts' }),
   schema: z.object({
     title: z.string(),
     description: z.string(),
