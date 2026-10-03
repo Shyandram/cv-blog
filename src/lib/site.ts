@@ -2,9 +2,8 @@ import { getCollection, type CollectionEntry } from 'astro:content';
 import { LANGS, DEFAULT_LANG, type Lang } from '../i18n/ui';
 import { TRACKS } from './taxonomy';
 
-// "<user>/<repo>" for edit and Colab links. GitHub Actions sets GITHUB_REPOSITORY automatically;
-// the fallback only matters for local builds.
-export const REPO = process.env.GITHUB_REPOSITORY ?? 'YOUR_GITHUB_USER/cv-blog';
+// GitHub repo for "Edit on GitHub" and "Open in Colab" links.
+export const REPO = 'Shyandram/cv-blog';
 export const BRANCH = 'main';
 
 /** Prefix an internal path with the deploy base (e.g. "/cv-blog/"). */

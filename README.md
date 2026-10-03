@@ -1,20 +1,29 @@
 # Pixels → Perception
 
 A bilingual (English / 繁體中文) computer vision tutorial site, from basic image processing to modern deep learning.
-Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to GitHub Pages.
+Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to Cloudflare Pages.
 
 - Survey of website systems: [`docs/01-survey.md`](docs/01-survey.md)
 - Site design: [`docs/02-design.md`](docs/02-design.md)
 - Visual mockup: [`design/mockup/index.html`](design/mockup/index.html)
 
-## Deploying (GitHub Pages)
+## Deploying (Cloudflare Pages)
 
-1. Create a GitHub repo and push this folder to its `main` branch.
-2. Open **Settings → Pages** and set **Source** to **GitHub Actions** (one time). The workflow's token
-   cannot turn Pages on by itself. On GitHub Free, Pages only works for **public** repos.
+The site is hosted on Cloudflare Pages, which builds it from this GitHub repo on every push.
 
-Every push to `main` runs `.github/workflows/deploy.yml`. It builds the site and publishes it to
-`https://<user>.github.io/<repo>/`; the base path is detected automatically. Pull requests are built but not deployed.
+One-time setup in the Cloudflare dashboard (**Workers & Pages → Create → Pages → Connect to Git**):
+
+| Setting | Value |
+|---|---|
+| Repository | `Shyandram/cv-blog` (the repo can stay private) |
+| Production branch | `main` |
+| Framework preset | Astro |
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+| Environment variable | `SITE` = your production URL, e.g. `https://cv-blog.pages.dev` |
+
+Node 22 is picked up from `.nvmrc`. Pushes to `main` go to production; other branches and pull requests
+get their own preview URL. `public/_headers` sets long-term caching for built assets.
 
 ## Writing a tutorial
 

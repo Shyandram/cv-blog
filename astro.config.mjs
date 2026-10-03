@@ -6,9 +6,10 @@ import { unified } from '@astrojs/markdown-remark';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
-// SITE and BASE are injected by the GitHub Pages workflow (actions/configure-pages),
-// e.g. SITE=https://<user>.github.io  BASE=/cv-blog. Locally they default to the root.
-const site = process.env.SITE || 'http://localhost:4321';
+// Hosted on Cloudflare Pages at the domain root. Set SITE in the Cloudflare project's
+// environment variables to the production URL (e.g. https://cv-blog.pages.dev or a custom domain);
+// CF_PAGES_URL (the per-deployment URL) is the fallback for preview builds.
+const site = process.env.SITE || process.env.CF_PAGES_URL || 'http://localhost:4321';
 const base = process.env.BASE || '/';
 
 export default defineConfig({

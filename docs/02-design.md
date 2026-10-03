@@ -111,12 +111,13 @@ cv-blog/
 ├── notebooks/                         # runnable companions (Colab badge)
 ├── public/models/                     # small .onnx files for browser demos
 ├── docs/                              # this survey + design
-├── .github/workflows/deploy.yml       # withastro/action → GitHub Pages
+├── public/_headers                    # Cloudflare Pages cache rules
 └── astro.config.mjs                   # mdx, remark-math, rehype-katex, expressive-code, sitemap, pagefind
 ```
 
-- **CI:** on push to `main`, build and deploy to Pages. On pull requests, build plus link check plus frontmatter validation.
-- **Domain:** `<user>.github.io/cv-blog` first; a custom domain can be added later via `CNAME`.
+- **Hosting:** Cloudflare Pages, connected to the GitHub repo. Pushes to `main` deploy to production;
+  pull requests get preview URLs. The build fails on invalid frontmatter.
+- **Domain:** `<project>.pages.dev` first; a custom domain can be added in the Cloudflare dashboard.
 - **Comments:** Giscus (GitHub Discussions), which needs no backend.
 - **Analytics (optional):** a privacy-friendly option such as GoatCounter.
 
@@ -139,7 +140,7 @@ cv-blog/
     "not yet translated" notice that links to the English version.
   - UI strings: `src/i18n/{en,zh-tw}.json`. Pagefind indexes each language separately.
   - Typography: add Noto Sans TC / Noto Serif TC as the CJK fallback in each font stack.
-- **Hosting:** GitHub repo → GitHub Pages via Actions.
+- **Hosting:** GitHub repo → Cloudflare Pages (changed from GitHub Pages on 2026-10-04).
 
 ## 10. Open questions
 1. Site name (placeholder: Pixels → Perception) and custom domain.
