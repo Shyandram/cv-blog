@@ -10,8 +10,8 @@ Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, an
 ## Deploying (GitHub Pages)
 
 1. Create a GitHub repo and push this folder to its `main` branch.
-2. The workflow enables GitHub Pages (source: GitHub Actions) on its first run. If that run fails with a
-   Pages permission error, open **Settings → Pages**, set **Source** to **GitHub Actions**, and re-run it.
+2. Open **Settings → Pages** and set **Source** to **GitHub Actions** (one time). The workflow's token
+   cannot turn Pages on by itself. On GitHub Free, Pages only works for **public** repos.
 
 Every push to `main` runs `.github/workflows/deploy.yml`. It builds the site and publishes it to
 `https://<user>.github.io/<repo>/`; the base path is detected automatically. Pull requests are built but not deployed.
