@@ -32,6 +32,8 @@ the same time. Follow them exactly.
 - **Never single out the site owner's identity.** Do not write "the author's own research",
   "作者自己的研究", etc. Cite the owner's papers neutrally, like any other work. The owner's own blog
   posts (`src/content/posts/`) are their writing; do not edit their original text.
+  Exception: the About page (`src/pages/[lang]/about.astro`) introduces the author and links to
+  https://shyandram.dev/ at the owner's request; keep personal details there and nowhere else.
 - **Every named method, paper, dataset, metric, standard or challenge needs a verified reference** in
   the page's reference list: a link you actually opened (arXiv abs page, DOI, CVF open access,
   official project/dataset/standard page) with title, authors, year and venue confirmed. Publisher DOIs
