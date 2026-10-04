@@ -1,10 +1,9 @@
 """Figures for NLP 01 (introduction).
 
 Run: MPLCONFIGDIR=/tmp/cv-blog-mpl .venv/bin/python scripts/figures/nlp_01_introduction_extra.py
-Uses only invented toy text and Python standard-library docstrings (no downloads); CPU, < 1 min.
+Uses only invented synthetic text (no downloads); CPU, < 1 min.
 Writes only to src/assets/nlp/nlp-01-introduction/.
 """
-import importlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -29,52 +28,47 @@ def save(fig, name):
 
 
 def pipeline():
-    fig, ax = plt.subplots(figsize=(13, 3.3))
+    fig, ax = plt.subplots(figsize=(10.4, 4.3))
     ax.set_xlim(0, 13); ax.set_ylim(0, 3.3); ax.axis("off")
-    steps = [("Raw text", '"Unbelievable,\nthe cats nap!"'),
-             ("Normalize", "Unicode NFC,\n(optional) lowercase"),
-             ("Tokenize", "un|believ|able|,\nthe|cats|nap|!"),
-             ("Token IDs", "[1043, 7781, 512,\n11, 5, 3920, ...]"),
-             ("Embeddings", "lookup rows of E\n(|V| × d table)"),
-             ("Model", "RNN / Transformer\n→ task output")]
+    steps = [("Raw text", "Unbelievable,\nthe cats nap!"),
+             ("Normalize", "Unicode NFC\noptional\nlowercase"),
+             ("Tokenize", "un|believ|able\n,|the|cats\n|nap|!"),
+             ("Token IDs", "[1043,7781,\n512,11,5,\n3920,...]"),
+             ("Embeddings", "lookup E\n(|V| × d)"),
+             ("Model", "RNN or\nTransformer\n→ output")]
     for i, (title, sub) in enumerate(steps):
         x = 0.15 + i * 2.15
         ax.add_patch(FancyBboxPatch((x, 0.9), 1.8, 1.7, boxstyle="round,pad=0.05",
                                     fc="#eef3fc" if i < 4 else "#f3eefc",
                                     ec=BLUE if i < 4 else PURPLE, lw=1.4))
         ax.text(x + 0.9, 2.25, title, ha="center", fontsize=11, weight="bold")
-        ax.text(x + 0.9, 1.45, sub, ha="center", va="center", fontsize=8.5, family="monospace")
+        ax.text(x + 0.9, 1.45, sub, ha="center", va="center", fontsize=10, family="monospace")
         if i < len(steps) - 1:
             ax.annotate("", xy=(x + 2.15, 1.75), xytext=(x + 1.85, 1.75),
                         arrowprops=dict(arrowstyle="->", lw=1.5))
     ax.text(4.4, 0.35, "fixed preprocessing: must match the pretrained model exactly",
-            ha="center", fontsize=9.5, color=BLUE)
-    ax.text(11.0, 0.35, "learned parameters", ha="center", fontsize=9.5, color=PURPLE)
+            ha="center", fontsize=10, color=BLUE)
+    ax.text(11.0, 0.35, "learned parameters", ha="center", fontsize=10, color=PURPLE)
     ax.text(6.5, 3.05, "The subword split and ID numbers are illustrative, not from a real tokenizer",
-            ha="center", fontsize=9, color=GREY)
+            ha="center", fontsize=10, color=GREY)
     save(fig, "text-pipeline.png")
 
 
 # ---------- BPE on standard-library docstrings ----------
-def docstring_corpus():
-    names = ["os", "re", "json", "collections", "itertools", "functools", "pathlib", "random",
-             "statistics", "string", "textwrap", "datetime", "decimal", "fractions", "heapq",
-             "bisect", "csv", "logging", "argparse", "subprocess", "threading", "typing",
-             "inspect", "unittest", "email", "http.client", "urllib.parse", "zipfile",
-             "tarfile", "sqlite3", "calendar", "difflib", "shutil", "tempfile", "socket"]
-    text = []
-    for n in names:
-        m = importlib.import_module(n)
-        for obj in [m] + [getattr(m, a, None) for a in dir(m)]:
-            doc = getattr(obj, "__doc__", None)
-            if isinstance(doc, str):
-                text.append(doc)
-    words = re.findall(r"[a-z]+", " ".join(text).lower())
+def synthetic_corpus():
+    """Invented compounds, deterministically ordered; no external text."""
+    stems = ["cat", "dog", "bird", "fish", "road", "tree", "rain", "sun", "moon", "star",
+             "book", "page", "read", "write", "walk", "play", "jump", "train", "test", "learn"]
+    prefixes = ["", "re", "un", "pre", "post", "over", "under", "out", "mis", "non"]
+    suffixes = ["", "s", "ed", "ing", "er", "ers", "able", "less", "ful", "ness"]
+    words = [pre + stem + suf for stem in stems for pre in prefixes for suf in suffixes]
+    rng = np.random.default_rng(7)
+    rng.shuffle(words)
     return words
 
 
 def bpe_curve():
-    words = docstring_corpus()
+    words = synthetic_corpus()
     cut = int(0.8 * len(words))
     train, test = Counter(words[:cut]), Counter(words[cut:])
     vocab = Counter({tuple(w) + ("_",): f for w, f in train.items()})
@@ -121,12 +115,12 @@ def bpe_curve():
     fig, ax = plt.subplots(figsize=(7.2, 3.9))
     ax.semilogx(v, t, "o-", color=BLUE)
     for vi, ti in zip(v, t):
-        ax.annotate(f"{ti:.2f}", (vi, ti), textcoords="offset points", xytext=(4, 6), fontsize=8.5)
+        ax.annotate(f"{ti:.2f}", (vi, ti), textcoords="offset points", xytext=(4, 6), fontsize=10)
     ax.axhline(1.0, color=GREY, ls="--", lw=1)
-    ax.text(v[0], 1.08, "1 token per word (whole-word vocabulary)", color=GREY, fontsize=9)
+    ax.text(v[0], 1.08, "1 token per word (whole-word vocabulary)", color=GREY, fontsize=10)
     ax.set_xlabel("Vocabulary size (characters + learned merges)")
     ax.set_ylabel("Tokens per held-out word")
-    ax.set_title(f"BPE on stdlib docstrings: {oov:.1%} of held-out words unseen in training")
+    ax.set_title(f"BPE on synthetic compounds: {oov:.1%} of held-out words unseen in training")
     ax.grid(alpha=.25, which="both")
     save(fig, "bpe-vocab-curve.png")
     print("bpe results", results, "oov", oov, "train words", cut)
@@ -162,7 +156,7 @@ def embeddings():
     Es = Es - Es.mean(0)
     _, _, Vt = np.linalg.svd(Es, full_matrices=False)
     P = Es @ Vt[:2].T
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), gridspec_kw={"width_ratios": [1, 1.1]})
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.6), gridspec_kw={"width_ratios": [1, 1.1]})
     ax = axes[0]
     placed = []                                   # merge labels of coinciding points
     for g, ws in groups.items():
@@ -176,9 +170,9 @@ def embeddings():
             else:
                 placed.append(([w], pt))
     for names, (x, y) in placed:
-        ax.annotate(" ≈ ".join(names), (x, y), textcoords="offset points", xytext=(5, 4), fontsize=9.5)
+        ax.annotate(" ≈ ".join(names), (x, y), textcoords="offset points", xytext=(5, 4), fontsize=10)
     ax.set_title("8-d PPMI-SVD vectors, projected to 2-D")
-    ax.legend(fontsize=9, loc="best")
+    ax.legend(fontsize=10, loc="best")
     ax.set_xticks([]); ax.set_yticks([])
     ax = axes[1]
     sel = ["cat", "kitten", "dog", "puppy", "car", "truck", "milk", "water"]
@@ -188,7 +182,7 @@ def embeddings():
     ax.set_yticks(range(len(sel)), sel)
     for i in range(len(sel)):
         for j in range(len(sel)):
-            ax.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center", fontsize=8,
+            ax.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center", fontsize=10,
                     color="white" if M[i, j] > 0.6 else "k")
     ax.set_title("Cosine similarity")
     fig.colorbar(im, ax=ax, fraction=0.046)
@@ -224,14 +218,14 @@ def perplexity_alpha():
     ax.semilogx(alphas, [ppl(a, test) for a in alphas], color=BLUE, label="held-out test sentences")
     ax.semilogx(alphas, [ppl(a, train) for a in alphas], color=ORANGE, ls="--", label="training sentences")
     ax.axhline(len(vocab), color=GREY, ls=":", lw=1)
-    ax.text(1.2e-3, len(vocab) + 0.3, f"uniform guess = |V| = {len(vocab)}", color=GREY, fontsize=9)
+    ax.text(1.2e-3, len(vocab) + 0.3, f"uniform guess = |V| = {len(vocab)}", color=GREY, fontsize=10)
     best = alphas[np.argmin([ppl(a, test) for a in alphas])]
     ax.axvline(0.2, color=GREEN, lw=1)
-    ax.text(0.21, 1.4, "α = 0.2 (code)", color=GREEN, fontsize=9)
+    ax.text(0.21, 1.4, "α = 0.2 (code)", color=GREEN, fontsize=10)
     ax.set_xlabel("Additive smoothing α")
     ax.set_ylabel("Bigram perplexity")
     ax.set_title("Too little smoothing punishes unseen pairs; too much flattens")
-    ax.legend(fontsize=9, loc="center left")
+    ax.legend(fontsize=10, loc="center left")
     ax.set_ylim(0, len(vocab) + 2)
     ax.grid(alpha=.25, which="both")
     save(fig, "bigram-smoothing.png")
@@ -259,7 +253,7 @@ def attention_weights():
         ax.imshow(w, cmap="Blues", vmin=0, vmax=1)
         for i in range(T):
             for j in range(T):
-                ax.text(j, i, f"{w[i, j]:.2f}", ha="center", va="center", fontsize=9,
+                ax.text(j, i, f"{w[i, j]:.2f}", ha="center", va="center", fontsize=10,
                         color="white" if w[i, j] > 0.6 else "k")
         ax.set_xticks(range(T), toks, rotation=30)
         ax.set_yticks(range(T), toks)
@@ -276,7 +270,7 @@ def timeline():
               (2018, "ELMo; GPT;\nSentencePiece", 0), (2019, "BERT", 1), (2020, "GPT-3; RAG;\nT5", 0),
               (2021, "CLIP", 1), (2022, "InstructGPT", 0), (2023, "LLaVA", 1)]
     xpos = lambda yr: 0 if yr == 2003 else 1.6 * (yr - 2013) + 1.8   # compress the 2003-2013 gap
-    fig, ax = plt.subplots(figsize=(13, 3.2))
+    fig, ax = plt.subplots(figsize=(10.4, 4.2))
     ax.plot([-0.6, 0.7], [0, 0], color="k", lw=1.2)
     ax.plot([1.1, xpos(2023) + 0.8], [0, 0], color="k", lw=1.2)
     ax.text(0.9, 0, "//", ha="center", va="center", fontsize=12)
@@ -285,7 +279,7 @@ def timeline():
         ax.plot([x, x], [0, 0.55 * y], color=GREY, lw=1)
         ax.scatter([x], [0], color=BLUE, zorder=3)
         ax.text(x, 0.65 * y, f"{year}\n{label}" if up else f"{label}\n{year}",
-                ha="center", va="bottom" if up else "top", fontsize=9)
+                ha="center", va="bottom" if up else "top", fontsize=10)
     ax.set_ylim(-2.2, 2.2); ax.set_xlim(-1.2, xpos(2023) + 1.0); ax.axis("off")
     ax.set_title("Milestones cited in this tutorial (publication years of the referenced papers)",
                  fontsize=11)

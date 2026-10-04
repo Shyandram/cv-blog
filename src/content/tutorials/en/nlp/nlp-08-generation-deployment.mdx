@@ -1,0 +1,429 @@
+---
+title: "NLP 08 · Generation, Summarization, Translation and Deployment"
+description: "Generate useful text from evidence, preserve meaning in summaries and translations, evaluate errors, and serve a versioned language application."
+track: nlp
+order: 80
+level: advanced
+prereqs: [nlp/nlp-07-discourse-dialogue]
+tags: [generation, summarization, translation, evaluation, deployment]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import selection from '../../../../assets/nlp/nlp-08-generation-deployment/selection.png';
+import batching from '../../../../assets/nlp/nlp-08-generation-deployment/batching.png';
+
+## What you'll learn
+
+- Distinguish content selection, sentence planning and realization in a language generator.
+- Build a small extractive summarizer that balances relevance with redundancy.
+- Explain conditional sequence generation, teacher forcing, search and translation constraints.
+- Evaluate lexical overlap alongside facts, meaning, omissions and human judgments.
+- Package preprocessing, decoding and evidence checks into a reproducible serving contract.
+- Connect textbook foundations to current generation surveys and deployment research.
+
+## The big picture
+
+A language application must choose what to say, express it clearly, and support what it says. These are separate responsibilities. A readable sentence can describe the wrong event; a correct sentence can omit the warning that the user needed. Deploying the generator adds a fourth responsibility: the result must arrive predictably, with enough recorded context to investigate a failure.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine writing a short note about a science experiment for a friend. First choose which observations matter. Then arrange them so your friend understands who did what. Finally write the sentences. If you change “did not move” into “moved,” your handwriting can be beautiful while your note is wrong. A useful generator must keep the experiment's meaning while making the note easier to read.
+</Callout>
+
+This final chapter follows two complementary readings. McRoy's Chapter 9 develops generation, summarization and translation [2]. Hagiwara's Chapters 6 and 8 explain sequence-to-sequence models and attention, while Chapters 10–11 connect modeling to training practices and deployment [1]. Read those chapters around one small application: a report writer for synthetic equipment observations. The examples here are original, local CPU experiments; they teach mechanisms without downloading a language model.
+
+The earlier NLP chapters supply classification, syntax, semantics, retrieval and dialogue context. Generation turns those representations into an output. Keep the distinction visible throughout the pipeline: a classifier predicts a label, a retriever selects evidence, and a generator constructs text. A successful system needs an evaluation that matches the role of each stage.
+
+## 1. Define the generation problem before choosing a model
+
+Generation means producing a sequence whose content and form satisfy a task. An input may be a document, a table, a source-language sentence, a dialogue history or a collection of retrieved passages. An output may be one sentence or a structured report. The choice changes both the modeling problem and what counts as an error.
+
+A conditional sequence model writes
+
+$$
+p_\theta(y\mid x,c)=\prod_{t=1}^{T}p_\theta(y_t\mid y_{\lt t},x,c).
+$$
+
+Here $x$ is the source input; $c$ is task context, such as the requested language or format; $y=(y_1,\ldots,y_T)$ is the output token sequence, including an end token; $y_{\lt t}$ contains the tokens before position $t$; and $\theta$ denotes learned parameters. This factorization describes a distribution. It does not certify that the sampled output is supported by the source.
+
+Begin by writing a task contract in ordinary language. For the equipment report: “Given timestamped observations, produce two sentences describing the current temperature and any explicitly recorded fault; preserve device names, units, numbers and negation.” This contract exposes omissions and contradictions that an unconstrained instruction such as “summarize nicely” hides. It also identifies the fields a deterministic baseline can handle.
+
+Separate three operations. **Content selection** chooses observations relevant to the user. **Sentence planning** decides ordering, grouping and referring expressions. **Realization** expresses the plan as grammatical text. McRoy [2] provides the linguistic reading for this distinction. Neural systems can combine the operations internally, but a combined architecture still needs tests for each responsibility.
+
+Consider a source with a high temperature, a later normal temperature, and an explicitly absent fault. Selecting the highest reading creates a different report from selecting the latest reading. Neither selection rule follows from grammatical fluency. Record whether the output should describe the current state, an extreme event, or the whole trajectory. Time and scope belong in the input contract.
+
+A template is a useful baseline when the input schema is narrow. It offers complete control over permitted claims and makes failure localization simple. Its limits are also clear: it cannot gracefully cover arbitrary relations, referring expressions or discourse. Measure that coverage rather than treating templates as inherently inadequate. A learned generator becomes useful when the additional flexibility solves a documented failure of the baseline.
+
+## 2. Extractive summarization: select evidence under a budget
+
+An extractive summary chooses source sentences. An abstractive summary may rewrite or combine them. Extraction makes the origin of each sentence explicit, but the selected sentences can still mislead through missing context, conflicting timestamps or unresolved pronouns. Selecting a sentence containing “it failed” without its antecedent is a discourse error even though every word came from the source.
+
+Suppose a document contains candidate sentences $s_1,\ldots,s_n$. Represent sentence $i$ by a unit vector $v_i$ and a user query by a unit vector $q$. A simple relevance score is $r_i=v_i^\top q$. To discourage repetition, use maximal marginal relevance, or MMR [3]:
+
+$$
+i^*=\operatorname*{arg\,max}_{i\notin S}\left[\lambda r_i-(1-\lambda)\max_{j\in S}v_i^\top v_j\right].
+$$
+
+Here $S$ is the set of already selected sentence indices; $i^*$ is the next index; $\lambda\in[0,1]$ balances relevance against similarity to previous selections; and the maximum similarity is defined as zero when $S$ is empty. The dot products are cosine similarities because the vectors have unit length. This is a greedy selection rule, rather than a proof of globally optimal summary quality.
+
+The following example uses binary word indicators to make every decision inspectable. The four candidate sentences are synthetic. Removing a small set of function words makes the representation less dominated by grammar, but it also removes potentially useful distinctions. Do not apply this tokenizer to general text without studying its effects.
+
+```python
+import re
+import numpy as np
+
+sentences = [
+    "Pump A temperature reached 80 C during the test.",
+    "The test recorded Pump A temperature at 80 C.",
+    "Pump A vibration triggered a shutdown warning.",
+    "The technician replaced a label on the cabinet.",
+]
+query = "pump temperature vibration shutdown"
+stop = {"a", "the", "at", "on", "during"}
+def tokens(text):
+    return set(re.findall(r"[a-z0-9]+", text.lower())) - stop
+vocab = sorted(set().union(*(tokens(s) for s in sentences), tokens(query)))
+def vector(text):
+    v = np.array([w in tokens(text) for w in vocab], dtype=float)
+    return v / max(np.linalg.norm(v), 1e-12)
+V = np.stack([vector(s) for s in sentences])
+q = vector(query)
+relevance, similarity = V @ q, V @ V.T
+selected = []
+for _ in range(2):
+    redundancy = similarity[:, selected].max(axis=1) if selected else np.zeros(4)
+    score = 0.55 * relevance - 0.45 * redundancy
+    score[selected] = -np.inf
+    selected.append(int(np.argmax(score)))
+print("Selected indices:", selected)
+print("Summary:", " ".join(sentences[i] for i in sorted(selected)))
+assert len(set(selected)) == 2
+assert 2 in selected and not ({0, 1} <= set(selected))
+```
+
+The selected pair includes the shutdown sentence and one temperature sentence, avoiding the nearly repeated temperature observation. Sorting the selected indices restores source order after selection. This matters because selection order measures marginal value, while presentation order should support comprehension. The example has no learned parameters and therefore no training leakage; a learned relevance scorer would require its own train/validation/test protocol.
+
+<Figure src={selection} alt="Cosine similarity matrix for four synthetic equipment sentences, with a relevance-versus-redundancy plot showing two selected sentences." caption="Figure 1 — An extractive baseline makes its trade-off visible. Similar temperature sentences compete for the same limited summary space; the shutdown sentence contributes different content." />
+
+A real budget usually limits tokens rather than sentence count. Add a candidate only if its full tokenized length fits the remaining budget. If no sentence fits, return a shorter summary or use a separate rewriting stage; silently cutting a sentence can remove its condition or negation. For multi-document summaries, group near-duplicate reports so repeated copies do not masquerade as independent evidence.
+
+Redundancy is only one constraint. An incident summary may require at least one consequence sentence, every critical numeric value, and an explicit marker for unresolved disagreement. Such requirements are easiest to inspect as content constraints on a plan. A high relevance score cannot compensate for dropping a mandatory warning. Retain source IDs and timestamps so readers can follow the selected evidence.
+
+## 3. Abstractive generation and conditional sequence learning
+
+A rewriting model can fuse observations and improve readability. It can also invent a connecting statement that the observations never established. “The temperature was high, so the pump failed” adds causation if the source only records simultaneous events. Build the target representation around supported propositions before treating fluent text as the final objective.
+
+Sequence-to-sequence learning maps an input sequence to an output sequence [4]. An encoder produces source representations; a decoder predicts the target one token at a time. Attention lets the decoder consult different source positions during prediction [5]. The [language-model chapter](/en/learn/nlp/nlp-05-language-models/) develops architectures; here the concern is how their output interacts with a task contract.
+
+Training usually supplies the correct preceding target tokens, a procedure called teacher forcing in the sequence-model literature [4]. The token-level loss is
+
+$$
+\mathcal L(\theta)=-\frac{1}{M}\sum_{b=1}^{B}\sum_{t=1}^{T_b}m_{bt}\log p_\theta(y_{bt}\mid y_{b,\lt t},x_b).
+$$
+
+Here $B$ is the number of examples; $T_b$ is the padded target length for example $b$; $m_{bt}$ is one for a real target token and zero for padding; $M=\sum_{b,t}m_{bt}$ is the number of real tokens; and $x_b$, $y_{bt}$ and $y_{b,\lt t}$ denote the source, current target token and reference prefix. The logarithm is natural. The mask removes padding from the loss; it does not remove it from computation automatically.
+
+Check the target shift carefully. The decoder input begins with a start token, while the target begins with the first output token. The end token belongs in the target so the model learns when to stop. Padding is separate from the end token: otherwise training can reward stopping in the wrong place. When batching documents of different lengths, record whether you average over tokens or examples; those choices assign different weights to long documents.
+
+At inference, the decoder receives its own previous predictions. A mistaken name or negation can alter subsequent probabilities. Low teacher-forced loss does not measure this whole feedback process. Evaluate generated sequences as well as reference-conditioned likelihood. For a summary, compare whether the generated propositions are supported; for a translation, check that the complete source meaning survives.
+
+Data construction is often more consequential than a small architectural change. A target summary written with access to later events is unsuitable for a model deployed before those events occur. A translation pair containing a silently corrected number trains the model to change that number. Keep source versions, annotation instructions and target provenance together. Group splits by document, conversation or event so near-duplicate inputs cannot enter both training and testing.
+
+Use attention as a diagnostic of computational access, not a factuality certificate. A token can attend to the correct evidence and still express its opposite. Evidence validation should examine the output claim, source entity, relation and scope. For narrow structured tasks, the generator can verbalize a validated plan. For unrestricted prose, validation becomes incomplete and should be reported as such.
+
+## 4. Decoding chooses a sequence, not a guarantee
+
+A trained distribution does not specify a single answer. Greedy decoding chooses the most probable next token. Beam search retains several partial sequences. Sampling draws tokens according to a distribution, possibly adjusted by a temperature. These choices control search and variation; none makes unsupported content reliable.
+
+The sequence score for a candidate is
+
+$$
+\ell(y\mid x)=\sum_{t=1}^{T}\log p_\theta(y_t\mid y_{\lt t},x).
+$$
+
+Here $\ell$ is the log probability of the complete sequence; $T$ includes the end token; and the remaining symbols are defined above. With raw log probabilities, every additional token contributes a nonpositive term. This can favor shorter sequences. Length adjustments change the search objective; describe their form and tune them on validation data rather than silently applying them.
+
+This tiny conditional model has two competing first tokens. It illustrates why choosing the best next token can miss the best complete sequence. The probabilities are constructed for the experiment, not estimated from language data.
+
+```python
+import math
+
+table = {
+    (): {"safe": 0.55, "close": 0.45},
+    ("safe",): {"stop": 0.51, "wait": 0.49},
+    ("close",): {"valve": 0.99, "door": 0.01},
+}
+def next_probs(prefix):
+    return table.get(prefix, {"<eos>": 1.0})
+def decode(width):
+    beams = [((), 0.0)]
+    for _ in range(3):
+        candidates = []
+        for seq, score in beams:
+            if seq and seq[-1] == "<eos>":
+                candidates.append((seq, score))
+                continue
+            for token, prob in next_probs(seq).items():
+                candidates.append((seq + (token,), score + math.log(prob)))
+        beams = sorted(candidates, key=lambda pair: pair[1], reverse=True)[:width]
+    return beams[0]
+greedy, beam = decode(1), decode(2)
+print(greedy[0], round(math.exp(greedy[1]), 4))
+print(beam[0], round(math.exp(beam[1]), 4))
+assert greedy[0] == ("safe", "stop", "<eos>")
+assert beam[0] == ("close", "valve", "<eos>")
+assert beam[1] > greedy[1]
+```
+
+The complete sequence probabilities are 0.2805 and 0.4455. Beam search finds the more probable sequence in this constructed tree. That result is about the model's probability assignment. If “close valve” contradicts the source instruction, a better probability search still produces the wrong application behavior. Search quality and task correctness need separate measurements.
+
+For temperature sampling, define $p_i^{(\tau)}=\exp(z_i/\tau)/\sum_j\exp(z_j/\tau)$. Here $z_i$ is the logit of token $i$, $j$ ranges over the vocabulary, and $\tau\gt0$ is temperature. Lower temperature concentrates probability on high-logit tokens. A factual mistake can be the highest-logit option, so reducing randomness does not remove it.
+
+Set explicit output limits, a stopping rule and behavior when the limit is reached. A truncated translation should not be returned as complete. Record the decoding parameters with the model artifact so an evaluation can be reproduced. For deterministic reports, reproducibility may matter more than stylistic diversity; for creative assistance, diverse suggestions can matter while evidence-sensitive statements still need verification.
+
+## 5. Translation preserves meaning across form
+
+Translation is conditional generation with a strong content constraint: preserve the source meaning while producing natural target-language text. Word order, morphology, idioms and implicit context make it more than replacing each word. McRoy's translation discussion [2] pairs naturally with Hagiwara's sequence-to-sequence material [1].
+
+Evaluate **adequacy**, whether the source meaning survives, separately from **fluency**, whether the target reads naturally. A fluent translation can omit an exception, reverse negation or change who performed an action. A literal translation may preserve technical content but sound awkward. The acceptable balance depends on the use case and must be specified before choosing a model or metric.
+
+A structured baseline can preserve an event record exactly while changing its realization. Suppose a record contains device, measured value, unit, time and fault status. Validate these fields before choosing a target-language template. This is controlled data-to-text generation, not a general translator. It is useful because it isolates errors introduced by realization from errors introduced by extraction or interpretation.
+
+For a general translator, preserve terminology through a glossary and test it in context. A required term can be present while attached to the wrong entity. Likewise, keeping every number is insufficient if the values are reassigned. Build challenge cases around relations: “Pump A is warmer than Pump B,” “the valve may remain closed,” and “no fault was detected before noon.” Minimal edits reveal whether the model respects comparison, modality, negation and time.
+
+Language tags and text normalization belong to the model contract. Traditional and Simplified Chinese are different output requirements; a broad language label alone does not specify script, regional terminology or punctuation. Do not convert source text destructively before storing it. Preserve the original alongside the normalized model input so reviewers can investigate a mistranslation.
+
+In low-resource settings, uncertainty can come from limited training coverage rather than input ambiguity. Record domain, dialect, script and language pair when reporting results. A system validated on short product descriptions has not thereby been validated on long technical instructions. If reviewers cannot read both languages, they cannot directly assess adequacy; use qualified bilingual review and explain the remaining coverage gaps.
+
+## 6. Evaluate words, claims and reader outcomes
+
+One automatic score cannot summarize all generation quality. A lexical overlap metric is reproducible and inexpensive, but a tiny word change can reverse meaning. Use automatic metrics to compare systems under a specified protocol, then inspect the error dimensions the application actually cares about.
+
+BLEU uses clipped n-gram precision with a brevity penalty for translation [6]. ROUGE includes recall-oriented overlap measures for summarization [7]. These metrics compare a candidate with one or more references; they do not prove semantic equivalence or source support. Name the variant, tokenizer, aggregation and reference set when reporting a score. A sentence-level number and a corpus-level number need not behave the same way.
+
+For a simple unigram recall check,
+
+$$
+R_1=\frac{\sum_w\min(c_{\mathrm{ref}}(w),c_{\mathrm{hyp}}(w))}{\sum_w c_{\mathrm{ref}}(w)}.
+$$
+
+Here $w$ ranges over word types; $c_{\mathrm{ref}}(w)$ and $c_{\mathrm{hyp}}(w)$ are reference and hypothesis word counts. The denominator is the number of reference tokens. This overlap calculation illustrates one component of ROUGE-style evaluation; the minimal implementation below does not reproduce every preprocessing or aggregation option of a full evaluation package.
+
+```python
+import re
+from collections import Counter
+
+def words(text):
+    return re.findall(r"[a-z0-9]+", text.lower())
+def overlap_recall(reference, hypothesis):
+    ref, hyp = Counter(words(reference)), Counter(words(hypothesis))
+    return sum((ref & hyp).values()) / sum(ref.values())
+reference = "Pump A is operating at 30 C."
+contradiction = "Pump A is not operating at 30 C."
+score = overlap_recall(reference, contradiction)
+print("Unigram recall:", score)
+assert score == 1.0
+assert ("not" in words(reference)) != ("not" in words(contradiction))
+```
+
+The contradiction receives recall 1.0 because it retains every reference token. A precision term would penalize the extra word, but the small penalty would still not express the importance of reversed negation. This is a controlled counterexample, not evidence that overlap metrics never correlate with human judgments. It explains why the metric must be paired with meaning-sensitive checks.
+
+For the equipment application, count **unsupported claims**, **missing required claims**, **incorrect numeric relations**, and **unresolved references** separately. These are project-defined error categories. Give annotators positive and negative examples for each, including cases where evidence is absent or contradictory. A summary that says less may have fewer unsupported claims while omitting critical information; report both error directions.
+
+Learned metrics such as COMET [8] use trained representations and human-quality supervision to assess translation. They can capture distinctions beyond literal overlap, but they bring their own model versions, training distributions and language coverage. Their outputs are measurements under those conditions. Check the metric on the same kinds of negation, quantity and terminology errors that matter in your application.
+
+Human evaluation should hide system identity, randomize presentation, preserve source context and specify the decision task. Ask reviewers to mark unsupported statements before judging overall usefulness. An overall preference may reward style and miss a rare critical error. Report who reviewed the outputs, what languages and domains they covered, and how disagreements were resolved. Keep a small adjudicated challenge set separate from routine traffic samples.
+
+Aggregate by a meaningful unit. Several sentences from one incident are correlated; treating them as independent examples can exaggerate certainty. Compare systems on the same source incidents, and inspect per-domain results rather than only one pooled average. When a model changes, rerun the fixed test set and a fresh sample so repeated tuning does not gradually turn the test set into development data.
+
+## 7. Training practices meet serving constraints
+
+An application serves inputs with variable lengths and different computational costs. Padding makes tensors rectangular, but it spends work on artificial positions. Hagiwara's Chapter 10 connects padding, sorting and masking to practical inference [1]. Keep this distinction clear: a correct loss mask prevents padding from altering the objective; it does not necessarily prevent the hardware from processing padded positions.
+
+Define padding utilization as
+
+$$
+u=\frac{\sum_{b=1}^{B}L_b}{B\max_b L_b}.
+$$
+
+Here $L_b$ is the real token length of request $b$; $B$ is batch size; and $u$ is the fraction of padded token positions containing real tokens. This is a workload diagnostic, not a measured speedup. Sorting nearby lengths into batches can increase utilization while also delaying requests that wait for a matching batch.
+
+```python
+import numpy as np
+
+lengths = np.array([8, 64, 12, 60, 10, 56, 14, 52])
+def utilization(values):
+    batches = values.reshape(-1, 4)
+    real = int(batches.sum())
+    padded = int((batches.max(axis=1) * 4).sum())
+    return real / padded
+arrival = utilization(lengths)
+bucketed = utilization(np.sort(lengths))
+print("Arrival-order utilization:", round(arrival, 3))
+print("Length-bucketed utilization:", round(bucketed, 3))
+assert bucketed > arrival
+# Two cache arrays (keys and values), with a toy equal head layout.
+layers, kv_heads, head_dim, cache_tokens, bytes_per_value = 4, 2, 16, 128, 4
+cache_bytes = 2 * layers * kv_heads * head_dim * cache_tokens * bytes_per_value
+print("Toy cache bytes:", cache_bytes)
+assert cache_bytes == 131072
+```
+
+<Figure src={batching} alt="Synthetic padded token slots in arrival-order and length-bucketed batches, beside the calculated cache growth for a toy decoder." caption="Figure 2 — Padding waste and cached attention state are different memory costs. The figure reports calculated token slots and toy cache bytes, rather than claiming an observed serving speedup." />
+
+Autoregressive attention commonly caches prior keys and values to avoid recomputing them. For a simple layout, the cache memory is approximately $M_{\mathrm{KV}}=2N_{\mathrm{layers}}H_{\mathrm{KV}}d_hTb_v$. Here $N_{\mathrm{layers}}$ is layer count, $H_{\mathrm{KV}}$ is the number of key/value heads, $d_h$ is head dimension, $T$ is cached token count, and $b_v$ is bytes per stored value. The factor two counts keys and values. Actual implementations add allocation and metadata costs and may use different layouts.
+
+Separate time to first output token from time between subsequent tokens, total completion time and throughput under load. A short prompt with a long answer stresses a different stage from a long prompt with a short answer. Include preprocessing, waiting, validation and serialization in end-to-end measurements. A fast decoder can sit inside a slow application.
+
+Set a request-length limit, an output limit and a queue deadline based on measured workload behavior. Report what happens on timeout: a partial result, a retryable error or a reviewed fallback. Repeated retries can amplify overload. A deployment test should contain unusually long inputs and simultaneous requests, not only the average input that fits comfortably in memory.
+
+## 8. A reproducible serving contract and capstone
+
+Package the system as a function whose input assumptions and outputs are explicit. A model file alone cannot reproduce a prediction. Tokenization, normalization, evidence selection, decoding parameters, validation rules and output formatting all affect behavior. Hagiwara's deployment chapter [1] supplies the practical reading for versioning, testing, train–serve differences and monitoring.
+
+Here is a deterministic report function for a narrow schema. It demonstrates field validation and traceable output without starting a server or using external services. The event record is trusted structured input; obtaining and validating that record from raw text would be a separate NLP stage.
+
+```python
+import math
+
+VERSION = "equipment-template-1"
+def report(event):
+    required = {"device", "temperature_c", "fault", "evidence_id"}
+    if set(event) != required:
+        raise ValueError("Unexpected input fields")
+    if not isinstance(event["device"], str) or not event["device"].strip():
+        raise ValueError("Missing device")
+    value = event["temperature_c"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("Temperature must be finite")
+    if event["fault"] not in ("present", "absent", "unknown"):
+        raise ValueError("Unknown fault status")
+    if not isinstance(event["evidence_id"], str) or not event["evidence_id"]:
+        raise ValueError("Missing evidence ID")
+    phrases = {"present": "A fault was recorded.",
+               "absent": "No fault was recorded.",
+               "unknown": "Fault status was not recorded."}
+    text = f"{event['device']} measured {value:g} C. {phrases[event['fault']]}"
+    return {"text": text, "evidence_id": event["evidence_id"], "version": VERSION}
+output = report({"device": "Pump A", "temperature_c": 30,
+                 "fault": "absent", "evidence_id": "synthetic-event-01"})
+print(output)
+assert output["text"] == "Pump A measured 30 C. No fault was recorded."
+assert output["version"] == VERSION
+```
+
+Notice the difference between absent and unknown. The input “no fault was recorded” is a statement about recorded evidence, not a claim that a fault is impossible. Encoding that distinction prevents the realization stage from upgrading missing evidence into certainty. The same rule applies to summary and translation systems: preserve qualification, scope and uncertainty.
+
+For a learned replacement, return the model version and the validated evidence IDs alongside the text. Store a preprocessing version and decoding configuration with the artifact. Logs should support diagnosis without unnecessarily retaining private source text. For a controlled corpus, a document identifier and reproducible authorized lookup may suffice; the right retention policy depends on the actual application.
+
+Deploy a new version to a limited share of requests and compare it with a stable version using the same error categories. Check latency, completion rate and evidence correctness together. Keep rollback simple: a stored bundle should select the previous model, tokenizer and validation rules as one unit. Mixing an old model with a new tokenizer can create a failure that neither component exhibited alone.
+
+The capstone is a small report application with a written contract, synthetic observations, an extractive baseline, a structured template baseline and an error table. Introduce paraphrases, negation, contradictory timestamps, unknown fields and long inputs. State exactly which cases the application supports. A controlled application with explicit limits demonstrates more understanding than an unrestricted generator evaluated only through attractive examples.
+
+## Modern view
+
+Modern generation research changes architectures, adaptation methods and serving techniques, while the task questions above remain necessary. Read the following sources as complementary maps, with evidence checked through October 4, 2026.
+
+**Li et al.'s pretrained-generation survey [9]** organizes methods around input representation, architecture and optimization, and covers applications and evaluation. This taxonomy helps locate a change: retrieval alters available input evidence, an encoder–decoder changes conditional architecture, and adaptation changes parameters or training objectives. Our teaching synthesis is to diagnose the failing stage before choosing a stronger model. The survey predates some later systems, so use it for organization alongside newer evaluation and deployment evidence.
+
+**Schmidtova et al.'s human-evaluation survey [10]** examines how studies define and assess hallucinations. It identifies inconsistent terminology and missing methodological reporting. Its practical lesson is to define source support, world knowledge and error severity separately, then publish annotation instructions and disagreement handling. A human score is interpretable only when the judgment procedure is clear. This survey concerns evaluation practice, rather than certifying one automatic detector.
+
+**The WMT25 evaluation findings [11]** separate segment-quality prediction, error-span annotation and quality-informed correction. They report that system-level and segment-level evaluation can favor different approaches, and that linguistic diversity remains difficult. This distinction matters for deployment: ranking two model versions across a test corpus does not establish that a metric can reliably reject one faulty output. Translation quality assessment and automated acceptance need different validation.
+
+**Kwon et al.'s PagedAttention work [12]** studies cache allocation and sharing in language-model serving. It addresses wasted memory and the batch sizes that memory permits. It supplies a concrete systems perspective on the cache calculation above. Its reported experimental improvements belong to its workloads and comparisons; a local toy calculation cannot reproduce them. Measure your request lengths, concurrency and latency targets before adopting a serving design.
+
+| Design axis | Choices to compare | Evidence needed |
+|---|---|---|
+| Content | selection, rewriting, structured verbalization | required content and source-support errors |
+| Conditioning | source text, retrieved evidence, dialogue or structured records | provenance, relevance and context coverage |
+| Model use | fixed pretrained model, task adaptation, narrow deterministic baseline | held-out task performance and maintenance cost |
+| Decoding | greedy, search, controlled sampling | completeness, variation and semantic errors |
+| Evaluation | overlap, learned scores, claim checks, human review | agreement with the application's failure categories |
+| Serving | batch construction, caching, queue policy | measured end-to-end latency, memory and completion behavior |
+
+Our synthesis of these readings is a shift in emphasis from generating plausible sentences to operating a measurable application. Stronger models broaden coverage, but they also make fluent errors harder to notice. Better serving permits larger workloads, but does not improve semantic validity by itself. A robust comparison pairs a model change with a stable evaluation contract and a documented workload.
+
+Open problems include preserving rare constraints across long contexts, assessing low-resource languages, detecting unsupported claims without suppressing useful answers, and obtaining reliable human judgments at manageable cost. Evaluation models can share errors with generators, especially when both rely on similar training data. Test independent evidence checks and bilingual review before delegating acceptance entirely to another model.
+
+A good research note ends with a specific uncertainty: “Does this verifier catch reversed negation in our technical reports?” or “Does length-based batching meet our queue deadline?” The textbooks provide the modeling language; surveys map alternatives; your controlled experiment determines which claim is justified for your application.
+
+## Key takeaways
+
+- Generation needs a content contract, a realization strategy and an evaluation of supported meaning.
+- Extraction preserves sentence provenance but can still omit context or mandatory facts.
+- Teacher-forced likelihood, decoding quality and application correctness measure different things.
+- Translation must preserve entities, relations, numbers, negation, scope and target-language requirements.
+- Overlap and learned metrics need claim checks and well-specified human evaluation.
+- Padding utilization and cache size are workload diagnostics; measure actual serving behavior separately.
+- Version the complete preprocessing–model–decoding–validation bundle and keep rollback reproducible.
+
+## Exercises
+
+1. **Selection under a real budget.** Modify the extractive example to allow at most 18 word tokens. Compare source-order presentation with selection-order presentation, and explain one failure of each.
+
+<details>
+<summary>Hint</summary>
+
+Count tokens using one fixed tokenizer before accepting a sentence. Never truncate a sentence silently. Selection order may place a consequence before its cause; source order may preserve irrelevant narrative order.
+
+</details>
+
+2. **Redundancy and mandatory content.** Sweep the MMR weight from zero to one, then add a rule that the shutdown warning must appear. Explain why similarity penalties alone cannot guarantee a required claim.
+
+<details>
+<summary>Hint</summary>
+
+At zero weight relevance disappears; at one weight redundancy disappears. A hard content requirement restricts the feasible summary choices instead of merely changing their scores.
+
+</details>
+
+3. **Decoder versus task.** Change the toy probabilities so beam search chooses a sentence that violates an externally supplied instruction. Add a constraint on permitted final sequences and compare its effect with widening the beam.
+
+<details>
+<summary>Hint</summary>
+
+Probability search optimizes the distribution's score. A permitted-sequence rule changes what outputs are admissible. Widening a beam need not repair a wrong probability model.
+
+</details>
+
+4. **Translation challenge set.** Write six original source sentences testing negation, comparison, units, modality, time and ambiguous reference. Specify the meaning that any acceptable translation must retain.
+
+<details>
+<summary>Hint</summary>
+
+Use a minimal edit such as adding “not” or swapping the two device names. Judge source adequacy independently of whether the target sentence sounds elegant.
+
+</details>
+
+5. **Metric disagreement.** Construct two candidate summaries: one with high word overlap but a wrong quantity, and another with lower overlap but correct meaning. Design an annotation form that reveals this difference.
+
+<details>
+<summary>Hint</summary>
+
+Ask reviewers to identify unsupported quantities and missing required facts before giving an overall usefulness judgment. Keep the source visible and system identity hidden.
+
+</details>
+
+6. **Serving capstone.** Extend the report function with a timestamp and a target-language choice. Reject malformed inputs, preserve unknown status, attach evidence IDs and version the realization rules. Document tests needed before replacing the template with a learned generator.
+
+<details>
+<summary>Hint</summary>
+
+Do not infer an unrecorded timestamp or convert unknown into absent. Test preprocessing parity, number formatting, script requirements, long inputs, timeout behavior and the complete rollback bundle.
+
+</details>
+
+## References
+
+1. M. Hagiwara, *Real-World Natural Language Processing*, Manning, 2021, Chapters 6, 8, 10–11. [Book](https://www.manning.com/books/real-world-natural-language-processing) · [Training practices](https://livebook.manning.com/book/real-world-natural-language-processing/chapter-10/) · [Deployment](https://livebook.manning.com/book/real-world-natural-language-processing/chapter-11/)
+2. S. McRoy, *Principles of Natural Language Processing*, open textbook, 2021, Chapter 9. [Book](https://wisconsin.pressbooks.pub/naturallanguage/) · [Generation chapter](https://wisconsin.pressbooks.pub/naturallanguage/chapter/natural-language-generation/)
+3. J. Goldstein and J. Carbonell, “Summarization: (1) Using MMR for Diversity-Based Reranking and (2) Evaluating Summaries,” TIPSTER Phase III Workshop, 1998. [Paper](https://aclanthology.org/X98-1025/)
+4. I. Sutskever, O. Vinyals and Q. V. Le, “Sequence to Sequence Learning with Neural Networks,” NeurIPS, 2014. [Paper](https://arxiv.org/abs/1409.3215)
+5. D. Bahdanau, K. Cho and Y. Bengio, “Neural Machine Translation by Jointly Learning to Align and Translate,” ICLR, 2015. [Paper](https://arxiv.org/abs/1409.0473)
+6. K. Papineni, S. Roukos, T. Ward and W.-J. Zhu, “Bleu: a Method for Automatic Evaluation of Machine Translation,” ACL, 2002. [Paper](https://aclanthology.org/P02-1040/)
+7. C.-Y. Lin, “ROUGE: A Package for Automatic Evaluation of Summaries,” Text Summarization Branches Out, 2004. [Paper](https://aclanthology.org/W04-1013/)
+8. R. Rei, C. Stewart, A. C. Farinha and A. Lavie, “COMET: A Neural Framework for MT Evaluation,” EMNLP, 2020. [Paper](https://aclanthology.org/2020.emnlp-main.213/)
+9. J. Li, T. Tang, W. X. Zhao, J.-Y. Nie and J.-R. Wen, “Pre-Trained Language Models for Text Generation: A Survey,” ACM Computing Surveys, 2024. [Publisher](https://doi.org/10.1145/3649449) · [Author manuscript](https://arxiv.org/abs/2201.05273)
+10. P. Schmidtova et al., “Do My Eyes Deceive Me? A Survey of Human Evaluations of Hallucinations in NLG,” INLG, 2025. [Survey](https://aclanthology.org/2025.inlg-main.4/)
+11. A. Lavie et al., “Findings of the WMT25 Shared Task on Automated Translation Evaluation Systems: Linguistic Diversity is Challenging and References Still Help,” WMT, 2025. [Report](https://aclanthology.org/2025.wmt-1.24/)
+12. W. Kwon et al., “Efficient Memory Management for Large Language Model Serving with PagedAttention,” SOSP, 2023. [Conference](https://sigops.org/s/conferences/sosp/2023/toc.html) · [Paper](https://arxiv.org/abs/2309.06180)

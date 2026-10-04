@@ -1,0 +1,368 @@
+---
+title: "NLP 06 · 檢索、問答與證據扎根"
+description: "建立可檢查的文字檢索器、評估排序、依版本化證據回答，並區分相關段落與足夠支持。"
+track: nlp
+order: 60
+level: intermediate
+prereqs: [nlp/nlp-05-language-models]
+tags: [nlp, retrieval, question-answering, rag, grounding, evaluation]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import pipelineFig from '../../../../assets/nlp/nlp-06-retrieval-question-answering/pipeline.png';
+import supportFig from '../../../../assets/nlp/nlp-06-retrieval-question-answering/support.png';
+
+## 你將學到
+
+- 定義含文件版本、證據區段與存取規則的可搜尋語料。
+- 比較詞彙加權、長度正規化檢索與學得的稠密表示。
+- 對標註查詢計算截斷召回率與倒數排名。
+- 建立完整本機檢索器及範圍有限的證據式回答器。
+- 區分相關性、可回答性、引用有效性與事實支持。
+- 依不同階段評估當代檢索增強系統。
+
+## 先看全貌
+
+語言模型不搜尋當前文件集合，也能延續問題；檢索系統則從明確語料選資訊。問答再加入一個決策：選到的內容是否支持回答，以及用哪些詞表達。把元件結合能建立有用管線，但沒有哪個階段會自動替下一階段背書。
+
+McRoy 第 8 章連結問答、文字檢索、資訊擷取與論證 [1]。Hagiwara 第 3、9 章提供表示與預訓練模型背景，第 10–11 章討論應用開發與部署 [2]。本章補充傳統資訊檢索及當代檢索增強生成研究。範例保持小型，讓每份文件與決策都能檢查。
+
+<Callout type="tip" title="用最簡單的話說">
+想像用一架操作說明卡回答問題。先找出正確機器的卡片，再檢查上面真的有沒有答案，最後指出使用的那一行。關於機器 A 的卡片不能回答機器 Z，即使兩張卡都有「溫度」。
+</Callout>
+
+本章貫穿的問題是「Pump A 的溫度上限是多少？」相關段落討論 Pump A 或溫度；足夠的段落指出該幫浦在適用政策下的上限；有效引用指向真實來源；受支持回答保留數值、單位、時間與範圍。四者是不同條件，評估應能指出失敗的是哪一項。
+
+<Figure src={pipelineFig} alt="查詢經過授權檢索、排序、證據選擇，形成附文件版本的受支持答案" caption="圖 1 — 檢索選候選，證據檢查決定能說什麼。每個階段都屬於明確應用契約。" />
+
+## 選模型前先設計語料
+
+**直觀說法。** 檢索器搜尋你提供的內容。文件身分、更新狀態與權限是系統的一部分，不是排序後才補的選填資料。
+
+可搜尋段落可表示為：
+
+$$
+d=(u,v,b,e,\mathbf x,a).
+$$
+
+其中 $d$ 是段落紀錄；$u$ 是父文件識別碼；$v$ 是版本；$b$、$e$ 是原文中包含起點、不包含終點的位移；$\mathbf x$ 是段落文字；$a$ 描述存取政策。必須聲明位移單位。這是本章的應用紀錄，不是通用儲存標準。
+
+段落可是一個自然段、一組句子或依文件結構選的章節。短段落能隔離答案，卻可能丟掉限定條件；長段落保留上下文，卻引入不相關內容並消耗生成預算。切塊邊界應根據任務選，再評估支持事實與條件是否仍放在一起。
+
+例如標題寫「只適用戶外設備」，下一段才給溫度上限。單獨索引該段，可能讓人以為也適用室內設備。保留標題或結構化適用範圍會改變可回答性契約。固定字元視窗容易實作，但簡單不代表能保留意義。
+
+版本也重要。舊政策可能相關卻不適用。需要當前答案時，應保留生效日期與替代關係。不能只因最新段落放在提示最後，就期待生成器判斷當前政策。應依明訂適用規則過濾或排序；語料沒有指定唯一權威來源時，讓衝突可見。
+
+在未授權元件或使用者收到段落文字前，就要套用權限。私密內容若已進模型請求或紀錄，才過濾最終答案就太晚了。檢索器語料視野應符合當前使用者權限，評估也應在受限視野下進行；否則全域相關性分數可能評到系統永遠不能展示的文件。
+
+## 詞彙檢索與稀疏向量
+
+**直觀說法。** 詞彙檢索匹配詞語，替有辨識力的詞加權。它容易檢查，精確名稱、代碼與技術短語重要時尤其有用。
+
+簡單的詞頻與逆文件頻率權重為：
+
+$$
+w_{t,d}=\operatorname{tf}(t,d)\log\frac{N}{\operatorname{df}(t)}.
+$$
+
+其中 $w_{t,d}$ 是詞 $t$ 在文件 $d$ 的權重；$\operatorname{tf}(t,d)$ 是依選定慣例定義的詞頻；$N$ 是索引文件數；$\operatorname{df}(t)$ 是包含該詞的文件數。只出現在查詢的詞若文件頻率為零，需要特別處理。實作常加入平滑或詞頻轉換，應記錄真正使用的慣例 [3, 4]。
+
+使用正規化文件與查詢向量時：
+
+$$
+s(q,d)=\frac{\mathbf v_q^\top\mathbf v_d}
+{\|\mathbf v_q\|_2\|\mathbf v_d\|_2}.
+$$
+
+其中 $q$ 是查詢；$d$ 是候選文件；$\mathbf v_q,\mathbf v_d$ 是向量；$s$ 是餘弦相似度；$\|\cdot\|_2$ 是歐氏範數。任一向量為零時定義分數為零。程式使用 scikit-learn 正規化向量，因此非零列的內積就是餘弦相似度 [4]。
+
+倒排索引（inverted index）為每個詞儲存出現它的文件，讓搜尋引擎不必把查詢與每份文件的所有詞彙逐一比較 [3]。本例只有四段，所以直接計算全部分數。數學表示與有效率的索引策略是分開的選擇。
+
+前處理直接影響檢索。丟掉單字元詞元的分詞器可能刪掉 Pump A 的 A。普通詞小寫化可能有幫助，卻會抹掉區分大小寫代碼。短語特徵有助辨識相鄰詞，不會涵蓋任意語法，也不保證語意相同。漏掉結果時，先看詞彙表，再怪排序模型。
+
+詞彙系統可能漏掉改寫。Device ceased operating 與 machine shutdown 可能少有共同詞。同義詞或查詢擴展能幫忙，但也改變匹配政策、增加歧義。應在保留查詢上評估擴展，特別包含精確代碼案例。廣泛擴展提升召回時，也可能找到術語相似的錯誤裝置。
+
+## 飽和與文件長度
+
+**直觀說法。** 重複查詢詞很多次，不應永遠提高相關性。長文件也有更多機會偶然匹配。
+
+常見 BM25 形式為：
+
+$$
+s(q,d)=\sum_{t\in q}
+\operatorname{idf}(t)
+\frac{f_{t,d}(k_1+1)}
+{f_{t,d}+k_1\left(1-b+b\,|d|/\overline L\right)}.
+$$
+
+其中 $q$ 在簡化式中是查詢詞集合；$d$ 是候選文件；$f_{t,d}$ 是詞頻；$\operatorname{idf}(t)$ 是選定逆文件頻率權重；$|d|$ 是詞元長度；$\overline L$ 是平均文件長度；$k_1$ 是正的飽和參數；$b\in[0,1]$ 控制長度正規化。不同實作的 IDF 與查詢詞頻慣例不同，資訊檢索教科書討論了這個家族及其假設 [3]。
+
+隨重複增加，分子與分母讓詞頻貢獻接近一個極限。長度項改變長文件預期有多少詞頻。這些是排序調整，不是文件含有真實答案的機率。一段內容可能反覆討論上限而排名很高，卻從未給出數值。
+
+應在反映部署語料的開發查詢上調整長度正規化。若所有答案都在短參考條目，不相關內容都在長敘事，一個設定可能特別強；改成長技術手冊後，行為會改變。比較排序設定時保持切塊固定，否則應說明語料表示與分數都改變了。
+
+## 稠密檢索與聯合重排序
+
+**直觀說法。** 學得的編碼器能匹配沒有精確重疊的相關表達。效果取決於訓練任務與對比例子。
+
+雙編碼器分數為：
+
+$$
+s_\theta(q,d)=f_\theta(q)^\top g_\theta(d).
+$$
+
+其中 $f_\theta$ 把查詢轉成向量；$g_\theta$ 把段落轉成向量；$\theta$ 是學得參數；$s_\theta$ 是內積分數。編碼器可共用或分別使用參數。Dense Passage Retrieval 是這種設計在問答中的原始研究例子 [5]。
+
+段落向量可預先計算，查詢再搜尋高分向量。近似搜尋以部分精確近鄰忠實度換速度；若使用它，就要同時評估表示與搜尋近似。本章不實作這種索引，因為小語料精確搜尋更適合學習契約。
+
+對比訓練可把一個正段落與數個負段落比較：
+
+$$
+\mathcal L=-\log
+\frac{\exp(s_\theta(q,d^+)/\tau)}
+{\exp(s_\theta(q,d^+)/\tau)+\sum_j\exp(s_\theta(q,d_j^-)/\tau)}.
+$$
+
+其中 $\mathcal L$ 是單一查詢損失；$d^+$ 是標註正段落；$d_j^-$ 是負候選 $j$；$\tau$ 是正溫度；$s_\theta$ 是學得分數。負例可包含措辭相似的困難段落。但只因未被標註就判負的段落，若也有有效答案，就成了假負例。
+
+聯合重排序器一起讀查詢與候選段落，能產生比兩個固定向量更豐富的詞元互動，通常放在較便宜的候選檢索後。這增加計算與一個選擇程序。應先報告候選召回率：沒有收到正確段落，重排序器就無法把它找回。
+
+稠密與詞彙檢索可以互補。稠密表示可能幫助改寫，詞彙匹配則保留精確代碼與罕見名字。混合時要注意尺度，因為詞彙分數與學得內積沒有相同單位。應在開發資料選混合設定，檢查是否引入錯誤實體結果。
+
+## 排序評估
+
+**直觀說法。** 檢索評估需要查詢及相關性判斷。選到一份文件，不代表選對了。
+
+對查詢 $q$ 的相關集合 $R_q$ 與前 $k$ 結果集合 $T_k(q)$：
+
+$$
+\operatorname{Recall@}k(q)=\frac{|R_q\cap T_k(q)|}{|R_q|}.
+$$
+
+其中 $k$ 是截斷位置；$R_q$ 包含標註相關文件；$T_k(q)$ 包含截斷前檢索結果；$|\cdot|$ 是集合大小。本章只對至少一份相關文件的查詢計算。沒有答案的查詢屬於另外的可回答性評估，不應任意指定召回率。
+
+第一個相關結果排名為 $r_q$ 時：
+
+$$
+\operatorname{RR}(q)=\frac{1}{r_q},\qquad
+\operatorname{MRR}=\frac{1}{Q}\sum_{q=1}^{Q}\operatorname{RR}(q).
+$$
+
+其中 $\operatorname{RR}$ 是倒數排名；$\operatorname{MRR}$ 是其平均；$Q$ 是評估查詢數；$r_q$ 從一開始。沒有回傳相關結果時定義倒數排名為零。當代檢索增強評估討論使用這些診斷 [6]。倒數排名只重視第一個成功結果，忽略後面的相關結果。
+
+標註完整性很重要。多個段落都支持答案，卻只標一個相關，可能把有效檢索判錯。要記錄相關是指主題匹配、包含答案，還是完整支持。重要歧義可使用多位判斷者，再依書面指南裁決。資料集應揭露任務定義，不只是列一段偏好的文字。
+
+開發與測試要隔離查詢家族及文件衍生版本。把開發問題稍作改寫放進測試，泛化證據很弱；同一報告的切塊跨集合也可能洩漏事實與措辭。切分應反映部署問題：沒見過的使用者、文件、未來版本或新領域。
+
+## 本機證據式回答器
+
+**直觀說法。** 不用大型生成器，也能示範檢索與支持檢查。回答器只處理一個明確問題家族，回傳來源區間。
+
+獨立程式使用四個合成段落，保留單字元詞，讓裝置代碼 A 仍是特徵。它對三個標註查詢量測排序，再只回答 Pump A 的狹義溫度上限問題。函數不是通用意圖分類器，呼叫者必須把已聲明的問題家族路由給它。
+
+```python
+import re
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+corpus = {
+    'temperature-v2': 'Pump A temperature limit is 80 C. This policy is current.',
+    'shutdown-v1': 'Pump A shutdown follows a vibration alarm.',
+    'label-v1': 'A technician replaced the cabinet label.',
+    'sensor-v1': 'Sensor B reports humidity once per hour.',
+}
+ids = list(corpus)
+vectorizer = TfidfVectorizer(ngram_range=(1, 2), token_pattern=r"(?u)\b\w+\b")
+D = vectorizer.fit_transform([corpus[key] for key in ids])
+def rank(query):
+    score = (D @ vectorizer.transform([query]).T).toarray().ravel()
+    order = sorted(range(len(ids)), key=lambda i: (-score[i], ids[i]))
+    return [(ids[i], float(score[i])) for i in order]
+queries = [
+    ('Pump A temperature limit', {'temperature-v2'}),
+    ('vibration shutdown alarm', {'shutdown-v1'}),
+    ('humidity report', {'sensor-v1'}),
+]
+recalls, reciprocal = [], []
+for query, relevant in queries:
+    ranking = rank(query)
+    recalls.append(len({key for key, _ in ranking[:2]} & relevant) / len(relevant))
+    first = next((i + 1 for i, (key, _) in enumerate(ranking) if key in relevant), None)
+    reciprocal.append(1 / first if first else 0.0)
+    print(query, '->', ranking[0][0])
+print('mean Recall@2:', np.mean(recalls))
+print('mean reciprocal rank:', np.mean(reciprocal))
+
+def answer_temperature(query):
+    if not re.search(r'\bpump\s+a\b', query, flags=re.I):
+        return {'answer': None, 'reason': 'unsupported entity'}
+    key, score = rank(query)[0]
+    text = corpus[key]
+    pattern = r'Pump A temperature limit is (\d+) C\.'
+    match = re.search(pattern, text)
+    if not match:
+        return {'answer': None, 'reason': 'no matching evidence'}
+    evidence = text[match.start():match.end()]
+    result = {'answer': f'{match.group(1)} C', 'document': key,
+              'start': match.start(), 'end': match.end(), 'evidence': evidence}
+    assert text[result['start']:result['end']] == result['evidence']
+    return result
+print(answer_temperature('What is the Pump A temperature limit?'))
+print(answer_temperature('What is the Pump Z temperature limit?'))
+```
+
+三個最高結果符合各自唯一相關段落，因此本次小型執行的平均 Recall@2 與平均倒數排名都是 1.0。這是固定測試案例結果，不是真實檢索基準。Pump A 回傳受支持的 80 C、文件版本與字元區間。即使存在溫度相關段落，Pump Z 仍不回答。
+
+明確實體檢查避免高詞彙分數把 Pump A 的上限移植到沒有支持的裝置。證據表達式也要求來源說出預期關係，而非只含一個數字。更彈性的系統需要更完整的實體與關係檢查，包括範圍、單位及適用日期。應透過標註測試擴充能力，不要放寬到所有問題都收到答案。
+
+回答器只看最高段落，因此正確證據排在後面時會拒答。這個限制刻意保留並說明。後續版本可以在固定預算內檢查多個候選，記錄最終用了哪個。要量測受支持回答與錯誤接受，不把多回答都視為改善。
+
+函數保留證據切片並驗證位移，可抓出序列化錯誤，卻不能抓全部語意錯誤。引用句仍可能談錯裝置、過期政策或假設情況。精確引文是重要機械檢查，支持關係仍是契約另外一部分。
+
+## 相關不代表可回答
+
+**直觀說法。** 段落可以討論主題，卻缺少所問事實。系統應能有意義地回傳證據不足。
+
+<Figure src={supportFig} alt="三個合成段落區分主題提及、錯誤幫浦的上限，以及完整支持 Pump A 的證據" caption="圖 2 — 主題重疊、錯誤實體證據與完整支持需要不同決策，分數本身不能定義可回答性。" />
+
+狹義問題應先定義必要欄位，再評估系統。溫度範例需要裝置身分、上限關係、數值與單位，也可能需要生效日期或操作條件。即使段落第一名，只要少一個必需欄位，證據仍可能不足。
+
+拒答政策決定何時不回答或請求澄清。若使用信心分數，門檻應在開發資料依錯答與不必要覆核的成本選擇。原始相似度不是校準後的正確機率；語料、分詞器或嵌入模型改變時，尺度也可能改變。
+
+同時報告覆蓋率與接受回答的品質：
+
+$$
+\mathrm{coverage}=\frac{N_{\mathrm{accepted}}}{N_{\mathrm{all}}},
+\qquad
+\mathrm{accepted\ accuracy}=\frac{N_{\mathrm{correct,\ accepted}}}{N_{\mathrm{accepted}}}.
+$$
+
+其中 $N_{\mathrm{all}}$ 是評估問題數；$N_{\mathrm{accepted}}$ 是收到回答的數量；$N_{\mathrm{correct,\ accepted}}$ 是依契約判正確的接受回答數。沒有接受回答時，接受準確率未定義；應回報此情況，不能把零接受當成成功準確率。
+
+覆蓋率必須包含沒有可用答案的問題。否則只在處處有答案的集合上，永遠回答的系統也會好看。應納入錯誤實體、缺少值、來源衝突與不支援的時間範圍，測試模型是否認知證據限制，而非只生成可能的回覆。
+
+## 檢索增強生成
+
+**直觀說法。** 生成器可依檢索段落回答。檢索提供外部內容，生成器仍必須正確使用它。
+
+原始檢索增強生成（retrieval-augmented generation，RAG）論文，把學得檢索器與條件序列生成結合，用於知識密集任務 [7]。一種序列層級形式為：
+
+$$
+p(y\mid x)\approx\sum_{z\in Z_k(x)}
+p_\eta(z\mid x)\,p_\theta(y\mid x,z).
+$$
+
+其中 $x$ 是問題；$y$ 是輸出序列；$z$ 是檢索段落；$Z_k(x)$ 是前 $k$ 候選集合；$\eta$ 是檢索器參數；$\theta$ 是生成器參數。近似反映只保留候選。這是特定模型的機率形式，不代表所有當代 RAG 應用都實作它。
+
+很多實務系統檢索、組提示，再執行分開訓練的生成器。即使未最佳化原始邊際目標，這種管線仍可有用，但要說清楚設計。否則 RAG 名稱會掩蓋檢索是否學得、候選是否重排序，以及生成器是否受訓使用來源。
+
+證據扎根（grounding）依明訂支持規則，把主張連到外部證據。有引用的答案可能可追溯，但追溯弱於支持：有效網址也可能指向與答案矛盾的文件。要評估每個重要主張是否由引用支持，以及是否保留必要限定。
+
+證據也可能衝突。生成器不應把互斥政策默默合成自信答案。應用可依契約優先採權威版本、展示衝突或請求澄清。決策應來自中繼資料與任務規則，而非哪一句最流暢。
+
+## 檢索內容的邊界
+
+**直觀說法。** 檢索文字是待檢查的證據，不是有權改變應用的指令來源。
+
+段落可能包含引述指令、誤導文字或惡意要求。提示注入（prompt injection）試圖讓模型遵循與應用邊界衝突的指令，OWASP 記錄了此風險類別 [8]。檢索系統的重要界線，是使用者／應用指令與不可信來源材料之間。
+
+來源文字應清楚分隔並標示文件身分，不得重新定義使用者權限、索取秘密資料或授權工具動作。若有工具，應在檢索段落之外，依使用者任務及應用政策驗證動作。文字分隔有助組織輸入，卻不是完整強制機制。
+
+相同原則適用紀錄與快取。某使用者權限下產生的快取結果，不能未檢查就給另一使用者。證據區段必須指向回答所用的同一文件版本。文件移除或替換時，更新索引，並考慮讓衍生回答失效。
+
+這些檢查也支援一般正確性。「忽略舊上限，新政策如下」可以是需要解讀的合法文件內容，「忽略應用指令」卻不是系統的新權威。都可儲存為來源材料，再套任務證據與權限規則；不能讓檢索成為修改治理契約的通道。
+
+## 用受控替換診斷失敗
+
+**直觀說法。** 把一個不完美元件換成已知正確輸入，就能找到答案在哪裡失敗。診斷結果應與端到端部署分數分開。
+
+先直接提供標註支持段落給回答器。如果仍答錯值，檢索就不是直接原因；應查實體、單位、範圍與文字實現。如果正確證據能答對，檢索證據卻失敗，就查候選召回與段落次序。這能定位瓶頸，但不假裝部署時也會有完美證據。
+
+接著保留正確段落，加入無關或衝突段落。只有額外上下文才造成失敗，表示是內容選擇或證據整合問題。一次改一個性質：另一裝置、過期版本、引述指控或未授權指令。執行前先標預期行為，避免看到結果後改解釋替輸出辯護。
+
+也應獨立測試證據序列化。答案正確卻指向另一文件版本，是追溯失敗；引文精確卻值錯，是支持失敗；值正確卻來自未授權文件，是存取失敗。即使可見回覆一樣，單一答案準確率仍無法解釋這些差別。
+
+最後保留真實查詢分布。診斷套件刻意提高困難案例比例，代表性保留集合則估計一般行為。兩者應分開報告目的。不能混成一個總分就聲稱估計正式流量。受控例子說明為何失敗，代表性例子則估計在所選部署條件下多久失敗一次。
+
+## 現代觀點
+
+**直觀說法。** 當代檢索增強研究一起考慮檢索、上下文組合與生成，也愈來愈重視分開評估失敗。
+
+Gao 等人的綜述將 RAG 分為 naive、advanced 與 modular 範式，並研究檢索、增強與生成 [6]，也區分上下文相關、答案相關與答案忠實。分類可定位改變：查詢改寫改檢索輸入，重排序改候選順序，上下文壓縮改生成器收到的內容。每種操作都可能改善某例，卻在另一例刪掉重要限定。
+
+原 DPR 與 RAG 論文提供廣泛術語背後的具體設計 [5, 7]。Zhao 等人更新至 2026 的綜述，則把檢索輔助放在大型模型使用與能力評估的更廣脈絡 [9]。它們支持系統觀點，不會證明每種語料與問題家族只要加檢索都會更準。
+
+開放問題包括跨語言與領域穩健檢索、可靠拒答、版本感知答案、矛盾證據、保護隱私的存取，以及多段落推理的支持評估。長上下文改變成本取捨，更大提示卻不會自動解決相關性或權限；系統仍須辨識哪些證據適用。
+
+有效學習順序是先建詞彙基準、標註相關性與可回答性、檢查失敗，再一次加一個元件。比較變更前後的檢索、受支持答案、拒答與資源成本，最終查詢與提示／門檻選擇分開。這樣改善才能歸因於量測行為，而非更時髦的元件名稱。
+
+## 重點整理
+
+- 可搜尋段落需要文件身分、版本、位移與存取政策。
+- 詞彙及稠密檢索有不同證據與失敗模式。
+- 候選召回限制後續重排序器或回答器能找回什麼。
+- 排序分數不是正確機率。
+- 相關性、可回答性、引用有效與主張支持是不同條件。
+- 同時報告覆蓋率與接受回答品質，包含無答案案例。
+- 檢索內容不能授權動作或重新定義應用權限。
+
+## 練習
+
+1. 加入當前 Pump B 政策及過期 Pump A 政策，分別寫相關性與適用性判斷。
+
+<details>
+<summary>提示</summary>
+
+定義問題日期與操作條件。舊段落可以主題相關，卻不適合最終答案。
+
+</details>
+
+2. 建立有效證據第二名的查詢，比較目前回答器與檢查兩候選版本。
+
+<details>
+<summary>提示</summary>
+
+固定證據述詞。量測受支持答案與錯誤接受，不把每個多出來的答案當改善。
+
+</details>
+
+3. 建立第一個相關排名相同、但前幾個結果相關段落數不同的兩查詢，比較倒數排名與召回。
+
+<details>
+<summary>提示</summary>
+
+倒數排名只看第一個命中，召回需要完整相關集合。
+
+</details>
+
+4. 設計含揭露另一文件指令的測試段落，說明必須在哪個邊界拒絕。
+
+<details>
+<summary>提示</summary>
+
+段落是證據，不是授權使用者或應用指令。暴露文件文字或執行動作之前就要強制權限。
+
+</details>
+
+5. 設計多語設備問題的保留評估，包含沒有答案與精確代碼。
+
+<details>
+<summary>提示</summary>
+
+先把改寫與文件衍生版本分組，再切分。按語言與問題家族回報，附上例數。
+
+</details>
+
+## 參考文獻
+
+1. Susan McRoy, *Principles of Natural Language Processing*, Chapter 8, 2021. [Open textbook](https://wisconsin.pressbooks.pub/naturallanguage/)
+2. Masato Hagiwara, *Real-World Natural Language Processing: Practical Applications with Deep Learning*, Chapters 3, 9, 10 and 11, Manning, 2021. [Publisher](https://www.manning.com/books/real-world-natural-language-processing)
+3. Christopher D. Manning, Prabhakar Raghavan and Hinrich Schütze, *Introduction to Information Retrieval*, Chapters 6, 8 and 11, Cambridge University Press, 2008. [Author-hosted book](https://nlp.stanford.edu/IR-book/)
+4. scikit-learn developers, “Text feature extraction,” scikit-learn documentation, accessed 2026. [Documentation](https://scikit-learn.org/stable/modules/feature_extraction.html#text-feature-extraction)
+5. Vladimir Karpukhin, Barlas Oguz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen and Wen-tau Yih, “Dense Passage Retrieval for Open-Domain Question Answering,” EMNLP, 2020. [Paper](https://aclanthology.org/2020.emnlp-main.550/)
+6. Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yi Dai, Jiawei Sun, Meng Wang and Haofen Wang, “Retrieval-Augmented Generation for Large Language Models: A Survey,” arXiv:2312.10997, revised 2024. [Survey](https://arxiv.org/abs/2312.10997)
+7. Patrick Lewis et al., “Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks,” NeurIPS, 2020. [Paper](https://arxiv.org/abs/2005.11401)
+8. OWASP GenAI Security Project contributors, “LLM01: Prompt Injection,” OWASP guidance, accessed 2026. [Official guidance](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+9. Wayne Xin Zhao et al., “A Survey of Large Language Models,” Frontiers of Computer Science, 2026. [Updated survey](https://arxiv.org/abs/2303.18223)
+

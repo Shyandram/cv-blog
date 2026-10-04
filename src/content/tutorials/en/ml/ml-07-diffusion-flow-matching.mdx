@@ -1,11 +1,11 @@
 ---
 title: "ML 07 · Diffusion Models and Flow Matching"
-description: "Derive noise prediction, DDPM sampling, score estimation and classifier-free guidance, then connect latent diffusion, DiT, rectified flows and few-step generation."
+description: "Derive noise, clean-image and velocity prediction, compare pixel and latent generation with JiT and representation autoencoders, and understand pretrained image/video diffusion and flow pipelines."
 track: ml
 order: 70
 level: advanced
 prereqs: [ml/ml-06-generative-models, ml/ml-04-vision-transformers]
-tags: [diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, generation]
+tags: [diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, jit, representation-autoencoders, pixel-space, latent-space, video-generation]
 published: 2026-10-04
 ---
 import Callout from '../../../../components/Callout.astro';
@@ -16,15 +16,17 @@ import samplersFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/ddp
 import guidanceFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/cfg-guidance.png';
 import pathsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/flow-paths.png';
 import stepsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/fm-euler-steps.png';
+import bottleneckFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/latent-bottleneck.png';
+import targetsFig from '../../../../assets/ml/ml-07-diffusion-flow-matching/prediction-targets.png';
 
 ## What you'll learn
 
 - How a known noise process turns "generate an image" into an ordinary supervised regression problem.
 - How the simplified noise-prediction loss of DDPM falls out of a variational bound, step by step.
-- How noise prediction, clean-image prediction and the **score** of a distribution are the same information in different units, and how the SDE view ties them together.
+- How noise, clean-image and velocity predictions convert algebraically, why their losses and finite networks differ, and how score estimation and the SDE view connect them.
 - How DDPM, DDIM and fast ODE solvers sample, and why the number of steps is a design choice.
 - How classifier guidance and classifier-free guidance steer a sampler, and what they cost.
-- How latent diffusion, diffusion transformers (DiT), flow matching, rectified flow, consistency models and one-step generators fit into one map, and how generated images are evaluated.
+- How pixel and latent diffusion, DiT, JiT, representation autoencoders, flow matching and few-step generation fit together, and how pretrained image/video pipelines are evaluated.
 
 ## The big picture
 
@@ -209,6 +211,66 @@ Because $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$ is a fixed li
 
 Given $x_t$ and $t$, each converts to the others exactly. However, an unweighted MSE on $\epsilon$, on $x_0$ or on $v$ weights the noise levels differently, so the choice affects training. Karras et al. [20] made this explicit with input/output "preconditioning" coefficients that keep the network's inputs and targets at unit variance for every noise level. Note that this diffusion "velocity" is a reparameterization of signal and noise; it is related to, but not identical with, the transport velocity of flow matching later in this chapter.
 
+### Exact conversion does not make finite networks equivalent
+
+For the variance-preserving path, write $a=\sqrt{\bar\alpha_t}$ and $b=\sqrt{1-\bar\alpha_t}$. Thus $a^2+b^2=1$ and $x_t=ax_0+b\epsilon$. The diffusion velocity $v_{\mathrm{VP}}=a\epsilon-bx_0$ completes a rotation:
+
+$$
+\begin{aligned}
+x_0&=a x_t-bv_{\mathrm{VP}}, &\epsilon&=b x_t+a v_{\mathrm{VP}},\\
+\hat x_0^{(\epsilon)}&=(x_t-b\hat\epsilon)/a, &
+\hat\epsilon^{(x)}&=(x_t-a\hat x_0)/b.
+\end{aligned}
+$$
+
+Here $a,b$ are known schedule coefficients; $v_{\mathrm{VP}}$ is the target used in [22]; hats denote estimates; and superscripts identify the network's direct output. The last two conversions require nonzero divisors. Their instability near an endpoint is a numerical and statistical issue, even though the algebra is exact in the interior.
+
+A noise error $\delta_\epsilon$ becomes a clean-image error $-(b/a)\delta_\epsilon$. Therefore, for corresponding predictions at a fixed noise level,
+
+$$
+\|\hat x_0-x_0\|^2=\frac{b^2}{a^2}\|\hat\epsilon-\epsilon\|^2
+=\frac{1}{\mathrm{SNR}(t)}\|\hat\epsilon-\epsilon\|^2,
+\qquad
+\|\hat x_0^{(v)}-x_0\|^2=b^2\|\hat v_{\mathrm{VP}}-v_{\mathrm{VP}}\|^2.
+$$
+
+$\mathrm{SNR}(t)=a^2/b^2$ is the signal-to-noise ratio; the second identity follows from the rotation above. Equal unweighted losses consequently emphasize different times. Changing the target without recording time sampling and loss weighting confounds an experiment [20], [22].
+
+There is also a capacity issue. If a network directly outputs a clean image, its final representation can discard nuisance noise. A network directly outputting noise may need to preserve more coordinates of the noisy input, or use a skip connection that supplies those coordinates. Converting one network's output afterward does not make its architecture identical to a network trained to output another target. This distinction becomes especially relevant for large pixel patches and high-dimensional latents; the JiT discussion below supplies recent evidence [42]. It does not imply that noise prediction generally fails: the earlier DDPM examples and dense image denoisers are counterexamples.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(7)
+x0 = rng.normal(size=32)
+eps = rng.normal(size=32)
+a, b = np.sqrt(.2), np.sqrt(.8)
+xt = a*x0 + b*eps
+v_vp = a*eps - b*x0
+assert np.allclose(a*xt - b*v_vp, x0)
+assert np.allclose(b*xt + a*v_vp, eps)
+
+# A deliberately imperfect noise estimate: compare equivalent losses.
+eps_hat = eps + .03*rng.normal(size=32)
+x_hat = (xt - b*eps_hat)/a
+noise_mse = np.mean((eps_hat - eps)**2)
+clean_mse = np.mean((x_hat - x0)**2)
+assert np.allclose(clean_mse/noise_mse, b*b/(a*a))
+print("Clean/noise MSE ratio:", round(clean_mse/noise_mse, 3))
+
+# A straight flow uses a different path and a different velocity.
+t = .35
+zt = (1-t)*eps + t*x0
+u = x0 - eps
+x_from_flow = zt + (1-t)*u
+u_from_clean = (x0 - zt)/(1-t)
+assert np.allclose(x_from_flow, x0)
+assert np.allclose(u_from_clean, u)
+print("VP velocity equals straight-flow target:", np.allclose(v_vp, u))
+```
+
+The example prints a loss ratio of 4.0 and `False` for the two velocity targets. Both use the letter $v$ in parts of the literature; a checkpoint's scheduler must identify the actual path, normalization and time direction.
+
 ### What is a score, and why does denoising estimate it?
 
 The **score** of a density $p$ is $\nabla_x\log p(x)$: a vector field that points toward higher probability. If you know the score, you can sample with **Langevin dynamics**: repeatedly step a little along the score and add a little noise. Song and Ermon [17] trained "noise-conditional score networks" at many noise levels and sampled with annealed Langevin dynamics — a parallel route to diffusion that turned out to be the same idea.
@@ -346,10 +408,38 @@ $$
 
 where $\hat x_0$ is the clean estimate at $x_{\tau_i}$ and $\eta\ge0$ controls stochasticity. Read it as: "estimate the clean example, then re-noise it to the next, lower noise level using the predicted noise direction." With $\eta=1$ and consecutive steps, this recovers DDPM's posterior variance; with $\eta=0$ the sampler is **deterministic** and is a discretization of the probability-flow ODE. Determinism has practical consequences: the same starting noise always gives the same output, so you can interpolate in noise space or invert a real image to its noise (DDIM inversion), which is the basis of many editing methods.
 
-Continuing from the DDPM snippet (same `net`, `abar`, `T`):
+The following standalone example repeats the same small training setup so it can run independently. When experimenting in one session, reuse the already trained `net`, `abar` and `T` instead:
 
 ```python
-# Continue from the DDPM snippet: reuse `net`, `abar` and `T`.
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0)
+torch.set_num_threads(1)
+T = 100
+beta = torch.linspace(.001, .15, T)
+alpha = 1-beta
+abar = alpha.cumprod(0)
+previous = torch.cat([torch.ones(1), abar[:-1]])
+post_var = beta * (1-previous) / (1-abar)
+net = nn.Sequential(nn.Linear(3, 64), nn.SiLU(),
+                    nn.Linear(64, 64), nn.SiLU(), nn.Linear(64, 2))
+opt = torch.optim.Adam(net.parameters(), lr=.002)
+def data(n):
+    side = torch.randint(2, (n, 1))*2-1
+    return torch.cat([side*1.5, torch.zeros(n, 1)], 1) + .25*torch.randn(n, 2)
+for step in range(3000):
+    x0 = data(128)
+    t = torch.randint(T, (len(x0),))
+    eps = torch.randn_like(x0)
+    a = abar[t, None]
+    xt = a.sqrt()*x0 + (1-a).sqrt()*eps
+    predicted = net(torch.cat([xt, t[:, None].float()/(T-1)], 1))
+    loss = F.mse_loss(predicted, eps)
+    opt.zero_grad(); loss.backward(); opt.step()
+net.eval()
+
 def ddim_sample(n, steps, eta=0.0, seed=1):
     g = torch.Generator().manual_seed(seed)
     taus = torch.linspace(T-1, 0, steps).round().long()
@@ -462,7 +552,7 @@ Guidance has a compute cost too: each step needs a conditional *and* an uncondit
 
 Rombach et al. [7] train an autoencoder first: an encoder $z=\mathcal E(x)$ maps an $H\times W\times3$ image to an $h\times w\times c$ latent with a spatial downsampling factor $f=H/h$, and a decoder $\mathcal D$ maps back. The autoencoder is trained with reconstruction, perceptual and adversarial losses plus a light regularizer (a small KL term toward a Gaussian, or vector quantization) so that the latent space stays well behaved. Diffusion is then trained on $z$ exactly as before, and generation ends with $\hat x=\mathcal D(z_0)$. With $f=8$, a $512\times512$ image becomes a $64\times64$ latent: 64 times fewer spatial positions for every network call.
 
-The trade-off is that the autoencoder sets a ceiling: details it cannot reconstruct (small text, fine textures, exact faces) cannot be generated, however good the diffusion model is. The latent's scale must also match what the diffusion model was trained on; implementations rescale latents to roughly unit variance. Text conditioning in [7] uses cross-attention layers in the U-Net, the design behind the Stable Diffusion family.
+The trade-off is a reconstruction bottleneck: information discarded by the encoder cannot be faithfully recovered from that code, although the decoder may synthesize plausible detail. The latent's scale must also match what the diffusion model was trained on; implementations rescale latents to roughly unit variance. Text conditioning in [7] uses cross-attention layers in the U-Net, the design behind the Stable Diffusion family.
 
 ### Diffusion transformers
 
@@ -471,6 +561,111 @@ DiT (Peebles and Xie [8]) replaces the U-Net with a Vision Transformer [41] (see
 It helps to keep three choices separate. The **architecture** (U-Net or transformer) is the function approximator. The **objective** (noise, $x_0$, $v$, or flow velocity) is what it regresses. The **sampler** (DDPM, DDIM, ODE solver) is how predictions become an image. Stable Diffusion 3 [9] is an example of a new combination: a latent transformer with separate weights for the image and text token streams that attend jointly ("MM-DiT"), trained with a rectified-flow objective and a timestep distribution biased toward intermediate noise levels.
 
 For video, the latent and the attention must cover time as well as space, so compression and attention patterns become the main engineering problem. Melnik et al.'s survey [31] reviews architectures, temporal-consistency mechanisms and evaluation for video diffusion. Per-frame quality is not enough there: object permanence, motion plausibility and long-duration consistency need their own evaluation.
+
+## Pixel space, latent space and representation autoencoders
+
+**Plain version.** The generator needs a place to do its repeated updates. That place can be the image itself, a compact reconstruction code, or features learned by a visual representation model. A latent stage buys a particular computational and statistical trade-off; it is not a prerequisite for generative modeling.
+
+### Why pixels become latents and then pixels again
+
+Training images arrive as pixels, while the output must be viewable as pixels. Between these endpoints, an encoder can remove redundancy and produce a grid that is cheaper to update repeatedly [7]. Train the encoder and decoder on reconstruction first, then fit a generative distribution to encoded training images. These are two different tasks: reconstruction preserves a given example; generation learns which encoded examples are plausible.
+
+The training and sampling routes are
+
+$$
+\begin{aligned}
+\text{training: }&x\xrightarrow{\mathcal E}z_{\mathrm{data}}
+\xrightarrow{\text{corrupt}}z_t
+\xrightarrow{\text{prediction loss}}\theta,\\
+\text{generation: }&z_{\mathrm{noise}}\xrightarrow{\text{learned sampler}}\hat z
+\xrightarrow{\mathcal D}\hat x,\\
+\text{reconstruction check: }&x\xrightarrow{\mathcal E}\mathcal E(x)
+\xrightarrow{\mathcal D}\tilde x.
+\end{aligned}
+$$
+
+Here $x$ is a training image; $\mathcal E$ and $\mathcal D$ are the encoder and decoder; $z_{\mathrm{data}}$ is an encoded image; $z_t$ is its corrupted state; $\theta$ parameterizes the generative predictor; $\hat z$ is a generated code; $\hat x$ is the generated image; and $\tilde x$ is a reconstruction. Pure text-to-image sampling does **not** encode an input image first. Editing and image-to-image generation can encode an actual input image and begin from a partially corrupted code.
+
+The main saving occurs because the denoiser or flow predictor runs repeatedly, while encoding training data and decoding a sample occur much less often. A spatial factor $f$ reduces grid positions by $f^2$, but the number of latent channels also matters. For an image with three channels and a latent with $c$ channels, the scalar-count reduction is $3f^2/c$. It is incorrect to describe the grid reduction as the reduction in all floating-point values or total runtime.
+
+For a transformer, token count and token width must also be distinguished. Full attention stores a matrix with a number of entries proportional to $N^2$, where $N$ is the token count; feature projections depend on token width as well [41]. A patch size can reduce $N$ in either pixels or latents. None of these counts alone predicts wall-clock speed because kernels, memory traffic, the decoder and conditioning contribute.
+
+```python
+# Synthetic shape bookkeeping, not a benchmark or a specific checkpoint.
+H = W = 512
+channels, spatial_factor, patch = 4, 8, 2
+pixel_values = H*W*3
+h = H//spatial_factor
+w = W//spatial_factor
+latent_values = h*w*channels
+pixel_tokens = (H//patch)*(W//patch)
+latent_tokens = (h//patch)*(w//patch)
+print("Spatial positions reduction:", (H*W)//(h*w))
+print("Scalar values reduction:", pixel_values//latent_values)
+print("Dense attention entries reduction:", pixel_tokens**2//latent_tokens**2)
+assert pixel_values//latent_values == 48
+assert pixel_tokens//latent_tokens == 64
+assert pixel_tokens**2//latent_tokens**2 == 4096
+```
+
+This constructed example yields 64 times fewer spatial positions, 48 times fewer scalar values and 4096 times fewer attention entries **at the same numerical patch size in each coordinate space**. Changing patch sizes changes the comparison. A pixel transformer with much larger patches can have the same token count as a latent transformer.
+
+The cost is information loss. If two images have the same code, a deterministic decoder cannot recover their different exact details. A decoder may invent plausible texture, but that does not restore information about the original image. The reconstruction check therefore deserves its own evaluation before generative training. Inspect fine lines, lettering and temporal changes, rather than relying only on average image error.
+
+The following deliberately simple encoder averages blocks and the decoder repeats those averages. It demonstrates a bottleneck without pretending to reproduce a learned VAE or RAE.
+
+```python
+import numpy as np
+
+y, x = np.mgrid[:64, :64]
+checker = ((x+y) % 2).astype(float)
+smooth = x/63
+image = .6*smooth + .4*checker
+f = 4
+latent = image.reshape(64//f, f, 64//f, f).mean(axis=(1, 3))
+reconstruction = np.repeat(np.repeat(latent, f, axis=0), f, axis=1)
+print("Synthetic reconstruction MSE:", round(np.mean((image-reconstruction)**2), 6))
+assert np.mean((image-reconstruction)**2) > .04
+# Recovering the exact latent does not recover the missing checkerboard.
+assert np.allclose(reconstruction[0, :f], reconstruction[0, 0])
+```
+
+<Figure src={bottleneckFig} alt="Original synthetic image with a smooth ramp and checkerboard, its block-average reconstruction, and the absolute reconstruction error." caption="Figure 5 — A latent bottleneck can remove detail before the generative model is trained. This block-average toy is an explanation of information loss, not an evaluation of a learned autoencoder." />
+
+For editing, repeatedly encoding and decoding a result can accumulate distortion. Keep intermediate edits in the compatible latent space when the pipeline permits it, and inspect the eventual pixel output. A good unconditional generator may still be a poor reconstruction system. The claim that an autoencoder sets a ceiling concerns faithfulness to encoded information; it does not mean that a generative decoder can never synthesize new fine texture.
+
+### Reconstruction codes versus semantic representation codes
+
+A VAE encoder is trained with a reconstruction objective and a distributional regularizer; its code is designed to support decoding and sampling [7]. A pretrained recognition encoder instead learns useful visual features. These goals can align, but recognition invariance may discard details needed for faithful reconstruction. The decoder and the retained feature structure determine whether the representation is a useful generative space.
+
+Zheng, Ma, Tong and Xie's **Representation Autoencoders (RAEs)** [43] pair a frozen pretrained representation encoder with a trained decoder. Their ICLR 2026 study uses semantic visual features as the space for generative modeling. It examines high-dimensional token features, dimension-dependent noise scheduling, decoder robustness and a shallow wide diffusion head. This changes the representation being generated, rather than simply adding a feature-alignment loss to a conventional latent predictor.
+
+Do not equate “latent” with “smaller in every dimension.” A spatially sparse feature grid can have many channels per token. An RAE is also not automatically a variational model: a frozen feature extractor plus a decoder does not by itself define a Gaussian posterior, a KL regularizer or a likelihood bound. Keep reconstruction, representation quality and generative quality as separate measurements.
+
+Tong et al. [44] extend this approach to freeform text-to-image generation in 2026. Their study compares RAE and VAE spaces at larger scales and examines decoder data composition. It finds that dimension-aware noise scheduling remains important while some small-scale architectural and decoder modifications offer little benefit at the tested larger scales. This is a reason to re-test recipes when scale and data change, rather than treating an ImageNet result as a universal design rule.
+
+For a new application, inspect whether the chosen encoder preserves the content that matters: fine text for documents, small defects for inspection, or frame-to-frame differences for video. Evaluate the decoder on held-out real features and on generated features. A decoder trained only on exact training codes can be sensitive to small off-distribution errors in a sampled code. Normalize features using the training recipe, and record the encoder version with the generative checkpoint.
+
+### JiT: direct clean-image prediction on pixels
+
+Li and He's **Just image Transformers (JiT)** [42], published at CVPR 2026 after a 2025 preprint, revisit large-patch transformers operating directly on pixels. The network predicts the clean image; sampling derives a flow velocity from that prediction. Their controlled experiments support a manifold-based explanation: a bottleneck can retain structured clean-image information while making direct prediction of high-dimensional noise or velocity difficult. The reported setup uses no pretrained latent tokenizer or auxiliary representation loss. This is evidence for a particular architecture and training regime, not a proof that pixel-space models always outperform latent generators.
+
+The crucial distinction is **direct network output versus the quantity used in the loss or solver**. For the straight path defined below, use $y_t=(1-t)\epsilon+tx$, with noise at $t=0$ and clean data at $t=1$. A network that directly predicts $\hat x_\theta(y_t,t)$ can supply
+
+$$
+\hat u_\theta(y_t,t)=\frac{\hat x_\theta(y_t,t)-y_t}{1-t},
+\qquad
+\|\hat u_\theta-(x-\epsilon)\|^2
+=\frac{\|\hat x_\theta-x\|^2}{(1-t)^2}.
+$$
+
+Here $x$ is the clean image; $\epsilon$ is the noise draw; $y_t$ is their interpolation; $\hat x_\theta$ is the direct prediction; and $\hat u_\theta$ is the corresponding transport velocity. The identity holds for $t\lt1$ before numerical clipping. An $x$-output network can thus train with a velocity-space loss. Calling it “clean prediction” does not mean its loss is an unweighted clean-image MSE. JiT's released implementation makes this distinction explicit [42].
+
+Near $t=1$, division by $1-t$ needs an endpoint convention and numerical safeguards. For the interior algebra, a fixed clean-image error is amplified increasingly as the endpoint approaches. During sampling, use the checkpoint's time distribution, noise scaling and solver recipe. Changing the direct output label alone does not reproduce the method.
+
+<Figure src={targetsFig} alt="Logarithmic plots of clean-image error amplification from a VP noise prediction and flow-velocity error amplification from a clean-image prediction." caption="Figure 6 — Equivalent predictions use different units. The left curve shows noise-error amplification at low signal; the right shows velocity-error amplification near the clean endpoint. The curves are algebraic identities, not model performance measurements." />
+
+A useful comparison fixes training data, compute, resolution, token count and the sampler, then changes the representation or target one at a time. Compare a pixel transformer, a compact VAE-latent transformer and a representation-latent transformer on reconstruction needs, generated quality and total cost. Record encoder/decoder cost and any representation pretraining. A model that uses a pretrained visual encoder has inherited training even when its generative stage starts from scratch.
 
 ## Flow matching: learn a transport velocity
 
@@ -510,7 +705,7 @@ $$
 
 so regressing the per-pair velocity $x-z$ trains the marginal velocity field. This is the same trick as in diffusion: a target that is noisy for any single example has the right conditional mean. Generation solves $dx/dt=v_\theta(x,t)$ from $t=0$ to $t=1$ with any ODE solver.
 
-<Figure src={pathsFig} alt="Random noise points connected by straight line segments to a set of data points on a circle." caption="Figure 5 — Conditional training paths are straight. Paths of different pairs cross, so the marginal velocity at a crossing point is an average, and the learned trajectories can curve." />
+<Figure src={pathsFig} alt="Random noise points connected by straight line segments to a set of data points on a circle." caption="Figure 7 — Conditional training paths are straight. Paths of different pairs cross, so the marginal velocity at a crossing point is an average, and the learned trajectories can curve." />
 
 ### How flow matching relates to diffusion
 
@@ -565,13 +760,52 @@ for steps in [1, 4, 50]:
           f"left-cluster mean x {left[:, 0].mean():.2f}, std {left[:, 0].std():.2f}")
 ```
 
-It prints, for 1, 4 and 50 steps, left-cluster means of $-0.18$, $-1.20$ and $-1.45$ with standard deviations $0.12$, $0.42$ and $0.29$. One Euler step lands almost at the overall data mean: at $t=0$ the marginal velocity is $\mathbb E[x]-z$, so a single full step sends *every* noise point to $\mathbb E[x]$. Straight conditional paths do not make the learned marginal flow straight. Figure 6 shows the same effect with the exact velocity of an 8-mode mixture.
+It prints, for 1, 4 and 50 steps, left-cluster means of $-0.18$, $-1.20$ and $-1.45$ with standard deviations $0.12$, $0.42$ and $0.29$. One Euler step lands almost at the overall data mean: at $t=0$ the marginal velocity is $\mathbb E[x]-z$, so a single full step sends *every* noise point to $\mathbb E[x]$. Straight conditional paths do not make the learned marginal flow straight. Figure 8 shows the same effect with the exact velocity of an 8-mode mixture.
 
-<Figure src={stepsFig} alt="Four scatter plots of Euler samples for 1, 2, 4 and 64 steps using the exact flow-matching velocity of an eight-mode mixture; one step collapses to the center, two steps form a disc, four steps a ring, 64 steps eight clusters with curved paths." caption="Figure 6 — Even with the exact marginal velocity, Euler sampling needs many steps: one step collapses every sample to the data mean, and the 64-step trajectories (black) bend toward the modes late in the path." />
+<Figure src={stepsFig} alt="Four scatter plots of Euler samples for 1, 2, 4 and 64 steps using the exact flow-matching velocity of an eight-mode mixture; one step collapses to the center, two steps form a disc, four steps a ring, 64 steps eight clusters with curved paths." caption="Figure 8 — Even with the exact marginal velocity, Euler sampling needs many steps: one step collapses every sample to the data mean, and the 64-step trajectories (black) bend toward the modes late in the path." />
 
 ### Rectified flow and reflow
 
 Liu, Gong and Liu [11] use the same straight interpolation ("rectified flow") and add **reflow**: after training, generate pairs $(z,\hat x)$ by solving the learned ODE from each $z$, then retrain on these *coupled* pairs instead of independent ones. Because the new pairs are already connected by the flow, their straight lines cross less, the learned trajectories become straighter, and fewer Euler steps are needed; a straight enough flow can then be distilled into a one-step model. Stable Diffusion 3 [9] showed that rectified-flow training of a large latent transformer works at text-to-image scale.
+
+## Pretrained image and video generators as complete pipelines
+
+**Plain version.** A pretrained generator is a bundle of compatible components. Loading the denoiser weights alone does not establish the right representation, text conditioning, prediction target or sampling schedule. The image/video boundary also changes what a reconstruction must preserve.
+
+### Read the components before running the checkpoint
+
+A practical pipeline combines a text encoder, an optional image/video encoder, a time-conditioned predictor, a sampler and an optional decoder. A separate refinement model may follow the first generator. Each component expects particular tensor shapes and scales. A scheduler declaring `v_prediction` may mean VP velocity; a flow scheduler may expect a derivative along a straight interpolation. Check the training path rather than guessing from a configuration string.
+
+The following verified examples illustrate architectural differences. They are fixed research baselines, rather than a ranking of the latest product releases. The references include their papers or technical reports and official release documentation.
+
+| Baseline | Generation representation and predictor | What to inspect in the pretrained pipeline |
+| --- | --- | --- |
+| SDXL [45] | Reconstruction latents with a convolutional denoiser | Text conditioning, latent scaling, optional base/refiner composition and compatible sampling configuration |
+| Stable Diffusion 3 [9] | Latent rectified flow with a joint text–image transformer | Flow time convention, text streams, time sampling and autoencoder compatibility |
+| FLUX.1 [46] | Latent rectified-flow transformer | Exact release variant, guidance behavior, text conditioning, autoencoder and release terms |
+| JiT [42] | Class-conditioned clean-image prediction directly on pixels | Image normalization, patch/resolution configuration, derived velocity and sampling recipe; this is not a freeform text-to-image checkpoint |
+| HunyuanVideo [47] | Compressed video latents with a flow-matching transformer | Video autoencoder, image/video joint training, temporal dimensions and text-conditioning components |
+| Wan2.1 [48] | Video diffusion transformer with a spatiotemporal autoencoder | Text-to-video versus image-to-video variant, causal video compression, temporal length and decode caching |
+
+SDXL [45] documents a larger latent image-generation architecture and optional refinement stage. Stable Diffusion 3 [9] illustrates how the same broad latent pipeline can instead use rectified flow and joint text/image attention. FLUX.1's official model card [46] describes a released rectified-flow transformer; its `.1-dev` variant is guidance-distilled. These facts do not make the checkpoints interchangeable. Ordinary two-pass CFG and a distilled guidance input can have different meanings and costs.
+
+For image-to-image generation, encoding an input and adding partial noise trades input preservation against the ability to change it. The actual noise level is determined by the schedule, not merely by a UI label such as “strength.” To compare edits, keep the same input and record the initial time, seed, prompt, guidance and reconstruction baseline. A reconstruction artifact can otherwise be mistaken for an edit requested by the text.
+
+### Video adds temporal compression and a consistency problem
+
+Let a video have $F$ frames, height $H$ and width $W$. A hypothetical encoder compressing time by $f_t$ and each spatial axis by $f_s$ gives a rough latent grid of $(F/f_t)\times(H/f_s)\times(W/f_s)$ positions. Exact shapes depend on padding and special handling of the first frame. After patching, dense attention across all positions grows quadratically with the remaining token count; separately reducing time and space can therefore change cost substantially.
+
+HunyuanVideo's technical report [47] combines a 3D video autoencoder with a flow-matching transformer and staged image/video training. Wan's report [48] explains a causal video VAE with special first-frame handling, spatial and temporal compression, and feature caching during chunked encoding/decoding. Causality in an autoencoder does not by itself imply that the entire video generator samples autoregressively; the generative attention and sampling procedure must be examined separately.
+
+A frame can look excellent while a clip changes an object's identity, reverses motion unexpectedly or forgets an occluded object. Test reconstruction of held-out clips before generation, then evaluate appearance, motion, prompt correspondence and consistency across frames. Melnik et al. [31] provide the survey map for these video-specific issues. A per-image metric alone cannot diagnose temporal behavior.
+
+A pretrained video generator also does not automatically become a reliable world model. Predicting plausible clips differs from predicting the consequences of a specified action. The [world-model chapter](/en/learn/deep-learning/dl-07-world-models/) develops this distinction through state, actions, rollouts and evaluation. Use the actual conditioning interface and evaluate the task the system claims to solve.
+
+### A reproducible first experiment
+
+Start by recording a pipeline manifest: checkpoint revision, encoder/decoder revisions, text encoder, representation shape and scaling, prediction target, time direction, solver, evaluation count, guidance, dtype and seed. Then perform a reconstruction check if an autoencoder is present and generate a fixed small prompt/seed set. Compare one change at a time. Include decoder latency and peak memory when reporting the cost of a latent method.
+
+This chapter's CPU examples test the underlying identities and failure modes without downloading weights. Full-resolution pretrained generation belongs in a separately provisioned experiment using the official release instructions [42], [45]–[48]. Treat an actual measured run, a paper's published result and a toy calculation as three different kinds of evidence.
 
 ## Few-step and one-step generation
 
@@ -651,22 +885,24 @@ The evaluation chapter [ML 10](/en/learn/ml/ml-10-evaluation-deployment/) return
 
 **State of the art, 2023–2026.** Several trends are visible across these reviews and the primary papers in this chapter. (1) *Transformers in latent space*: DiT-style backbones [8] replaced U-Nets in many large systems, and joint text–image transformers trained with rectified-flow objectives [9] became a standard text-to-image recipe. (2) *Flow matching as the default objective*: straight-path flow matching [10], [11] is now used alongside or instead of noise prediction, with diffusion understood as one choice of probability path [2], [29]. (3) *Fewer evaluations*: distillation [22], [33], consistency models [12], [32] and average-velocity models [13] bring sampling down to one to four network calls with quality approaching multi-step samplers. (4) *Better evaluation*: the community is moving from Inception-based FID toward richer feature spaces, human studies and alignment metrics [25], [26]. (5) *Beyond images*: video, 3-D, audio and scientific data reuse the same machinery, with video's temporal consistency and cost the main open challenges [31].
 
+**Representation and prediction, 2025–2026.** JiT [42] tests direct clean-image prediction on pixels; RAE [43] tests generation in frozen semantic feature spaces; its text-to-image follow-up [44] examines larger-scale behavior. These studies separate where the model operates from what the network directly predicts. The pretrained examples above [45]–[48] show why component compatibility and temporal reconstruction matter in actual image/video pipelines. Compare these choices under matched compute and data, including representation pretraining.
+
 **Open problems.** Sampling cost at high resolution and long video duration; principled guidance that does not trade away diversity or produce over-saturation; evaluation metrics that agree with people and detect memorization; understanding generalization (why models produce new samples rather than copies of training data); controllability and editing with guarantees; and data provenance, consent and misuse, which are social rather than purely technical questions. The next chapter, [ML 08](/en/learn/ml/ml-08-autoregressive-vision/), covers the main alternative route: autoregressive generation over pixels and tokens, and its hybrids with diffusion.
 
 ## Key takeaways
 
 - The forward process has a closed form $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$, so training reduces to "pick a random noise level and regress the noise."
 - Every term of the variational bound is a weighted noise-prediction error; $\mathcal L_{\mathrm{simple}}$ drops the weights, which improves samples but is not the likelihood.
-- Noise, clean-image, $v$, score and flow-velocity predictions are interconvertible for Gaussian paths; they differ in how the loss weights noise levels and in time convention.
+- Noise, clean-image, VP velocity, score and flow velocity convert under a specified path; time direction, loss weighting, endpoint stability and network capacity matter. JiT directly outputs clean pixels while deriving a velocity for training and sampling.
 - Sampling is solving a reverse SDE or ODE: DDPM, DDIM and higher-order solvers trade steps for accuracy with the same trained network; count NFE, not "steps."
 - Guidance trades diversity for adherence and doubles the per-step cost for CFG; very large weights push samples off the data distribution.
-- Latent space, architecture, objective and sampler are separate design choices; the autoencoder caps achievable detail.
+- Pixels, reconstruction latents and RAE features are different generative spaces. Latent compression saves repeated updates but can lose information; pretrained image/video pipelines require compatible encoders, predictors, guidance and samplers.
 - Conditional flow matching trains the marginal velocity by regressing per-pair straight-line velocities, but straight conditional paths do not make the learned flow straight — few-step generation needs reflow, distillation, consistency or average-velocity training.
 - No single metric measures quality: FID depends on sample size and feature extractor; pair it with precision/recall, human or alignment studies and cost.
 
 ## Exercises
 
-1. **Recover the clean estimate.** Starting from $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$, derive $\hat x_0$ from a noise prediction. If $\epsilon_\theta$ has an error $\delta$, how large is the error in $\hat x_0$ at $\bar\alpha_t=0.25$ and at $\bar\alpha_t=10^{-4}$?
+1. **Recover the clean estimate.** Starting from $x_t=\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon$, derive $\hat x_0$ from a noise prediction. If $\epsilon_\theta$ has an error $\delta$, how large is the error in $\hat x_0$ at $\bar\alpha_t=0.25$ and at $\bar\alpha_t=10^{-4}$? Then derive the straight-flow velocity from a clean prediction and explain why JiT can output $x$ while using a velocity loss.
 
 <details>
 <summary>Hint</summary>
@@ -684,7 +920,7 @@ Use $\bar\alpha_t=\alpha_t\bar\alpha_{t-1}$ and $\beta_t=1-\alpha_t$. The coeffi
 
 </details>
 
-3. **Count compute.** A latent text-to-image model samples with 30 DDIM steps and classifier-free guidance using separate conditional and unconditional passes, then runs the decoder once. How many denoiser evaluations are needed? How does the count change for a 4-step distilled model that has guidance "baked in"?
+3. **Count compute.** A latent text-to-image model samples with 30 DDIM steps and classifier-free guidance using separate conditional and unconditional passes, then runs the decoder once. How many denoiser evaluations are needed? How does the count change for a 4-step distilled model that has guidance "baked in"? For the synthetic shape example, change the latent channels to 16 and the pixel patch size to 16. Recompute scalar counts and attention entries. Which savings remain, and which depend on patching?
 
 <details>
 <summary>Hint</summary>
@@ -763,3 +999,10 @@ Heun uses two network calls per step. Plot samples, not only numbers. One Euler 
 39. M. Oquab, T. Darcet, T. Moutakanni et al., "DINOv2: Learning Robust Visual Features without Supervision," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2304.07193)
 40. B. Efron, "Tweedie's Formula and Selection Bias," *Journal of the American Statistical Association*, vol. 106, no. 496, pp. 1602–1614, 2011. [doi](https://doi.org/10.1198/jasa.2011.tm11181)
 41. A. Dosovitskiy, L. Beyer, A. Kolesnikov et al., "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+42. T. Li and K. He, "Back to Basics: Let Denoising Generative Models Denoise," *CVPR*, 2026 (preprint 2025). [paper](https://arxiv.org/abs/2511.13720), [publication record](https://people.csail.mit.edu/kaiming/publications.html), [official JiT code](https://github.com/LTH14/JiT).
+43. B. Zheng, N. Ma, S. Tong and S. Xie, "Diffusion Transformers with Representation Autoencoders," *ICLR*, 2026 (preprint 2025). [proceedings](https://proceedings.iclr.cc/paper_files/paper/2026/hash/3c4141c12660ad3625eb4ae845e0a6f9-Abstract-Conference.html), [manuscript](https://arxiv.org/abs/2510.11690).
+44. S. Tong, B. Zheng, Z. Wang, B. Tang, N. Ma, E. Brown, J. Yang, R. Fergus, Y. LeCun and S. Xie, "Scaling Text-to-Image Diffusion Transformers with Representation Autoencoders," *CVPR Findings Track*, 2026. [manuscript](https://arxiv.org/abs/2601.16208), [author publication record](https://ellisbrown.github.io/research/).
+45. D. Podell, Z. English, K. Lacey, A. Blattmann, T. Dockhorn, J. Müller, J. Penna and R. Rombach, "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis," *ICLR*, 2024. [proceedings](https://proceedings.iclr.cc/paper_files/paper/2024/hash/081b08068e4733ae3e7ad019fe8d172f-Abstract-Conference.html), [official model card](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0).
+46. Black Forest Labs, "FLUX.1 [dev]," official pretrained-model card, 2024. [model card](https://huggingface.co/black-forest-labs/FLUX.1-dev).
+47. W. Kong, Q. Tian, Z. Zhang et al., "HunyuanVideo: A Systematic Framework For Large Video Generative Models," technical report, arXiv:2412.03603, 2024. [report](https://arxiv.org/abs/2412.03603), [official release](https://github.com/Tencent-Hunyuan/HunyuanVideo).
+48. Team Wan, A. Wang, B. Ai, B. Wen et al., "Wan: Open and Advanced Large-Scale Video Generative Models," technical report, arXiv:2503.20314, 2025. [report](https://arxiv.org/abs/2503.20314), [official Wan2.1 release](https://github.com/Wan-Video/Wan2.1).
