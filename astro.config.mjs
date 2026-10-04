@@ -36,6 +36,25 @@ export default defineConfig({
   site,
   base,
   trailingSlash: 'always',
+  security: {
+    csp: {
+      directives: [
+        "default-src 'self'",
+        "base-uri 'none'",
+        "object-src 'none'",
+        "form-action 'none'",
+        "frame-src 'none'",
+        "connect-src 'self'",
+        "img-src 'self' data:",
+        // Vite embeds small local font subsets as data URLs.
+        "font-src 'self' data:",
+      ],
+      // Pagefind runs WebAssembly; arbitrary JavaScript eval remains blocked.
+      scriptDirective: { resources: ["'self'", "'wasm-unsafe-eval'"] },
+      // KaTeX, syntax highlighting and interactive plots use inline styles.
+      styleDirective: { resources: ["'self'", "'unsafe-inline'"] },
+    },
+  },
   redirects: {
     // Former NLP tutorials, reorganized into the 12-topic NLP syllabus.
     '/en/learn/nlp/nlp-00-language-structure-meaning/': '/en/learn/nlp/nlp-02-linguistic-essentials/',

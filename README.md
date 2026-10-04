@@ -72,7 +72,32 @@ One-time setup in the Cloudflare dashboard (**Workers & Pages → Create → Pag
 | Environment variable | `SITE` = `https://blog.shyandram.dev` |
 
 Node 22 is picked up from `.nvmrc`. Pushes to `main` go to production; other branches and pull requests
-get their own preview URL. `public/_headers` sets long-term caching for built assets.
+get their own preview URL. `public/_headers` sets security headers and long-term caching for built assets.
+
+### Security settings
+
+The build serves fonts locally and adds a per-page Content Security Policy with script hashes.
+Inline styles remain allowed for KaTeX, syntax highlighting and interactive plots; inline
+JavaScript without a matching hash and JavaScript `eval` are blocked. Pagefind's WebAssembly
+is explicitly allowed. Cloudflare applies the complementary HTTP headers from `public/_headers`.
+Font license notices are served from `public/fonts/licenses/`.
+
+After building, run `.venv/bin/python scripts/check-security.py` to verify script hashes across
+the output and test search, themes, language selection and injection blocking in Chromium.
+The test emulates Cloudflare's headers locally and saves desktop/mobile screenshots in `/tmp`.
+
+**HTTPS redirect requires a Cloudflare setting:** enable **SSL/TLS → Edge Certificates → Always
+Use HTTPS** if every hostname in the zone supports HTTPS. Otherwise, create a Single Redirect
+with wildcard request URL `http://blog.shyandram.dev/*`, target URL
+`https://blog.shyandram.dev/${1}`, status 301, and **Preserve query string** enabled.
+HSTS in `_headers` protects returning HTTPS visitors;
+it does not redirect a first HTTP visit. Do not add a second `public/_redirects` file.
+See [Cloudflare's HTTPS instructions](https://developers.cloudflare.com/ssl/edge-certificates/additional-options/always-use-https/).
+The hostname-scoped rule follows [Cloudflare's selective HTTPS example](https://developers.cloudflare.com/rules/url-forwarding/examples/redirect-admin-https/).
+
+After deployment, verify that `curl -I http://blog.shyandram.dev/en/` redirects to HTTPS and
+`curl -I https://blog.shyandram.dev/en/` includes the security headers. Run `npm audit` after
+dependency updates. Keep credentials in ignored `.env.*` or `.dev.vars*` files, never in `public/`.
 
 ## Writing a tutorial
 
