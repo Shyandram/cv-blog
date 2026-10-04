@@ -1,0 +1,323 @@
+import { L, pick, num, fmt, svg, text, path } from './types.ts';
+import type { Control, Experiment } from './types.ts';
+import type { Lang } from '../../i18n/ui';
+
+const range = (key: string, en: string, zh: string, value: number, min: number, max: number, step = 1): Control => ({ key, label: L(en, zh), kind: 'range', value, min, max, step });
+const select = (key: string, en: string, zh: string, value: string, options: [string, string, string][]): Control => ({ key, label: L(en, zh), kind: 'select', value, options: options.map(([value, en, zh]) => ({ value, label: L(en, zh) })) });
+const metric = (lang: Lang, en: string, zh: string, value: string | number) => ({ label: pick(lang, en, zh), value: String(value) });
+const stroke = (color = 'a') => `stroke="var(--plot-${color})" stroke-width="2.5"`;
+const line = (x1: number, y1: number, x2: number, y2: number, color = 'grid') => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--plot-${color})"/>`;
+const dot = (x: number, y: number, r = 4, color = 'a') => `<circle cx="${x}" cy="${y}" r="${r}" fill="var(--plot-${color})"/>`;
+const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
+const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+const softmax = (xs: number[]) => { const m = Math.max(...xs); const e = xs.map(x => Math.exp(x - m)); const z = sum(e); return e.map(x => x / z); };
+const normal = (x: number, mu = 0, sigma = 1) => Math.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * Math.sqrt(2 * Math.PI));
+function bars(labels: string[], values: number[], max = Math.max(...values, 1), colors?: string[]) {
+  return labels.map((label, i) => { const y = 37 + i * 32; return text(12, y + 15, label) + `<rect x="160" y="${y}" width="${Math.max(0, 370 * values[i] / max)}" height="21" fill="var(--plot-${colors?.[i] ?? 'a'})"/>` + text(540, y + 15, fmt(values[i])); }).join('');
+}
+function curves(series: { values: number[]; color: string }[], yMin: number, yMax: number, labels: string[]) {
+  const height = 270;
+  return line(45, 230, 610, 230) + line(45, 25, 45, 230) + series.map(({ values, color }) => path(values.map((v, i) => [45 + i * 560 / Math.max(1, values.length - 1), 230 - 195 * (v - yMin) / (yMax - yMin)] as [number, number]), stroke(color)) + (values.length === 1 ? dot(45, 230 - 195 * (values[0] - yMin) / (yMax - yMin), 5, color) : '')).join('') + labels.map((label, i) => text(50 + i * 270, height, label, `fill="var(--plot-${series[i]?.color ?? 'ink'})"`)).join('');
+}
+
+export function scopeTruth(reading: number[]) {
+  return { eachSome: reading.every(mask => mask !== 0), shared: [1, 2, 4].some(book => reading.every(mask => (mask & book) !== 0)) };
+}
+
+const scope: Experiment = {
+  id: 'quantifier-scope', track: 'nlp',
+  title: L('Does “everyone read a book” mean the same book?', '「每個人都讀了一本書」是同一本嗎？'),
+  description: L('Change a small reading relation and evaluate two quantifier orders exactly.', '改變小型閱讀關係，精確判斷兩種量詞順序的真值。'),
+  challenge: L('Make “each person read some book” true while “one book was read by everyone” is false. Can the reverse happen?', '讓「每個人都讀過某本書」成立，但「有一本書每個人都讀過」不成立。反過來可能嗎？'),
+  note: L('This is a finite truth-condition model, not an automatic interpretation of an ambiguous sentence. A shared book satisfies both readings.', '這是有限情境中的真值條件模型，不會自動解讀歧義句。所有人讀過同一本書時，兩種解讀都成立。'),
+  related: ['nlp/nlp-02-linguistic-essentials', 'nlp/nlp-06-sequence-labeling'],
+  controls: ['A', 'B', 'C'].map((person, i) => select(`p${i}`, `Person ${person} read`, `${person} 讀過的書`, String(1 << i), [['0', 'Nothing', '沒有'], ['1', 'Book 1', '書 1'], ['2', 'Book 2', '書 2'], ['4', 'Book 3', '書 3'], ['3', 'Books 1 and 2', '書 1 和 2'], ['7', 'All three books', '三本都讀過']])),
+  compute(s, lang) {
+    const masks = [0, 1, 2].map(i => num(s, `p${i}`)); const t = scopeTruth(masks);
+    let body = text(30, 30, pick(lang, 'People → books: an edge means “read”', '人 → 書：連線代表「讀過」'));
+    masks.forEach((mask, i) => { [1, 2, 4].forEach((bit, j) => { if (mask & bit) body += line(140, 75 + i * 65, 460, 75 + j * 65, 'a'); }); });
+    masks.forEach((_, i) => { body += dot(140, 75 + i * 65, 8) + text(85, 80 + i * 65, 'ABC'[i]); body += dot(460, 75 + i * 65, 8, 'b') + text(485, 80 + i * 65, String(i + 1)); });
+    const truth = (b: boolean) => pick(lang, b ? 'True' : 'False', b ? '真' : '假');
+    return { svg: svg(body, 260), summary: pick(lang, '∀ person ∃ book allows a different book per person. ∃ book ∀ person requires one shared book; changing quantifier order changes the claim.', '∀ 人 ∃ 書允許每個人讀不同的書；∃ 書 ∀ 人要求有一本共同讀過的書。改變量詞順序會改變命題。'), metrics: [metric(lang, 'Each person: some book', '每個人：至少一本', truth(t.eachSome)), metric(lang, 'One book: everyone', '某一本：所有人', truth(t.shared))] };
+  },
+};
+
+export function trainBpe(steps: number, input: string) {
+  const corpus = [['low', 5], ['lower', 2], ['lowest', 3], ['slow', 2], ['slower', 1]] as [string, number][];
+  const words = corpus.map(([word, count]) => ({ pieces: [...word, '▁'], count }));
+  const merges: { a: string; b: string; count: number }[] = [];
+  const merge = (pieces: string[], a: string, b: string) => { const out: string[] = []; for (let i = 0; i < pieces.length; i++) { if (pieces[i] === a && pieces[i + 1] === b) { out.push(a + b); i++; } else out.push(pieces[i]); } return out; };
+  for (let step = 0; step < steps; step++) {
+    const counts = new Map<string, number>();
+    for (const word of words) for (let i = 0; i < word.pieces.length - 1; i++) { const key = JSON.stringify(word.pieces.slice(i, i + 2)); counts.set(key, (counts.get(key) ?? 0) + word.count); }
+    const best = [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]; if (!best) break;
+    const [a, b] = JSON.parse(best[0]) as [string, string]; merges.push({ a, b, count: best[1] });
+    words.forEach(w => { w.pieces = merge(w.pieces, a, b); });
+  }
+  let pieces = [...Array.from(input.trim().slice(0, 30)), '▁'];
+  for (const { a, b } of merges) pieces = merge(pieces, a, b);
+  return { merges, pieces, trainingTokens: sum(words.map(w => w.pieces.length * w.count)) };
+}
+const bpe: Experiment = {
+  id: 'subword-merges', track: 'nlp', title: L('Build subwords one merge at a time', '逐步合併字元，建立子詞'),
+  description: L('Train byte-pair encoding on a tiny weighted vocabulary and apply the learned merge order to a new word.', '在小型加權詞彙表上訓練 BPE，再將學得的合併順序套用到新字詞。'),
+  challenge: L('Compare “lower”, “slowest” and “glow”. Which pieces transfer to unseen words, and which merges only compress the training vocabulary?', '比較 lower、slowest 與 glow。哪些子詞能用於未見字詞？哪些合併只是壓縮訓練詞彙？'),
+  note: L('Character-level BPE with an explicit end marker ▁; lexicographic tie breaking. This is not a byte tokenizer or a pretrained vocabulary. New characters remain individual pieces; spaces inside the input are treated as characters.', '這是字元層級 BPE，使用詞尾符號 ▁，同分時依字典順序決定。不使用位元組切詞器或預訓練詞彙表。新字元保留為單獨子詞，輸入中的空格也視為字元。'),
+  related: ['nlp/nlp-01-introduction', 'nlp/nlp-02-linguistic-essentials', 'nlp/nlp-10-pretrained-bert'],
+  controls: [range('merges', 'Merge steps', '合併步數', 4, 0, 12), { key: 'word', kind: 'text', label: L('Apply to one word (first 30 characters)', '套用字詞（前 30 個字元）'), value: 'slowest' }],
+  compute(s, lang) {
+    const result = trainBpe(num(s, 'merges'), String(s.word));
+    const body = text(20, 27, 'low ×5 · lower ×2 · lowest ×3 · slow ×2 · slower ×1') + result.merges.map((m, i) => text(25 + Math.floor(i / 6) * 310, 65 + (i % 6) * 27, `${i + 1}. ${m.a} + ${m.b} → ${m.a + m.b} (${m.count})`)).join('') + text(20, 252, pick(lang, 'Output pieces:', '輸出子詞：')) + text(20, 278, result.pieces.slice(0, 16).join(' | ')) + text(20, 304, result.pieces.slice(16).join(' | '));
+    return { svg: svg(body, 335), summary: pick(lang, 'Merge counts come only from the fixed training vocabulary. Encoding applies the learned rules in order; it does not refit them to your input.', '合併次數只由固定訓練詞彙計算。編碼依序套用已學得的規則，不會用你的輸入重新訓練。'), metrics: [metric(lang, 'Learned merges', '學得合併', result.merges.length), metric(lang, 'Training pieces, weighted', '訓練子詞總數（加權）', result.trainingTokens), metric(lang, 'Input pieces', '輸入子詞數', result.pieces.length)] };
+  },
+};
+
+export function poolingExample(reverse: boolean, mode: string, pads: number) {
+  const values = reverse ? [-1, 0.2, 1] : [1, 0.2, -1];
+  const pooled = mode === 'position' ? sum(values.map((v, i) => (i + 1) * v)) / 6 : sum(values) / (mode === 'unmasked' ? 3 + pads : 3);
+  return { values, pooled, probability: sigmoid(5 * pooled) };
+}
+const pooling: Experiment = {
+  id: 'pooling-order', track: 'nlp', title: L('What does pooling erase?', '池化會抹去哪些訊息？'),
+  description: L('Swap subject and object, then compare masked means, padding mistakes and position-weighted pooling.', '交換主詞與受詞，比較遮罩平均、填補錯誤與位置加權池化。'),
+  challenge: L('Reverse “dogs chase cats”. Why is a mean-pooled classifier unable to detect the role change? Then add padding and find the faulty denominator.', '反轉 dogs chase cats。為何平均池化分類器無法辨認角色改變？再增加填補，找出錯誤的分母。'),
+  note: L('Fixed scalar embeddings: dogs=1, chase=0.2, cats=−1; classifier p=σ(5h). Position weights 1,2,3 are a diagnostic, not a trained syntax model.', '固定純量嵌入：dogs=1、chase=0.2、cats=−1；分類器 p=σ(5h)。位置權重 1、2、3 只用來診斷，不是訓練過的句法模型。'),
+  related: ['nlp/nlp-03-neural-networks-for-nlp', 'nlp/nlp-04-lexical-semantics-word-embeddings'],
+  controls: [select('order', 'Sentence', '句子', 'forward', [['forward', 'dogs chase cats', 'dogs chase cats'], ['reverse', 'cats chase dogs', 'cats chase dogs']]), select('mode', 'Pooling', '池化方式', 'mean', [['mean', 'Mean, mask padding', '平均，排除填補'], ['unmasked', 'Mean, count padding (bug)', '平均，計入填補（錯誤）'], ['position', 'Position weights 1,2,3', '位置權重 1、2、3']]), range('pads', 'Zero padding tokens', '零向量填補數', 3, 0, 9)],
+  compute(s, lang) { const r = poolingExample(s.order === 'reverse', String(s.mode), num(s, 'pads')); const names = s.order === 'reverse' ? ['cats', 'chase', 'dogs'] : ['dogs', 'chase', 'cats']; const body = names.map((n, i) => `<rect x="${30 + i * 200}" y="40" width="175" height="75" rx="7" fill="var(--plot-grid)"/>` + text(50 + i * 200, 70, n) + text(50 + i * 200, 95, `e = ${r.values[i]}`)).join('') + text(30, 165, `h = ${fmt(r.pooled)} → logit = ${fmt(5 * r.pooled)}`) + `<g transform="translate(0 158)">${bars(['P(class 1)'], [r.probability])}</g>`; return { svg: svg(body, 260), summary: pick(lang, 'Zero padding must not change a masked mean. Averaging preserves a bag of embeddings but loses grammatical roles carried by order.', '正確遮罩下，零向量填補不應改變平均值。平均池化保留嵌入的集合，卻失去由順序承載的語法角色。'), metrics: [metric(lang, 'Pooled h', '池化 h', fmt(r.pooled)), metric(lang, 'P(class 1)', 'P(類別 1)', fmt(r.probability)), metric(lang, 'Real / padded length', '實際／填補後長度', `3 / ${3 + num(s, 'pads')}`)] }; },
+};
+
+export function sequenceDecode(evidence: number, bonus: number, constrained: boolean) {
+  const emissions = [[2, 1, -1], [1.2, 0, evidence], [1.5, 0, 0.3], [2, -0.5, -1]];
+  const local = emissions.map(row => row.indexOf(Math.max(...row)));
+  const valid = (tags: number[]) => tags.every((tag, i) => tag !== 2 || (i > 0 && tags[i - 1] !== 0));
+  const score = (tags: number[]) => sum(tags.map((tag, i) => emissions[i][tag] + (i > 0 && tags[i - 1] === 1 && tag === 2 ? bonus : 0)));
+  let best: number[] = [], bestScore = -Infinity;
+  for (let n = 0; n < 81; n++) { const tags = [0, 1, 2, 3].map(i => Math.floor(n / 3 ** (3 - i)) % 3); if (constrained && !valid(tags)) continue; const value = score(tags); if (value > bestScore) { best = tags; bestScore = value; } }
+  return { emissions, local, best, bestScore, localScore: score(local), localValid: valid(local), bestValid: valid(best) };
+}
+const sequence: Experiment = {
+  id: 'sequence-decoding', track: 'nlp', title: L('Local tag choices versus a coherent sequence', '局部標籤選擇與完整序列'),
+  description: L('Combine emission scores, transition scores and BIO span constraints to choose a complete tag path.', '結合發射分數、轉移分數與 BIO 片段限制，選出完整標籤路徑。'),
+  challenge: L('Raise the score for I at “York”. Can a transition preference change the best path even when the local winner stays fixed?', '提高 York 的 I 分數。即使局部最佳標籤不變，轉移偏好能否改變最佳路徑？'),
+  note: L('O=outside, B=begin, I=inside one entity type. Scores are synthetic, not probabilities. All 81 paths are enumerated exactly; dynamic programming would find the same maximum more efficiently on long sequences.', 'O=外部、B=起始、I=內部，只使用一種實體類型。這些合成分數不是機率。此處精確枚舉 81 條路徑；長序列可用動態規劃更有效率地找到相同最大值。'),
+  related: ['nlp/nlp-12-syntactic-semantic-tasks', 'nlp/nlp-06-sequence-labeling'],
+  controls: [range('evidence', 'York: I emission', 'York：I 發射分數', 0.8, -2, 4, 0.2), range('bonus', 'B → I transition bonus', 'B → I 轉移加分', 2, -2, 3, 0.2), select('constraints', 'Legal BIO spans', '合法 BIO 片段', 'yes', [['yes', 'Enforce', '強制遵守'], ['no', 'Ignore constraints', '忽略限制']])],
+  compute(s, lang) { const r = sequenceDecode(num(s, 'evidence'), num(s, 'bonus'), s.constraints === 'yes'); const names = ['New', 'York', 'office', 'opens']; const tags = ['O', 'B', 'I']; let body = names.map((n, i) => text(85 + i * 145, 25, n)).join(''); r.emissions.forEach((row, i) => row.forEach((v, j) => { body += `<rect x="${65 + i * 145}" y="${48 + j * 58}" width="112" height="42" rx="5" fill="var(--plot-${r.best[i] === j ? 'a' : 'grid'})" fill-opacity="${r.best[i] === j ? 0.3 : 1}"/>` + text(82 + i * 145, 75 + j * 58, `${tags[j]}: ${fmt(v)}`); })); body += path(r.best.map((tag, i) => [120 + i * 145, 69 + tag * 58] as [number, number]), `${stroke('b')} stroke-dasharray="5 4"`); body += text(20, 255, `Local: ${r.local.map(i => tags[i]).join(' → ')} | Global: ${r.best.map(i => tags[i]).join(' → ')}`); return { svg: svg(body), summary: pick(lang, 'The highlighted cells maximize the total path score, not each token separately. An I tag can only continue a B or I when constraints are enforced.', '反白格子最大化整條路徑的總分，而不是各詞獨立的分數。啟用限制時，I 只能接在 B 或 I 後面。'), metrics: [metric(lang, 'Best total score', '最佳總分', fmt(r.bestScore)), metric(lang, 'Local path score', '局部路徑總分', fmt(r.localScore)), metric(lang, 'Local path legal?', '局部路徑合法？', pick(lang, r.localValid ? 'Yes' : 'No', r.localValid ? '是' : '否'))] }; },
+};
+
+const documents = ['robots see red objects', 'red red red objects', 'robots use cameras to see distant objects in a room', 'language models predict words', 'cameras record light', 'red flowers grow'];
+export function lexicalRetrieval(query: string, k1: number, b: number) {
+  const tokenize = (v: string): string[] => v.toLowerCase().match(/[a-z]+/g) ?? [];
+  const docs = documents.map(tokenize); const terms = [...new Set(tokenize(query.slice(0, 200)))]; const avg = sum(docs.map(d => d.length)) / docs.length;
+  return docs.map((doc, index) => ({ index, score: sum(terms.map(term => { const tf = doc.filter(t => t === term).length; const df = docs.filter(d => d.includes(term)).length; const idf = Math.log(1 + (docs.length - df + 0.5) / (df + 0.5)); return tf ? idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * doc.length / avg)) : 0; })) })).sort((a, b) => b.score - a.score || a.index - b.index);
+}
+const retrieval: Experiment = {
+  id: 'retrieval-ranking', track: 'nlp', title: L('Why does this document rank first?', '為何這份文件排在第一？'),
+  description: L('Inspect BM25 term saturation and document-length normalization on a fully visible local corpus.', '在完整可見的本地語料上，觀察 BM25 詞頻飽和與文件長度正規化。'),
+  challenge: L('Search “red”, then “robots objects”. Change length normalization and saturation; explain each rank swap from document terms.', '先搜尋 red，再搜尋 robots objects。改變長度正規化與飽和程度，根據文件中的詞解釋排名交換。'),
+  note: L('Six synthetic documents, lowercase English word tokenization, distinct query terms, positive smoothed IDF. A lexical relevance score is not evidence that a document answers a question.', '六份合成文件，採小寫英文字詞切分、不重複查詢詞與正值平滑 IDF。詞彙相關分數不代表文件足以回答問題。'),
+  related: ['nlp/nlp-09-language-modeling-transformers'],
+  controls: [{ key: 'query', label: L('Query (English words)', '查詢（英文字詞）'), kind: 'text', value: 'red objects' }, range('k1', 'Term saturation k₁', '詞頻飽和 k₁', 1.2, 0, 3, 0.1), range('b', 'Length normalization b', '長度正規化 b', 0.75, 0, 1, 0.05)],
+  compute(s, lang) { const ranked = lexicalRetrieval(String(s.query), num(s, 'k1'), num(s, 'b')); const body = bars(ranked.map(r => `D${r.index + 1}`), ranked.map(r => r.score)) + documents.map((d, i) => text(20, 265 + i * 25, `D${i + 1}: ${d}`)).join(''); return { svg: svg(body, 430), summary: pick(lang, 'IDF rewards terms found in fewer documents. k₁ controls how repeated matches saturate; b controls the penalty for length relative to this corpus mean.', 'IDF 提高少數文件中才出現的詞之權重。k₁ 控制重複命中的飽和程度；b 控制相對於此語料平均長度的懲罰。'), metrics: [metric(lang, 'Top document', '最高分文件', ranked[0].score > 0 ? `D${ranked[0].index + 1}` : pick(lang, 'No lexical matches', '沒有詞彙命中')), metric(lang, 'Top score', '最高分', fmt(ranked[0].score)), metric(lang, 'Matching documents', '命中文件', ranked.filter(d => d.score > 0).length)] }; },
+};
+
+export function dialogueBelief(prior: number, reliability: number, turns: number, reset: boolean) {
+  const values = [prior]; const logit = (p: number) => Math.log(p / (1 - p)); let odds = logit(prior);
+  for (let i = 0; i < turns; i++) { if (reset && i === 2) odds = logit(prior); odds += [1, 1, -1][i] * logit(reliability); values.push(sigmoid(odds)); }
+  return values;
+}
+const dialogue: Experiment = {
+  id: 'dialogue-belief', track: 'nlp', title: L('When a correction should replace old evidence', '更正何時應取代舊證據？'),
+  description: L('Track a two-city belief through observations and compare accumulation with an explicit correction reset.', '追蹤兩個城市的信念，比較累積觀察與明確更正後的重設。'),
+  challenge: L('Start with a strong prior for Taipei. At turn three compare retaining old observations with discarding superseded evidence.', '先設定強烈偏向臺北的先驗。第三輪時，比較保留舊觀察與捨棄已被更正的證據。'),
+  note: L('A synthetic Bayesian tracker with fixed observation reliability. Text is not parsed, and the reset policy is supplied explicitly. Real corrections need semantic scope and provenance, not blind repeated likelihood multiplication.', '這是固定觀察可靠度的合成貝氏追蹤器，不解析文字，更正策略由使用者指定。真實更正需要語意範圍與來源紀錄，不能盲目重複相乘概似。'),
+  related: ['nlp/nlp-08-seq2seq-transformers', 'nlp/nlp-02-linguistic-essentials'],
+  controls: [range('prior', 'Prior P(Taipei)', '先驗 P(臺北)', 0.5, 0.05, 0.95, 0.05), range('reliability', 'Observation reliability', '觀察可靠度', 0.8, 0.5, 0.95, 0.05), range('turns', 'Observed turns', '已觀察輪數', 3, 0, 3), select('reset', 'Turn 3 correction policy', '第三輪更正策略', 'yes', [['yes', 'Replace earlier observations', '取代先前觀察'], ['no', 'Accumulate all observations', '累積全部觀察']])],
+  compute(s, lang) { const values = dialogueBelief(num(s, 'prior'), num(s, 'reliability'), num(s, 'turns'), s.reset === 'yes'); const body = curves([{ values, color: 'a' }], 0, 1, [pick(lang, 'P(Taipei): prior → observed turns', 'P(臺北)：先驗 → 已觀察輪次')]) + text(50, 310, '1: Taipei · 2: Taipei · 3: “Actually, Tainan”'); return { svg: svg(body, 340), summary: pick(lang, 'Each observation multiplies prior odds by its likelihood ratio. Resetting a correction keeps the initial prior but removes the likelihood factors of superseded observations.', '每次觀察以概似比更新先驗勝算。重設更正會保留初始先驗，但移除已被取代之觀察的概似因子。'), metrics: [metric(lang, 'P(Taipei)', 'P(臺北)', fmt(values.at(-1)!)), metric(lang, 'P(Tainan)', 'P(臺南)', fmt(1 - values.at(-1)!)), metric(lang, 'Observed turns', '已觀察輪次', num(s, 'turns'))] }; },
+};
+
+export function decodingDistribution(temperature: number, k: number, p: number) {
+  const base = softmax([3, 2, 1, 0, -1].map(x => x / temperature)); const top = base.slice(0, k); const z = sum(top); let cumulative = 0, keep = 0;
+  for (const v of top) { cumulative += v / z; keep++; if (cumulative >= p - 1e-12) break; }
+  const retained = sum(base.slice(0, keep)); const distribution = base.map((v, i) => i < keep ? v / retained : 0);
+  return { base, distribution, keep, entropy: -sum(distribution.filter(v => v > 0).map(v => v * Math.log2(v))) };
+}
+const decoding: Experiment = {
+  id: 'decoding-controls', track: 'nlp', title: L('Temperature, top-k and top-p change the distribution', '溫度、top-k 與 top-p 如何改變分布'),
+  description: L('Follow fixed logits through temperature scaling, top-k truncation, nucleus truncation and renormalization.', '追蹤固定 logits 經過溫度縮放、top-k 截斷、核心截斷與重新正規化的結果。'),
+  challenge: L('Keep temperature fixed and lower top-p. Why can the output entropy change abruptly even though the slider moves continuously?', '固定溫度並降低 top-p。為何滑桿連續移動，輸出熵卻可能突然改變？'),
+  note: L('Five synthetic candidate tokens with logits [3,2,1,0,−1]. This applies top-k first, then top-p to its renormalized distribution. No model is trained and no quality score is inferred from entropy.', '五個合成候選詞的 logits 為 [3,2,1,0,−1]。先套用 top-k，再對重新正規化的分布套用 top-p。不訓練模型，也不從熵推論文字品質。'),
+  related: ['nlp/nlp-09-language-modeling-transformers', 'nlp/nlp-08-seq2seq-transformers', 'ml/ml-08-autoregressive-vision'],
+  controls: [range('temperature', 'Temperature', '溫度', 1, 0.2, 3, 0.1), range('k', 'Top-k candidates', 'Top-k 候選數', 5, 1, 5), range('p', 'Top-p cumulative mass', 'Top-p 累積機率', 0.9, 0.1, 1, 0.05)],
+  compute(s, lang) { const r = decodingDistribution(num(s, 'temperature'), num(s, 'k'), num(s, 'p')); let body = text(20, 25, pick(lang, 'Filled: final probabilities · outline: before truncation', '實心：最終機率・外框：截斷前機率')); body += bars(['A', 'B', 'C', 'D', 'E'], r.distribution, 1); body += r.base.map((v, i) => `<rect x="160" y="${37 + i * 32}" width="${370 * v}" height="21" fill="none" stroke="var(--plot-b)"/>`).join(''); return { svg: svg(body, 230), summary: pick(lang, 'Temperature rescales relative logits. Truncation sets excluded candidates to zero and renormalizes the survivors; it cannot improve the information available to the model.', '溫度縮放 logits 的相對差距。截斷將排除候選的機率設為零，再正規化保留候選；它無法增加模型掌握的訊息。'), metrics: [metric(lang, 'Candidates retained', '保留候選數', r.keep), metric(lang, 'Entropy, bits', '熵（位元）', fmt(r.entropy)), metric(lang, 'Probability sum', '機率總和', fmt(sum(r.distribution)))] }; },
+};
+
+export function maskingHeads(causal: boolean, clue: number, head: string) {
+  // Four fixed token vectors; the masked position has no content vector.
+  const vectors = [[0.1, 0.2], [0.2, 0.1], [0, 0], [clue, 0.5]];
+  const visible = vectors.map((_, i) => !causal || i < 2);
+  const context = [0, 1].map(j => sum(vectors.filter((_, i) => visible[i] && i !== 2).map(v => v[j])) / visible.filter((v, i) => v && i !== 2).length);
+  const logits = head === 'masked' ? [3 * context[0], -3 * context[0]] : [2 * context[0] + context[1], -2 * context[0] - context[1]];
+  return { vectors, visible, context, probabilities: softmax(logits) };
+}
+const masking: Experiment = {
+  id: 'masked-objectives', track: 'nlp', title: L('What may a masked predictor see?', '遮罩預測器能看見哪些位置？'),
+  description: L('Change a right-context clue, hide it causally, then attach different output heads to the same small contextual vector.', '改變右側語境線索，以因果遮罩隱藏它，再將不同輸出頭接到同一個小型語境向量。'),
+  challenge: L('Change the right-hand clue under each mask. When must the masked-position prediction remain identical, and why?', '在兩種遮罩下分別改變右側線索。哪一種情況的遮罩位置預測必須保持相同？為什麼？'),
+  note: L('A hand-built uniform context encoder and two linear heads illustrate BERT-style visibility and task interfaces. These are not BERT embeddings or pretrained predictions. The sequence head reads this toy pooled context, not an actual [CLS] representation.', '此處以手工設定的均勻語境編碼器與兩個線性輸出頭，示範 BERT 類型的可見範圍及任務介面。這些不是 BERT 嵌入或預訓練預測。序列輸出頭讀取玩具池化語境，不是真正的 [CLS] 表徵。'),
+  related: ['nlp/nlp-09-language-modeling-transformers', 'nlp/nlp-10-pretrained-bert', 'nlp/nlp-11-classification-bert', 'nlp/nlp-07-attention-transformers'],
+  controls: [select('mask', 'Visible context', '可見語境', 'bidirectional', [['bidirectional', 'Left and right, target masked', '左右語境，目標已遮罩'], ['causal', 'Strictly left of target', '僅目標左側']]), range('clue', 'Right-context feature', '右側語境特徵', 1, -1, 1, 0.1), select('head', 'Output head', '輸出頭', 'masked', [['masked', 'Masked token: candidates A/B', '遮罩詞：候選 A／B'], ['sequence', 'Sequence label: classes +/−', '序列標籤：類別 +／−']])],
+  compute(s, lang) { const r = maskingHeads(s.mask === 'causal', num(s, 'clue'), String(s.head)); let body = ['left 1', 'left 2', '[MASK]', 'right clue'].map((name, i) => `<rect x="${15 + i * 155}" y="35" width="140" height="65" rx="5" fill="var(--plot-${r.visible[i] && i !== 2 ? 'a' : 'grid'})" fill-opacity="0.3"/>` + text(25 + i * 155, 62, name) + text(25 + i * 155, 87, `[${r.vectors[i].map(v => fmt(v)).join(', ')}]`)).join(''); body += text(25, 140, `h = [${r.context.map(v => fmt(v)).join(', ')}]`); const labels = s.head === 'masked' ? ['Token A', 'Token B'] : ['Class +', 'Class −']; body += `<g transform="translate(0 135)">${bars(labels, r.probabilities, 1)}</g>`; return { svg: svg(body, 270), summary: pick(lang, 'The target content is always absent. A bidirectional objective can use right context; a causal next-token objective cannot. An output head maps representations to the labels required by a task.', '目標內容始終不可見。雙向目標可利用右側語境，因果次詞預測則不行。輸出頭將表徵映射為任務所需標籤。'), metrics: [metric(lang, 'Context positions used', '使用語境位置數', r.visible.filter((v, i) => v && i !== 2).length), metric(lang, 'First output probability', '第一個輸出機率', fmt(r.probabilities[0])), metric(lang, 'Output probabilities sum', '輸出機率總和', fmt(sum(r.probabilities)))] }; },
+};
+
+export function finiteDifference(x: number, exponent: number, central: boolean) {
+  const h = 10 ** exponent; const exact = Math.exp(x); const estimate = central ? (Math.exp(x + h) - Math.exp(x - h)) / (2 * h) : (Math.exp(x + h) - Math.exp(x)) / h;
+  return { h, exact, estimate, relative: Math.abs(estimate - exact) / exact };
+}
+const gradients: Experiment = {
+  id: 'gradient-check', track: 'ml', title: L('Why a smaller finite-difference step can be worse', '為何有限差分步長越小反而越差？'),
+  description: L('Check the derivative of exp(x), separating truncation error from floating-point cancellation.', '檢查 exp(x) 的導數，區分截斷誤差與浮點相減造成的消去誤差。'),
+  challenge: L('Sweep h from 10⁻¹ to 10⁻¹⁶. Find the useful range for forward and central differences rather than choosing the smallest step.', '將 h 從 10⁻¹ 掃描至 10⁻¹⁶。找出前向差分與中央差分的有效區間，而非直接選最小步長。'),
+  note: L('Computed with JavaScript binary64 arithmetic; exact means the analytic derivative exp(x) evaluated in the same arithmetic. A zero measured error is rounded agreement, not proof of exact real arithmetic.', '使用 JavaScript binary64 運算；此處「解析值」是以相同精度計算的解析導數 exp(x)。測得零誤差只代表捨入後相同，不是實數運算完全精確的證明。'),
+  related: ['ml/ml-01c-numerical-computation', 'ml/ml-02-neural-networks'],
+  controls: [range('x', 'Evaluation point x', '計算位置 x', 1, -2, 2, 0.1), range('exponent', 'log₁₀(step h)', 'log₁₀（步長 h）', -5, -16, -1), select('scheme', 'Difference formula', '差分公式', 'central', [['central', 'Central difference', '中央差分'], ['forward', 'Forward difference', '前向差分']])],
+  compute(s, lang) { const r = finiteDifference(num(s, 'x'), num(s, 'exponent'), s.scheme === 'central'); const errors = Array.from({ length: 61 }, (_, i) => Math.log10(Math.max(1e-17, finiteDifference(num(s, 'x'), -16 + i / 4, s.scheme === 'central').relative))); const body = curves([{ values: errors, color: 'a' }], -17, 1, ['log₁₀(h): −16 → −1']) + dot(45 + (num(s, 'exponent') + 16) / 15 * 560, 230 - 195 * (Math.log10(Math.max(1e-17, r.relative)) + 17) / 18, 6, 'b') + text(50, 20, 'y: log₁₀(relative error), floor −17'); return { svg: svg(body), summary: pick(lang, 'Large h introduces approximation error. Very small h subtracts nearly identical floating-point values, losing useful digits. Central differences cancel the leading truncation term but still suffer roundoff.', 'h 太大會產生近似誤差；h 太小則會相減兩個極接近的浮點值，流失有效位數。中央差分消去領先的截斷項，但仍受捨入誤差影響。'), metrics: [metric(lang, 'Analytic derivative', '解析導數', fmt(r.exact, 8)), metric(lang, 'Numerical derivative', '數值導數', fmt(r.estimate, 8)), metric(lang, 'Relative error', '相對誤差', r.relative.toExponential(3))] }; },
+};
+
+export function mlpProbability(x: number, y: number, activation: string, gain: number, bias: number) {
+  const act = (v: number) => activation === 'relu' ? Math.max(0, v) : activation === 'tanh' ? Math.tanh(v) : v;
+  const h1 = act(gain * (x + y)), h2 = act(gain * (x + y - 1));
+  return sigmoid(4 / gain * (h1 - 2 * h2) - 2 + bias);
+}
+const network: Experiment = {
+  id: 'nonlinear-network', track: 'ml', title: L('Two hidden units can bend a decision region', '兩個隱藏單元如何彎折決策區域'),
+  description: L('Compare a fixed two-unit network with and without nonlinear activations on the XOR corners.', '在 XOR 四個角點上，比較固定雙單元網路使用與不使用非線性激活的差異。'),
+  challenge: L('Make all four corner decisions correct. Then replace the activation with a linear map: why can changing the bias no longer solve XOR?', '讓四個角點都分類正確。再換成線性激活：為何調整偏差仍無法解出 XOR？'),
+  note: L('Weights are hand constructed, not trained: h₁=a(g(x+y)), h₂=a(g(x+y−1)), p=σ(4(h₁−2h₂)/g−2+b). Color is P(class 1); circles show known corner labels.', '權重由手工設定而非訓練：h₁=a(g(x+y))、h₂=a(g(x+y−1))、p=σ(4(h₁−2h₂)/g−2+b)。顏色為 P(類別 1)，圓圈標示已知角點標籤。'),
+  related: ['ml/ml-02-neural-networks', 'nlp/nlp-03-neural-networks-for-nlp'],
+  controls: [select('activation', 'Activation a', '激活函數 a', 'relu', [['relu', 'ReLU', 'ReLU'], ['tanh', 'tanh', 'tanh'], ['linear', 'Linear', '線性']]), range('gain', 'Hidden gain g', '隱藏層倍率 g', 1, 0.5, 4, 0.25), range('bias', 'Output bias b', '輸出偏差 b', 0, -3, 3, 0.25)],
+  compute(s, lang) { const probability = (x: number, y: number) => mlpProbability(x, y, String(s.activation), num(s, 'gain'), num(s, 'bias')); let body = ''; for (let iy = 0; iy < 24; iy++) for (let ix = 0; ix < 24; ix++) { const p = probability(ix / 23, iy / 23); body += `<rect x="${185 + ix * 10}" y="${260 - iy * 10}" width="10.2" height="10.2" fill="var(--plot-a)" fill-opacity="${0.08 + 0.92 * p}"/>`; } const corners = [[0, 0, 0], [0, 1, 1], [1, 0, 1], [1, 1, 0]]; corners.forEach(([x, y, label]) => { body += dot(190 + x * 230, 265 - y * 230, 8, label ? 'b' : 'c') + text(450, 55 + corners.findIndex(c => c[0] === x && c[1] === y) * 52, `${x},${y}: ${fmt(probability(x, y))}`); }); body += text(185, 300, 'x: 0 → 1; y: 0 → 1 upward'); return { svg: svg(body, 330), summary: pick(lang, 'A linear hidden layer collapses to one affine decision boundary. Nonlinear hidden units create pieces that can assign the two opposite XOR corners to the same class.', '線性隱藏層會合併成單一仿射決策邊界。非線性單元組合出分段區域，能把 XOR 的兩個對角點分到同一類。'), metrics: [metric(lang, 'Correct corners', '正確角點', `${corners.filter(([x, y, label]) => Number(probability(x, y) >= 0.5) === label).length} / 4`), metric(lang, 'P(1 | 0,1)', 'P(1 | 0,1)', fmt(probability(0, 1))), metric(lang, 'P(1 | 1,1)', 'P(1 | 1,1)', fmt(probability(1, 1)))] }; },
+};
+
+export function selectiveMemory(retain: number, distractor: number, selective: boolean) {
+  const inputs = [1, 0.6, -0.5, 0.3, -0.8, 0.5, 0.2, -0.4, -1, 0.7, -0.5, 0.4].map((v, i) => i === 0 || i === 8 ? v : v * distractor);
+  let h = 0, derivative = 1; const states: number[] = []; const gates: number[] = [];
+  inputs.forEach((x, i) => { const a = selective && i !== 0 && i !== 8 ? 1 : retain; h = a * h + (1 - a) * x; if (i > 0) derivative *= a; states.push(h); gates.push(a); });
+  return { inputs, states, gates, derivative };
+}
+const memory: Experiment = {
+  id: 'selective-memory', track: 'ml', title: L('Selective state updates: remember the useful inputs', '選擇性狀態更新：記住重要輸入'),
+  description: L('Compare a fixed recurrent decay with input-dependent write decisions while distractors pass through a sequence.', '在序列加入干擾值，比較固定遞迴衰減與依輸入決定的寫入行為。'),
+  challenge: L('Increase distractor amplitude. Which state changes under selective updates? Set retention to one and explain why perfect preservation also prevents writing.', '增加干擾振幅。選擇性更新下哪些狀態會改變？將保留係數設為一，解釋為何完全保留也會阻止寫入。'),
+  note: L('Scalar recurrence hₜ=aₜhₜ₋₁+(1−aₜ)xₜ. Relevant positions 1 and 9 are provided by an oracle. This illustrates gating and Mamba’s input-selectivity motivation; it is not an implementation of Mamba, LSTM or GRU.', '純量遞迴 hₜ=aₜhₜ₋₁+(1−aₜ)xₜ。重要位置 1 與 9 由事先標記提供。此處示範閘控與 Mamba 輸入選擇性的動機，不是 Mamba、LSTM 或 GRU 的實作。'),
+  related: ['ml/ml-03a-recurrent-recursive-networks', 'ml/ml-04-vision-transformers', 'nlp/nlp-05-recurrent-neural-networks'],
+  controls: [range('retain', 'Retention a when writing', '寫入時的保留係數 a', 0.25, 0, 1, 0.05), range('noise', 'Distractor amplitude', '干擾振幅', 1, 0, 2, 0.1), select('mode', 'State update policy', '狀態更新策略', 'selective', [['selective', 'Skip marked distractors', '略過已標記干擾'], ['fixed', 'Same update at every step', '每一步使用相同更新']])],
+  compute(s, lang) { const r = selectiveMemory(num(s, 'retain'), num(s, 'noise'), s.mode === 'selective'); return { svg: svg(curves([{ values: r.inputs, color: 'b' }, { values: r.states, color: 'a' }], -1.7, 1.7, [pick(lang, 'Input (positions 1,9 matter)', '輸入（位置 1、9 重要）'), pick(lang, 'Recurrent state', '遞迴狀態')]) + text(50, 20, 'hₜ = aₜhₜ₋₁ + (1−aₜ)xₜ')), summary: pick(lang, 'Fixed decay trades persistence against interference at every step. Selection can preserve state through irrelevant inputs, but the gate must identify relevance correctly; the oracle here removes that learning problem.', '固定衰減在每一步都取捨持續記憶與干擾。選擇機制能跨越無關輸入保留狀態，但必須正確辨認重要性；此處事先標記省略了這項學習問題。'), metrics: [metric(lang, 'Final state', '最終狀態', fmt(r.states.at(-1)!)), metric(lang, '∂h₁₂ / ∂h₁', '∂h₁₂ / ∂h₁', fmt(r.derivative, 6)), metric(lang, 'Write opportunities', '可寫入位置數', r.gates.filter(a => a < 1).length)] }; },
+};
+
+export function contrastiveExample(positive: number, negative: number, temperature: number, collapsed: boolean) {
+  const angles = collapsed ? [0, 0, 0, 0] : [positive, negative, 120, -100]; const cosine = angles.map(a => Math.cos(a * Math.PI / 180)); const probabilities = softmax(cosine.map(c => c / temperature)); return { angles, cosine, probabilities, loss: -Math.log(probabilities[0]) };
+}
+const contrastive: Experiment = {
+  id: 'contrastive-alignment', track: 'ml', title: L('Alignment, hard negatives and collapsed features', '對齊、困難負例與特徵坍縮'),
+  description: L('Move paired and unpaired unit vectors, then inspect the normalized matching loss used by contrastive learning.', '移動配對與未配對單位向量，觀察對比學習使用的正規化匹配損失。'),
+  challenge: L('Bring a negative closer to the anchor than the positive. Does a lower temperature help the correct pair? Then collapse all vectors.', '讓負例比正例更靠近錨點。降低溫度會幫助正確配對嗎？接著讓所有向量坍縮。'),
+  note: L('One anchor, one positive and three negative candidates; vectors are controlled directly rather than trained. The same matching geometry explains image–text retrieval, but these are not CLIP features or semantic predictions.', '一個錨點、一個正例與三個負例；直接控制向量，不進行訓練。相同匹配幾何可解釋影像與文字檢索，但這些不是 CLIP 特徵或語意預測。'),
+  related: ['ml/ml-05-representation-learning', 'ml/ml-09-foundation-models', 'nlp/nlp-04-lexical-semantics-word-embeddings'],
+  controls: [range('positive', 'Positive angle, degrees', '正例角度', 20, 0, 180, 5), range('negative', 'Hard negative angle', '困難負例角度', 60, -180, 180, 5), range('temperature', 'Temperature', '溫度', 0.2, 0.05, 1, 0.05), select('collapse', 'Feature geometry', '特徵幾何', 'no', [['no', 'Use selected angles', '使用所選角度'], ['yes', 'Collapse all vectors', '全部向量坍縮']])],
+  compute(s, lang) { const r = contrastiveExample(num(s, 'positive'), num(s, 'negative'), num(s, 'temperature'), s.collapse === 'yes'); let body = `<circle cx="160" cy="140" r="100" fill="none" stroke="var(--plot-grid)"/>` + line(160, 140, 260, 140, 'c') + text(235, 125, 'anchor'); r.angles.forEach((a, i) => { const x = 160 + 100 * Math.cos(a * Math.PI / 180), y = 140 - 100 * Math.sin(a * Math.PI / 180); body += line(160, 140, x, y, i === 0 ? 'a' : 'b') + dot(x, y, 5, i === 0 ? 'a' : 'b') + text(x - 10, y - 12 - (s.collapse === 'yes' ? i * 18 : 0), i === 0 ? '+' : `−${i}`); }); body += r.probabilities.map((p, i) => text(335, 50 + i * 51, `${i === 0 ? '+' : '−' + i}: ${fmt(p)}`) + `<rect x="335" y="${59 + i * 51}" width="${260 * p}" height="16" fill="var(--plot-${i === 0 ? 'a' : 'b'})"/>`).join(''); return { svg: svg(body), summary: pick(lang, 'Loss = −log(exp(sim⁺/τ) / Σ exp(sim/τ)). Temperature sharpens whichever candidate already has the highest similarity. Collapsed unit vectors give equal probabilities and loss log(4).', '損失 = −log(exp(sim⁺/τ) / Σ exp(sim/τ))。溫度會強化原本相似度最高的候選。坍縮的單位向量產生相等機率與 log(4) 損失。'), metrics: [metric(lang, 'Positive probability', '正例機率', fmt(r.probabilities[0])), metric(lang, 'Matching loss, nats', '匹配損失（nat）', fmt(r.loss)), metric(lang, 'Positive cosine', '正例餘弦值', fmt(r.cosine[0]))] }; },
+};
+
+export function bottleneckSignal(kept: number, detail: number) {
+  const n = 16; const basis = (i: number, k: number) => Math.sqrt((k === 0 ? 1 : 2) / n) * Math.cos(Math.PI * (i + 0.5) * k / n);
+  const original = Array.from({ length: n }, (_, i) => Math.cos(Math.PI * (i + 0.5) * 2 / n) + detail * Math.cos(Math.PI * (i + 0.5) * 11 / n));
+  const coefficients = Array.from({ length: n }, (_, k) => sum(original.map((v, i) => v * basis(i, k))));
+  const reconstructed = original.map((_, i) => sum(coefficients.slice(0, kept).map((c, k) => c * basis(i, k))));
+  return { original, reconstructed, coefficients, mse: sum(original.map((v, i) => (v - reconstructed[i]) ** 2)) / n };
+}
+const bottleneck: Experiment = {
+  id: 'latent-bottleneck', track: 'ml', title: L('Pixel → latent → pixel: what cannot come back?', '像素 → 潛在表徵 → 像素：哪些細節無法還原？'),
+  description: L('Encode a 16-value scanline into a smaller orthogonal representation and decode it without inventing missing detail.', '將 16 個值的掃描線編碼成較小的正交表徵，再解碼並觀察遺失的細節。'),
+  challenge: L('Keep the latent width at four and increase fine-detail amplitude. Can a perfect decoder recover the discarded frequency without extra information?', '將潛在寬度固定為四，再提高細節振幅。沒有額外訊息時，完美解碼器能還原捨棄的頻率嗎？'),
+  note: L('An orthonormal cosine basis is a deterministic linear encoder/decoder, not a learned VAE or representation autoencoder. Kept coefficients are exact; only truncation causes loss. Latent generators inherit a real tokenizer’s reconstruction limits too.', '正交餘弦基底是確定性的線性編碼器／解碼器，不是學得的 VAE 或表徵自編碼器。保留係數不量化，損失只來自截斷。潛在生成器也會受真實切詞器的重建限制影響。'),
+  related: ['ml/ml-05a-factor-models-autoencoders', 'ml/ml-07-diffusion-flow-matching', 'ml/ml-08-autoregressive-vision'],
+  controls: [range('kept', 'Retained coefficients', '保留係數數量', 4, 1, 16), range('detail', 'High-frequency detail amplitude', '高頻細節振幅', 0.6, 0, 1, 0.05)],
+  compute(s, lang) { const r = bottleneckSignal(num(s, 'kept'), num(s, 'detail')); return { svg: svg(curves([{ values: r.original, color: 'b' }, { values: r.reconstructed, color: 'a' }], -2, 2, [pick(lang, 'Original scanline', '原始掃描線'), pick(lang, 'Decoded scanline', '解碼掃描線')]) + text(50, 20, `16 → ${num(s, 'kept')} → 16`)), summary: pick(lang, 'The encoder keeps the lowest-frequency coefficients. Once a coefficient is discarded, multiple inputs share the same latent code; decoding alone cannot determine which original was present.', '編碼器保留最低頻率的係數。丟棄係數後，多種輸入會共用同一潛在碼；只靠解碼無法判斷原本是哪個輸入。'), metrics: [metric(lang, 'Reconstruction MSE', '重建均方誤差', fmt(r.mse, 6)), metric(lang, 'Latent / input values', '潛在／輸入值數', `${num(s, 'kept')} / 16`), metric(lang, 'Discarded energy / 16', '捨棄能量／16', fmt(sum(r.coefficients.slice(num(s, 'kept')).map(v => v * v)) / 16, 6))] }; },
+};
+
+export function vaeObjective(mu: number, sigma: number, beta: number) {
+  const kl = 0.5 * (mu * mu + sigma * sigma - 1 - Math.log(sigma * sigma)); const nll = 0.5 * ((1 - mu) ** 2 + sigma * sigma) / 0.25 + Math.log(0.5 * Math.sqrt(2 * Math.PI)); return { kl, nll, total: nll + beta * kl };
+}
+const vae: Experiment = {
+  id: 'vae-tradeoff', track: 'ml', title: L('A VAE trades reconstruction against prior agreement', 'VAE 如何取捨重建與先驗一致性'),
+  description: L('Move and widen a Gaussian posterior, then compute expected decoder loss and the exact KL penalty.', '移動並調整高斯後驗寬度，計算期望解碼損失與精確 KL 懲罰。'),
+  challenge: L('Set q(z|x) equal to the prior. Why is KL zero but reconstruction still poor for x=1? Can shrinking σ improve one term while worsening the other?', '將 q(z|x) 設為先驗。為何 KL 為零，但 x=1 的重建仍差？縮小 σ 能否改善一項卻使另一項惡化？'),
+  note: L('One observation x=1, q=N(μ,σ²), prior=N(0,1), fixed decoder p(x|z)=N(z,0.5²). Expected negative log likelihood is analytic; no samples or network training. β=1 gives the negative evidence lower bound for this model; other β values are weighted objectives.', '單一觀察 x=1、q=N(μ,σ²)、先驗=N(0,1)，固定解碼器 p(x|z)=N(z,0.5²)。期望負對數概似以解析式計算，不抽樣也不訓練網路。β=1 時是此模型的負證據下界；其他 β 是加權目標。'),
+  related: ['ml/ml-06-generative-models', 'ml/ml-05a-factor-models-autoencoders'],
+  controls: [range('mu', 'Posterior mean μ', '後驗平均 μ', 0.8, -2, 2, 0.1), range('sigma', 'Posterior standard deviation σ', '後驗標準差 σ', 0.5, 0.1, 2, 0.1), range('beta', 'KL weight β', 'KL 權重 β', 1, 0, 4, 0.1)],
+  compute(s, lang) { const r = vaeObjective(num(s, 'mu'), num(s, 'sigma'), num(s, 'beta')); const xs = Array.from({ length: 121 }, (_, i) => -6 + i / 10); return { svg: svg(curves([{ values: xs.map(x => normal(x)), color: 'b' }, { values: xs.map(x => normal(x, num(s, 'mu'), num(s, 'sigma'))), color: 'a' }], 0, Math.max(0.45, normal(num(s, 'mu'), num(s, 'mu'), num(s, 'sigma')) * 1.05), [pick(lang, 'Prior N(0,1)', '先驗 N(0,1)'), pick(lang, 'Posterior q(z|x)', '後驗 q(z|x)')]) + text(50, 20, 'z: −6 → 6; y: probability density')), summary: pick(lang, 'Reconstruction favors latent values near x=1 and a narrow posterior. KL penalizes both moving away from zero and changing variance away from one. Prior agreement alone does not guarantee useful reconstruction.', '重建偏好接近 x=1 的潛在值與較窄後驗。KL 同時懲罰平均偏離零及變異數偏離一。只符合先驗不保證有用的重建。'), metrics: [metric(lang, 'Expected decoder NLL', '期望解碼負對數概似', fmt(r.nll)), metric(lang, 'KL(q || prior), nats', 'KL(q || 先驗)（nat）', fmt(r.kl)), metric(lang, 'NLL + β KL', '負對數概似 + β KL', fmt(r.total))] }; },
+};
+
+export function flowTransform(z: number, scale: number, bend: number) {
+  const x = scale * z + bend * Math.tanh(z); const jacobian = scale + bend * (1 - Math.tanh(z) ** 2); return { x, jacobian, density: normal(z) / jacobian };
+}
+const flow: Experiment = {
+  id: 'flow-density', track: 'ml', title: L('Stretch space, change density: the Jacobian matters', '拉伸空間會改變密度：Jacobian 的作用'),
+  description: L('Push a Gaussian through an invertible nonlinear map and preserve probability mass with its derivative.', '將高斯分布通過可逆非線性映射，利用導數保持機率質量。'),
+  challenge: L('Increase the nonlinear stretch near zero. Why does the output density at zero fall even though zero still maps to zero?', '增加零附近的非線性拉伸。為何零仍映射到零，該處輸出密度卻下降？'),
+  note: L('One-dimensional normalizing flow x=az+b tanh(z), with a>0 and b≥0. The derivative is always positive, so the map is invertible. Curves are computed from the exact change-of-variables formula, without fitting a model.', '一維正規化流 x=az+b tanh(z)，其中 a>0、b≥0。導數始終為正，因此映射可逆。曲線由精確變數變換公式計算，不擬合模型。'),
+  related: ['ml/ml-06-generative-models', 'ml/ml-01b-probability-information'],
+  controls: [range('scale', 'Linear scale a', '線性縮放 a', 1, 0.3, 2, 0.1), range('bend', 'Nonlinear stretch b', '非線性拉伸 b', 1, 0, 2, 0.1)],
+  compute(s, lang) { const scale = num(s, 'scale'), bend = num(s, 'bend'); const xs = Array.from({ length: 161 }, (_, i) => -4 + i * 0.05); const transformed = xs.map(z => flowTransform(z, scale, bend)); const ymax = Math.max(0.42, ...transformed.map(r => r.density)); const map = (x: number, y: number): [number, number] => [320 + x * 27, 240 - y / ymax * 190]; const area = sum(transformed.slice(1).map((r, i) => (r.x - transformed[i].x) * (r.density + transformed[i].density) / 2)); const body = line(45, 240, 610, 240) + path(xs.map(z => map(z, normal(z))), stroke('b')) + path(transformed.map(r => map(r.x, r.density)), stroke('a')) + text(40, 280, 'Output p(x)', 'fill="var(--plot-a)"') + text(320, 280, 'Base p(z)', 'fill="var(--plot-b)"') + text(40, 20, 'Common x-axis: −10 → 10; y: density'); return { svg: svg(body, 310), summary: pick(lang, 'pₓ(f(z)) = p_z(z) / |f′(z)|. A local stretch spreads the same probability over more output space. Omitting the Jacobian would change the total probability mass.', 'pₓ(f(z)) = p_z(z) / |f′(z)|。局部拉伸將相同機率分散到更大的輸出空間；省略 Jacobian 會改變總機率質量。'), metrics: [metric(lang, 'Derivative at zero', '零點導數', fmt(scale + bend)), metric(lang, 'Output density at zero', '零點輸出密度', fmt(flowTransform(0, scale, bend).density)), metric(lang, 'Numerical area (±4 base σ)', '數值面積（基底 ±4σ）', fmt(area, 5))] }; },
+};
+
+export function transportSolve(initial: number, rate: number, steps: number, midpoint: boolean) {
+  let x = initial; const trajectory = [x]; const dt = 1 / steps; const field = (v: number) => rate * v + 1;
+  for (let i = 0; i < steps; i++) { x += dt * field(midpoint ? x + dt * field(x) / 2 : x); trajectory.push(x); }
+  const exact = Math.exp(rate) * initial + (Math.abs(rate) < 1e-12 ? 1 : Math.expm1(rate) / rate);
+  return { trajectory, exact, error: Math.abs(x - exact) };
+}
+const transport: Experiment = {
+  id: 'transport-steps', track: 'ml', title: L('A correct velocity field still needs a numerical solver', '正確速度場仍需要數值求解器'),
+  description: L('Transport particles through a known velocity field and compare integration error at equal step counts.', '讓粒子通過已知速度場，比較相同步數下的積分誤差。'),
+  challenge: L('Set the rate to zero: why is one Euler step exact? Then use a nonzero rate and compare steps with actual field evaluations.', '將變化率設為零：為何一步 Euler 就精確？再使用非零變化率，比較步數與實際速度場評估次數。'),
+  note: L('Known field v(x,t)=λx+1, integrated from t=0 to 1. This isolates solver error relevant to flow-matching sampling; no velocity network is trained and no generation quality is measured. The dashed paths use the analytic solution.', '已知速度場 v(x,t)=λx+1，從 t=0 積分到 1。此處隔離流匹配取樣中的求解器誤差，不訓練速度網路，也不衡量生成品質。虛線使用解析解。'),
+  related: ['ml/ml-07-diffusion-flow-matching', 'ml/ml-01c-numerical-computation'],
+  controls: [range('rate', 'Field slope λ', '速度場斜率 λ', 0.8, -1, 1, 0.1), range('steps', 'Integration steps', '積分步數', 4, 1, 40), select('solver', 'Integrator', '積分器', 'euler', [['euler', 'Euler: 1 evaluation per step', 'Euler：每步評估 1 次'], ['midpoint', 'Midpoint: 2 evaluations per step', '中點法：每步評估 2 次']])],
+  compute(s, lang) { const rate = num(s, 'rate'), steps = num(s, 'steps'), midpoint = s.solver === 'midpoint'; const starts = [-1, -0.5, 0, 0.5, 1]; const solved = starts.map(x => transportSolve(x, rate, steps, midpoint)); const project = (t: number, x: number): [number, number] => [45 + 550 * t, 245 - (x + 1.2) * 37]; let body = line(45, 245, 600, 245) + text(50, 280, 't: 0 → 1 · vertical position: state x'); solved.forEach((r, i) => { body += path(r.trajectory.map((x, j) => project(j / steps, x)), stroke('a')); body += path(Array.from({ length: 41 }, (_, j) => { const t = j / 40; return project(t, Math.exp(rate * t) * starts[i] + (Math.abs(rate) < 1e-12 ? t : Math.expm1(rate * t) / rate)); }), `${stroke('b')} stroke-dasharray="4 4"`); }); return { svg: svg(body), summary: pick(lang, 'Step count and function evaluations are different costs. Reducing integration error cannot fix an incorrect learned field; this oracle example keeps field error at zero so the two issues stay separate.', '步數與函數評估次數是不同成本。減少積分誤差無法修正錯誤的學得速度場；此處已知精確速度場，因此速度場誤差為零。'), metrics: [metric(lang, 'Mean endpoint error', '平均終點誤差', fmt(sum(solved.map(r => r.error)) / solved.length, 6)), metric(lang, 'Field evaluations / particle', '每粒子速度場評估次數', steps * (midpoint ? 2 : 1)), metric(lang, 'Exact endpoint from x₀=0', 'x₀=0 的精確終點', fmt(solved[2].exact))] }; },
+};
+
+export function binaryAutoregression(copy: number, bits: number[], column: boolean) {
+  const order = column ? [0, 2, 1, 3] : [0, 1, 2, 3]; const sequence = order.map(i => bits[i]); const factors = sequence.map((v, i) => i === 0 ? 0.5 : v === sequence[i - 1] ? copy : 1 - copy); const probability = factors.reduce((a, b) => a * b, 1);
+  const distribution = Array.from({ length: 16 }, (_, n) => { const seq = order.map(i => (n >> (3 - i)) & 1); return seq.slice(1).reduce((p, value, i) => p * (value === seq[i] ? copy : 1 - copy), 0.5); });
+  return { sequence, factors, probability, distribution, bitsPerPixel: -Math.log2(probability) / 4 };
+}
+const autoregression: Experiment = {
+  id: 'autoregressive-pixels', track: 'ml', title: L('Factor a tiny image into conditional predictions', '把微型影像分解為條件預測'),
+  description: L('Enumerate all sixteen binary 2×2 images under a first-order pixel model, then change the generation order.', '在一階像素模型下枚舉十六種二元 2×2 影像，再改變生成順序。'),
+  challenge: L('Compare row stripes and a checkerboard when copying is likely. Switch raster to column order: which model assumptions changed?', '在偏好複製的設定下比較橫條紋與棋盤格。把逐列順序換成逐行順序：哪些模型假設改變了？'),
+  note: L('First pixel has probability 1/2; each later pixel copies the previous one with probability c. The chain rule is exact, but this model deliberately retains only one previous pixel. Order dependence here comes from that restricted conditional model.', '第一個像素的機率為 1/2；後續像素以機率 c 複製前一像素。鏈式法則精確成立，但此模型刻意只保留前一像素。這裡的順序依賴來自受限的條件模型。'),
+  related: ['ml/ml-08-autoregressive-vision', 'nlp/nlp-09-language-modeling-transformers'],
+  controls: [range('copy', 'Copy-previous probability c', '複製前一像素的機率 c', 0.8, 0.05, 0.95, 0.05), select('pattern', 'Observed image', '觀察影像', 'stripe', [['stripe', 'Row stripes 00/11', '橫條紋 00／11'], ['checker', 'Checkerboard 01/10', '棋盤格 01／10'], ['solid', 'Solid 11/11', '全白 11／11']]), select('order', 'Generation order', '生成順序', 'raster', [['raster', 'Row-major raster', '逐列掃描'], ['column', 'Column-major', '逐行掃描']])],
+  compute(s, lang) { const bits = s.pattern === 'stripe' ? [0, 0, 1, 1] : s.pattern === 'checker' ? [0, 1, 1, 0] : [1, 1, 1, 1]; const r = binaryAutoregression(num(s, 'copy'), bits, s.order === 'column'); let body = bits.map((bit, i) => `<rect x="${35 + i % 2 * 55}" y="${40 + Math.floor(i / 2) * 55}" width="52" height="52" fill="var(--plot-${bit ? 'a' : 'grid'})"/>` + text(55 + i % 2 * 55, 72 + Math.floor(i / 2) * 55, bit)).join(''); body += text(180, 65, `Sequence: ${r.sequence.join(' → ')}`) + text(180, 105, `P = ${r.factors.map(v => fmt(v)).join(' × ')}`); r.distribution.forEach((p, i) => { body += `<rect x="${25 + i * 37}" y="${255 - p * 280}" width="27" height="${p * 280}" fill="var(--plot-b)"/>` + text(25 + i * 37, 280, i); }); body += text(25, 310, 'Image index 0…15 (four bits, row-major)'); return { svg: svg(body, 340), summary: pick(lang, 'Joint probability multiplies normalized conditional factors. All sixteen image probabilities sum to one. A high-copy model prefers sequences with fewer transitions, which need not correspond to the same spatial pattern in each order.', '聯合機率是各個正規化條件因子的乘積。十六種影像機率總和為一。高複製機率模型偏好較少轉換的序列，但不同順序對應的空間圖樣不一定相同。'), metrics: [metric(lang, 'Image probability', '影像機率', fmt(r.probability, 6)), metric(lang, 'Bits per pixel', '每像素位元', fmt(r.bitsPerPixel)), metric(lang, 'All-image probability sum', '全影像機率總和', fmt(sum(r.distribution)))] }; },
+};
+
+export function temperatureCalibration(temperature: number) {
+  const logits = [-3, -2, -1, -0.4, 0.2, 0.8, 1.7, 3]; const labels = [0, 0, 1, 0, 1, 0, 1, 1]; const probabilities = logits.map(z => sigmoid(z / temperature));
+  const accuracy = sum(probabilities.map((p, i) => Number(Number(p >= 0.5) === labels[i]))) / labels.length;
+  const nll = -sum(probabilities.map((p, i) => Math.log(labels[i] ? p : 1 - p))) / labels.length;
+  const brier = sum(probabilities.map((p, i) => (p - labels[i]) ** 2)) / labels.length;
+  return { logits, labels, probabilities, accuracy, nll, brier };
+}
+const calibration: Experiment = {
+  id: 'temperature-calibration', track: 'ml', title: L('Same predictions, different probability quality', '預測相同，機率品質卻不同'),
+  description: L('Apply one positive temperature to fixed validation logits and compare accuracy, log loss and squared probability error.', '對固定驗證 logits 套用正溫度，比較準確率、對數損失與機率平方誤差。'),
+  challenge: L('Find a temperature with lower log loss than T=1. Why does accuracy stay fixed even while confidence changes?', '找出對數損失低於 T=1 的溫度。為何信心改變時，準確率保持不變？'),
+  note: L('Eight synthetic validation observations, not a benchmark. Binary probabilities use σ(logit/T), with a fixed 0.5 decision threshold. Choosing T here illustrates validation tuning; it does not establish performance on an unseen test set.', '八筆合成驗證觀察，不是基準測試。二元機率使用 σ(logit/T)，決策閾值固定為 0.5。在此挑選 T 是示範驗證集調整，不代表未見測試集上的表現。'),
+  related: ['ml/ml-10-evaluation-deployment', 'nlp/nlp-11-classification-bert', 'nlp/nlp-03-neural-networks-for-nlp'],
+  controls: [range('temperature', 'Calibration temperature T', '校準溫度 T', 1, 0.2, 4, 0.1)],
+  compute(s, lang) { const r = temperatureCalibration(num(s, 'temperature')); let body = text(30, 25, pick(lang, 'Bars: P(class 1) · dots: observed labels 0 or 1', '長條：P(類別 1)・圓點：觀察標籤 0 或 1')); r.probabilities.forEach((p, i) => { const x = 50 + i * 72; body += `<rect x="${x}" y="${235 - 170 * p}" width="35" height="${170 * p}" fill="var(--plot-a)"/>` + dot(x + 17, 235 - 170 * r.labels[i], 6, 'b') + text(x, 265, r.logits[i]); }); body += text(50, 295, 'x: original logit · y: 0 (bottom) → 1 (top)'); return { svg: svg(body, 320), summary: pick(lang, 'Positive temperature preserves logit ordering and binary decisions. It can adjust overconfidence or underconfidence, but cannot correct which examples the classifier gets wrong.', '正溫度保留 logits 排序與二元決策。它能調整過度自信或信心不足，卻無法修正分類器判錯的樣本。'), metrics: [metric(lang, 'Accuracy', '準確率', `${fmt(100 * r.accuracy)}%`), metric(lang, 'Mean log loss, nats', '平均對數損失（nat）', fmt(r.nll)), metric(lang, 'Brier score', 'Brier 分數', fmt(r.brier))] }; },
+};
+
+export const chapterLanguageExperiments: Experiment[] = [scope, bpe, pooling, sequence, retrieval, dialogue, decoding, masking, gradients, network, memory, contrastive, bottleneck, vae, flow, transport, autoregression, calibration];
