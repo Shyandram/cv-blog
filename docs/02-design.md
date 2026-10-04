@@ -20,16 +20,20 @@ Home
 │   ├── 1  Image Processing                /learn/#image-processing
 │   │      histograms, point ops, convolution & filtering, edges, morphology,
 │   │      frequency domain (FFT), geometric transforms, denoising
-│   ├── 2  Pattern Recognition             /learn/#pattern-recognition
+│   ├── 2  NLP                             /learn/#nlp
+│   │      Hagiwara + McRoy: applications, syntax, semantics, retrieval, dialogue, generation
+│   ├── 3  Pattern Recognition             /learn/#pattern-recognition
 │   │      Bayes decisions, densities, linear/kernel methods, features, context,
 │   │      clustering, inference, ensembles and evaluation; Theodoridis/Koutroumbas + Bishop
-│   ├── 3  ML/DL                           /learn/#ml
+│   ├── 4  ML/DL                           /learn/#ml
 │   │      mathematics, neural networks, merged filtering/CNNs, recurrence, transformers,
 │   │      representations, factor models, VAEs/GANs/flows, diffusion, AR, foundation models
-│   ├── 4  DL for Vision                   /learn/#deep-learning
+│   ├── 5  DL for Vision                   /learn/#deep-learning
 │   │      classification, detection, restoration, low light, tracking and world models
-│   └── 5  NLP                             /learn/#nlp
-│          tokenization, language modeling, transformers and a further reading roadmap
+│   ├── 6  Optimization                    /learn/#optimization
+│   │      Boyd + Vandenberghe: convex modeling, duality, estimation and numerical methods
+│   └── 7  Information Theory              /learn/#information-theory
+│          Cover + Thomas: entropy, coding, capacity, rate distortion and statistical decisions
 ├── Blog (news, paper notes, opinion)      /blog/
 ├── Playground (all interactive demos)     /playground/
 ├── Tags                                   /tags/<tag>/
@@ -64,7 +68,7 @@ table of contents (right). On mobile, the side columns collapse into drawers.
 # src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx
 title: "ML 03 · Convolution, Image Filtering and CNNs"
 description: "From blur and Sobel kernels to learned filters and a small CNN classifier."
-track: ml                        # enum of the 6 tracks
+track: ml                        # enum of the 8 tracks
 order: 30                         # position in track
 level: intermediate               # beginner | intermediate | advanced
 prereqs: [foundations/images-as-arrays]
@@ -97,7 +101,7 @@ Built so far: `ImageCompare`, `KernelPlayground`, `Figure`, `Callout`, prerequis
   reserved for code, math, and track identity.
 - **Typography:** Bricolage Grotesque (headings), Source Serif 4 (article prose), system UI font (interface), JetBrains Mono (code), KaTeX fonts (math).
 - **Track colors** (used for badges and progress bars only):
-  Foundations slate · Image Processing teal · Pattern Recognition indigo · ML/DL amber · DL for Vision rose · NLP green.
+  Foundations slate · Image Processing teal · NLP green · Pattern Recognition indigo · ML/DL amber · DL for Vision rose · Optimization violet · Information Theory copper.
 - **Themes:** light and dark via CSS tokens, following the OS setting with a manual toggle. Images get no
   inversion in dark mode, because pixel values matter in this subject.
 - See `design/mockup/` for a clickable prototype of the home page and tutorial page.

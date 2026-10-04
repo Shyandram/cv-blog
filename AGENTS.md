@@ -1,7 +1,7 @@
 # AGENTS.md — rules for anyone (human or AI) editing this repo
 
 This is the source of **Pixels → Perception**, a bilingual (English / 繁體中文) tutorial site on
-image processing, pattern recognition, machine learning, deep learning and computer vision.
+image processing, pattern recognition, machine learning, deep learning, computer vision, NLP, optimization and information theory.
 Live site: <https://blog.shyandram.dev/> · Stack: Astro 7 + MDX + KaTeX + Pagefind, deployed by
 Cloudflare from `main`.
 
@@ -49,8 +49,8 @@ the same time. Follow them exactly.
 ## 3. Tutorial standard (the "house style")
 
 Tutorials live in `src/content/tutorials/<lang>/<track>/<slug>.mdx`, one file per language with the
-**same slug**. Tracks: `foundations`, `image-processing`, `pattern-recognition`, `ml`,
-`deep-learning`, `nlp` (see `src/lib/taxonomy.ts`). Good examples to imitate:
+**same slug**. Tracks: `foundations`, `image-processing`, `nlp`, `pattern-recognition`, `ml`,
+`deep-learning`, `optimization`, `information-theory` (see `src/lib/taxonomy.ts`). Good examples to imitate:
 `image-processing/dip-03-intensity-spatial-filtering.mdx`, `deep-learning/dl-05-low-light-enhancement.mdx`.
 
 **Structure (in this order):**

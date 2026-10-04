@@ -1,6 +1,6 @@
 # Pixels → Perception
 
-A bilingual (English / 繁體中文) tutorial site covering image processing, pattern recognition, machine learning, deep learning for vision, and NLP.
+A bilingual (English / 繁體中文) tutorial site covering image processing, pattern recognition, machine learning, deep learning for vision, NLP, optimization, and information theory.
 Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to Cloudflare Pages.
 
 **Live site: <https://blog.shyandram.dev/>** ([English](https://blog.shyandram.dev/en/) · [繁體中文](https://blog.shyandram.dev/zh-tw/))
@@ -11,17 +11,19 @@ Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, an
 
 ## Curriculum
 
-The curriculum has six tracks in English and Traditional Chinese. Start with
+The curriculum has eight tracks in English and Traditional Chinese. Start with
 [Foundations: getting started and textbooks](src/content/tutorials/en/foundations/getting-started.mdx).
 
 | Track | Coverage |
 | --- | --- |
 | 0 · Foundations | Entry paths, textbook selection, and images as arrays |
 | 1 · Image Processing | The existing DIP sequence, from intensity transforms to pattern classification |
-| 2 · Pattern Recognition | A complete course based on Theodoridis/Koutroumbas, *Pattern Recognition* (4th ed.), and Bishop, *Pattern Recognition and Machine Learning* |
-| 3 · ML/DL | ML basics; linear algebra; probability/information; numerical computation; feedforward, convolutional, recurrent and recursive networks; transformers; representation learning; factor models and autoencoders; VAEs/GANs/flows; diffusion/flow matching; autoregression; foundation models; evaluation/deployment |
-| 4 · DL for Vision | Classification, detection, restoration, low-light enhancement, tracking, and world models |
-| 5 · NLP | An introductory chapter with a runnable language model and a further reading roadmap |
+| 2 · NLP | Eight chapters based on Hagiwara and McRoy: applications, classification, syntax, semantics, language models, retrieval, dialogue, generation and deployment |
+| 3 · Pattern Recognition | A complete course based on Theodoridis/Koutroumbas, *Pattern Recognition* (4th ed.), and Bishop, *Pattern Recognition and Machine Learning* |
+| 4 · ML/DL | ML basics; linear algebra; probability/information; numerical computation; feedforward, convolutional, recurrent and recursive networks; selective state-space models and visual Mamba; transformers; representation learning; factor models and autoencoders; VAEs/GANs/flows; diffusion/flow matching, JiT and representation autoencoders; pretrained image/video generators; autoregression; foundation models; evaluation/deployment |
+| 5 · DL for Vision | Classification, detection, restoration, low-light enhancement, tracking, and world models |
+| 6 · Optimization | Eight chapters based on Boyd and Vandenberghe: convex sets/functions, problem formulation, duality, estimation, gradient/Newton methods, constrained solvers and applications |
+| 7 · Information Theory | Eight chapters based on Cover and Thomas: entropy, typicality, source coding, channel capacity, Gaussian channels, rate distortion, statistical decisions and networks |
 
 ML 03 incorporates the former **Convolution & Image Filtering** tutorial, including its
 interactive kernel and image comparison demos. The old English and Chinese URLs
@@ -34,6 +36,8 @@ The ML/DL expansion uses Goodfellow/Bengio/Courville's *Deep Learning*, Prince's
 Concepts*, *Mathematics for Machine Learning*, and Murphy's probabilistic ML texts
 as complementary readings. Each chapter links its books, surveys and original papers.
 The Foundations chapter explains which book to choose for a particular starting point.
+
+The NLP course follows Masato Hagiwara's [*Real-World Natural Language Processing*](https://www.manning.com/books/real-world-natural-language-processing) (2021) and Susan McRoy's [*Principles of Natural Language Processing*](https://wisconsin.pressbooks.pub/naturallanguage/) (2021). Optimization follows Stephen Boyd and Lieven Vandenberghe's [*Convex Optimization*](https://web.stanford.edu/~boyd/cvxbook/) (2004). Information Theory follows Thomas M. Cover and Joy A. Thomas's [*Elements of Information Theory*, second edition](https://onlinelibrary.wiley.com/doi/book/10.1002/047174882X) (2006). Chapters identify specific book readings and connect them to verified modern surveys and original papers.
 
 | Reading purpose | Chapter and survey/review |
 | --- | --- |
@@ -48,7 +52,7 @@ The Foundations chapter explains which book to choose for a particular starting 
 
 This is a curated reading map, not an exhaustive review of every publication.
 Research coverage is dated **2026-10-04** and includes, where relevant, DINOv3,
-SAM 3, Qwen3-VL, V-JEPA 2, VGGT, VAR, MAR and MeanFlow. Text separates a paper's
+SAM 3, Qwen3-VL, V-JEPA 2, VGGT, VAR, MAR, MeanFlow, JiT and representation autoencoders. Text separates a paper's
 reported capabilities from general guarantees. Small CPU experiments and synthetic
 figures teach mechanisms; they do not claim to reproduce those large-model benchmarks.
 
@@ -84,7 +88,7 @@ Frontmatter (validated at build time, see `src/content.config.ts`):
 ```yaml
 title: ML 03 · Convolution, Image Filtering and CNNs
 description: One sentence shown on cards and in search results.
-track: ml                 # foundations | image-processing | pattern-recognition | ml | deep-learning | nlp
+track: ml                 # foundations | image-processing | nlp | pattern-recognition | ml | deep-learning | optimization | information-theory
 order: 30                 # position within the track
 level: intermediate       # beginner | intermediate | advanced
 prereqs: [foundations/images-as-arrays]
