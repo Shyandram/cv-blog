@@ -30,12 +30,12 @@ def save(fig, name):
 def pipeline():
     fig, ax = plt.subplots(figsize=(10.4, 4.3))
     ax.set_xlim(0, 13); ax.set_ylim(0, 3.3); ax.axis("off")
-    steps = [("Raw text", "Unbelievable,\nthe cats nap!"),
-             ("Normalize", "Unicode NFC\noptional\nlowercase"),
-             ("Tokenize", "un|believ|able\n,|the|cats\n|nap|!"),
-             ("Token IDs", "[1043,7781,\n512,11,5,\n3920,...]"),
-             ("Embeddings", "lookup E\n(|V| × d)"),
-             ("Model", "RNN or\nTransformer\n→ output")]
+    steps = [("Raw text", "Pump B:\nnot ready."),
+             ("Normalize", "Unicode NFC\nkeep case"),
+             ("Tokenize", "Pump|B|:\nnot|ready|."),
+             ("Token IDs", "[7,12,3,\n8,19,4]"),
+             ("Encode", "counts or\nembeddings"),
+             ("Predict", "classifier\nor extractor\n→ output")]
     for i, (title, sub) in enumerate(steps):
         x = 0.15 + i * 2.15
         ax.add_patch(FancyBboxPatch((x, 0.9), 1.8, 1.7, boxstyle="round,pad=0.05",
@@ -46,10 +46,10 @@ def pipeline():
         if i < len(steps) - 1:
             ax.annotate("", xy=(x + 2.15, 1.75), xytext=(x + 1.85, 1.75),
                         arrowprops=dict(arrowstyle="->", lw=1.5))
-    ax.text(4.4, 0.35, "fixed preprocessing: must match the pretrained model exactly",
+    ax.text(4.4, 0.35, "text and numerical encoding: keep the fitted rules fixed",
             ha="center", fontsize=10, color=BLUE)
-    ax.text(11.0, 0.35, "learned parameters", ha="center", fontsize=10, color=PURPLE)
-    ax.text(6.5, 3.05, "The subword split and ID numbers are illustrative, not from a real tokenizer",
+    ax.text(11.0, 0.35, "task predictor", ha="center", fontsize=10, color=PURPLE)
+    ax.text(6.5, 3.05, "The token split and IDs illustrate one encoding, not a pretrained tokenizer",
             ha="center", fontsize=10, color=GREY)
     save(fig, "text-pipeline.png")
 

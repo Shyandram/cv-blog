@@ -1,0 +1,778 @@
+---
+title: "NLP 08 · Sequence-to-Sequence Models with Transformers (Machine Translation, Chatbots)"
+description: "Build and train an encoder–decoder Transformer for translation, decode it with greedy and beam search, score it with BLEU written from scratch, and carry the same conditional-generation ideas into dialogue state, clarification and conversation evaluation."
+track: nlp
+order: 80
+level: intermediate
+prereqs: [nlp/nlp-07-attention-transformers]
+tags: [nlp, seq2seq, machine-translation, transformers, beam-search, bleu, dialogue, chatbots]
+published: 2026-10-04
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import trainFig from '../../../../assets/nlp/nlp-08-seq2seq-transformers/training-cross-attention.png';
+import belief from '../../../../assets/nlp/nlp-08-seq2seq-transformers/belief.png';
+import state from '../../../../assets/nlp/nlp-08-seq2seq-transformers/state.png';
+
+## What you'll learn
+
+- How machine translation moved from statistical phrase tables to neural encoder–decoders, and what the Transformer changed.
+- Conditional sequence learning: target shifting, teacher forcing, padding-aware loss, and why exposure bias appears at generation time.
+- How to train a small encoder–decoder Transformer translator on CPU, and decode it with greedy and beam search with length normalization.
+- How BLEU works (written from scratch), what chrF and COMET add, and why none of them certifies meaning.
+- How the same conditional-generation view applies to chatbots, and why task dialogue also needs explicit state, clarification and tool boundaries.
+- How to evaluate whole conversations rather than isolated replies.
+
+## The big picture
+
+A sequence-to-sequence (seq2seq) model reads one sequence and writes another: a French sentence from an English one, a reply from a conversation history, a summary from a document. The encoder turns the input into one vector per token; the decoder writes the output one token at a time, reading its own prefix through causal self-attention and the input through cross-attention ([NLP 07](/en/learn/nlp/nlp-07-attention-transformers/)). The same machinery serves translation and dialogue, but the two tasks fail differently. A translation can be fluent and reverse a negation. A chatbot can produce a friendly reply while querying the wrong device.
+
+<Callout type="tip" title="Explain like I'm five">
+Think of an interpreter at a meeting. First they listen to the whole sentence (the encoder). Then they speak the translation word by word, and before each word they glance back at the part of the speech they are translating (cross-attention). A good interpreter can also say "do you mean Pump A or Pump B?" when the speaker is unclear. Speaking smoothly is not the same as being right; the interpreter is judged by whether the listener ends up with the same meaning.
+</Callout>
+
+Two complementary readings anchor the chapter. Hagiwara's Chapter 6 explains sequence-to-sequence models for translation and conversational applications, and Chapter 8 covers attention and Transformers [1]. McRoy's Chapter 9 discusses translation as meaning-preserving generation [2]. The examples here are original, local CPU experiments; they teach mechanisms without downloading a model or a dataset. [NLP 09](/en/learn/nlp/nlp-09-language-modeling-transformers/) continues with open-ended generation, summarization and serving.
+
+## 1. From statistical to neural machine translation
+
+**Plain version.** Machine translation first learned word and phrase correspondences from aligned sentence pairs and combined them with a separate model of fluent target text. Neural translation replaced that pipeline with one network trained end to end.
+
+Statistical machine translation (SMT) framed translation as a **noisy channel**. To translate a foreign sentence $\mathbf f$ into English $\mathbf e$, choose
+
+$$
+\hat{\mathbf e}=\operatorname*{arg\,max}_{\mathbf e}\;p(\mathbf e)\,p(\mathbf f\mid\mathbf e).
+$$
+
+Here $p(\mathbf e)$ is a language model that rewards fluent English; $p(\mathbf f\mid\mathbf e)$ is a translation model that rewards faithfulness; and $\hat{\mathbf e}$ is the chosen translation. Brown et al.'s IBM models estimated word-level translation probabilities and alignments from sentence-aligned text [3]. Koehn, Och and Marcu's phrase-based translation used multi-word phrase pairs, which capture local reordering and idioms better than single words [4]. Such systems combined many separately trained components and features.
+
+Neural networks entered as components first: Cho et al. used an RNN encoder–decoder to score phrase pairs inside an existing SMT system [5]. Sutskever, Vinyals and Le then trained an LSTM encoder–decoder to translate directly [6]. Bahdanau, Cho and Bengio added attention so the decoder could search the source at each step [7], and Vaswani et al. replaced recurrence with attention entirely [8]. Subword segmentation such as byte-pair encoding made open vocabularies practical, so rare words and names could be translated as sequences of known pieces [9]; [NLP 02](/en/learn/nlp/nlp-02-linguistic-essentials/) builds a BPE vocabulary step by step. Stahlberg's review traces this transition from count-based SMT to neural MT in detail [22].
+
+Two recent anchors show where the field went. The NLLB project built a single massively multilingual model covering 200 languages, with particular attention to low-resource languages [21]. The WMT24 general translation task compared submitted systems with several large language models and online providers under professional human evaluation; its title summarizes the finding: the LLM era is here, but MT is not solved [20].
+
+## 2. Conditional sequence learning
+
+**Plain version.** A translator models the probability of the target sentence given the source, one token at a time. Training shows it the correct previous target tokens; generation makes it use its own.
+
+A conditional sequence model writes
+
+$$
+p_\theta(\mathbf y\mid\mathbf x)=\prod_{t=1}^{U}p_\theta(y_t\mid y_{\lt t},\mathbf x).
+$$
+
+Here $\mathbf x$ is the source sequence; $\mathbf y=(y_1,\ldots,y_U)$ is the target sequence, including an end token; $U$ is its length; $y_{\lt t}$ contains the tokens before position $t$; and $\theta$ denotes learned parameters. The source can be visible in full while the target remains causal. This factorization describes a distribution. It does not certify that a sampled output is supported by the source.
+
+Training usually supplies the correct preceding target tokens, a procedure called teacher forcing [6]. For a batch, the token-level loss is
+
+$$
+\mathcal L(\theta)=-\frac{1}{M}\sum_{b=1}^{B}\sum_{t=1}^{T_b}m_{bt}\log p_\theta(y_{bt}\mid y_{b,\lt t},\mathbf x_b).
+$$
+
+Here $B$ is the number of examples; $T_b$ is the padded target length for example $b$; $m_{bt}$ is one for a real target token and zero for padding; $M=\sum_{b,t}m_{bt}$ is the number of real tokens; and $\mathbf x_b$, $y_{bt}$ and $y_{b,\lt t}$ denote the source, current target token and reference prefix. The logarithm is natural. The mask removes padding from the loss; it does not remove it from computation automatically.
+
+Check the target shift carefully. The decoder input begins with a start token, while the target begins with the first output token. The end token belongs in the target so the model learns when to stop. Padding is separate from the end token: otherwise training can reward stopping in the wrong place. When batching sentences of different lengths, record whether you average over tokens or examples; those choices assign different weights to long sentences.
+
+Data construction is often more consequential than a small architectural change. A translation pair containing a silently corrected number trains the model to change that number. Keep source versions, annotation instructions and target provenance together. Group splits by document, conversation or event so near-duplicate inputs cannot enter both training and testing.
+
+### Teacher forcing and exposure bias
+
+Teacher forcing presents the correct prefix even when the model would have generated a different one. Suppose the reference begins `Pump A`, but generation selects `Pump B`. Later tokens can form a perfectly fluent statement about Pump B. Reference-conditioned loss still evaluates those later positions after `Pump A`; it never tests recovery from this particular generated mistake. The distinction is between prediction under a supplied history and behavior under the model's own evolving history.
+
+Ranzato et al. named this training/inference mismatch **exposure bias**: the model is exposed only to ground-truth prefixes during training, but must consume its own predictions at test time, so errors can accumulate [10]. Two responses illustrate the design space. **Scheduled sampling** gradually replaces some ground-truth decoder inputs with the model's own predictions during training [11]. **Sequence-level training** optimizes a score of whole generated sequences, such as BLEU, rather than only next-token likelihood [10]. Neither removes the need to evaluate full generated outputs; maximum likelihood with teacher forcing remains the standard starting point, and the factorization itself is exact. [ML 08](/en/learn/ml/ml-08-autoregressive-vision/) discusses the same mismatch for image generation.
+
+Token averaging also hides unequal semantic consequences. Replacing `the` may slightly affect style; replacing `not`, a device ID or a unit can reverse the result. Each token contributes a log-loss term, while the application may assign very different costs to these changes. A lower average loss can coexist with more critical errors if common wording improves while a rare distinction deteriorates. Several outputs can also correctly express the source: a single reference supplies one acceptable wording, not the complete set.
+
+## 3. The encoder–decoder Transformer for translation
+
+**Plain version.** The encoder reads the whole source with bidirectional self-attention. The decoder writes the target with causal self-attention and reads the encoder with cross-attention. A final linear layer turns each decoder state into a distribution over target tokens.
+
+The original Transformer [8] is assembled from the blocks of [NLP 07](/en/learn/nlp/nlp-07-attention-transformers/):
+
+1. **Inputs.** Source and target text are segmented into subwords [9] ([NLP 02](/en/learn/nlp/nlp-02-linguistic-essentials/)). Each token ID is embedded, scaled by $\sqrt d$ and added to a sinusoidal position encoding.
+2. **Encoder.** $N$ blocks of self-attention and feedforward sublayers, with a padding mask on source keys, produce the **memory** $M\in\mathbb R^{T_x\times d}$, one vector per source token.
+3. **Decoder.** $N$ blocks of masked self-attention (causal plus target padding), cross-attention to $M$ (source padding masked), and feedforward sublayers.
+4. **Output.** A linear layer and softmax give $p_\theta(y_t\mid y_{\lt t},\mathbf x)$ at every target position.
+
+During training, all target positions are computed in one pass, because the causal mask makes each position see only its own prefix. During generation, the encoder runs once, and the decoder runs once per output token. Practical decoders cache the keys and values of earlier target positions instead of recomputing them; [NLP 09](/en/learn/nlp/nlp-09-language-modeling-transformers/) analyzes that cache.
+
+Two training details from the original paper are worth knowing. The model was trained with **label smoothing**: the target distribution puts most of its mass on the reference token and spreads a small amount over the rest of the vocabulary [8, 29]. With smoothing parameter $\varepsilon$ and vocabulary $V$, the training target is $q(v)=(1-\varepsilon)\mathbf 1\{v=y_t\}+\varepsilon/|V|$; here $\mathbf 1\{\cdot\}$ is one when its condition holds. This discourages extreme confidence; Vaswani et al. report that it hurt perplexity but improved BLEU [8]. The model also used a learning-rate warm-up, which Xiong et al. later linked to the post-norm layout ([NLP 07](/en/learn/nlp/nlp-07-attention-transformers/)).
+
+## 4. Decoding: greedy search, beam search and length normalization
+
+**Plain version.** A trained model gives a probability for every possible next token. A decoder must turn those probabilities into one output sentence. Greedy decoding takes the best next token each time; beam search keeps several partial sentences alive.
+
+The sequence score for a candidate is
+
+$$
+\ell(\mathbf y\mid\mathbf x)=\sum_{t=1}^{U}\log p_\theta(y_t\mid y_{\lt t},\mathbf x).
+$$
+
+Here $\ell$ is the log probability of the complete sequence; $U$ includes the end token; and the remaining symbols are defined above. Exact maximization over all sequences is intractable because the number of candidates grows exponentially with length. **Greedy decoding** chooses the most probable token at each step. **Beam search** with width $k$ keeps the $k$ highest-scoring prefixes, extends each by every token, and again keeps the best $k$; finished hypotheses (ending in the end token) are set aside. These choices control search and variation; none makes unsupported content reliable.
+
+Greedy decoding can miss the best complete sequence: a first token with slightly lower probability may lead to a much more probable continuation, which a beam keeps alive long enough to discover. [NLP 09](/en/learn/nlp/nlp-09-language-modeling-transformers/) works through a constructed example of this, the bound that raw log probabilities give on unfinished prefixes, the difference between search error and model error, and sampling-based decoding. Here we focus on what translation adds: length normalization, and a measured greedy-versus-beam comparison on a trained translator (Section 6).
+
+### Length normalization
+
+Raw log probability has a built-in preference. Every additional token contributes a nonpositive term, so longer hypotheses tend to score lower even when they are better translations. Wu et al. describe this bias in Google's neural MT system and rank finished hypotheses by a normalized score [12]:
+
+$$
+s(\mathbf y,\mathbf x)=\frac{\ell(\mathbf y\mid\mathbf x)}{\operatorname{lp}(\mathbf y)},\qquad
+\operatorname{lp}(\mathbf y)=\frac{(5+|\mathbf y|)^\alpha}{(5+1)^\alpha}.
+$$
+
+Here $|\mathbf y|$ is the hypothesis length in tokens; $\alpha\geq0$ controls the strength of normalization, with $\alpha=0$ recovering the raw score and $\alpha=1$ approximating a per-token average; and $s$ is the score used to rank finished hypotheses. Their full scoring function also adds a coverage penalty based on attention, which we omit. They tuned $\alpha$ on development data [12]; treat it as a hyperparameter, not a constant.
+
+```python
+candidates = {                       # per-token log-probabilities, end token included
+    "stop <eos>": [-0.9, -1.1],
+    "stop pump b now <eos>": [-0.9, -0.5, -0.3, -0.4, -0.2],
+}
+def length_penalty(n, alpha):        # Wu et al. (2016): ((5 + n) / 6) ** alpha
+    return ((5 + n) / 6) ** alpha
+for alpha in [0.0, 0.6, 1.0]:
+    scores = {c: sum(lp) / length_penalty(len(lp), alpha) for c, lp in candidates.items()}
+    best = max(scores, key=scores.get)
+    print(f"alpha={alpha}:", {c: round(s, 3) for c, s in scores.items()}, "->", best)
+```
+
+Output:
+
+```text
+alpha=0.0: {'stop <eos>': -2.0, 'stop pump b now <eos>': -2.3} -> stop <eos>
+alpha=0.6: {'stop <eos>': -1.823, 'stop pump b now <eos>': -1.693} -> stop pump b now <eos>
+alpha=1.0: {'stop <eos>': -1.714, 'stop pump b now <eos>': -1.38} -> stop pump b now <eos>
+```
+
+The raw score prefers the truncated instruction; $\alpha=0.6$ and $\alpha=1$ prefer the complete one (a small $\alpha$ such as $0.2$ would still prefer the short one). Whether that is right depends on the source, which the score does not see.
+
+Normalization also changes the search itself: with raw scores, a finished hypothesis that beats every unfinished prefix can be returned safely, because extending a prefix can only lower its raw score; with a length-normalized score that argument no longer holds, so the stopping rule must account for the penalty.
+
+Set explicit output limits, a stopping rule and behavior when the limit is reached. A truncated translation should not be returned as complete. Record the decoding parameters with the model so an evaluation can be reproduced.
+
+## 5. Evaluating translations: BLEU, chrF and COMET
+
+**Plain version.** Automatic metrics compare a system output with one or more human reference translations. They are cheap and reproducible, which makes them useful for comparing systems, but a tiny word change can reverse meaning without changing the score much.
+
+### BLEU
+
+BLEU compares n-grams of the candidate with those of the references [13]. For each order $n=1,\dots,4$ it computes a **modified (clipped) precision**: each candidate n-gram is counted at most as many times as it appears in the reference where it is most frequent. Over a test corpus,
+
+$$
+p_n=\frac{\sum_{\text{sent}}\sum_{g\in G_n}\min\!\big(c(g),\,c_{\mathrm{ref}}^{\max}(g)\big)}{\sum_{\text{sent}}\sum_{g\in G_n}c(g)},\qquad
+\mathrm{BP}=\begin{cases}1 & c\gt r\\ e^{\,1-r/c} & c\leq r\end{cases},\qquad
+\mathrm{BLEU}=\mathrm{BP}\cdot\exp\!\Big(\sum_{n=1}^{4}w_n\log p_n\Big).
+$$
+
+Here $G_n$ is the set of distinct n-grams in a candidate sentence; $c(g)$ is the count of n-gram $g$ in the candidate; $c_{\mathrm{ref}}^{\max}(g)$ is its largest count in any single reference for that sentence; $c$ is the total candidate length over the corpus; $r$ is the **effective reference length**, the sum over sentences of the reference length closest to each candidate's length; $\mathrm{BP}$ is the **brevity penalty**, which stops a system from gaining precision by writing very short outputs; and $w_n=1/4$ are uniform weights. BLEU is a corpus-level score: the precisions are pooled over all sentences before the logarithm, so it is not the average of sentence scores.
+
+```python
+import math
+from collections import Counter
+
+def ngrams(tokens, n):
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+def corpus_bleu(hypotheses, references, max_n=4):
+    """hypotheses: list of token lists; references: list of lists of token lists."""
+    matched, total = [0] * max_n, [0] * max_n
+    hyp_len = ref_len = 0
+    for hyp, refs in zip(hypotheses, references):
+        hyp_len += len(hyp)
+        # effective reference length: the reference length closest to the hypothesis
+        ref_len += min((abs(len(r) - len(hyp)), len(r)) for r in refs)[1]
+        for n in range(1, max_n + 1):
+            counts = ngrams(hyp, n)
+            max_ref = Counter()
+            for r in refs:
+                max_ref |= ngrams(r, n)            # elementwise max over references
+            matched[n - 1] += sum((counts & max_ref).values())   # clipped counts
+            total[n - 1] += max(len(hyp) - n + 1, 0)
+    if min(matched) == 0:
+        return 0.0, matched, total
+    log_p = sum(math.log(m / t) for m, t in zip(matched, total)) / max_n
+    bp = 1.0 if hyp_len > ref_len else math.exp(1 - ref_len / hyp_len)
+    return bp * math.exp(log_p), matched, total
+
+refs = [["the cat is on the mat".split(), "there is a cat on the mat".split()]]
+_, m, t = corpus_bleu(["the the the the the the the".split()], refs, max_n=1)
+print("clipped unigram precision:", f"{m[0]}/{t[0]}")
+ref = "pump a is not operating at 30 c".split()
+for hyp in ["pump a is not operating at 30 c",
+            "pump a is operating at 30 c",
+            "pump a is not running at 30 c"]:
+    score, _, _ = corpus_bleu([hyp.split()], [[ref]])
+    print(f"{score:.3f}  {hyp}")
+assert m[0] == 2 and t[0] == 7
+assert corpus_bleu([ref], [[ref]])[0] == 1.0
+```
+
+Output:
+
+```text
+clipped unigram precision: 2/7
+1.000  pump a is not operating at 30 c
+0.515  pump a is operating at 30 c
+0.500  pump a is not running at 30 c
+```
+
+The first check reproduces the classic clipping example: a candidate that repeats "the" seven times gets credit for only two, because no reference contains "the" more than twice [13]. The second check is the warning. Dropping `not` reverses the meaning, yet scores higher than a correct paraphrase that replaces `operating` with `running`. BLEU measures surface overlap with the references; it has no notion of which words carry the proposition.
+
+This implementation uses whitespace tokens, no smoothing (any zero n-gram precision gives zero), and the closest-reference-length rule. Published BLEU scores depend on such choices. Post showed that differences in tokenization and normalization alone can change reported BLEU substantially, and introduced sacreBLEU, which computes the score on detokenized text with a standard internal tokenizer and prints a version signature [14]. Report that signature with any BLEU number; scores computed with different settings are not comparable.
+
+### chrF
+
+chrF scores **character** n-grams instead of word n-grams [15]:
+
+$$
+\mathrm{chrF}_\beta=(1+\beta^2)\,\frac{\mathrm{chrP}\cdot\mathrm{chrR}}{\beta^2\,\mathrm{chrP}+\mathrm{chrR}}.
+$$
+
+Here $\mathrm{chrP}$ and $\mathrm{chrR}$ are character n-gram precision and recall, averaged over n-gram orders; and $\beta$ weights recall $\beta$ times as much as precision. Popović found 6-grams worked best in her experiments and compared $\beta=1$ with $\beta=3$ [15]. Character n-grams give partial credit for shared stems and inflections, which helps for morphologically rich target languages, but chrF is still an overlap score: it cannot tell that `not` matters more than `the`.
+
+### Learned metrics: COMET
+
+COMET trains a neural model to predict human quality judgments from the source, the candidate and a reference, using a cross-lingual pretrained encoder [16]. It can reward a correct paraphrase that shares few words with the reference. In the WMT22 metrics task, evaluated against expert MQM (Multidimensional Quality Metrics) annotations, neural learned metrics correlated better with human ratings than overlap metrics such as BLEU and chrF [18]. Learned metrics bring their own model versions, training distributions and language coverage; their outputs are measurements under those conditions. Check the metric on the same kinds of negation, quantity and terminology errors that matter in your application.
+
+### A metric that ranks systems is not automatically an output gate
+
+The WMT25 evaluation findings separate segment-quality prediction, error-span annotation and quality-informed correction; they report that system-level and segment-level evaluation can favor different approaches, and that linguistic diversity remains difficult [19]. This matters because rejecting one faulty translation is a different decision from ranking average model quality. A metric can reward a generally fluent system while missing rare reversed negations in individual outputs. The acceptance threshold needs validation on those errors, rather than being inherited from an aggregate correlation result.
+
+Cross the generator's error categories with the evaluator's inputs. A reference-only comparison can inspect wording agreement but lacks the source needed to verify an unsupported statement. A source-aware evaluator has that evidence, yet can still share the generator's scope or quantity mistake. Inspect disagreement cases: correct paraphrases marked poor, fluent contradictions marked good, and accurate but incomplete translations. Include human review with the original source and separate adequacy from style. This analysis identifies which part of an evaluation signal is useful for model comparison and which part can responsibly inform acceptance of a particular result.
+
+### Overlap, recall and human judgment
+
+The same counterexample affects recall-oriented overlap, which ROUGE uses for summarization [17]. For a simple unigram recall check,
+
+$$
+R_1=\frac{\sum_w\min(c_{\mathrm{ref}}(w),c_{\mathrm{hyp}}(w))}{\sum_w c_{\mathrm{ref}}(w)}.
+$$
+
+Here $w$ ranges over word types; $c_{\mathrm{ref}}(w)$ and $c_{\mathrm{hyp}}(w)$ are reference and hypothesis word counts. The denominator is the number of reference tokens. This minimal implementation does not reproduce every preprocessing or aggregation option of a full evaluation package.
+
+```python
+import re
+from collections import Counter
+
+def words(text):
+    return re.findall(r"[a-z0-9]+", text.lower())
+def overlap_recall(reference, hypothesis):
+    ref, hyp = Counter(words(reference)), Counter(words(hypothesis))
+    return sum((ref & hyp).values()) / sum(ref.values())
+reference = "Pump A is operating at 30 C."
+contradiction = "Pump A is not operating at 30 C."
+score = overlap_recall(reference, contradiction)
+print("Unigram recall:", score)
+assert score == 1.0
+assert ("not" in words(reference)) != ("not" in words(contradiction))
+```
+
+The contradiction receives recall 1.0 because it retains every reference token. A precision term would penalize the extra word, but the small penalty would still not express the importance of reversed negation. This is a controlled counterexample, not evidence that overlap metrics never correlate with human judgments. It explains why the metric must be paired with meaning-sensitive checks.
+
+Human evaluation should hide system identity, randomize presentation, preserve source context and specify the decision task. Freitag et al.'s large MQM study, with professional translators who could see the full document, ranked systems substantially differently from the crowd-worker ratings of the same shared task [30]. Ask reviewers to mark specific errors before judging overall quality, report who reviewed the outputs and in which languages, and keep an adjudicated challenge set separate from routine samples.
+
+## 6. Hands-on: a tiny Transformer translator
+
+**Plain version.** We invent a small language pair, train an encoder–decoder Transformer on 3,000 sentence pairs for under a minute on a CPU, and compare greedy and beam decoding with the BLEU function above.
+
+The source language is English-like: subject, verb, object, with optional adjectives before nouns and an optional `never`. The target language is invented: every word has a fixed translation, adjectives follow their nouns, the object is followed by the particle `o`, the verb comes last, and negation becomes the suffix word `nai`. For example, `the small drone never lifts a red cable` becomes `la drono pico un kablo rosso o levi nai`. Translating therefore requires both a dictionary and reordering, the two things that made word-by-word translation inadequate. Training and test sentences are disjoint, but they come from the same small grammar, so this is an in-distribution test.
+
+The model uses PyTorch's encoder and decoder layers (two of each, width 64, four heads), scaled embeddings plus sinusoidal positions, boolean masks (`True` means blocked), and `ignore_index` to drop padded targets from the loss, implementing the masked loss of Section 2. Run it after the BLEU block, because it calls `corpus_bleu`.
+
+```python
+# Run after the BLEU block above: this code calls its corpus_bleu function.
+import math, random, time
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+torch.manual_seed(0); torch.set_num_threads(1); rng = random.Random(0)
+lexicon = {"the": "la", "a": "un", "robot": "robo", "sensor": "senso",
+           "pump": "pompa", "valve": "valva", "drone": "drono", "cable": "kablo",
+           "red": "rosso", "blue": "blu", "big": "grando", "small": "pico",
+           "sees": "vidi", "checks": "kontrolli", "moves": "movi",
+           "opens": "aperi", "lifts": "levi"}
+DET, NOUN = ["the", "a"], ["robot", "sensor", "pump", "valve", "drone", "cable"]
+ADJ, VERB = ["red", "blue", "big", "small"], ["sees", "checks", "moves", "opens", "lifts"]
+
+def noun_phrase():
+    adj = [rng.choice(ADJ)] if rng.random() < 0.5 else []
+    return rng.choice(DET), adj, rng.choice(NOUN)
+
+def pair():          # source: SVO, adjective before noun; target: SOV, adjective after noun
+    (d1, a1, n1), (d2, a2, n2) = noun_phrase(), noun_phrase()
+    verb, neg = rng.choice(VERB), rng.random() < 0.3
+    src = [d1, *a1, n1] + (["never"] if neg else []) + [verb, d2, *a2, n2]
+    np_ = lambda d, a, n: [lexicon[d], lexicon[n]] + [lexicon[x] for x in a]
+    tgt = np_(d1, a1, n1) + np_(d2, a2, n2) + ["o", lexicon[verb]] + (["nai"] if neg else [])
+    return " ".join(src), " ".join(tgt)
+
+pairs = list(dict(pair() for _ in range(6000)).items())   # unique source sentences
+train_pairs, test_pairs = pairs[:3000], pairs[3000:3200]
+PAD, BOS, EOS = 0, 1, 2
+src_vocab = ["<pad>", "<bos>", "<eos>"] + sorted({w for s, _ in pairs for w in s.split()})
+tgt_vocab = ["<pad>", "<bos>", "<eos>"] + sorted({w for _, t in pairs for w in t.split()})
+s_id = {w: i for i, w in enumerate(src_vocab)}
+t_id = {w: i for i, w in enumerate(tgt_vocab)}
+
+def batch(texts, ids, L):
+    rows = [[ids[w] for w in t.split()] + [EOS] for t in texts]
+    return torch.tensor([r + [PAD] * (L - len(r)) for r in rows])
+S = batch([s for s, _ in train_pairs], s_id, 10)
+Y = batch([t for _, t in train_pairs], t_id, 12)
+Y_in = torch.cat([torch.full((len(Y), 1), BOS), Y[:, :-1]], dim=1)   # shift right
+
+def sinusoidal(n, d):
+    pos = torch.arange(n)[:, None]
+    omega = 1.0 / 10000 ** (torch.arange(0, d, 2) / d)
+    pe = torch.zeros(n, d)
+    pe[:, 0::2], pe[:, 1::2] = torch.sin(pos * omega), torch.cos(pos * omega)
+    return pe
+
+class TinyMT(nn.Module):
+    def __init__(self, d=64):
+        super().__init__()
+        self.d = d
+        self.src_emb = nn.Embedding(len(src_vocab), d)
+        self.tgt_emb = nn.Embedding(len(tgt_vocab), d)
+        self.register_buffer("pe", sinusoidal(32, d))
+        enc = nn.TransformerEncoderLayer(d, 4, 128, dropout=0.0, batch_first=True)
+        dec = nn.TransformerDecoderLayer(d, 4, 128, dropout=0.0, batch_first=True)
+        self.encoder = nn.TransformerEncoder(enc, 2, enable_nested_tensor=False)
+        self.decoder = nn.TransformerDecoder(dec, 2)
+        self.out = nn.Linear(d, len(tgt_vocab))
+    def embed(self, emb, x):
+        return emb(x) * math.sqrt(self.d) + self.pe[: x.shape[1]]
+    def encode(self, src):
+        return self.encoder(self.embed(self.src_emb, src), src_key_padding_mask=src.eq(PAD))
+    def decode(self, memory, src, y_in):
+        T = y_in.shape[1]
+        causal = torch.ones(T, T, dtype=torch.bool).triu(1)      # True = blocked
+        h = self.decoder(self.embed(self.tgt_emb, y_in), memory, tgt_mask=causal,
+                         tgt_key_padding_mask=y_in.eq(PAD),
+                         memory_key_padding_mask=src.eq(PAD))
+        return self.out(h)
+
+@torch.no_grad()
+def greedy(src_text, max_len=14):
+    src = batch([src_text], s_id, len(src_text.split()) + 1)
+    memory, y = model.encode(src), [BOS]
+    for _ in range(max_len):
+        logp = model.decode(memory, src, torch.tensor([y]))[0, -1].log_softmax(-1)
+        y.append(int(logp.argmax()))
+        if y[-1] == EOS:
+            break
+    return [tgt_vocab[i] for i in y[1:] if i != EOS]
+
+@torch.no_grad()
+def beam_search(src_text, width=4, alpha=0.6, max_len=14):
+    src = batch([src_text], s_id, len(src_text.split()) + 1)
+    memory = model.encode(src)
+    beams, finished = [([BOS], 0.0)], []
+    lp = lambda n: ((5 + n) / 6) ** alpha             # GNMT length penalty
+    for _ in range(max_len):
+        prefixes = torch.tensor([y for y, _ in beams])
+        logp = model.decode(memory.expand(len(beams), -1, -1), src.expand(len(beams), -1),
+                            prefixes)[:, -1].log_softmax(-1)
+        cand = [(y + [t], s + logp[b, t].item()) for b, (y, s) in enumerate(beams)
+                for t in logp[b].topk(width).indices.tolist()]
+        cand.sort(key=lambda c: c[1], reverse=True)
+        beams = []
+        for y, s in cand:
+            (finished if y[-1] == EOS else beams).append((y, s))
+            if len(beams) == width:
+                break
+        if not beams:
+            break
+    best, _ = max(finished or beams, key=lambda c: c[1] / lp(len(c[0]) - 1))
+    return [tgt_vocab[i] for i in best[1:] if i != EOS]
+
+@torch.no_grad()
+def log_prob(src_text, words):                       # model score of a full output
+    src = batch([src_text], s_id, len(src_text.split()) + 1)
+    y = [t_id[w] for w in words] + [EOS]
+    logp = model.decode(model.encode(src), src, torch.tensor([[BOS] + y[:-1]])).log_softmax(-1)
+    return logp[0, torch.arange(len(y)), y].sum().item()
+
+def evaluate():
+    model.eval()
+    refs, outputs = [[t.split()] for _, t in test_pairs], {}
+    for name, decode in [("greedy", greedy), ("beam-4", beam_search)]:
+        hyps = [decode(s) for s, _ in test_pairs]
+        exact = sum(h == r[0] for h, r in zip(hyps, refs)) / len(refs)
+        mean_lp = sum(log_prob(s, h) for (s, _), h in zip(test_pairs, hyps)) / len(hyps)
+        print(f"  {name}: BLEU {corpus_bleu(hyps, refs)[0]:.3f}  exact {exact:.3f}"
+              f"  mean log p {mean_lp:.3f}")
+        outputs[name] = hyps
+    print("  outputs that differ:", sum(g != b for g, b in zip(*outputs.values())))
+    model.train()
+
+model = TinyMT()
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+start = time.time()
+for step in range(1, 401):
+    idx = torch.randint(0, len(S), (64,))
+    logits = model.decode(model.encode(S[idx]), S[idx], Y_in[idx])   # teacher forcing
+    loss = F.cross_entropy(logits.reshape(-1, len(tgt_vocab)), Y[idx].reshape(-1),
+                           ignore_index=PAD)
+    opt.zero_grad(); loss.backward(); opt.step()
+    if step in (100, 400):
+        print(f"after {step} steps: training loss {loss.item():.3f}")
+        evaluate()
+model.eval()
+print(" ".join(greedy("the small drone never lifts a red cable")))
+print(f"total time {time.time() - start:.0f}s")
+```
+
+Output (CPU, single thread; the timing will vary by machine, and other PyTorch versions or hardware can change the last digits):
+
+```text
+after 100 steps: training loss 0.221
+  greedy: BLEU 0.614  exact 0.365  mean log p -1.587
+  beam-4: BLEU 0.618  exact 0.375  mean log p -1.553
+  outputs that differ: 31
+after 400 steps: training loss 0.003
+  greedy: BLEU 1.000  exact 1.000  mean log p -0.027
+  beam-4: BLEU 1.000  exact 1.000  mean log p -0.027
+  outputs that differ: 0
+la drono pico un kablo rosso o levi nai
+total time 16s
+```
+
+Read the two checkpoints separately. After 100 steps the model is half-trained: only about a third of the 200 test translations are exactly right. Here beam search changes 31 of the 200 outputs, finds outputs with a higher average model log probability, and improves BLEU and exact match slightly. After 400 steps the model is confident and correct on this in-distribution test, and greedy and beam produce identical outputs: when the model's distribution is sharply peaked, there is nothing for a wider search to find. Beam search helps by reducing **search error**; it cannot fix **model error**, and on easy inputs it may change nothing.
+
+BLEU and exact match move together here because the language is tiny and deterministic: there is exactly one correct translation per source. With real references, a correct translation can differ from the reference, and the two numbers diverge. The test also checks only sentences from the same grammar. It says nothing about compositional generalization, such as an adjective–noun combination never seen in training; Exercise 1 asks you to test that.
+
+<Figure src={trainFig} alt="Left: training loss on a log scale falls from about 3 nats to below 0.01 over 400 steps, with a dashed line at step 100. Right: a heat map of cross-attention weights for the held-out sentence a big valve never lifts the red cable; each target word puts most weight on its source counterpart, so the map shows the reordering: valva reads valve, grando reads big, levi reads lifts, and nai reads never." caption="Figure 1 — The tiny translator. Left: teacher-forced training loss from the code above. Right: cross-attention of the last decoder layer, averaged over heads, for a held-out sentence it translates correctly. Each row is the decoder position that predicts the labeled word. The off-diagonal pattern is the reordering the model learned; it is a view of where the computation read, not a proof of why it is correct." />
+
+The cross-attention map in Figure 1 is the Transformer version of the soft alignments that Bahdanau et al. visualized for RNN translators [7]. Adjectives in the target read the adjectives that preceded the nouns in the source; the verb, which moves to the end, reads the source verb; and `nai` reads `never`. This alignment emerged from the translation loss alone; no alignment labels were given.
+
+## 7. Translation preserves meaning across form
+
+**Plain version.** A good translation changes the words and their order but keeps who did what to whom, when, how much, and whether it happened at all.
+
+Translation is conditional generation with a strong content constraint: preserve the source meaning while producing natural target-language text. Word order, morphology, idioms and implicit context make it more than replacing each word. McRoy's translation discussion [2] pairs naturally with Hagiwara's sequence-to-sequence material [1].
+
+Evaluate **adequacy**, whether the source meaning survives, separately from **fluency**, whether the target reads naturally. A fluent translation can omit an exception, reverse negation or change who performed an action. A literal translation may preserve technical content but sound awkward. The acceptable balance depends on the use case and must be specified before choosing a model or metric.
+
+For a general translator, preserve terminology through a glossary and test it in context. A required term can be present while attached to the wrong entity. Likewise, keeping every number is insufficient if the values are reassigned. Build challenge cases around relations: "Pump A is warmer than Pump B," "the valve may remain closed," and "no fault was detected before noon." Minimal edits reveal whether the model respects comparison, modality, negation and time.
+
+Language tags and text normalization belong to the model contract. Traditional and Simplified Chinese are different output requirements; a broad language label alone does not specify script, regional terminology or punctuation. Do not convert source text destructively before storing it. Preserve the original alongside the normalized model input so reviewers can investigate a mistranslation.
+
+In low-resource settings, uncertainty can come from limited training coverage rather than input ambiguity. Record domain, dialect, script and language pair when reporting results. A system validated on short product descriptions has not thereby been validated on long technical instructions. If reviewers cannot read both languages, they cannot directly assess adequacy; use qualified bilingual review and explain the remaining coverage gaps.
+
+### Preserve the proposition, not only its words
+
+For a translation, compare the source and target as propositions with participants, relations and scope. "Pump A is warmer than Pump B" must keep the comparison direction. A target that contains both names and the word "warmer" can still reverse it. "No sensor exceeded the limit" differs from "Not every sensor exceeded the limit": the second allows some exceedances. [NLP 12](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/) explains why these negation scopes differ.
+
+Ambiguity sometimes belongs to the source. `May` can express possibility or permission depending on context. If an isolated sentence does not decide between them, translating it into a form that unambiguously expresses permission adds an interpretation. Use the surrounding document or conversation when available; otherwise preserve or flag the ambiguity. A fluent target does not justify resolving an underspecified source arbitrarily.
+
+A meaning-oriented comparison can check entity bindings, event status, quantities, units, negation and conditions individually, then assess overall readability. These checks allow lexical variation while exposing proposition changes. They also separate a true translation error from an already ambiguous source: an annotator disagreement caused by missing source context should not be interpreted as evidence that one vocabulary choice fixes the model.
+
+## 8. Chatbots: conversation as sequence-to-sequence
+
+**Plain version.** A chatbot can be built like a translator whose "source" is the conversation so far and whose "target" is the next reply. That works for fluent small talk, but a task assistant also needs to keep track of what has been decided.
+
+Vinyals and Le trained a sequence-to-sequence model to predict the next turn from the previous turns, on an IT helpdesk dataset and on movie subtitles, and found it could hold simple conversations despite optimizing a likelihood objective that does not directly measure conversation quality [23]. Li et al. observed that such models tend to produce safe, generic replies such as "I don't know" regardless of the input, and proposed a maximum mutual information objective that favors replies specific to the message [24]. The lesson carries over to modern assistants: a high-probability reply is not necessarily an informative or correct one.
+
+For response generation, write $p_\theta(u_t\mid h_t,s_t,e_t)$, where $u_t$ is the next system utterance, $h_t$ is selected history, $s_t$ is task state, $e_t$ is evidence and $\theta$ is the model parameters. The conditional distribution says what the generator receives. It does not ensure that the generator respects every state field or evidence item.
+
+Task-oriented dialogue has a defined outcome: supply a query, complete a booking-like record, retrieve the right observation or produce a specified report. Open conversation has less sharply defined goals and more acceptable replies. Both require consistency, but their success criteria differ. A modular task system separates understanding, state tracking, policy, evidence access and realization, which makes errors easier to locate. A learned end-to-end system can combine these functions, but it still needs tests that distinguish wrong state from poor wording. The surveys of Deriu et al. [25] and Ni et al. [26] describe the broader design and evaluation families.
+
+A task policy can choose clarification, query, explanation or refusal of an unsupported operation. Generation then verbalizes that action. This keeps conversational fluency from deciding whether a query is ready. Open conversation benefits from flexible language, but persona or style should not override factual consistency. A system can be engaging while inventing past interactions or implying it performed an action that never occurred. Evaluate claims about the conversation against the actual log, and claims about external facts against evidence.
+
+## 9. Turns, dialogue acts and state
+
+**Plain version.** A conversation is a changing shared problem. The latest sentence may replace an earlier request, refer back to something, or correct the system. The system must track what has been proposed and what has actually been accepted.
+
+A dialogue turn is a participant's contribution at a particular point in an exchange. Its function, its **dialogue act**, can be a request, an answer, a correction, a confirmation or a clarification. The same surface word can have different functions depending on the pending question: "Tuesday" may supply a date or correct an earlier date.
+
+A task-oriented dialogue state stores the information needed to continue a specified task. For an equipment-query assistant, slots might include device, time interval, measurement and output language. Store values together with source turn, confidence and status. Unknown, explicitly absent and not applicable should not collapse into one empty string. Write a state update as
+
+$$
+s_t=U(s_{t-1},o_t,r_t),\qquad a_t=\pi(s_t).
+$$
+
+Here $s_t$ is the state after turn $t$; $o_t$ is the observed utterance or extracted dialogue act; $r_t$ identifies the speaker and other turn context; $U$ is the update rule; $a_t$ is the next system action; and $\pi$ is the policy mapping state to actions. The state need not be a single deterministic record, and the policy need not generate text directly.
+
+Keep proposal state separate from committed state. A user may ask for an option, inspect it and then change it. The system's own suggestion does not become a user preference merely because it appears in the transcript. Corrections require scope: "Actually, Pump B" can replace the selected device while keeping the time interval; "start over" may discard the whole task; "not yesterday" rejects a value without necessarily specifying a replacement.
+
+### A deterministic state tracker with correction tests
+
+A structured state tracker is a useful baseline for a narrow task. It reveals the contract between language understanding and action selection. The example consumes already extracted events; it does not claim to understand arbitrary natural language. The state stores selected slots and a revision counter. Any accepted slot change invalidates the previous confirmation, and a confirmation is valid only for the revision explicitly presented to the user. This prevents an old "yes" from authorizing a newly changed proposal.
+
+```python
+from copy import deepcopy
+
+initial = {"device": None, "period": None, "revision": 0, "confirmed": None}
+def update(state, event):
+    result = deepcopy(state)
+    kind = event["kind"]
+    if kind == "set":
+        slot, value = event["slot"], event["value"]
+        allowed = {"device": {"pump_a", "pump_b"}, "period": {"today", "yesterday"}}
+        if slot not in allowed or value not in allowed[slot]:
+            raise ValueError("Unsupported slot or value")
+        if result[slot] != value:
+            result[slot] = value
+            result["revision"] += 1
+            result["confirmed"] = None
+    elif kind == "confirm":
+        if event["revision"] != result["revision"]:
+            raise ValueError("Confirmation refers to an old proposal")
+        if any(result[k] is None for k in ["device", "period"]):
+            raise ValueError("Cannot confirm incomplete state")
+        result["confirmed"] = result["revision"]
+    else:
+        raise ValueError("Unsupported event")
+    return result
+s1 = update(initial, {"kind": "set", "slot": "device", "value": "pump_a"})
+s2 = update(s1, {"kind": "set", "slot": "period", "value": "today"})
+s3 = update(s2, {"kind": "confirm", "revision": 2})
+s4 = update(s3, {"kind": "set", "slot": "device", "value": "pump_b"})
+print("Before correction:", s3)
+print("After correction:", s4)
+assert initial["device"] is None
+assert s3["confirmed"] == 2 and s4["confirmed"] is None
+try:
+    update(s4, {"kind": "confirm", "revision": 2})
+except ValueError:
+    pass
+else:
+    raise AssertionError("Stale confirmation was accepted")
+```
+
+<Figure src={state} alt="Synthetic dialogue-state timeline: device and period are selected, revision two is confirmed, then a device correction creates revision three and invalidates confirmation." caption="Figure 2 — Corrections change state and confirmation scope. Keeping a revision makes stale acceptance visible rather than silently applying it to a different proposal." />
+
+The copy preserves previous states for inspection and testing. A real system also needs event IDs so a repeated delivery does not apply the same update twice. Store the source turn and parsed event so an error can be traced to language understanding or state logic. Do not equate absence of a slot with a negative assertion: "no fault occurred" fills a fault-status value; an unmentioned fault leaves it unknown. The narrow allowed values make the baseline's coverage obvious. General systems can use learned slot extraction and open-vocabulary values, but should still validate units, schema and provenance. A model's confidence is not a substitute for a legal value.
+
+## 10. Belief states and useful clarification
+
+**Plain version.** When an utterance is ambiguous, keep several interpretations with probabilities instead of guessing. Then decide whether to act or to ask a question, depending on how costly a wrong action would be.
+
+A simple Bayesian update is
+
+$$
+b_t(h)=\frac{p(o_t\mid h)b_{t-1}(h)}{\sum_{h'}p(o_t\mid h')b_{t-1}(h')}.
+$$
+
+Here $h$ is a candidate interpretation; $b_{t-1}(h)$ is its previous probability; $o_t$ is the new observation; $p(o_t\mid h)$ is its likelihood under the interpretation; and the denominator normalizes over candidates $h'$. This simplified update assumes a fixed hypothesis space and a specified observation model. A changing task needs a transition model or an explicit correction operation rather than repeatedly treating every utterance as independent evidence.
+
+```python
+import numpy as np
+
+hypotheses = ["pump_a", "pump_b", "unknown"]
+prior = np.array([0.48, 0.48, 0.04])
+ambiguous_likelihood = np.array([0.6, 0.5, 0.2])
+posterior = prior*ambiguous_likelihood
+posterior /= posterior.sum()
+print("After ambiguous evidence:", dict(zip(hypotheses, posterior.round(3).tolist())))
+action = "clarify" if posterior.max() < 0.9 else "query"
+assert action == "clarify"
+# A second synthetic observation explicitly names Pump B.
+named_likelihood = np.array([0.02, 0.95, 0.03])
+updated = posterior*named_likelihood
+updated /= updated.sum()
+print("After explicit naming:", dict(zip(hypotheses, updated.round(3).tolist())))
+assert updated[1] > 0.9
+assert np.isclose(updated.sum(), 1)
+```
+
+The likelihoods are constructed for the teaching example. They are not calibrated model scores or measured human behavior. In a learned system, calibration and uncertainty under distribution shift require validation. Retaining an unknown hypothesis also prevents a closed list from pretending that every real request refers to a known device.
+
+<Figure src={belief} alt="Synthetic belief probabilities over Pump A, Pump B and unknown before evidence, after an ambiguous observation and after explicit naming." caption="Figure 3 — A belief state preserves ambiguity until additional evidence changes the decision. The probabilities are constructed for the example and do not claim empirical calibration." />
+
+A decision-theoretic policy minimizes expected loss: $a^*=\operatorname*{arg\,min}_a\sum_h b_t(h)L(a,h)$. Here $a$ ranges over permitted actions and $L(a,h)$ is the cost of action $a$ when interpretation $h$ is true. For a candidate question $q$, one-step expected loss is:
+
+$$
+V(q)=c(q)+\sum_o p(o\mid q)\min_a\sum_h b(h\mid o,q)L(a,h).
+$$
+
+Here $V(q)$ is expected loss after asking, $c(q)$ is the question's cost, $o$ ranges over possible replies, $p(o\mid q)$ is the reply probability under the current belief, $b(h\mid o,q)$ is the posterior over interpretation $h$ after that reply, $a$ ranges over subsequent actions, and $L(a,h)$ is their loss. The minimum assumes the system chooses its best next action after observing the answer. Compare $V(q)$ with the minimum expected loss of acting immediately. This finite decision calculation is a teaching model, not a calibrated description of human replies.
+
+```python
+import numpy as np
+
+prior = np.array([0.55, 0.45])  # true device A or B
+reply_given_device = np.array([[0.8, 0.2], [0.2, 0.8]])
+question_cost = 1.0
+for wrong_cost in [10.0, 2.0]:
+    immediate = wrong_cost * (1 - prior.max())
+    expected_after_question = question_cost
+    for reply in range(2):
+        mass = prior * reply_given_device[:, reply]
+        probability = mass.sum()
+        posterior = mass / probability
+        expected_after_question += probability * wrong_cost * (1 - posterior.max())
+    action = 'clarify' if expected_after_question < immediate else 'query A'
+    print(wrong_cost, round(immediate, 2), round(expected_after_question, 2), action)
+assert np.allclose(reply_given_device.sum(axis=1), 1)
+```
+
+The outputs compare `4.5` with `3.0` and choose clarification at wrong-query cost `10`; they compare `0.9` with `1.4` and query A at cost `2`. The belief and question are unchanged. The consequence of an error changes the best action. A fixed confidence threshold hides this dependence, while expected loss makes it explicit. Ask the question that distinguishes the uncertainty that matters: if only the device is ambiguous, do not request the already established time interval again.
+
+Corrections require a different distinction. "Actually, Pump B" can change the requested device, rather than provide evidence that Pump B was intended all along. The old belief concerned the earlier state; the new utterance changes the state itself. A probabilistic tracker needs state transitions as well as observation likelihoods, or an explicit update rule that recognizes corrections.
+
+## 11. Context, memory and tool boundaries
+
+**Plain version.** A long conversation does not fit, or does not need to fit, into every model input. What is kept must keep its status: a retracted request is not an active one. And when a chatbot can call tools, saying "I did it" must be backed by an actual result.
+
+Partition context into recent turns, structured task state and retrieved evidence. Recent turns support local reference and tone; state stores accepted slots and unresolved questions; evidence supports factual claims. A summary should not promote an unverified model response into authoritative evidence. A useful memory record includes a value, its source, time, scope and status (proposed, accepted or retracted). A rolling window may contain "yes" while excluding the proposal it answered; a summary may retain a device but omit that it was replaced by another. Test both with synthetic conversations, and compare the reconstructed state with an explicit event log.
+
+A tool-connected dialogue system generates proposals that software may execute. The proposal, execution and result are distinct events. A sentence saying "I queried the database" should be supported by a successful query result, not merely by the model having generated a query description. Tool-learning research studies how foundation models plan, select tools, construct arguments and use feedback [27]. An application should expose only its permitted operations through an explicit schema, validate the selected tool and arguments before execution, then attach the result status and evidence identifier to the state.
+
+Read-only evidence can contain imperative text. An equipment manual might quote a command, and a retrieved conversation might contain another participant's request. These strings remain source content. They should not update the current user's task state or expand the system's permitted operations. A result should distinguish success, no matching observation and execution error; converting all three into a generic fluent answer erases the information needed to understand what happened. Retrying a read-only query may be acceptable; repeating an operation that changes external state can produce a second effect, so record request identifiers and execution status in software rather than relying on the language model to remember.
+
+## 12. Evaluate a conversation, not just a reply
+
+**Plain version.** A correct-looking response can hide a wrong slot, a stale memory or an action that never ran. Measure the state and the final outcome over whole conversations.
+
+Deriu et al.'s survey [25] explains why task-oriented, conversational and question-answering systems require different evaluation methods. For a specified set of slots $J$, define exact state accuracy as
+
+$$
+A_{\mathrm{state}}=\frac{1}{N}\sum_{t=1}^{N}\mathbf1\{\hat s_{t,j}=s_{t,j}\text{ for every }j\in J\}.
+$$
+
+Here $N$ is the number of evaluated turns; $s_{t,j}$ is the reference value for slot $j$ at turn $t$; $\hat s_{t,j}$ is the predicted value; and $\mathbf1$ is one when all selected slots match and zero otherwise. This strict measure exposes errors hidden by averaging over mostly empty or easy slots. The selected slot set and handling of unknown values must be specified.
+
+```python
+reference = [
+    {"device": "pump_a", "period": None},
+    {"device": "pump_a", "period": "today"},
+    {"device": "pump_b", "period": "today"},
+]
+predicted = [
+    {"device": "pump_a", "period": None},
+    {"device": "pump_a", "period": "today"},
+    {"device": "pump_a", "period": "today"},
+]
+slots = ["device", "period"]
+joint = sum(all(p[j] == r[j] for j in slots)
+            for p, r in zip(predicted, reference))/len(reference)
+slot_accuracy = sum(p[j] == r[j] for p, r in zip(predicted, reference)
+                    for j in slots)/(len(reference)*len(slots))
+print("Exact state accuracy:", joint)
+print("Per-slot accuracy:", slot_accuracy)
+assert joint == 2/3 and slot_accuracy == 5/6
+# The final device is wrong despite many correct fields.
+assert predicted[-1]["device"] != reference[-1]["device"]
+```
+
+Task success should check the final requested outcome, not just dialogue length or friendly style. For the example, require the correct device, time interval and evidence, with corrections honored. A short conversation that queries the wrong device is not efficient success. BLEU against a reference reply is a poor fit here for the same reason as in translation, made worse by the many acceptable replies a conversation allows.
+
+Human evaluation should show enough history to interpret a response and specify the judgment task. A rater who sees only the last reply cannot assess whether a correction was honored. Randomize system identity, define error categories and retain disagreements. Schmidtova et al. [28] show why explicit hallucination definitions and reporting matter. Split datasets by conversation so adjacent turns are not scattered across train and test, and report uncertainty at the conversation level: turns within one conversation are dependent.
+
+## Modern view
+
+**Plain version.** Translation and dialogue both moved toward large pretrained models, but the evaluation questions in this chapter became more important, not less.
+
+**Surveys.** Stahlberg's review in the *Journal of Artificial Intelligence Research* (2020) traces neural MT from its roots in word and sentence embeddings and early encoder–decoders to attention and the Transformer, and closes with a survey of recent trends [22]. It is the best single map for the material in Sections 1–4. For dialogue, Ni et al.'s systematic survey (*Artificial Intelligence Review*, 2023) organizes deep-learning dialogue systems by model type and system type, and its task-oriented versus open-domain distinction explains why one response metric cannot characterize every conversation [26]. Deriu et al. [25] map evaluation methods to those system types. Qin et al.'s review of tool learning with foundation models (*ACM Computing Surveys*, 2024) motivates inspecting argument construction and result use alongside text quality [27].
+
+**State of the art, 2023–2026.** WMT has documented the arrival of large language models in translation: the WMT24 general-task findings evaluate several LLMs alongside submitted MT systems and online providers with professional human annotation, and the title states the balance, "the LLM era is here but MT is not solved yet" [20]. Massively multilingual models such as NLLB extend coverage to 200 languages, with low-resource languages as the explicit target [21]. On evaluation, the WMT22 metrics task found neural metrics more reliable than overlap metrics against expert MQM judgments [18], and the WMT25 findings separate system ranking from segment-level error detection [19].
+
+| Design axis | Choices to compare | Evidence needed |
+|---|---|---|
+| Architecture | encoder–decoder, decoder-only, multilingual | held-out quality per language pair and domain |
+| Decoding | greedy, beam with length normalization, sampling | completeness, length and semantic errors, not only model score |
+| Evaluation | BLEU/chrF (with signature), learned metrics, MQM-style human review | agreement with the application's failure categories |
+| Dialogue state | end-to-end generation, explicit state and policy | state accuracy, correction recovery, final task success |
+| Tool use | free-form claims, validated proposals with results | executed outcomes matching reported outcomes |
+
+**Open problems.** Low-resource and dialectal translation, document-level consistency, evaluating metrics on rare but critical errors (negation, numbers, names), reliable automatic acceptance of individual outputs, calibration of dialogue state under task changes, multilingual corrections, and stale memories in long conversations. A higher corpus score and a fluent reply are both easy to obtain; preserved meaning and a correct final action are what need evidence.
+
+## Key takeaways
+
+- SMT combined separately estimated translation and language models; NMT trains one encoder–decoder end to end, and the Transformer made it fully attention-based.
+- Shift targets, keep the end token, mask padding in both attention and loss; teacher forcing trains on gold prefixes, so test the model on its own generated outputs (exposure bias).
+- Greedy and beam search optimize the model's score with different amounts of search; length normalization changes which hypothesis wins; neither repairs a wrong model.
+- BLEU is clipped corpus-level n-gram precision with a brevity penalty; report the sacreBLEU signature, add chrF or learned metrics, and check meaning-critical errors directly.
+- A tiny Transformer learns dictionary translation and reordering in seconds, and its cross-attention recovers the alignment without supervision.
+- Chatbots can be seq2seq models, but task dialogue needs explicit state with revisions, belief over ambiguous interpretations, and clarification chosen by expected loss.
+- Keep tool proposals, executions and results separate, and evaluate whole conversations by state and final outcome.
+
+## Exercises
+
+1. **Compositional test.** In the translator code, remove every training pair in which `red` modifies `cable`, then test on sentences that contain `red cable`. Compare exact match on these sentences with the ordinary test set.
+
+<details>
+<summary>Hint</summary>
+
+Filter `train_pairs` before building `S` and `Y`, and keep the vocabulary unchanged so the failure is about combination rather than unknown words. Look at the cross-attention map of a failure.
+
+</details>
+
+2. **Beam width and length.** Evaluate the 100-step checkpoint with beam widths 1, 2, 4 and 8 and with $\alpha\in\{0,0.6,1\}$. Report BLEU, exact match, mean output length and mean log probability. When does a higher model score fail to improve BLEU?
+
+<details>
+<summary>Hint</summary>
+
+Width 1 with $\alpha=0$ is greedy decoding. Save the outputs and compare the sentences that change, not only the averages.
+
+</details>
+
+3. **Translation challenge set.** Write six original source sentences testing negation, comparison, units, modality, time and ambiguous reference. Specify the meaning that any acceptable translation must retain.
+
+<details>
+<summary>Hint</summary>
+
+Use a minimal edit such as adding "not" or swapping the two device names. Judge source adequacy independently of whether the target sentence sounds elegant.
+
+</details>
+
+4. **Metric disagreement.** Construct two candidate translations: one with high word overlap but a wrong quantity, and another with lower overlap but correct meaning. Score them with the BLEU function and design an annotation form that reveals the difference.
+
+<details>
+<summary>Hint</summary>
+
+Ask reviewers to identify unsupported quantities and missing required facts before giving an overall judgment. Keep the source visible and system identity hidden.
+
+</details>
+
+5. **Correction scope.** Extend the state tracker with a measurement slot. Test a device-only correction, a rejected period and a complete restart without silently changing unrelated slots.
+
+<details>
+<summary>Hint</summary>
+
+Define distinct events for setting, retracting and resetting. Any changed proposal should invalidate a confirmation that refers to its previous revision.
+
+</details>
+
+6. **False action report.** Specify an evidence schema that distinguishes a successful query, no matching record and execution failure. Write a response requirement for each state, and a test conversation for each.
+
+<details>
+<summary>Hint</summary>
+
+Attach an execution identifier and status to the result. A generated proposal alone cannot support a sentence claiming that the query succeeded.
+
+</details>
+
+## References
+
+1. M. Hagiwara, *Real-World Natural Language Processing*, Manning, 2021, Chapters 6 and 8. [Book](https://www.manning.com/books/real-world-natural-language-processing) · [Sequence-to-sequence chapter](https://livebook.manning.com/book/real-world-natural-language-processing/chapter-6/)
+2. S. McRoy, *Principles of Natural Language Processing*, open textbook, 2021, Chapter 9. [Book](https://wisconsin.pressbooks.pub/naturallanguage/) · [Generation chapter](https://wisconsin.pressbooks.pub/naturallanguage/chapter/natural-language-generation/)
+3. P. F. Brown, S. A. Della Pietra, V. J. Della Pietra and R. L. Mercer, "The Mathematics of Statistical Machine Translation: Parameter Estimation," *Computational Linguistics* 19(2), 1993. [Paper](https://aclanthology.org/J93-2003/)
+4. P. Koehn, F. J. Och and D. Marcu, "Statistical Phrase-Based Translation," HLT-NAACL, 2003. [Paper](https://aclanthology.org/N03-1017/)
+5. K. Cho, B. van Merriënboer, C. Gulcehre, D. Bahdanau, F. Bougares, H. Schwenk and Y. Bengio, "Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation," EMNLP, 2014. [Paper](https://aclanthology.org/D14-1179/)
+6. I. Sutskever, O. Vinyals and Q. V. Le, "Sequence to Sequence Learning with Neural Networks," NeurIPS, 2014. [Paper](https://arxiv.org/abs/1409.3215)
+7. D. Bahdanau, K. Cho and Y. Bengio, "Neural Machine Translation by Jointly Learning to Align and Translate," ICLR, 2015. [Paper](https://arxiv.org/abs/1409.0473)
+8. A. Vaswani et al., "Attention Is All You Need," NeurIPS, 2017. [Paper](https://papers.nips.cc/paper/7181-attention-is-all-you-need)
+9. R. Sennrich, B. Haddow and A. Birch, "Neural Machine Translation of Rare Words with Subword Units," ACL, 2016. [Paper](https://aclanthology.org/P16-1162/)
+10. M. Ranzato, S. Chopra, M. Auli and W. Zaremba, "Sequence Level Training with Recurrent Neural Networks," ICLR, 2016. [Paper](https://arxiv.org/abs/1511.06732)
+11. S. Bengio, O. Vinyals, N. Jaitly and N. Shazeer, "Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks," NeurIPS, 2015. [Paper](https://proceedings.neurips.cc/paper/2015/hash/e995f98d56967d946471af29d7bf99f1-Abstract.html)
+12. Y. Wu et al., "Google's Neural Machine Translation System: Bridging the Gap between Human and Machine Translation," arXiv:1609.08144, 2016. [Paper](https://arxiv.org/abs/1609.08144)
+13. K. Papineni, S. Roukos, T. Ward and W.-J. Zhu, "Bleu: a Method for Automatic Evaluation of Machine Translation," ACL, 2002. [Paper](https://aclanthology.org/P02-1040/)
+14. M. Post, "A Call for Clarity in Reporting BLEU Scores," WMT, 2018. [Paper](https://aclanthology.org/W18-6319/)
+15. M. Popović, "chrF: character n-gram F-score for automatic MT evaluation," WMT, 2015. [Paper](https://aclanthology.org/W15-3049/)
+16. R. Rei, C. Stewart, A. C. Farinha and A. Lavie, "COMET: A Neural Framework for MT Evaluation," EMNLP, 2020. [Paper](https://aclanthology.org/2020.emnlp-main.213/)
+17. C.-Y. Lin, "ROUGE: A Package for Automatic Evaluation of Summaries," Text Summarization Branches Out, 2004. [Paper](https://aclanthology.org/W04-1013/)
+18. M. Freitag et al., "Results of WMT22 Metrics Shared Task: Stop Using BLEU – Neural Metrics Are Better and More Robust," WMT, 2022. [Report](https://aclanthology.org/2022.wmt-1.2/)
+19. A. Lavie et al., "Findings of the WMT25 Shared Task on Automated Translation Evaluation Systems: Linguistic Diversity is Challenging and References Still Help," WMT, 2025. [Report](https://aclanthology.org/2025.wmt-1.24/)
+20. T. Kocmi et al., "Findings of the WMT24 General Machine Translation Shared Task: The LLM Era Is Here but MT Is Not Solved Yet," WMT, 2024. [Report](https://aclanthology.org/2024.wmt-1.1/)
+21. NLLB Team et al., "Scaling neural machine translation to 200 languages," *Nature* 630, 2024. [DOI](https://doi.org/10.1038/s41586-024-07335-x)
+22. F. Stahlberg, "Neural Machine Translation: A Review," *Journal of Artificial Intelligence Research* 69, 2020. [DOI](https://doi.org/10.1613/jair.1.12007)
+23. O. Vinyals and Q. V. Le, "A Neural Conversational Model," ICML Deep Learning Workshop, 2015. [Paper](https://arxiv.org/abs/1506.05869)
+24. J. Li, M. Galley, C. Brockett, J. Gao and B. Dolan, "A Diversity-Promoting Objective Function for Neural Conversation Models," NAACL-HLT, 2016. [Paper](https://aclanthology.org/N16-1014/)
+25. J. Deriu, Á. Rodrigo, A. Otegi, G. Echegoyen, S. Rosset, E. Agirre and M. Cieliebak, "Survey on Evaluation Methods for Dialogue Systems," *Artificial Intelligence Review* 54, 2021. [Survey](https://link.springer.com/article/10.1007/s10462-020-09866-x)
+26. J. Ni, T. Young, V. Pandelea, F. Xue and E. Cambria, "Recent Advances in Deep Learning Based Dialogue Systems: A Systematic Survey," *Artificial Intelligence Review* 56, 2023. [Survey](https://link.springer.com/article/10.1007/s10462-022-10248-8)
+27. Y. Qin et al., "Tool Learning with Foundation Models," *ACM Computing Surveys* 57, 2024. [Author manuscript](https://arxiv.org/abs/2304.08354) · [Publication](https://doi.org/10.1145/3704435)
+28. P. Schmidtova et al., "Do My Eyes Deceive Me? A Survey of Human Evaluations of Hallucinations in NLG," INLG, 2025. [Survey](https://aclanthology.org/2025.inlg-main.4/)
+29. C. Szegedy, V. Vanhoucke, S. Ioffe, J. Shlens and Z. Wojna, "Rethinking the Inception Architecture for Computer Vision," CVPR, 2016. [Paper](https://arxiv.org/abs/1512.00567)
+30. M. Freitag, G. Foster, D. Grangier, V. Ratnakar, Q. Tan and W. Macherey, "Experts, Errors, and Context: A Large-Scale Study of Human Evaluation for Machine Translation," *Transactions of the Association for Computational Linguistics* 9, 2021. [DOI](https://doi.org/10.1162/tacl_a_00437)
