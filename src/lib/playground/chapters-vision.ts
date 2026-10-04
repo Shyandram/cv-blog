@@ -1044,8 +1044,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "receptive-field",
     track: "deep-learning",
     title: L(
-      "DL 01 · How much input can one feature see?",
-      "DL 01・一個特徵能看到多少輸入？",
+      "DLCV 01 · How much input can one feature see?",
+      "DLCV 01・一個特徵能看到多少輸入？",
     ),
     description: L(
       "Stack convolutional layers and trace receptive-field size and the spacing between neighboring outputs.",
@@ -1101,8 +1101,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "classification-threshold",
     track: "deep-learning",
     title: L(
-      "DL 02 · A decision threshold changes which mistakes you make",
-      "DL 02・決策門檻改變錯誤的種類",
+      "DLCV 02 · A decision threshold changes which mistakes you make",
+      "DLCV 02・決策門檻改變錯誤的種類",
     ),
     description: L(
       "Move the decision threshold on fixed classifier scores and inspect the confusion matrix, precision, recall and error cost.",
@@ -1178,8 +1178,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "restoration-ambiguity",
     track: "deep-learning",
     title: L(
-      "DL 04 · A sharp guess can be less faithful",
-      "DL 04・清晰的猜測可能較不忠實",
+      "DLCV 04 · A sharp guess can be less faithful",
+      "DLCV 04・清晰的猜測可能較不忠實",
     ),
     description: L(
       "Two sharp signals produce the same observation. Compare their conditional mean with a sharper, committed reconstruction.",
@@ -1250,8 +1250,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "lowlight-photons",
     track: "deep-learning",
     title: L(
-      "DL 05 · Gain cannot create missing photons",
-      "DL 05・增益無法補回缺少的光子",
+      "DLCV 05 · Gain cannot create missing photons",
+      "DLCV 05・增益無法補回缺少的光子",
     ),
     description: L(
       "Separate exposure, read noise and digital gain using the mean and variance of a photon-counting model.",
@@ -1338,8 +1338,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "tracking-association",
     track: "deep-learning",
     title: L(
-      "DL 06 · Crossing objects challenge identity",
-      "DL 06・交錯物體考驗身分關聯",
+      "DLCV 06 · Crossing objects challenge identity",
+      "DLCV 06・交錯物體考驗身分關聯",
     ),
     description: L(
       "Balance positional and appearance costs and solve the complete two-object one-to-one assignment.",
@@ -1432,8 +1432,8 @@ export const chapterVisionExperiments: Experiment[] = [
     id: "world-model-rollout",
     track: "deep-learning",
     title: L(
-      "DL 07 · Small dynamics errors compound in rollouts",
-      "DL 07・小型動態誤差會在展開中累積",
+      "DLCV 07 · Small dynamics errors compound in rollouts",
+      "DLCV 07・小型動態誤差會在展開中累積",
     ),
     description: L(
       "Compare one-step predictions, open-loop rollout and periodic observation refresh under the same actions.",

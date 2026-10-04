@@ -23,7 +23,7 @@ BOXES = {
     "nlp": ("Natural Language Processing", "NLP 01-12: linguistics, embeddings,\nRNNs, Transformers, BERT", .50, .69, "#f7e8e8"),
     "pr": ("Pattern Recognition", "PR 01-10: decisions, densities,\nclassifiers, clustering", .83, .69, "#fdf0e0"),
     "ml": ("Machine Learning", "ML 01-10: math, networks, CNNs,\nrepresentations, generative models", .68, .45, "#f3e8f7"),
-    "dl": ("Deep Learning", "DL 01-07: classification, detection,\nrestoration, tracking, world models", .32, .45, "#e3f2f7"),
+    "dl": ("Deep Learning for CV (DLCV)", "DLCV 01-07: classification, detection,\nrestoration, tracking, world models", .32, .45, "#e3f2f7"),
     "opt": ("Optimization", "OPT 01-08: convexity, duality,\nnumerical methods", .32, .135, "#efe9f8"),
     "it": ("Information Theory", "IT 01-08: entropy, coding,\ncapacity, rate distortion", .68, .135, "#fbece4"),
 }
