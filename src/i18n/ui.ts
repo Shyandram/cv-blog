@@ -27,7 +27,7 @@ const en = {
   'track.pattern-recognition': 'Pattern Recognition',
   'track.ml': 'Machine Learning',
   'track.deep-learning': 'Deep Learning for Computer Vision',
-  'track.nlp': 'NLP',
+  'track.nlp': 'Natural Language Processing',
   'track.optimization': 'Optimization',
   'track.information-theory': 'Information Theory',
   'track.label': 'Track',
