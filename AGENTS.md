@@ -75,7 +75,7 @@ data, metrics, datasets/benchmarks, failure modes) but still open each section i
 
 **Frontmatter** (validated by `src/content.config.ts`):
 ```yaml
-title: "..."            # same numbering scheme as the rest of the track
+title: "..."            # "<PREFIX> NN · Title" / zh-tw "<PREFIX> NN・標題" (IP, PR, ML, DL, NLP, OPT, IT)
 description: "..."      # one sentence
 track: <track>
 order: <int>            # position in the track
@@ -101,6 +101,10 @@ the PNG with a Chinese caption. Show figures with `<Figure src={img} alt="..." c
 **Components** (`src/components/`): `Callout`, `Figure`, `ImageCompare` (before/after slider, two
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
+
+**Titles and link text:** tutorials are named by track prefix and two-digit number, e.g. `IP 05`,
+`ML 03a`, `DL 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's
+chapter order, but the site calls them IP 01–13). Link text to a tutorial uses the same name.
 
 **Links:** internal links are absolute with a trailing slash, e.g.
 `/en/learn/image-processing/dip-05-restoration-reconstruction/`; the target must exist. When you

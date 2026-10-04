@@ -16,14 +16,14 @@ The curriculum has eight tracks in English and Traditional Chinese. Start with
 
 | Track | Coverage |
 | --- | --- |
-| 0 · Foundations | Entry paths, textbook selection, and images as arrays |
-| 1 · Image Processing | The existing DIP sequence, from intensity transforms to pattern classification |
-| 2 · NLP | Eight chapters based on Hagiwara and McRoy: applications, classification, syntax, semantics, language models, retrieval, dialogue, generation and deployment |
-| 3 · Pattern Recognition | A complete course based on Theodoridis/Koutroumbas, *Pattern Recognition* (4th ed.), and Bishop, *Pattern Recognition and Machine Learning* |
-| 4 · ML/DL | ML basics; linear algebra; probability/information; numerical computation; feedforward, convolutional, recurrent and recursive networks; selective state-space models and visual Mamba; transformers; representation learning; factor models and autoencoders; VAEs/GANs/flows; diffusion/flow matching, JiT and representation autoencoders; pretrained image/video generators; autoregression; foundation models; evaluation/deployment |
-| 5 · DL for Vision | Classification, detection, restoration, low-light enhancement, tracking, and world models |
-| 6 · Optimization | Eight chapters based on Boyd and Vandenberghe: convex sets/functions, problem formulation, duality, estimation, gradient/Newton methods, constrained solvers and applications |
-| 7 · Information Theory | Eight chapters based on Cover and Thomas: entropy, typicality, source coding, channel capacity, Gaussian channels, rate distortion, statistical decisions and networks |
+| Foundations (start) | Entry paths, textbook selection, and images as arrays |
+| Image Processing (IP 01–13, entry) | Thirteen tutorials following the chapter order of Gonzalez & Woods, from intensity transforms to pattern classification |
+| Natural Language Processing (NLP 01–12, entry) | Twelve tutorials following the course syllabus: introduction, linguistic essentials, neural networks for NLP, lexical semantics and word embeddings, RNNs, sequence labeling (POS tagging, information extraction), attention and Transformers, seq2seq (machine translation, chatbots), language modeling and generation, BERT, classification with BERT (sentiment, NLI), and syntactic and semantic tasks |
+| Pattern Recognition (PR 01–10, entry) | A complete course based on Theodoridis/Koutroumbas, *Pattern Recognition* (4th ed.), and Bishop, *Pattern Recognition and Machine Learning* |
+| Machine Learning (ML 01–10, core) | ML basics; linear algebra; probability/information; numerical computation; feedforward, convolutional, recurrent and recursive networks; selective state-space models and visual Mamba; transformers; representation learning; factor models and autoencoders; VAEs/GANs/flows; diffusion/flow matching, JiT and representation autoencoders; pretrained image/video generators; autoregression; foundation models; evaluation/deployment |
+| Deep Learning (DL 01–07, core) | Classification, detection, restoration, low-light enhancement, tracking, and world models |
+| Optimization (OPT 01–08, theory) | Eight chapters based on Boyd and Vandenberghe: convex sets/functions, problem formulation, duality, estimation, gradient/Newton methods, constrained solvers and applications |
+| Information Theory (IT 01–08, theory) | Eight chapters based on Cover and Thomas: entropy, typicality, source coding, channel capacity, Gaussian channels, rate distortion, statistical decisions and networks |
 
 ML 03 incorporates the former **Convolution & Image Filtering** tutorial, including its
 interactive kernel and image comparison demos. The old English and Chinese URLs
