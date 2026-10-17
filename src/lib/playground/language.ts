@@ -69,23 +69,6 @@ export function ngramDistribution(corpus: string, query: string, order: number, 
   };
 }
 
-export const WORD_TOKENS = ['small', 'red', 'robots', 'move', 'slowly'];
-/** Explicit synthetic input and output lookup tables; no training or semantic claims. */
-export const WORD_E = [[1, 0], [0, 1], [1, 1], [-1, 0.5], [0.5, -1]];
-export const WORD_U = [[0.5, 1], [-0.5, 0.5], [1, -0.5], [-1, -0.5], [0, 1]];
-
-export function word2vecExample(center: number, radius: number, mode: 'cbow' | 'skipgram') {
-  const index = Math.round(bounded(center, 2, 0, WORD_TOKENS.length - 1));
-  const window = Math.round(bounded(radius, 1, 1, 2));
-  const neighbors = WORD_TOKENS.map((_, i) => i).filter(i => i !== index && Math.abs(i - index) <= window);
-  const hidden = mode === 'cbow'
-    ? [0, 1].map(d => neighbors.reduce((sum, i) => sum + WORD_E[i][d], 0) / neighbors.length)
-    : [...WORD_E[index]];
-  const probabilities = stableSoftmax(WORD_U.map(output => dot(output, hidden)));
-  const targets = mode === 'cbow' ? [index] : neighbors;
-  const losses = targets.map(target => -Math.log(probabilities[target]));
-  return { index, neighbors, hidden, probabilities, targets, losses, loss: losses.reduce((a, b) => a + b, 0) / losses.length };
-}
 
 export const ATTENTION_TOKENS = ['we', 'see', 'small', 'robots', 'move'];
 export const ATTENTION_Q = [[1, 0], [0.5, 1], [1, 1], [-0.5, 1], [0, -1]];
@@ -141,43 +124,6 @@ const ngram: Experiment = {
   },
 };
 
-const word2vec: Experiment = {
-  id: 'word2vec', track: 'nlp',
-  title: L('CBOW and Skip-gram: who predicts whom?', 'CBOW 與 Skip-gram：誰預測誰？'),
-  description: L('Choose a center token and window. Build the actual training examples, then calculate a full-softmax loss.', '選擇中心詞與視窗，建立實際訓練樣本，再計算完整 softmax 損失。'),
-  challenge: L('Select “robots” with radius 2. Switch objectives: how many targets are scored, and which input vectors are averaged?', '選擇「robots」並把半徑設為 2。切換目標函數：計算了幾個目標？哪些輸入向量會取平均？'),
-  note: L('Sentence: small red robots move slowly. E is the input table; U is the output table. All two-dimensional vectors shown are fixed, synthetic and untrained. CBOW averages neighbors to predict the center; Skip-gram predicts each neighbor separately from the center. The displayed Skip-gram loss is the mean over these pairs. Full softmax uses all five vocabulary words, with no negative sampling.', '句子：small red robots move slowly。E 是輸入向量表，U 是輸出向量表。顯示的二維向量皆為固定、人工設定且未經訓練的數值。CBOW 將鄰詞向量取平均後預測中心詞；Skip-gram 由中心詞分別預測每個鄰詞。顯示的 Skip-gram 損失是各詞對損失的平均。完整 softmax 使用全部五個詞，未使用負取樣。'),
-  related: ['nlp/nlp-03-neural-networks-for-nlp'],
-  controls: [
-    { key: 'mode', label: L('Prediction objective', '預測目標'), kind: 'select', value: 'cbow', options: [{ value: 'cbow', label: L('CBOW', 'CBOW') }, { value: 'skipgram', label: L('Skip-gram', 'Skip-gram') }] },
-    { key: 'center', label: L('Center token', '中心詞'), kind: 'select', value: '2', options: WORD_TOKENS.map((word, i) => ({ value: String(i), label: L(word, word) })) },
-    { key: 'radius', label: L('Window radius', '視窗半徑'), kind: 'range', value: 1, min: 1, max: 2, step: 1 },
-  ],
-  compute(state, lang) {
-    const mode = state.mode === 'skipgram' ? 'skipgram' : 'cbow';
-    const result = word2vecExample(Number(state.center), Number(state.radius), mode);
-    const pairs = mode === 'cbow'
-      ? [`mean(${result.neighbors.map(i => WORD_TOKENS[i]).join(', ')}) → ${WORD_TOKENS[result.index]}`]
-      : result.neighbors.map(i => `${WORD_TOKENS[result.index]} → ${WORD_TOKENS[i]}`);
-    const offset = 45 + pairs.length * 26;
-    const body = text(20, 26, pick(lang, 'Prediction examples', '預測樣本')) + pairs.map((pair, i) => text(20, 53 + i * 26, pair)).join('')
-      + text(20, offset + 35, pick(lang, 'Word', '詞')) + text(155, offset + 35, 'P(word | input)') + text(366, offset + 35, 'E[word]') + text(496, offset + 35, 'U[word]')
-      + WORD_TOKENS.map((word, i) => {
-        const y = offset + 68 + i * 34;
-        return text(20, y, word) + `<rect x="145" y="${y - 16}" width="${result.probabilities[i] * 180}" height="22" fill="var(--plot-${result.targets.includes(i) ? 'b' : 'a'})"/>` + text(286, y, fmt(result.probabilities[i], 3)) + text(366, y, `[${WORD_E[i].join(', ')}]`) + text(496, y, `[${WORD_U[i].join(', ')}]`);
-      }).join('');
-    return {
-      svg: svg(body, offset + 235),
-      summary: `${pick(lang, 'Hidden vector h', '隱藏向量 h')} = [${result.hidden.map(n => fmt(n)).join(', ')}]. ${pick(lang, 'Scores are U[word] · h; probabilities are their softmax. Target rows use the second accent color. Each target contributes −ln P(target | input).', '分數為 U[word] · h，機率由 softmax 得到。目標列以第二種強調色顯示，每個目標貢獻 −ln P(target | input)。')}`,
-      metrics: [
-        { label: pick(lang, 'Context tokens', '上下文詞元數'), value: String(result.neighbors.length) },
-        { label: pick(lang, 'Prediction targets', '預測目標數'), value: String(result.targets.length) },
-        { label: pick(lang, 'Mean loss (natural log)', '平均損失（自然對數）'), value: fmt(result.loss, 4) },
-      ],
-    };
-  },
-};
-
 const attention: Experiment = {
   id: 'attention', track: 'ml',
   title: L('Attention: which tokens are visible?', '注意力：哪些詞元可見？'),
@@ -210,4 +156,4 @@ const attention: Experiment = {
   },
 };
 
-export const languageExperiments: Experiment[] = [ngram, word2vec, attention];
+export const languageExperiments: Experiment[] = [ngram, attention];

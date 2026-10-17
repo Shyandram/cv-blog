@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { kernelDensity, densityScore, ridgeFit, REGRESSION_X, REGRESSION_Y, nearestVote, projectionStats, alignSequences, mixtureEM, variationalComparison, ensembleVariance, rejectionUnderShift, chapterRecognitionExperiments } from '../../src/lib/playground/chapters-recognition.ts';
+import { kernelDensity, densityScore, ridgeFit, REGRESSION_X, REGRESSION_Y, nearestVote, projectionStats, alignSequences, mixtureEM, variationalComparison, rejectionUnderShift, chapterRecognitionExperiments } from '../../src/lib/playground/chapters-recognition.ts';
 const close = (actual: number, expected: number, tolerance = 1e-9) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 
 test('kernel density integrates to one and leave-one-out excludes self prediction', () => {
@@ -83,13 +83,6 @@ test('KL comparison vanishes for identical normals and distinguishes mode covera
     assert.ok(r.pMass > 0.999 && r.qMass > 0.998);
   }
 });
-test('ensemble variance matches independent and fully correlated limits', () => {
-  for (const m of [1, 5, 50]) {
-    close(ensembleVariance(m, 0, 0).variance, 1 / m);
-    close(ensembleVariance(m, 1, 0).variance, 1);
-    close(ensembleVariance(m, 0.3, 0.4).mse - ensembleVariance(m, 0.3, 0).mse, 0.16);
-  }
-});
 test('rejection distinguishes no decisions from no error and exposes distribution shift', () => {
   const all = rejectionUnderShift(0.5, 0), selective = rejectionUnderShift(0.9, 0), shifted = rejectionUnderShift(0.9, 2), none = rejectionUnderShift(1, 0);
   close(all.coverage, 1); close(all.risk!, 0.158655, 0.001);
@@ -99,8 +92,8 @@ test('rejection distinguishes no decisions from no error and exposes distributio
   close(none.coverage, 0); assert.equal(none.risk, null);
   close(rejectionUnderShift(0.8, -1).risk!, rejectionUnderShift(0.8, 1).risk!, 1e-8);
 });
-test('all nine chapter experiments render finite bilingual results at control boundaries', () => {
-  assert.equal(chapterRecognitionExperiments.length, 9);
+test('all eight chapter experiments render finite bilingual results at control boundaries', () => {
+  assert.equal(chapterRecognitionExperiments.length, 8);
   for (const experiment of chapterRecognitionExperiments) {
     const initial = Object.fromEntries(experiment.controls.map(c => [c.key, c.value]));
     for (const lang of ['en', 'zh-tw'] as const) {

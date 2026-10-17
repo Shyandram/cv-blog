@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   chapterLanguageExperiments, scopeTruth, trainBpe, poolingExample, sequenceDecode,
-  lexicalRetrieval, dialogueBelief, decodingDistribution, maskingHeads, finiteDifference,
+  lexicalRetrieval, decodingDistribution, maskingHeads, finiteDifference,
   mlpProbability, selectiveMemory, contrastiveExample, bottleneckSignal, vaeObjective,
   flowTransform, transportSolve, binaryAutoregression, temperatureCalibration,
 } from '../../src/lib/playground/chapters-language.ts';
@@ -55,14 +55,6 @@ test('retrieval has no matches for OOV and k1=0 reduces each matched term to IDF
   assert.equal(docs.length, 3);
   docs.forEach(d => close(d.score, Math.log(2)));
   assert.deepEqual(lexicalRetrieval('red red', 1, 0), lexicalRetrieval('red', 1, 0));
-});
-
-test('dialogue odds multiply, neutral observations preserve prior and corrections reset evidence', () => {
-  close(dialogueBelief(0.5, 0.8, 1, false).at(-1)!, 0.8);
-  close(dialogueBelief(0.5, 0.8, 2, false).at(-1)!, 16 / 17);
-  close(dialogueBelief(0.2, 0.5, 3, false).at(-1)!, 0.2);
-  close(dialogueBelief(0.2, 0.8, 3, true).at(-1)!, 1 / 17);
-  assert.notEqual(dialogueBelief(0.2, 0.8, 3, true).at(-1), dialogueBelief(0.2, 0.8, 3, false).at(-1));
 });
 
 test('decoding normalizes truncated probabilities, and top-k precedes top-p', () => {
@@ -154,7 +146,7 @@ test('temperature changes probability scoring without changing any decision', ()
 });
 
 test('all chapter demos render finite bilingual results at range endpoints and select options', () => {
-  assert.equal(chapterLanguageExperiments.length, 18);
+  assert.equal(chapterLanguageExperiments.length, 17);
   for (const experiment of chapterLanguageExperiments) {
     const base = Object.fromEntries(experiment.controls.map(c => [c.key, c.value]));
     const states: State[] = [base];

@@ -114,10 +114,6 @@ export function variationalComparison(mu: number, sigma: number, separation: num
   const kl = (a: number[], b: number[]) => Math.max(0, a.reduce((s, v, i) => s + v * Math.log(Math.max(v, 1e-300) / Math.max(b[i], 1e-300)) * dx, 0));
   return { xs, p: pn, q: qn, forward: kl(pn, qn), reverse: kl(qn, pn), pMass: pm, qMass: qm };
 }
-export function ensembleVariance(count: number, correlation: number, bias: number) {
-  const variance = correlation + (1 - correlation) / count;
-  return { variance, mse: bias * bias + variance, floor: bias * bias + correlation };
-}
 export function rejectionUnderShift(threshold: number, shift: number) {
   const xs = sequence(-9, 9, 3601), dx = xs[1] - xs[0];
   let accepted = 0, errors = 0, total = 0;
@@ -138,6 +134,7 @@ export const chapterRecognitionExperiments: Experiment[] = [
     challenge: L('Find a bandwidth that improves the leave-one-out log score. Why can a spiky fit score worse on a held-out point?', '找出能提高留一法對數分數的頻寬。為什麼尖銳的密度曲線，在保留觀測點上的分數反而較低？'),
     note: L('Ten fixed synthetic observations; Gaussian kernels integrate to one. The score averages log density at each point after excluding that point. It is a density score in nats, not classification accuracy. The plot shows individual contributions divided by ten.', '使用十個固定的合成觀測值；Gaussian 核函數的積分為一。分數是在排除每個點後，計算該點的平均對數密度，單位為 nat，不是分類準確率。圖中個別核函數已除以十。'),
     related: related('pr-02-density-estimation'),
+    predict: { question: L("Which bandwidth gives the best held-out log-likelihood: h = 0.1, 0.5 or 2?", "哪一個頻寬的留一法對數概似最好：h = 0.1、0.5 或 2？"), options: [{ value: "0.1", label: L("h = 0.1", "h = 0.1") }, { value: "0.5", label: L("h = 0.5", "h = 0.5") }, { value: "2", label: L("h = 2", "h = 2") }], answer: "0.5", explain: L("A small h leaves each held-out point almost alone (score about −5.9), a large h blurs the two clusters together (about −2.2), and a moderate h scores best (about −1.8).", "h 太小會讓每個被留出的點幾乎孤立（分數約 −5.9）；h 太大會把兩群模糊在一起（約 −2.2）；適中的 h 分數最好（約 −1.8）。") },
     controls: [{ key: 'bandwidth', label: L('Kernel bandwidth h', '核函數頻寬 h'), kind: 'range', min: 0.1, max: 2, step: 0.05, value: 0.5 }],
     compute(state, lang) {
       const h = num(state, 'bandwidth'), xs = sequence(-5, 5), values = xs.map(x => kernelDensity(x, h));
@@ -157,6 +154,7 @@ export const chapterRecognitionExperiments: Experiment[] = [
     challenge: L('At degree seven, increase regularization. Does the lowest training error also give the lowest underlying-function error?', '使用七次多項式並增加正則化。最低訓練誤差，是否也對應最低的原始函數誤差？'),
     note: L('The blue fit solves sum of squared residuals + λ times the squared non-intercept coefficients. Twelve fixed synthetic points have deterministic perturbations. The dashed curve is sin(πx); its grid error is available only because this is a known synthetic problem. Polynomial features are linear in their coefficients.', '藍線最小化殘差平方和加上 λ 乘以非截距係數的平方和。十二個合成點加入固定擾動。虛線為 sin(πx)；只有在這個已知合成問題中，才能直接計算它的網格誤差。多項式特徵對係數仍是線性的。'),
     related: related('pr-03-linear-models'),
+    predict: { question: L("Set λ = 0 and raise the degree from 5 to 6. Training error falls (0.0285 to 0.0239). What happens to the error against the true function?", "設 λ = 0，把次數從 5 提高到 6。訓練誤差下降（0.0285 到 0.0239）。與真實函數的誤差會怎麼變？"), options: [{ value: "falls", label: L("It falls too", "也下降") }, { value: "rises", label: L("It rises", "上升") }], answer: "rises", explain: L("It rises from about 0.0005 to about 0.0063. The extra flexibility fits the noise in the 12 training points, which lowers the training error and moves the curve away from the true function.", "它從約 0.0005 升到約 0.0063。多出來的彈性擬合了 12 個訓練點中的雜訊，訓練誤差因此下降，曲線卻離真實函數更遠。") },
     controls: [{ key: 'degree', label: L('Polynomial degree', '多項式次數'), kind: 'range', min: 1, max: 7, step: 1, value: 5 }, { key: 'lambda', label: L('Regularization λ', '正則化 λ'), kind: 'range', min: 0, max: 5, step: 0.05, value: 0.1 }],
     compute(state, lang) {
       const result = ridgeFit(num(state, 'degree'), num(state, 'lambda')), xs = sequence(-1, 1), ys = xs.map(result.predict);
@@ -254,6 +252,7 @@ export const chapterRecognitionExperiments: Experiment[] = [
     challenge: L('With separated modes, compare a narrow approximation on one mode against a wide one covering both. Which KL prefers each?', '當兩個峰分開時，比較集中在單一峰的窄近似與涵蓋兩個峰的寬近似。哪個方向的 KL 偏好哪一種？'),
     note: L('Target p is an equal mixture N(−a,0.65²) and N(a,0.65²). Approximation q is N(μ,σ²). Both are numerically normalized on [−12,12] with spacing 0.02; KL values are grid approximations in nats. This is an adjustable distribution family, not an optimizer.', '目標 p 為 N(−a,0.65²) 與 N(a,0.65²) 的等權混合，近似 q 為 N(μ,σ²)。兩者在 [−12,12] 上以 0.02 間距數值正規化；KL 為網格近似，單位是 nat。這是可調整的分布族，不是最佳化器。'),
     related: related('pr-08-approximate-inference'),
+    predict: { question: L("The target has two separated bumps and q is a single Gaussian. Which divergence is smallest for a q that sits on just one bump?", "目標分布有兩個分開的峰，q 是單一高斯。只落在其中一個峰上的 q，哪一種散度比較小？"), options: [{ value: "forward", label: L("Forward KL(p‖q)", "前向 KL(p‖q)") }, { value: "reverse", label: L("Reverse KL(q‖p)", "反向 KL(q‖p)") }], answer: "reverse", explain: L("Reverse KL punishes q for putting mass where p has none, so a narrow q settles on one bump (mode seeking). Forward KL punishes q for missing any of p's mass, so its best q is wide and covers both bumps. In this setup the best forward fit has mean 0 and σ about 2.1; the best reverse fit sits on a bump at ±2 with σ about 0.7.", "反向 KL 會懲罰 q 把機率放在 p 沒有質量的地方，因此窄的 q 會落在單一峰上（偏向單一模式）。前向 KL 則懲罰 q 漏掉 p 的任何質量，所以最佳的 q 又寬又涵蓋兩個峰。在這個設定下，前向最佳解的平均為 0、σ 約 2.1；反向最佳解落在 ±2 的峰上，σ 約 0.7。") },
     controls: [{ key: 'separation', label: L('Target half-separation a', '目標峰間距的一半 a'), kind: 'range', min: 0, max: 3, step: 0.2, value: 2 }, { key: 'mu', label: L('Approximation mean μ', '近似平均值 μ'), kind: 'range', min: -3, max: 3, step: 0.1, value: -2 }, { key: 'sigma', label: L('Approximation standard deviation σ', '近似標準差 σ'), kind: 'range', min: 0.3, max: 3, step: 0.05, value: 0.65 }],
     compute(state, lang) {
       const r = variationalComparison(num(state, 'mu'), num(state, 'sigma'), num(state, 'separation'));
@@ -263,22 +262,6 @@ export const chapterRecognitionExperiments: Experiment[] = [
       body += text(55, 22, pick(lang, 'Blue: target p · orange: approximation q', '藍色：目標 p · 橘色：近似 q'));
       for (const x of [-6, -3, 0, 3, 6]) body += text(px(x), 265, x, 'text-anchor="middle"');
       return { svg: svg(body), summary: pick(lang, 'KL(p‖q) weights mismatch where the target has mass; KL(q‖p) weights mismatch where the approximation puts mass. A single Gaussian may cover both modes or settle on one, depending on the objective.', 'KL(p‖q) 依目標的機率質量加權差異；KL(q‖p) 依近似分布配置的質量加權差異。單一 Gaussian 可能涵蓋兩個峰，也可能集中在一個峰，取決於目標函數。'), metrics: [{ label: 'KL(p ‖ q)', value: fmt(r.forward) }, { label: 'KL(q ‖ p)', value: fmt(r.reverse) }] };
-    },
-  },
-  {
-    id: 'ensemble-correlation', track: 'pattern-recognition',
-    title: L('PR 09 · More models cannot erase shared errors', 'PR 09・增加模型無法消除共同誤差'),
-    description: L('Separate ensemble size, error correlation and shared bias in the squared-error decomposition.', '在平方誤差分解中，區分集成大小、誤差相關性與共同偏差。'),
-    challenge: L('Compare 50 highly correlated learners with five independent learners. Then increase shared bias: can adding models remove it?', '比較五十個高度相關的學習器與五個獨立學習器。接著增加共同偏差：加入更多模型能消除它嗎？'),
-    note: L('An exact population calculation for scalar prediction errors: each learner has variance 1, common bias b and pairwise correlation ρ ≥ 0. Equal averaging gives variance ρ+(1−ρ)/M and MSE b²+variance. This is an assumption-based calculation, not measured performance or a model of majority voting.', '這是純量預測誤差的精確母體計算：每個學習器的變異數為 1，共同偏差為 b，成對相關係數為 ρ ≥ 0。等權平均的變異數為 ρ+(1−ρ)/M，均方誤差為 b²+變異數。結果依賴這些假設，不是實測效能，也不是多數投票模型。'),
-    related: related('pr-09-ensembles-validation'),
-    controls: [{ key: 'count', label: L('Number of learners M', '學習器數量 M'), kind: 'range', min: 1, max: 50, step: 1, value: 10 }, { key: 'correlation', label: L('Pairwise error correlation ρ', '成對誤差相關係數 ρ'), kind: 'range', min: 0, max: 1, step: 0.05, value: 0.3 }, { key: 'bias', label: L('Shared prediction bias b', '共同預測偏差 b'), kind: 'range', min: 0, max: 1, step: 0.05, value: 0.2 }],
-    compute(state, lang) {
-      const count = num(state, 'count'), correlation = num(state, 'correlation'), bias = num(state, 'bias'), r = ensembleVariance(count, correlation, bias), px = (v: number) => 55 + (v - 1) / 49 * 545, py = (v: number) => 240 - v * 95;
-      let body = axes() + path(sequence(1, 50, 50).map(m => [px(m), py(ensembleVariance(m, correlation, bias).mse)]), stroke('a')) + path([[55, py(r.floor)], [600, py(r.floor)]], `${stroke('c')} stroke-dasharray="5 4"`) + dot(px(count), py(r.mse), 'b', 6);
-      body += text(55, 22, pick(lang, 'Blue: mean squared error · dashed: infinite-ensemble limit', '藍線：均方誤差 · 虛線：無限大集成的極限'));
-      for (const m of [1, 10, 20, 30, 40, 50]) body += text(px(m), 265, m, 'text-anchor="middle"');
-      return { svg: svg(body), summary: pick(lang, 'Independent fluctuations average away. Correlated fluctuations and shared bias remain, so diversity and a valid evaluation split matter more than model count alone.', '獨立波動會被平均掉；相關波動與共同偏差則會保留。因此模型多樣性與有效的評估切分，比單看模型數量更有意義。'), metrics: [{ label: pick(lang, 'Ensemble variance', '集成變異數'), value: fmt(r.variance) }, { label: pick(lang, 'Expected squared error', '期望平方誤差'), value: fmt(r.mse) }, { label: pick(lang, 'Irreducible-by-averaging floor', '平均無法消除的誤差下限'), value: fmt(r.floor) }] };
     },
   },
   {

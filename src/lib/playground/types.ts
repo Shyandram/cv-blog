@@ -18,6 +18,13 @@ export interface Result {
   summary: string;
   metrics: { label: string; value: string }[];
 }
+/** A commit-before-reveal question shown above the controls. `answer` is the value of the correct option. */
+export interface Predict {
+  question: Localized;
+  options: { value: string; label: Localized }[];
+  answer: string;
+  explain: Localized;
+}
 export interface Experiment {
   id: string;
   track: Track;
@@ -28,6 +35,7 @@ export interface Experiment {
   /** Existing tutorial slugs; the page resolves current translated titles at build time. */
   related: string[];
   controls: Control[];
+  predict?: Predict;
   compute: (state: State, lang: Lang) => Result;
 }
 export const L = (en: string, zh: string): Localized => ({ en, 'zh-tw': zh });
