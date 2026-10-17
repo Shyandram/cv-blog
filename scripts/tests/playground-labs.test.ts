@@ -72,3 +72,20 @@ test('every lab has a loader, at most three controls, a valid predict answer and
     for (const c of lab.controls) assert.ok(c.kind === 'range' ? c.min! <= Number(c.value) && Number(c.value) <= c.max! : c.options!.some(o => o.value === String(c.value)), `${lab.id}.${c.key} default`);
   }
 });
+
+test('the PNG test helper reads the real assets exactly as the browser does', async () => {
+  const { readGray, readRgb, asset } = await import('./helpers/png.ts');
+  const cam = readGray(asset('camera-256.png')), crop = readGray(asset('camera-crop-128.png')), astro = readRgb(asset('astronaut-256.png')), truth = readGray(asset('doc-truth.png'));
+  assert.deepEqual([cam.w, cam.h, crop.w, crop.h, astro.w, astro.h, truth.w, truth.h], [256, 256, 128, 128, 256, 256, 384, 192]);
+  assert.ok(cam.data.every(v => v >= 0 && v <= 1) && new Set(truth.data).size === 2);
+  // Facts quoted in the frequency lab's explanation, computed from the real crop with the lab's own pipeline.
+  const { radialLowpass, fft2d } = await import('../../src/lib/imagekit/fft.ts');
+  const lo = crop.data.reduce((a, b) => Math.min(a, b)), hi = crop.data.reduce((a, b) => Math.max(a, b));
+  const outside = (kind: 'ideal' | 'butterworth' | 'gaussian') => {
+    const re = Float64Array.from(crop.data), im = new Float64Array(128 * 128), H = radialLowpass(128, 128, kind, 12, 2);
+    fft2d(re, im, 128, 128); for (let i = 0; i < re.length; i++) { re[i] *= H[i]; im[i] *= H[i]; } fft2d(re, im, 128, 128, true);
+    return Array.from(re).filter(v => v > hi + 0.02 || v < lo - 0.02).length / re.length;
+  };
+  assert.ok(Math.abs(outside('ideal') - 0.0157) < 0.0006, `ideal at D0=12 should ring on about 1.6% of pixels, got ${outside('ideal')}`);
+  assert.equal(outside('gaussian'), 0);
+});
