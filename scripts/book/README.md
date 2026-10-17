@@ -1,5 +1,7 @@
 # LaTeX book export
 
+The book is published as four volumes per language (`scripts/book/volumes.mjs` lists which tracks go in each; the blog essays ride with volume 4), so each PDF stays small enough to download comfortably and to fit the 25 MiB Cloudflare limit. Links to tutorials in the same volume stay inside the PDF; links to tutorials in other volumes open the website.
+
 This exporter reads the published English and Traditional Chinese tutorials and blog posts directly from the content source. It does not execute MDX. The website's text is preserved; interactive widgets become links, image comparisons become static image pairs, and exercise hints are expanded.
 
 The books use an 8 × 10 inch page, a designed title page, contents, eight curriculum parts, a final blog part, running headers, native mathematical typesetting, embedded fonts, and hyperlinks. Reference numbering remains local to each tutorial. Generated files are written to the ignored `book-output/` directory and are not deployed with the website.
@@ -21,8 +23,7 @@ export PANDOC=/path/to/pandoc
 export BOOK_FONTS=/path/to/book-fonts
 node scripts/book/export.mjs
 cd book-output
-/path/to/tectonic --untrusted --keep-logs --keep-intermediates pixels-perception-en.tex
-/path/to/tectonic --untrusted --keep-logs --keep-intermediates pixels-perception-zh-tw.tex
+/path/to/tectonic --untrusted --keep-logs --keep-intermediates pixels-perception-en-vol1.tex   # and vol2, vol3, vol4, and the same for zh-tw
 ```
 
 To export just one language, pass `en` or `zh-tw` to the Node script. `BOOK_OUTPUT` overrides the output directory; `BOOK_DATE` overrides the snapshot date. Generated TeX files use paths relative to their output directory, so compile there. Tectonic runs the passes needed to resolve contents and hyperlinks.
@@ -50,6 +51,6 @@ export BOOK_FONTS=/path/to/book-fonts TECTONIC=/path/to/tectonic     # see Requi
 npm run book                                                          # both languages, or: npm run book -- en
 ```
 
-`npm run book` runs the export, shrinks the figures in the output folder (`optimize_figures.py`, needs Pillow: plots stay palette PNGs, photographs become JPEG, width capped at 800 px; the originals in `src/assets` are untouched), rewrites the LaTeX sources for the renamed files, compiles with Tectonic, and copies `pixels-perception-<lang>.pdf` to `public/books/`. It refuses to publish a PDF over 25 MiB, the Cloudflare Pages limit for a single file. Commit `public/books/*.pdf` and `src/data/books.json` together, after reviewing the PDFs with `check_pdf.py`. `--skip-build` publishes PDFs that are already compiled in `BOOK_OUTPUT`.
+`npm run book` runs the export, shrinks the figures in the output folder (`optimize_figures.py`, needs Pillow: plots stay palette PNGs, photographs become JPEG, width capped at 800 px; the originals in `src/assets` are untouched), rewrites the LaTeX sources for the renamed files, compiles with Tectonic, and copies `pixels-perception-<lang>-vol<N>.pdf` to `public/books/`. It refuses to publish a PDF over 25 MiB, the Cloudflare Pages limit for a single file. Commit `public/books/*.pdf` and `src/data/books.json` together, after reviewing the PDFs with `check_pdf.py`. `--skip-build` publishes PDFs that are already compiled in `BOOK_OUTPUT`.
 
 Pandoc 3.8 renamed `--no-highlight` to `--syntax-highlighting=none`; the exporter detects the installed version and uses the right flag.
