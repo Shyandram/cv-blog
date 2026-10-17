@@ -175,6 +175,14 @@ def check_contour_energy(metrics, set_, zh):
     assert dist() < 1, metrics()       # found the rim, 0.5 px
 
 
+def check_mlp(metrics, set_, zh):
+    v = list(metrics().values())  # moons train, moons test, moons loss, circles train, circles test, circles loss, rises
+    assert first_float(v[0]) >= 95 and first_float(v[3]) >= 95, metrics()
+    set_("m", "1")
+    v = list(metrics().values())
+    assert first_float(v[0]) <= 87.5 and first_float(v[3]) <= 66.5, metrics()
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -184,7 +192,7 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
-    "bagging-trees": check_bagging, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "bagging-trees": check_bagging, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
 }
 
 

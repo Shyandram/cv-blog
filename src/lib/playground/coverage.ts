@@ -53,7 +53,7 @@ export const chapterPlan: Record<string, string[]> = {
     'ml/ml-01a-linear-algebra': ['linear-transform'],
     'ml/ml-01b-probability-information': ['probability-mismatch', 'bayes-decision'],
     'ml/ml-01c-numerical-computation': ['gradient-check'],
-    'ml/ml-02-neural-networks': ['nonlinear-network', 'gradient-check'],
+    'ml/ml-02-neural-networks': ['mlp-training', 'gradient-check'],
     'ml/ml-03-convolutional-networks': ['kernel-filter', 'receptive-field'],
     'ml/ml-03a-recurrent-recursive-networks': ['selective-memory'],
     'ml/ml-04-vision-transformers': ['attention'],
