@@ -14,4 +14,6 @@ import { lab as cornerTensor } from './corner-tensor.ts';
 import { lab as receptiveField } from './receptive-field.ts';
 import { lab as neighborGeometry } from './neighbor-geometry.ts';
 import { lab as diffusionTargets } from './diffusion-targets.ts';
-export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets];
+import { lab as baggingTrees } from './bagging-trees.ts';
+import { lab as linearTransform } from './linear-transform.ts';
+export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform];

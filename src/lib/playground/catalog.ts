@@ -1,5 +1,4 @@
 import { TRACKS, type Track } from '../taxonomy';
-import { geometryExperiments } from './geometry';
 import { visionExperiments } from './vision';
 import { languageExperiments } from './language';
 import { mathExperiments } from './math';
@@ -9,7 +8,7 @@ import { chapterInformationExperiments } from './chapters-information';
 import { chapterRecognitionExperiments } from './chapters-recognition';
 import { chapterVisionExperiments } from './chapters-vision';
 import { chapterLanguageExperiments } from './chapters-language';
-export const experiments = [...geometryExperiments, ...visionExperiments, ...languageExperiments, ...mathExperiments, ...chapterFoundationsExperiments, ...chapterOptimizationExperiments, ...chapterInformationExperiments, ...chapterRecognitionExperiments, ...chapterVisionExperiments, ...chapterLanguageExperiments]
+export const experiments = [...visionExperiments, ...languageExperiments, ...mathExperiments, ...chapterFoundationsExperiments, ...chapterOptimizationExperiments, ...chapterInformationExperiments, ...chapterRecognitionExperiments, ...chapterVisionExperiments, ...chapterLanguageExperiments]
     .sort((a, b) => TRACKS.indexOf(a.track) - TRACKS.indexOf(b.track));
 export interface Source {
     title: string;

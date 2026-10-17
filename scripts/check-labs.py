@@ -148,6 +148,25 @@ def check_diffusion(metrics, set_, zh):
     assert first_float(list(metrics().values())[1]) < p[0] - 2, metrics()
 
 
+def check_bagging(metrics, set_, zh):
+    v = [pct(x) for x in metrics().values()]  # bagged, single tree, average member, disagreement (all %)
+    assert v[1] - v[0] > 1.5 and v[2] > v[1] and v[3] > 10, metrics()
+    set_("depth", "2")
+    w = [pct(x) for x in metrics().values()]
+    assert w[3] < 6 and abs(w[1] - w[0]) < 0.5, metrics()  # stable shallow trees: no gain
+
+
+def check_linear_transform(metrics, set_, zh):
+    v = list(metrics().values())  # det, s1, s2, kappa, rank, orientation
+    assert abs(first_float(v[0]) - 1) < 0.01 and abs(first_float(v[1]) - 1.62) < 0.01 and abs(first_float(v[2]) - 0.62) < 0.01 and abs(first_float(v[3]) - 2.62) < 0.01, v  # default shear: area kept, circle becomes an ellipse
+    set_("preset", "stretch")
+    set_("k", "-1")
+    assert first_float(list(metrics().values())[0]) < -0.99, metrics()  # negative det: mirrored
+    set_("k", "0")
+    w = list(metrics().values())
+    assert "∞" in w[3] and w[4].startswith("1"), w  # rank 1
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -157,6 +176,7 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
+    "bagging-trees": check_bagging, "linear-transform": check_linear_transform,
 }
 
 

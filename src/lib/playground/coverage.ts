@@ -41,6 +41,7 @@ export const chapterPlan: Record<string, string[]> = {
     'pattern-recognition/pr-06-templates-structured-models': ['sequence-alignment'],
     'pattern-recognition/pr-07-clustering-mixtures': ['mixture-em'],
     'pattern-recognition/pr-08-approximate-inference': ['variational-kl'],
+    'pattern-recognition/pr-09-ensembles-validation': ['bagging-trees'],
     'pattern-recognition/pr-10-recognition-capstone': ['rejection-shift'],
     'deep-learning/dl-01-deep-learning-for-image-processing': ['receptive-field'],
     'deep-learning/dl-02-image-classification': ['classification-threshold', 'temperature-calibration'],
@@ -98,7 +99,6 @@ export const readingOnlyChapters = [
     'image-processing/dip-01-introduction',
     'image-processing/dip-07-wavelets-transforms',
     'ml/ml-01-introduction',
-    'pattern-recognition/pr-09-ensembles-validation',
 ];
 const defaultReason = L('This chapter\u2019s own figures, code and exercises carry its main idea; a separate interactive demo would not add to them.', '本章的圖、程式與練習已經足以說明主要概念；另外加一個互動實驗不會增加理解。');
 const reasons: Record<string, Localized> = {

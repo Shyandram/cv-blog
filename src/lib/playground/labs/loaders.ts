@@ -15,4 +15,6 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'receptive-field': () => import('./receptive-field.ts'),
   'neighbor-geometry': () => import('./neighbor-geometry.ts'),
   'diffusion-targets': () => import('./diffusion-targets.ts'),
+  'bagging-trees': () => import('./bagging-trees.ts'),
+  'linear-transform': () => import('./linear-transform.ts'),
 };
