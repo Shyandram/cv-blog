@@ -127,32 +127,6 @@ export function ambiguousRestoration(probability: number, mix: number) {
     riskMean: probability * mse(a, mean) + (1 - probability) * mse(b, mean),
   };
 }
-export function trackingAssignment(
-  motionWeight: number,
-  appearanceError: number,
-  crossing: number,
-) {
-  const predictions = [0.3, 0.7],
-    detections = [0.3 + 0.4 * crossing, 0.7 - 0.4 * crossing];
-  const cost = predictions.map((x, i) =>
-    detections.map(
-      (y, j) =>
-        motionWeight * Math.abs(x - y) +
-        (1 - motionWeight) * (i === j ? appearanceError : 1 - appearanceError),
-    ),
-  );
-  const direct = cost[0][0] + cost[1][1],
-    swapped = cost[0][1] + cost[1][0];
-  return {
-    predictions,
-    detections,
-    cost,
-    direct,
-    swapped,
-    assignment: direct <= swapped ? [0, 1] : [1, 0],
-    ties: Math.abs(direct - swapped) < 1e-10,
-  };
-}
 export function worldRollout(
   coefficient: number,
   steps: number,
@@ -513,100 +487,6 @@ export const chapterVisionExperiments: Experiment[] = [
             r.riskMean,
           ),
           metric(l, "Sharpness (adjacent total variation)", "清晰程度（相鄰取樣總變差）", variation),
-        ],
-      };
-    },
-  },
-  {
-    id: "tracking-association",
-    track: "deep-learning",
-    title: L(
-      "DLCV 06 · Crossing objects challenge identity",
-      "DLCV 06・交錯物體考驗身分關聯",
-    ),
-    description: L(
-      "Balance positional and appearance costs and solve the complete two-object one-to-one assignment.",
-      "權衡位置與外觀成本，求解兩物體的一對一完整指派。",
-    ),
-    challenge: L(
-      "Make the objects cross, then increase motion weight. Under what appearance error does adding appearance stop helping?",
-      "讓兩個物體交錯，再提高運動權重。外觀誤差多大時，加入外觀不再有幫助？",
-    ),
-    note: L(
-      "Two predicted positions are fixed at 0.3 and 0.7. Detection identities are known only for evaluation. Cost = w×absolute position error+(1−w)×appearance cost. Both permutations are enumerated exactly; no detector, learned embedding, birth/death logic or Hungarian implementation. Ties choose identity order.",
-      "兩個預測位置固定為 0.3 與 0.7。偵測身分僅供評估。成本 = w×位置絕對誤差+(1−w)×外觀成本。精確列舉兩個排列；未實作偵測器、學得的嵌入、軌跡新增刪除或 Hungarian 演算法。並列時選身分順序。",
-    ),
-    related: [DL("dl-06-object-tracking")],
-    controls: [
-      range("crossing", "Crossing progress", "交錯進度", 1, 0, 1, 0.05),
-      range("motion", "Motion weight w", "運動權重 w", 0.7, 0, 1, 0.05),
-      range(
-        "appearance",
-        "Same-identity appearance cost",
-        "同身分外觀成本",
-        0.1,
-        0,
-        1,
-        0.05,
-      ),
-    ],
-    compute(s, l) {
-      const r = trackingAssignment(
-        n(s, "motion"),
-        n(s, "appearance"),
-        n(s, "crossing"),
-      );
-      let body = text(
-        40,
-        30,
-        pick(l, "Predicted tracks → current detections", "預測軌跡 → 當前偵測"),
-      );
-      r.predictions.forEach((x, i) => {
-        body +=
-          `<circle cx="${70 + x * 500}" cy="75" r="10" fill="var(--plot-${"ab"[i]})"/><circle cx="${70 + r.detections[i] * 500}" cy="195" r="10" fill="var(--plot-${"ab"[i]})"/>` +
-          path(
-            [
-              [70 + x * 500, 90],
-              [70 + r.detections[r.assignment[i]] * 500, 180],
-            ],
-            `stroke="var(--plot-${"ab"[i]})" stroke-width="2.5"`,
-          );
-      });
-      body +=
-        text(
-          40,
-          250,
-          `C = [${r.cost[0].map((v) => fmt(v)).join(", ")}; ${r.cost[1].map((v) => fmt(v)).join(", ")}]`,
-        ) +
-        text(
-          40,
-          280,
-          pick(
-            l,
-            "Colors show true identity; lines show assignment.",
-            "顏色表示真實身分；連線表示指派。",
-          ),
-        );
-      return {
-        svg: svg(body),
-        summary: pick(
-          l,
-          r.ties
-            ? "Both assignments have equal cost. The deterministic tie break is not evidence of identity."
-            : "Matching nearest positions can switch identities after a crossing. Appearance helps only when its cost is informative.",
-          r.ties
-            ? "兩種指派成本相同。固定的並列處理規則並非身分證據。"
-            : "交錯後，匹配最近位置可能交換身分。只有在外觀成本提供可靠訊息時，外觀才有幫助。",
-        ),
-        metrics: [
-          metric(l, "Identity-preserving cost", "保持身分的成本", r.direct),
-          metric(l, "Swapped-identity cost", "交換身分的成本", r.swapped),
-          metric(
-            l,
-            "Identity switches",
-            "身分交換數",
-            r.assignment[0] === 0 ? 0 : 2,
-          ),
         ],
       };
     },

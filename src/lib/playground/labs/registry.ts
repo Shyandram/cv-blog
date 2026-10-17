@@ -18,4 +18,5 @@ import { lab as baggingTrees } from './bagging-trees.ts';
 import { lab as linearTransform } from './linear-transform.ts';
 import { lab as contourEnergy } from './contour-energy.ts';
 import { lab as mlpTraining } from './mlp.ts';
-export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining];
+import { lab as trackingAssociation } from './tracking-association.ts';
+export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining, trackingAssociation];

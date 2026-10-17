@@ -5,7 +5,6 @@ import {
   rocCurve,
   ambiguousRestoration,
   totalVariation,
-  trackingAssignment,
   worldRollout,
   chapterVisionExperiments,
 } from "../../src/lib/playground/chapters-vision.ts";
@@ -102,16 +101,6 @@ test("Restoration default shows the point: the blurry mean has lower risk, the s
     assert.ok(q.riskMean < q.risk);
   }
 });
-test("Two-object matching enumerates globally minimal cost; appearance can prevent swaps", () => {
-  assert.deepEqual(trackingAssignment(1, 0.1, 1).assignment, [1, 0]);
-  assert.deepEqual(trackingAssignment(0, 0.1, 1).assignment, [0, 1]);
-  for (const w of [0, 0.5, 1])
-    for (const error of [0, 0.5, 1]) {
-      const r = trackingAssignment(w, error, 1),
-        cost = r.cost[0][r.assignment[0]] + r.cost[1][r.assignment[1]];
-      near(cost, Math.min(r.direct, r.swapped));
-    }
-});
 test("World model exact dynamics remove drift, refresh every step equals teacher forcing", () => {
   const exact = worldRollout(0.96, 60, 0.1, 5);
   near(exact.openError, 0);
@@ -122,8 +111,8 @@ test("World model exact dynamics remove drift, refresh every step equals teacher
   const off = worldRollout(1.02, 60, 0.1, 0);
   near(off.openError, off.correctedError);
 });
-test("All four bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
-  assert.equal(chapterVisionExperiments.length, 4);
+test("All three bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
+  assert.equal(chapterVisionExperiments.length, 3);
   const ids = new Set<string>();
   for (const e of chapterVisionExperiments) {
     assert.ok(!ids.has(e.id));

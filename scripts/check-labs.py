@@ -183,6 +183,14 @@ def check_mlp(metrics, set_, zh):
     assert first_float(v[0]) <= 87.5 and first_float(v[3]) <= 66.5, metrics()
 
 
+def check_tracking(metrics, set_, zh):
+    m = list(metrics().values())
+    assert first_float(m[0]) == 2 and first_float(m[2]) < 0.65, f"default overlap-only should swap two identities: {m}"
+    set_("lambda", "0.5")
+    m2 = list(metrics().values())
+    assert first_float(m2[0]) == 0 and first_float(m2[2]) > 0.8, f"mixing colour in should remove the swap: {m2}"
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -192,7 +200,7 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
-    "bagging-trees": check_bagging, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "bagging-trees": check_bagging, "tracking-association": check_tracking, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
 }
 
 

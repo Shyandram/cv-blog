@@ -36,6 +36,5 @@ export const experimentSources: Record<string, Source[]> = {
     'classification-threshold': [sources['pattern-recognition'][1]],
     'temperature-calibration': [calibrationSource],
     'restoration-ambiguity': [source('Yochai Blau & Tomer Michaeli, The Perception-Distortion Tradeoff, CVPR, 2018', 'https://arxiv.org/abs/1711.06077')],
-    'tracking-association': [source('Alex Bewley et al., Simple Online and Realtime Tracking, ICIP, 2016', 'https://arxiv.org/abs/1602.00763')],
     'world-model-rollout': [source('David Ha & Jürgen Schmidhuber, World Models, arXiv, 2018', 'https://arxiv.org/abs/1803.10122')],
 };
