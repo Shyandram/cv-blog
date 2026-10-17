@@ -18,8 +18,8 @@ previews.mkdir(exist_ok=True)
 report = {}
 normalize = lambda s: re.sub(r'\s+', '', s)
 
-for lang, edition in manifest['editions'].items():
-    stem = f'pixels-perception-{lang}'
+for stem, edition in manifest['books'].items():
+    lang = stem.removeprefix('pixels-perception-')  # e.g. en-vol1
     source = (out / f'{stem}.tex').read_text()
     assert source.count('\\bookchapter{') == len(edition['chapters'])
     assert source.count('\\begin{Verbatim}') == edition['codeBlocks']
