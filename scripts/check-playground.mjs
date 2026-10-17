@@ -13,7 +13,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const bundled = await build({
   stdin: {
-    contents: "export * from './src/lib/playground/coverage'; export * from './src/lib/playground/catalog';",
+    contents: "export * from './src/lib/playground/coverage'; export * from './src/lib/playground/catalog'; export * from './src/lib/playground/labs/registry';",
     resolveDir: process.cwd(), loader: 'ts',
   },
   bundle: true, write: false, platform: 'node', format: 'esm',

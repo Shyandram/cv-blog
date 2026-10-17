@@ -7,14 +7,12 @@ import {
   haarInverse,
   dctQuantize,
   binaryMorph,
-  thresholdScene,
   radialSnake,
   structureTensor,
   prototypeDistances,
   receptiveField,
   classificationThreshold,
   ambiguousRestoration,
-  photonNoise,
   trackingAssignment,
   worldRollout,
   chapterVisionExperiments,
@@ -80,14 +78,6 @@ test("Morphology: dilation contains input, erosion is contained, opening is idem
     });
     assert.deepEqual(binaryMorph(opened, 10, 1, shape, "open"), opened);
   }
-});
-test("Otsu perfectly separates the uniform-lit scene but not severe illumination", () => {
-  near(thresholdScene(0, 0.4, true).iou, 1);
-  assert.ok(thresholdScene(1, 0.4, true).iou < 1);
-  assert.equal(
-    thresholdScene(0, 1, false).mask.reduce((a, b) => a + b, 0),
-    0,
-  );
 });
 test("Circular contour descent never raises energy and can miss narrow edge attraction", () => {
   for (const start of [0.1, 0.5, 1, 1.8])
@@ -160,15 +150,6 @@ test("Conditional mean minimizes expected MSE over the ambiguity slider", () => 
   near(ambiguousRestoration(0.5, 0).risk, 0.25);
   near(ambiguousRestoration(0.5, 1).risk, 0.5);
 });
-test("Digital gain preserves SNR while more exposure improves it", () => {
-  const a = photonNoise(40, 1, 2),
-    b = photonNoise(40, 8, 2),
-    c = photonNoise(80, 1, 2);
-  near(a.snr, b.snr);
-  near(b.mean, 8 * a.mean);
-  near(b.std, 8 * a.std);
-  assert.ok(c.snr > a.snr);
-});
 test("Two-object matching enumerates globally minimal cost; appearance can prevent swaps", () => {
   assert.deepEqual(trackingAssignment(1, 0.1, 1).assignment, [1, 0]);
   assert.deepEqual(trackingAssignment(0, 0.1, 1).assignment, [0, 1]);
@@ -190,7 +171,7 @@ test("World model exact dynamics remove drift, refresh every step equals teacher
   near(off.openError, off.correctedError);
 });
 test("All fifteen bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
-  assert.equal(chapterVisionExperiments.length, 15);
+  assert.equal(chapterVisionExperiments.length, 13);
   const ids = new Set<string>();
   for (const e of chapterVisionExperiments) {
     assert.ok(!ids.has(e.id));

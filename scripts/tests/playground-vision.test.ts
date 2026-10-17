@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // Node's built-in TypeScript runner requires an explicit extension.
-import { samplePixels, lowpassSignal, diffusionSignal, intersectionOverUnion, suppressBoxes, visionExperiments } from '../../src/lib/playground/vision.ts';
+import { samplePixels, diffusionSignal, intersectionOverUnion, suppressBoxes, visionExperiments } from '../../src/lib/playground/vision.ts';
 
 test('pixel quantization uses the chosen levels and dense 8-bit sampling has bounded error', () => {
   const binary = samplePixels(1, 1);
@@ -12,15 +12,6 @@ test('pixel quantization uses the chosen levels and dense 8-bit sampling has bou
   assert.ok(coarse.error > dense.error);
   assert.equal(coarse.output[0], coarse.output[3]);
   assert.equal(coarse.output[0], coarse.output[3 * 24 + 3]);
-});
-
-test('ideal low-pass has exact frequency boundaries and Parseval mean-square loss', () => {
-  const all = lowpassSignal(12), low = lowpassSignal(11), none = lowpassSignal(1);
-  assert.equal(all.error, 0);
-  assert.deepEqual(low.retained, [1, 0]);
-  assert.ok(Math.abs(low.error - 0.45 ** 2 / 2) < 1e-12);
-  assert.ok(Math.abs(none.error - (1 + 0.45 ** 2) / 2) < 1e-12);
-  assert.ok(none.filtered.every((v: number) => v === 0));
 });
 
 test('all oracle targets invert the forward identity whenever identifiable', () => {

@@ -28,13 +28,6 @@ const pixelGrid = (values: number[], side: number, x0: number, y0: number) => va
   return `<rect x="${x0 + i % side * 9}" y="${y0 + Math.floor(i / side) * 9}" width="9.1" height="9.1" fill="rgb(${gray},${gray},${gray})"/>`;
 }).join('');
 
-/** The input has exactly two discrete Fourier frequencies over its 64-sample period. */
-export function lowpassSignal(cutoff: number) {
-  const original = Array.from({ length: 64 }, (_, n) => Math.sin(TAU * 2 * n / 64) + 0.45 * Math.sin(TAU * 12 * n / 64));
-  const retained = [cutoff >= 2 ? 1 : 0, cutoff >= 12 ? 0.45 : 0];
-  const filtered = original.map((_, n) => retained[0] * Math.sin(TAU * 2 * n / 64) + retained[1] * Math.sin(TAU * 12 * n / 64));
-  return { original, filtered, retained, error: mse(original, filtered) };
-}
 const signalPath = (values: number[], color: string, scale: number, center = 146, height = 72, dashed = false) => path(values.map((v, i) => [38 + i * 564 / (values.length - 1), center - height * v / scale]), `stroke="var(--plot-${color})" stroke-width="2.5"${dashed ? ' stroke-dasharray="7 4"' : ''}`);
 const baseline = (y: number) => `<line x1="38" y1="${y}" x2="602" y2="${y}" stroke="currentColor" opacity="0.25"/>`;
 
@@ -91,22 +84,6 @@ export const visionExperiments: Experiment[] = [
       return { svg: svg(text(52, 27, pick(lang, 'Original', '原始影像')) + text(370, 27, pick(lang, 'Sampled + quantized', '取樣與量化後')) + pixelGrid(r.original, r.side, 52, 43) + pixelGrid(r.output, r.side, 370, 43), 282),
         summary: pick(lang, `Keep one sample per ${stride} × ${stride} block and round brightness to ${r.levels} levels. Spatial detail and brightness precision are separate choices.`, `每個 ${stride} × ${stride} 區塊保留一個取樣點，亮度四捨五入至 ${r.levels} 階。空間細節與亮度精度是不同的選擇。`),
         metrics: [{ label: pick(lang, 'Available gray levels', '可用灰階數'), value: String(r.levels) }, { label: pick(lang, 'Mean squared error', '均方誤差'), value: fmt(r.error, 6) }, { label: pick(lang, 'Retained samples', '保留取樣點數'), value: String(Math.ceil(r.side / stride) ** 2) }] };
-    },
-  },
-  {
-    id: 'frequency-filter', track: 'image-processing',
-    title: L('A low-pass filter in two views', '從兩種角度看低通濾波'),
-    description: L('Move the frequency cutoff and see which oscillations survive in the signal.', '移動截止頻率，觀察訊號中哪些振盪會保留下來。'),
-    challenge: L('Find a cutoff that removes the 12-cycle component while preserving the 2-cycle component. Why does the output change in jumps?', '找出可移除 12 週期成分、同時保留 2 週期成分的截止頻率。為什麼輸出會跳躍式變化？'),
-    note: L('An ideal discrete low-pass filter retains frequencies k ≤ cutoff in a periodic 64-sample signal. The only nonzero amplitudes are 1 at k=2 and 0.45 at k=12. This toy signal is not an image spectrum.', '理想離散低通濾波器保留 k ≤ 截止頻率的成分。週期訊號共有 64 個取樣點，非零振幅只有 k=2 的 1 與 k=12 的 0.45。這是示範訊號，不是影像頻譜。'),
-    related: ['image-processing/dip-04-frequency-domain'],
-    controls: [{ key: 'cutoff', label: L('Cutoff (cycles per period)', '截止頻率（每週期振盪次數）'), kind: 'range', value: 6, min: 0, max: 16, step: 1 }],
-    compute(state, lang) {
-      const cutoff = Math.round(bounded(state, 'cutoff', 6, 0, 16)), r = lowpassSignal(cutoff);
-      let drawing = text(38, 26, pick(lang, 'Dashed: input · Solid: output', '虛線：輸入 · 實線：輸出')) + baseline(127) + signalPath(r.original, 'a', 1.5, 127, 75, true) + signalPath(r.filtered, 'b', 1.5, 127, 75);
-      drawing += text(38, 238, pick(lang, 'Retained amplitudes', '保留的振幅'));
-      r.retained.forEach((amplitude, i) => { const x = 285 + i * 165; drawing += `<rect x="${x}" y="${286 - amplitude * 48}" width="34" height="${amplitude * 48}" fill="var(--plot-b)"/>` + text(x - 8, 310, `k=${i ? 12 : 2}: ${fmt(amplitude)}`); });
-      return { svg: svg(drawing, 330), summary: pick(lang, `Cutoff ${cutoff}: retain amplitudes ${fmt(r.retained[0])} and ${fmt(r.retained[1])}. Removing a Fourier component removes its entire oscillation from the signal.`, `截止頻率為 ${cutoff}：保留的振幅為 ${fmt(r.retained[0])} 與 ${fmt(r.retained[1])}。移除一個傅立葉成分，會移除訊號中的整段對應振盪。`), metrics: [{ label: pick(lang, 'Retained components', '保留成分數'), value: String(r.retained.filter(x => x > 0).length) }, { label: pick(lang, 'Mean squared change', '均方變化量'), value: fmt(r.error, 6) }] };
     },
   },
   {

@@ -1,4 +1,5 @@
 import { experiments } from './catalog';
+import { labs } from './labs/registry';
 import { L, type Localized } from './types';
 import type { Track } from '../taxonomy';
 /** Chapter routes are the stable keys. Titles and chapter order come from the content collection. */
@@ -12,7 +13,7 @@ export interface PlaygroundEntry {
 const legacy: PlaygroundEntry[] = [
     { id: 'kernel-filter', track: 'image-processing', title: L('Edit a filter kernel', '編輯濾波核'), description: L('Predict the response of flat regions and edges as you change the kernel weights.', '改變核權重，預測平坦區域與邊緣的回應。'), related: ['image-processing/dip-03-intensity-spatial-filtering', 'ml/ml-03-convolutional-networks'] },
 ];
-export const playgroundEntries: PlaygroundEntry[] = [...experiments, ...legacy];
+export const playgroundEntries: PlaygroundEntry[] = [...experiments, ...labs, ...legacy];
 /**
  * The plan is the single source of truth for which experiments a chapter shows.
  * At most two per chapter; the first is the suggested starting point. A chapter without an entry

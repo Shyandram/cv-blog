@@ -200,46 +200,6 @@ export function binaryMorph(
       ? primitive(primitive(a, true), false)
       : primitive(a, op === "dilate");
 }
-export function thresholdScene(
-  illumination: number,
-  threshold: number,
-  automatic: boolean,
-) {
-  const side = 20,
-    truth = Array.from({ length: 400 }, (_, i) =>
-      Number(((i % 20) - 10) ** 2 + (Math.floor(i / 20) - 10) ** 2 < 36),
-    );
-  const image = truth.map((v, i) =>
-    clamp(0.2 + 0.42 * v + illumination * ((i % 20) / 19 - 0.5)),
-  );
-  let best = -1,
-    chosen = 0;
-  for (let k = 0; k < 256; k++) {
-    const t = k / 255,
-      low = image.filter((v) => v <= t),
-      high = image.filter((v) => v > t);
-    if (!low.length || !high.length) continue;
-    const mean = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
-    const score =
-      ((low.length * high.length) / 400 ** 2) * (mean(low) - mean(high)) ** 2;
-    if (score > best + 1e-12) {
-      best = score;
-      chosen = t;
-    }
-  }
-  const t = automatic ? chosen : threshold;
-  const mask = image.map((v) => Number(v > t));
-  const tp = mask.reduce((s, v, i) => s + v * truth[i], 0),
-    union = mask.reduce((s, v, i) => s + Number(v || truth[i]), 0);
-  return {
-    side,
-    truth,
-    image,
-    mask,
-    threshold: t,
-    iou: union ? tp / union : 1,
-  };
-}
 /** A deliberately restricted circular snake: radius is the only degree of freedom. */
 export function radialSnake(initial: number, tension: number, steps: number) {
   const energy = (r: number) =>
@@ -374,16 +334,6 @@ export function ambiguousRestoration(probability: number, mix: number) {
     output,
     risk: probability * mse(a, output) + (1 - probability) * mse(b, output),
     riskMean: probability * mse(a, mean) + (1 - probability) * mse(b, mean),
-  };
-}
-export function photonNoise(exposure: number, gain: number, read: number) {
-  const signal = exposure * 0.25,
-    variance = signal + read ** 2;
-  return {
-    mean: gain * signal,
-    std: gain * Math.sqrt(variance),
-    snr: signal / Math.sqrt(variance),
-    relative: Math.sqrt(variance) / signal,
   };
 }
 export function trackingAssignment(
@@ -774,73 +724,6 @@ export const chapterVisionExperiments: Experiment[] = [
             "Changed pixels",
             "改變的像素",
             output.filter((v, i) => v !== input[i]).length,
-          ),
-        ],
-      };
-    },
-  },
-  {
-    id: "segmentation-threshold",
-    track: "image-processing",
-    title: L(
-      "IP 10 · A histogram can hide spatial illumination",
-      "IP 10・直方圖可能隱藏空間照明變化",
-    ),
-    description: L(
-      "Segment a disk under an illumination ramp using a manual or Otsu threshold and compare against the known mask.",
-      "用手動或 Otsu 門檻分割照明漸變下的圓盤，並與已知遮罩比較。",
-    ),
-    challenge: L(
-      "Increase the illumination ramp. Can the automatic global threshold still separate the whole disk from the background?",
-      "增加照明漸變幅度。自動全域門檻還能把整個圓盤與背景分開嗎？",
-    ),
-    note: L(
-      "Synthetic intensities: background 0.2, disk +0.42, horizontal illumination ramp, then clipping. Otsu searches 256 candidate thresholds and takes the first maximum. This differs from implementations that average ties. IoU uses the known synthetic disk.",
-      "合成亮度包含背景 0.2、圓盤加上 0.42，以及水平照明漸變，最後截斷。Otsu 搜尋 256 個候選門檻，取第一個最大值，與平均並列解的實作不同。IoU 使用已知的合成圓盤作為基準。",
-    ),
-    related: [IP("dip-10-segmentation")],
-    controls: [
-      range(
-        "illumination",
-        "Illumination ramp",
-        "照明漸變幅度",
-        0.3,
-        0,
-        1,
-        0.05,
-      ),
-      select("method", "Threshold selection", "門檻選擇", "otsu", [
-        ["otsu", "Otsu", "Otsu"],
-        ["manual", "Manual", "手動"],
-      ]),
-      range("threshold", "Manual threshold", "手動門檻", 0.4, 0, 1, 0.02),
-    ],
-    compute(s, l) {
-      const r = thresholdScene(
-        n(s, "illumination"),
-        n(s, "threshold"),
-        s.method === "otsu",
-      );
-      return {
-        svg: svg(
-          text(45, 28, pick(l, "Observed intensities", "觀測亮度")) +
-            text(365, 28, pick(l, "Predicted foreground", "預測前景")) +
-            grid(r.image, 20, 45, 45) +
-            grid(r.mask, 20, 365, 45),
-        ),
-        summary: pick(
-          l,
-          "Otsu maximizes between-class intensity separation; it does not know which pixels belong to the disk. A spatial lighting gradient can violate the global two-class intensity assumption.",
-          "Otsu 最大化兩類亮度的分離程度，並不知道哪些像素屬於圓盤。空間照明漸變可能破壞全域亮度可分成兩類的假設。",
-        ),
-        metrics: [
-          metric(l, "Applied threshold", "實際門檻", r.threshold),
-          metric(l, "Mask IoU", "遮罩 IoU", r.iou),
-          metric(
-            l,
-            "Foreground pixels",
-            "前景像素",
-            r.mask.reduce((a, b) => a + b, 0),
           ),
         ],
       };
@@ -1242,94 +1125,6 @@ export const chapterVisionExperiments: Experiment[] = [
             r.riskMean,
           ),
           metric(l, "Adjacent total variation", "相鄰取樣總變差", variation),
-        ],
-      };
-    },
-  },
-  {
-    id: "lowlight-photons",
-    track: "deep-learning",
-    title: L(
-      "DLCV 05 · Gain cannot create missing photons",
-      "DLCV 05・增益無法補回缺少的光子",
-    ),
-    description: L(
-      "Separate exposure, read noise and digital gain using the mean and variance of a photon-counting model.",
-      "用光子計數模型的平均值與變異數，分辨曝光、讀出雜訊與數位增益。",
-    ),
-    challenge: L(
-      "Double digital gain, then double exposure. Which changes the signal-to-noise ratio, and why?",
-      "先加倍數位增益，再加倍曝光。哪個會改變訊雜比？為什麼？",
-    ),
-    note: L(
-      "Flat scene x=0.25, electrons N~Poisson(exposure×x), independent zero-mean read noise with standard deviation σr electrons. Output is gain×(N+noise). Curves show exact mean ±1 standard deviation, not simulated images or confidence intervals. Clipping and quantization are excluded.",
-      "平坦場景 x=0.25，電子數 N~Poisson(曝光×x)，並加入獨立、零均值、標準差為 σr 電子的讀出雜訊。輸出為增益×(N+雜訊)。曲線顯示精確平均值 ±1 標準差，並非模擬影像或信賴區間。未考慮截斷與量化。",
-    ),
-    related: [DL("dl-05-low-light-enhancement")],
-    controls: [
-      range(
-        "exposure",
-        "Exposure scale (electrons at x=1)",
-        "曝光尺度（x=1 時的電子數）",
-        40,
-        4,
-        200,
-        4,
-      ),
-      range("gain", "Digital gain", "數位增益", 2, 1, 8, 0.5),
-      range(
-        "read",
-        "Read-noise standard deviation",
-        "讀出雜訊標準差",
-        2,
-        0,
-        8,
-        0.5,
-      ),
-    ],
-    compute(s, l) {
-      const r = photonNoise(n(s, "exposure"), n(s, "gain"), n(s, "read"));
-      const values = Array.from({ length: 32 }, (_, i) =>
-        photonNoise(4 + (i * 196) / 31, n(s, "gain"), n(s, "read")),
-      );
-      const body = lines(
-        [
-          values.map((v) => v.mean),
-          values.map((v) => v.mean + v.std),
-          values.map((v) => v.mean - v.std),
-        ],
-        [
-          pick(l, "Mean", "平均"),
-          pick(l, "Mean + σ", "平均 + σ"),
-          pick(l, "Mean − σ", "平均 − σ"),
-        ],
-      );
-      const selectedX = 70 + (530 * (n(s, "exposure") - 4)) / 196;
-      const selectedMarker = `<line x1="${selectedX}" y1="45" x2="${selectedX}" y2="245" stroke="var(--plot-ink)" stroke-dasharray="3 3"/>`;
-      return {
-        svg: svg(
-          text(
-            70,
-            20,
-            pick(l, "Exposure sweep: 4 → 200", "曝光掃描：4 → 200"),
-          ) +
-            body +
-            selectedMarker,
-        ),
-        summary: pick(
-          l,
-          "Digital gain multiplies signal and noise equally, leaving their ratio unchanged. More collected photons improve relative precision; read noise dominates most when the signal is small.",
-          "數位增益同時乘上訊號與雜訊，因此不改變兩者比例。收集更多光子可改善相對精度；訊號微弱時，讀出雜訊的影響尤其明顯。",
-        ),
-        metrics: [
-          metric(l, "Selected output mean", "所選輸出平均值", r.mean),
-          metric(
-            l,
-            "Selected output standard deviation",
-            "所選輸出標準差",
-            r.std,
-          ),
-          metric(l, "Signal/noise ratio (linear)", "訊雜比（線性）", r.snr),
         ],
       };
     },
