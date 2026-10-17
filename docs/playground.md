@@ -26,7 +26,7 @@ The Playground has two kinds of experiments. Both are optional per chapter (see 
 3. **Lab module.** Copy `labs/segmentation-threshold.ts`. It exports `lab: LabDef` with:
    * `id` (reuse the id of the demo it replaces so `#id` links keep working), `track`, bilingual `title`, `description`, `challenge`, `note`, `related` chapter slugs;
    * `controls` (1 to 3 `range` or `select`), `predict`, `assets`, `panes`, `sources`;
-   * `create({ lang, images })` returns `{ render(state, canvases) }` which draws to the canvases and returns `{ summary, metrics, plots }`. Keep pure computation in exported functions so Node tests can call them.
+   * `create({ lang, images })` returns `{ render(state, canvases), attach? }`. `render` draws to the canvases and returns `{ summary, metrics, plots }`; keep pure computation in exported functions so Node tests can call them. `attach(canvases, setControl)` is optional and adds click or drag on a canvas by writing into controls through `setControl`; the sliders stay the keyboard-accessible source of truth.
 4. **Register.** Add the lab to `labs/registry.ts` (build time) and `labs/loaders.ts` (browser, lazy), and list it in `chapterPlan`. At most two experiments per chapter.
 5. **Embed.** Put `<Lab id="..." />` in both language files of the chapter, after the figure that introduces the idea, and add `import Lab from '../../../../components/Lab.astro';`.
 6. **Test.** Unit tests in `scripts/tests/`, a threshold for the default state in `scripts/check-labs.py` (`EXPECT`), then `npm run build` and `.venv/bin/python scripts/check-labs.py`.

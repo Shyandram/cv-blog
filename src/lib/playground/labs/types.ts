@@ -26,6 +26,12 @@ export interface LabOutput {
 }
 export interface LabInstance {
   render(state: State, canvases: Record<string, HTMLCanvasElement>): LabOutput;
+  /**
+   * Optional direct manipulation (click or drag on a canvas). Called once, before the first render. Use `setControl` to
+   * write the result into a control (for example the x and y sliders of a probe), so the keyboard-accessible sliders stay
+   * the single source of truth and a pointer is only a shortcut.
+   */
+  attach?(canvases: Record<string, HTMLCanvasElement>, setControl: (key: string, value: string | number) => void): void;
 }
 export interface LabEnv { lang: Lang; images: Record<string, Gray | Rgb> }
 export interface LabDef {
