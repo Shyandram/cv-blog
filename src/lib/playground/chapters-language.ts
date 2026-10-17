@@ -216,23 +216,6 @@ const contrastive: Experiment = {
   compute(s, lang) { const r = contrastiveExample(num(s, 'positive'), num(s, 'negative'), num(s, 'temperature'), s.collapse === 'yes'); let body = `<circle cx="160" cy="140" r="100" fill="none" stroke="var(--plot-grid)"/>` + line(160, 140, 260, 140, 'c') + text(235, 125, pick(lang, 'anchor', '錨點')); r.angles.forEach((a, i) => { const x = 160 + 100 * Math.cos(a * Math.PI / 180), y = 140 - 100 * Math.sin(a * Math.PI / 180); body += line(160, 140, x, y, i === 0 ? 'a' : 'b') + dot(x, y, 5, i === 0 ? 'a' : 'b') + text(x - 10, y - 12 - (s.collapse === 'yes' ? i * 18 : 0), i === 0 ? '+' : `−${i}`); }); body += r.probabilities.map((p, i) => text(335, 50 + i * 51, `${i === 0 ? '+' : '−' + i}: ${fmt(p)}`) + `<rect x="335" y="${59 + i * 51}" width="${260 * p}" height="16" fill="var(--plot-${i === 0 ? 'a' : 'b'})"/>`).join(''); return { svg: svg(body), summary: pick(lang, 'Loss = −log(exp(sim⁺/τ) / Σ exp(sim/τ)). Temperature sharpens whichever candidate already has the highest similarity. Collapsed unit vectors give equal probabilities and loss log(4).', '損失 = −log(exp(sim⁺/τ) / Σ exp(sim/τ))。溫度會強化原本相似度最高的候選。坍縮的單位向量產生相等機率與 log(4) 損失。'), metrics: [metric(lang, 'Positive probability', '正例機率', fmt(r.probabilities[0])), metric(lang, 'Matching loss, nats', '匹配損失（nat）', fmt(r.loss)), metric(lang, 'Positive cosine', '正例餘弦值', fmt(r.cosine[0]))] }; },
 };
 
-export function bottleneckSignal(kept: number, detail: number) {
-  const n = 16; const basis = (i: number, k: number) => Math.sqrt((k === 0 ? 1 : 2) / n) * Math.cos(Math.PI * (i + 0.5) * k / n);
-  const original = Array.from({ length: n }, (_, i) => Math.cos(Math.PI * (i + 0.5) * 2 / n) + detail * Math.cos(Math.PI * (i + 0.5) * 11 / n));
-  const coefficients = Array.from({ length: n }, (_, k) => sum(original.map((v, i) => v * basis(i, k))));
-  const reconstructed = original.map((_, i) => sum(coefficients.slice(0, kept).map((c, k) => c * basis(i, k))));
-  return { original, reconstructed, coefficients, mse: sum(original.map((v, i) => (v - reconstructed[i]) ** 2)) / n };
-}
-const bottleneck: Experiment = {
-  id: 'latent-bottleneck', track: 'ml', title: L('Pixel → latent → pixel: what cannot come back?', '像素 → 潛在表徵 → 像素：哪些細節無法還原？'),
-  description: L('Encode a 16-value scanline into a smaller orthogonal representation and decode it without inventing missing detail.', '將 16 個值的掃描線編碼成較小的正交表徵，再解碼並觀察遺失的細節。'),
-  challenge: L('Keep the latent width at four and increase fine-detail amplitude. Can a perfect decoder recover the discarded frequency without extra information?', '將潛在寬度固定為四，再提高細節振幅。沒有額外訊息時，完美解碼器能還原捨棄的頻率嗎？'),
-  note: L('An orthonormal cosine basis is a deterministic linear encoder/decoder, not a learned VAE or representation autoencoder. Kept coefficients are exact; only truncation causes loss. Latent generators inherit a real tokenizer’s reconstruction limits too.', '正交餘弦基底是確定性的線性編碼器／解碼器，不是學得的 VAE 或表徵自編碼器。保留係數不量化，損失只來自截斷。潛在生成器也會受真實切詞器的重建限制影響。'),
-  related: ['ml/ml-05a-factor-models-autoencoders', 'ml/ml-07-diffusion-flow-matching', 'ml/ml-08-autoregressive-vision'],
-  controls: [range('kept', 'Retained coefficients', '保留係數數量', 4, 1, 16), range('detail', 'High-frequency detail amplitude', '高頻細節振幅', 0.6, 0, 1, 0.05)],
-  compute(s, lang) { const r = bottleneckSignal(num(s, 'kept'), num(s, 'detail')); return { svg: svg(curves([{ values: r.original, color: 'b' }, { values: r.reconstructed, color: 'a' }], -2, 2, [pick(lang, 'Original scanline', '原始掃描線'), pick(lang, 'Decoded scanline', '解碼掃描線')]) + text(50, 20, `16 → ${num(s, 'kept')} → 16`)), summary: pick(lang, 'The encoder keeps the lowest-frequency coefficients. Once a coefficient is discarded, multiple inputs share the same latent code; decoding alone cannot determine which original was present.', '編碼器保留最低頻率的係數。丟棄係數後，多種輸入會共用同一潛在碼；只靠解碼無法判斷原本是哪個輸入。'), metrics: [metric(lang, 'Reconstruction MSE', '重建均方誤差', fmt(r.mse, 6)), metric(lang, 'Latent / input values', '潛在／輸入值數', `${num(s, 'kept')} / 16`), metric(lang, 'Discarded energy / 16', '捨棄能量／16', fmt(sum(r.coefficients.slice(num(s, 'kept')).map(v => v * v)) / 16, 6))] }; },
-};
-
 export function vaeObjective(mu: number, sigma: number, beta: number) {
   const kl = 0.5 * (mu * mu + sigma * sigma - 1 - Math.log(sigma * sigma)); const nll = 0.5 * ((1 - mu) ** 2 + sigma * sigma) / 0.25 + Math.log(0.5 * Math.sqrt(2 * Math.PI)); return { kl, nll, total: nll + beta * kl };
 }
@@ -308,4 +291,4 @@ const calibration: Experiment = {
   compute(s, lang) { const r = temperatureCalibration(num(s, 'temperature')); let body = text(30, 25, pick(lang, 'Bars: P(class 1) · dots: observed labels 0 or 1', '長條：P(類別 1)・圓點：觀察標籤 0 或 1')); r.probabilities.forEach((p, i) => { const x = 50 + i * 72; body += `<rect x="${x}" y="${235 - 170 * p}" width="35" height="${170 * p}" fill="var(--plot-a)"/>` + dot(x + 17, 235 - 170 * r.labels[i], 6, 'b') + text(x, 265, r.logits[i]); }); body += text(50, 295, pick(lang, 'x: original logit · y: 0 (bottom) → 1 (top)', 'x：原始 logit · y：0（下）→ 1（上）')); return { svg: svg(body, 320), summary: pick(lang, 'Positive temperature preserves logit ordering and binary decisions. It can adjust overconfidence or underconfidence, but cannot correct which examples the classifier gets wrong.', '正溫度保留 logits 排序與二元決策。它能調整過度自信或信心不足，卻無法修正分類器判錯的樣本。'), metrics: [metric(lang, 'Accuracy', '準確率', `${fmt(100 * r.accuracy)}%`), metric(lang, 'Mean log loss, nats', '平均對數損失（nat）', fmt(r.nll)), metric(lang, 'Brier score', 'Brier 分數', fmt(r.brier))] }; },
 };
 
-export const chapterLanguageExperiments: Experiment[] = [scope, bpe, pooling, sequence, retrieval, decoding, masking, gradients, network, memory, contrastive, bottleneck, vae, flow, transport, autoregression, calibration];
+export const chapterLanguageExperiments: Experiment[] = [scope, bpe, pooling, sequence, retrieval, decoding, masking, gradients, network, memory, contrastive, vae, flow, transport, autoregression, calibration];

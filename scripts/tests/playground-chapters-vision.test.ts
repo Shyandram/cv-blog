@@ -1,16 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  regularizedInverse,
-  colorGain,
-  haarForward,
-  haarInverse,
-  dctQuantize,
-  binaryMorph,
   radialSnake,
-  structureTensor,
-  prototypeDistances,
-  receptiveField,
   classificationThreshold,
   ambiguousRestoration,
   trackingAssignment,
@@ -19,66 +10,6 @@ import {
 } from "../../src/lib/playground/chapters-vision.ts";
 const near = (a: number, b: number, tol = 1e-9) =>
   assert.ok(Math.abs(a - b) < tol, `${a} != ${b}`);
-const mse = (a: number[], b: number[]) =>
-  a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0) / a.length;
-test("Inverse restoration is exact without perturbations; regularization controls amplified noise", () => {
-  for (const blur of [0, 3, 6]) {
-    const r = regularizedInverse(blur, 0, 0);
-    near(mse(r.clean, r.restored), 0);
-  }
-  const raw = regularizedInverse(6, 0.03, 0),
-    reg = regularizedInverse(6, 0.03, 0.02);
-  assert.ok(reg.gain < raw.gain);
-  assert.ok(mse(reg.clean, reg.restored) < mse(raw.clean, raw.restored));
-});
-test("Common linear-light gain preserves color ratios only before clipping", () => {
-  near(colorGain([0.7, 0.3, 0.1], 1.1).shift, 0);
-  const r = colorGain([0.7, 0.3, 0.1], 2);
-  assert.equal(r.count, 1);
-  assert.ok(r.shift > 0);
-});
-test("Haar transform is invertible, energy preserving and keeps the mean under detail removal", () => {
-  const a = [0.2, 0.3, 0.7, 0.8, 0.1, 0.9, 0.4, 0.6],
-    c = haarForward(a),
-    b = haarInverse(c);
-  a.forEach((v, i) => near(v, b[i]));
-  near(
-    a.reduce((s, v) => s + v * v, 0),
-    c.reduce((s, v) => s + v * v, 0),
-  );
-  const smooth = haarInverse(c.map((v, i) => (i ? 0 : v)));
-  smooth.forEach((v) => near(v, a.reduce((s, x) => s + x, 0) / 8));
-});
-test("DCT quantization obeys Parseval and the zero-step roundtrip", () => {
-  near(dctQuantize(0).error, 0);
-  for (const step of [0.025, 0.15, 1]) {
-    const r = dctQuantize(step);
-    near(r.error, mse(r.coeff, r.quant));
-    assert.ok(
-      r.quant.every((v) => Math.abs(v / step - Math.round(v / step)) < 1e-9),
-    );
-  }
-});
-test("Morphology: dilation contains input, erosion is contained, opening is idempotent", () => {
-  const a = Array.from({ length: 100 }, (_, i) =>
-    Number(
-      i % 10 >= 3 &&
-        i % 10 <= 6 &&
-        Math.floor(i / 10) >= 3 &&
-        Math.floor(i / 10) <= 6,
-    ),
-  );
-  for (const shape of ["square", "diamond"]) {
-    const eroded = binaryMorph(a, 10, 1, shape, "erode"),
-      dilated = binaryMorph(a, 10, 1, shape, "dilate"),
-      opened = binaryMorph(a, 10, 1, shape, "open");
-    a.forEach((v, i) => {
-      assert.ok(eroded[i] <= v);
-      assert.ok(dilated[i] >= v);
-    });
-    assert.deepEqual(binaryMorph(opened, 10, 1, shape, "open"), opened);
-  }
-});
 test("Circular contour descent never raises energy and can miss narrow edge attraction", () => {
   for (const start of [0.1, 0.5, 1, 1.8])
     for (const tension of [0, 0.15, 1]) {
@@ -94,29 +25,6 @@ test("Circular contour descent never raises energy and can miss narrow edge attr
     nearEdge = radialSnake(1.2, 0.15, 80);
   assert.ok(outside.radius < 0.5);
   assert.ok(nearEdge.radius > 0.9);
-});
-test("Structure tensor eigenvalues are rotation invariant and contrast scales response quartically", () => {
-  for (const kind of ["flat", "edge", "corner"]) {
-    const a = structureTensor(kind, 0, 1),
-      b = structureTensor(kind, 75, 1),
-      c = structureTensor(kind, 75, 2);
-    a.eigen.forEach((v, i) => near(v, b.eigen[i]));
-    near(c.response, 16 * a.response);
-  }
-  assert.ok(structureTensor("edge", 0, 1).response < 0);
-  assert.ok(structureTensor("corner", 0, 1).response > 0);
-});
-test("Scaling a feature can change nearest-prototype predictions", () => {
-  const a = prototypeDistances(0.6, 0.65, 0.25),
-    b = prototypeDistances(0.6, 0.65, 4);
-  assert.ok(a[1] < a[0]);
-  assert.ok(b[0] < b[1]);
-});
-test("Receptive-field recurrence accumulates preceding stride correctly", () => {
-  assert.equal(receptiveField(3, 1, 1).field, 7);
-  assert.equal(receptiveField(3, 2, 1).field, 15);
-  assert.equal(receptiveField(3, 2, 1).jump, 8);
-  assert.equal(receptiveField(3, 1, 3).field, 19);
 });
 test("Threshold confusion counts, undefined precision and weighted error cost", () => {
   const all = classificationThreshold(0, 1),
@@ -170,8 +78,8 @@ test("World model exact dynamics remove drift, refresh every step equals teacher
   const off = worldRollout(1.02, 60, 0.1, 0);
   near(off.openError, off.correctedError);
 });
-test("All fifteen bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
-  assert.equal(chapterVisionExperiments.length, 13);
+test("All five bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
+  assert.equal(chapterVisionExperiments.length, 5);
   const ids = new Set<string>();
   for (const e of chapterVisionExperiments) {
     assert.ok(!ids.has(e.id));

@@ -59,11 +59,105 @@ def check_lowlight(metrics, set_, zh):
     assert c > a + 5, f"more photons must improve SNR: {a} -> {c}"
 
 
+def first_float(s):
+    return float(re.search(r"-?\d+(?:\.\d+)?", s).group(0))
+
+
+def check_transform_coding(metrics, set_, zh):
+    m = list(metrics().values())  # nonzero %, PSNR, error smooth/busy halves, zoom box
+    assert 5 < pct(m[0]) < 9 and 29 < pct(m[1]) < 32, f"default (DCT, step 0.2): about 7% nonzero, 30.5 dB: {m}"
+    s, b = [float(x) for x in m[2].split("/")]
+    assert b > 2 * s, f"the busy half should have over twice the error of the smooth half: {m}"
+    set_("step", "0.6")
+    m2 = list(metrics().values())
+    assert pct(m2[0]) < 4 and pct(m2[1]) < 27, m2
+
+
+def check_inverse_regularization(metrics, set_, zh):
+    def restored():
+        return [pct(v) for k, v in metrics().items() if "restored" in k.lower() or "還原後" in k][0]
+    assert restored() < 10, f"the plain inverse filter should fail by default: {metrics()}"
+    set_("logk", "-2.75")
+    assert restored() > 25, f"a small K should win: {metrics()}"
+
+
+def check_morphology_shapes(metrics, set_, zh):
+    v = list(metrics().values())
+    assert v[1].replace(" ", "") == "74→24" and v[2].replace(" ", "") == "50/50", f"opening removes all clutter by default: {v}"
+    set_("shape", "hline")
+    assert list(metrics().values())[2].replace(" ", "") == "45/50", metrics()
+
+
+def check_array_dtype(metrics, set_, zh):
+    v = list(metrics().values())  # wrapped %, clipped %, mean brightness, PSNR
+    assert pct(v[0]) > 20 and pct(v[1]) == 0 and pct(v[2]) < 125, f"default should wrap the bright pixels: {metrics()}"
+    set_("mode", "saturate")
+    w = list(metrics().values())
+    assert pct(w[0]) == 0 and pct(w[1]) > 20 and pct(w[2]) > 170, f"saturating arithmetic should clip, not wrap: {metrics()}"
+
+
+def check_pixel_sampling(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # PSNR photo, PSNR zone plate, false-pattern contrast
+    assert v[2] > 0.3 and v[1] < 8, f"default stride 4 should alias the zone plate: {metrics()}"
+    set_("prefilter", "gaussian")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[2] < 0.1 and w[0] > v[0] + 1 and w[1] > v[1] + 1, f"the Gaussian prefilter should remove the false rings and raise PSNR: {metrics()}"
+
+
+def check_color_clipping(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # overflow %, mean hue change, colour lost %
+    assert v[0] > 60 and v[1] > 10 and v[2] > 5, f"default per-channel clipping should shift hue: {metrics()}"
+    set_("method", "scale")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[1] < 0.5 and w[2] == 0, f"rescaling keeps hue: {metrics()}"
+
+
+def check_corner_tensor(metrics, set_, zh):
+    def r():
+        return pct(next(v for k, v in metrics().items() if "Harris" in k))
+    assert r() > 0.95, metrics()  # the default probe is the strongest corner
+    set_("x", "30"); set_("y", "80")
+    assert r() < -0.1, metrics()  # an edge has negative R
+    set_("x", "200"); set_("y", "20")
+    assert abs(r()) < 0.01, metrics()  # flat sky: R near 0
+
+
+def check_receptive_field(metrics, set_, zh):
+    def rf():
+        return int(re.search(r"\d+", next(iter(metrics().values()))).group())
+    assert rf() == 29, metrics()
+    set_("stack", "plain3")
+    assert rf() == 7, metrics()
+    set_("stack", "stride-first")
+    assert rf() == 11, metrics()
+
+
+def check_neighbor(metrics, set_, zh):
+    v = list(metrics().values())  # accuracy, accuracy in cm, nearest neighbours changed, tie-dependent
+    assert first_float(v[1]) - first_float(v[0]) > 0.05 and int(v[2].split("/")[0]) > 20, metrics()
+    set_("scale", "cm")
+    v = list(metrics().values())
+    assert int(v[2].split("/")[0]) == 0 and abs(first_float(v[0]) - first_float(v[1])) < 1e-9, metrics()
+
+
+def check_diffusion(metrics, set_, zh):
+    v = list(metrics().values())  # alpha, PSNR of the chosen target, PSNR eps/x0/v, error multiplier
+    p = [float(x) for x in re.findall(r"\d+\.\d", v[2])]
+    assert p[1] - p[0] > 15 and abs(first_float(v[3]) - 10) < 0.5, metrics()
+    set_("err", "0.1")
+    assert first_float(list(metrics().values())[1]) < p[0] - 2, metrics()
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
 
-EXPECT = {"frequency-filter": check_frequency_filter, "segmentation-threshold": check_segmentation, "lowlight-photons": check_lowlight}
+EXPECT = {
+    "frequency-filter": check_frequency_filter, "segmentation-threshold": check_segmentation, "lowlight-photons": check_lowlight,
+    "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
+    "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
+    "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
+}
 
 
 def serve():

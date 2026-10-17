@@ -27,13 +27,12 @@ export const chapterPlan: Record<string, string[]> = {
     'image-processing/dip-04-frequency-domain': ['frequency-filter'],
     'image-processing/dip-05-restoration-reconstruction': ['inverse-regularization'],
     'image-processing/dip-06-color': ['color-clipping'],
-    'image-processing/dip-07-wavelets-transforms': ['haar-details'],
-    'image-processing/dip-08-compression-watermarking': ['dct-quantization'],
+    'image-processing/dip-08-compression-watermarking': ['transform-coding'],
     'image-processing/dip-09-morphology': ['morphology-shapes'],
     'image-processing/dip-10-segmentation': ['segmentation-threshold'],
     'image-processing/dip-11-active-contours': ['contour-energy'],
     'image-processing/dip-12-feature-extraction': ['corner-tensor'],
-    'image-processing/dip-13-pattern-classification': ['prototype-scaling'],
+    'image-processing/dip-13-pattern-classification': ['neighbor-geometry'],
     'pattern-recognition/pr-01-bayes-decisions': ['bayes-decision'],
     'pattern-recognition/pr-02-density-estimation': ['density-bandwidth'],
     'pattern-recognition/pr-03-linear-models': ['ridge-polynomial'],
@@ -58,7 +57,7 @@ export const chapterPlan: Record<string, string[]> = {
     'ml/ml-03a-recurrent-recursive-networks': ['selective-memory'],
     'ml/ml-04-vision-transformers': ['attention'],
     'ml/ml-05-representation-learning': ['contrastive-alignment'],
-    'ml/ml-05a-factor-models-autoencoders': ['latent-bottleneck', 'vae-tradeoff'],
+    'ml/ml-05a-factor-models-autoencoders': ['transform-coding', 'vae-tradeoff'],
     'ml/ml-06-generative-models': ['vae-tradeoff', 'flow-density'],
     'ml/ml-07-diffusion-flow-matching': ['diffusion-targets', 'transport-steps'],
     'ml/ml-08-autoregressive-vision': ['autoregressive-pixels', 'decoding-controls'],
@@ -97,6 +96,7 @@ export const chapterPlan: Record<string, string[]> = {
 export const readingOnlyChapters = [
     'foundations/getting-started',
     'image-processing/dip-01-introduction',
+    'image-processing/dip-07-wavelets-transforms',
     'ml/ml-01-introduction',
     'pattern-recognition/pr-09-ensembles-validation',
 ];
@@ -108,6 +108,10 @@ export const readingOnly: Record<string, Localized> = Object.fromEntries(reading
 /** Removed or merged ids keep working as `#id` links on the playground page. */
 export const idAliases: Record<string, string> = {
     'blur-compare': 'kernel-filter',
+    'prototype-scaling': 'neighbor-geometry',
+    'dct-quantization': 'transform-coding',
+    'haar-details': 'transform-coding',
+    'latent-bottleneck': 'transform-coding',
 };
 export function chapterExperiments(slug: string): PlaygroundEntry[] {
     return (chapterPlan[slug] ?? []).flatMap(id => { const e = playgroundEntries.find(x => x.id === id); return e ? [e] : []; });

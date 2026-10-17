@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   chapterLanguageExperiments, scopeTruth, trainBpe, poolingExample, sequenceDecode,
   lexicalRetrieval, decodingDistribution, maskingHeads, finiteDifference,
-  mlpProbability, selectiveMemory, contrastiveExample, bottleneckSignal, vaeObjective,
+  mlpProbability, selectiveMemory, contrastiveExample, vaeObjective,
   flowTransform, transportSolve, binaryAutoregression, temperatureCalibration,
 } from '../../src/lib/playground/chapters-language.ts';
 import type { State } from '../../src/lib/playground/types.ts';
@@ -98,15 +98,6 @@ test('contrastive collapse has log candidate-count loss and hard negatives penal
   close(sum(contrastiveExample(20, 60, 0.2, false).probabilities), 1);
 });
 
-test('orthogonal bottleneck exactly reconstructs full rank and obeys discarded-energy identity', () => {
-  for (const detail of [0, 0.6, 1]) for (const kept of [1, 4, 12, 16]) {
-    const r = bottleneckSignal(kept, detail);
-    close(r.mse, sum(r.coefficients.slice(kept).map(v => v * v)) / 16);
-    if (kept === 16) assert.ok(r.mse < 1e-25);
-    if (kept === 4) close(r.mse, detail ** 2 / 2);
-  }
-});
-
 test('Gaussian VAE KL is nonnegative and zero at prior; beta acts only on KL', () => {
   close(vaeObjective(0, 1, 1).kl, 0);
   for (const mu of [-2, 0, 2]) for (const sigma of [0.1, 1, 2]) {
@@ -146,7 +137,7 @@ test('temperature changes probability scoring without changing any decision', ()
 });
 
 test('all chapter demos render finite bilingual results at range endpoints and select options', () => {
-  assert.equal(chapterLanguageExperiments.length, 17);
+  assert.equal(chapterLanguageExperiments.length, 16);
   for (const experiment of chapterLanguageExperiments) {
     const base = Object.fromEntries(experiment.controls.map(c => [c.key, c.value]));
     const states: State[] = [base];

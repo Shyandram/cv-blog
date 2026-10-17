@@ -44,15 +44,6 @@ export function ridgeFit(degree: number, lambda: number) {
   return { weights, predict, trainingMse: mean(REGRESSION_X.map((x, i) => (predict(x) - REGRESSION_Y[i]) ** 2)), functionMse: mean(sequence(-1, 1, 101).map(x => (predict(x) - Math.sin(Math.PI * x)) ** 2)), penalty: weights.slice(1).reduce((s, w) => s + w * w, 0) };
 }
 
-export const NEIGHBOR_POINTS = Array.from({ length: 24 }, (_, i) => {
-  const angle = i * Math.PI / 6, ring = i < 12 ? 0.85 : 1.8;
-  return { x: ring * Math.cos(angle), y: ring * Math.sin(angle), label: i < 12 ? 0 : 1 };
-});
-export function nearestVote(x: number, y: number, k: number, yScale: number) {
-  const ranked = NEIGHBOR_POINTS.map((p, i) => ({ ...p, i, distance: Math.hypot(p.x - x, yScale * (p.y - y)) })).sort((a, b) => a.distance - b.distance || a.i - b.i);
-  const neighbors = ranked.slice(0, k), fraction = mean(neighbors.map(p => p.label));
-  return { ranked, neighbors, fraction, decision: fraction > 0.5 ? 1 : 0 };
-}
 
 export function projectionStats(degrees: number) {
   const angle = degrees * Math.PI / 180, u = [Math.cos(angle), Math.sin(angle)];
@@ -164,29 +155,6 @@ export const chapterRecognitionExperiments: Experiment[] = [
       body += text(55, 22, pick(lang, 'Blue: fitted polynomial · dashed: true function', '藍線：多項式擬合 · 虛線：真實函數'));
       for (const x of [-1, -0.5, 0, 0.5, 1]) body += text(px(x), 265, x, 'text-anchor="middle"');
       return { svg: svg(body), summary: pick(lang, 'Changing λ alters the fitted coefficients, not the observations. Large penalties can remove noise-fitting but also suppress the curvature needed to represent the signal.', '改變 λ 會改變擬合係數，觀測值維持固定。大幅懲罰可抑制對雜訊的擬合，也可能壓低表示訊號所需的曲率。'), metrics: [{ label: pick(lang, 'Training mean squared error', '訓練均方誤差'), value: fmt(result.trainingMse, 4) }, { label: pick(lang, 'True-function grid error', '真實函數網格誤差'), value: fmt(result.functionMse, 4) }, { label: pick(lang, 'Squared coefficient norm', '係數範數平方'), value: fmt(result.penalty) }] };
-    },
-  },
-  {
-    id: 'neighbor-geometry', track: 'pattern-recognition',
-    title: L('PR 04 · A neighbor depends on the distance', 'PR 04・誰是鄰居，取決於距離'),
-    description: L('Move a query through two rings and see how neighbor count and feature scaling change a nonlinear decision boundary.', '在兩個環上移動查詢點，觀察鄰居數量與特徵尺度如何改變非線性決策邊界。'),
-    challenge: L('Keep the query fixed and change the vertical feature scale. Can the vote change even though no data point moved?', '固定查詢點並改變縱向特徵尺度。資料點都沒有移動，投票結果仍會改變嗎？'),
-    note: L('Twenty-four synthetic training points on two rings. Distance is sqrt((Δx)² + s²(Δy)²); ties use the fixed point index. The colored background shows computed majority decisions. A vote fraction is not a calibrated class probability.', '二十四個合成訓練點分布在兩個環上。距離為 sqrt((Δx)² + s²(Δy)²)；等距時依固定點索引排序。背景色是實際計算的多數決結果。投票比例不是經過校準的類別機率。'),
-    related: related('pr-04-kernels-nonlinear-classifiers'),
-    controls: [{ key: 'k', label: L('Neighbors k (odd)', '鄰居數 k（奇數）'), kind: 'range', min: 1, max: 23, step: 2, value: 5 }, { key: 'x', label: L('Query x', '查詢點 x'), kind: 'range', min: -2, max: 2, step: 0.1, value: 1.2 }, { key: 'y', label: L('Query y', '查詢點 y'), kind: 'range', min: -2, max: 2, step: 0.1, value: 0.5 }, { key: 'scale', label: L('Vertical distance scale s', '縱向距離尺度 s'), kind: 'range', min: 0.2, max: 3, step: 0.2, value: 1 }],
-    compute(state, lang) {
-      const x = num(state, 'x'), y = num(state, 'y'), k = num(state, 'k'), scale = num(state, 'scale'), result = nearestVote(x, y, k, scale);
-      const px = (v: number) => 320 + v * 53, py = (v: number) => 143 - v * 53;
-      let body = '';
-      for (let i = 0; i < 28; i++) for (let j = 0; j < 28; j++) {
-        const xx = -2.2 + (i + 0.5) * 4.4 / 28, yy = -2.2 + (j + 0.5) * 4.4 / 28;
-        body += `<rect x="${px(xx) - 4.2}" y="${py(yy) - 4.2}" width="8.5" height="8.5" fill="var(--plot-${nearestVote(xx, yy, k, scale).decision ? 'b' : 'a'})" opacity="0.14"/>`;
-      }
-      for (const p of result.neighbors) body += path([[px(x), py(y)], [px(p.x), py(p.y)]], 'stroke="var(--plot-muted)" stroke-width="1"');
-      for (const p of NEIGHBOR_POINTS) body += dot(px(p.x), py(p.y), p.label ? 'b' : 'a');
-      body += `<path d="M${px(x) - 7},${py(y)} h14 M${px(x)},${py(y) - 7} v14" stroke="var(--plot-c)" stroke-width="3"/>`;
-      body += text(55, 22, pick(lang, 'Blue: class 0 · orange: class 1 · cross: query', '藍色：類別 0 · 橘色：類別 1 · 十字：查詢點')) + text(320, 282, pick(lang, 'Square coordinates: x, y ∈ [−2.2, 2.2]', '正方形座標：x、y ∈ [−2.2, 2.2]'), 'text-anchor="middle"');
-      return { svg: svg(body), summary: pick(lang, `The query is assigned to class ${result.decision}. Feature scaling changes the distance metric and therefore the neighbors, even when the display coordinates stay fixed.`, `查詢點被分到類別 ${result.decision}。即使顯示座標固定，特徵尺度仍會改變距離度量，進而改變鄰居。`), metrics: [{ label: pick(lang, 'Class 1 vote fraction', '類別 1 投票比例'), value: fmt(result.fraction) }, { label: pick(lang, 'Farthest selected distance', '最遠入選鄰居距離'), value: fmt(result.neighbors.at(-1)!.distance) }] };
     },
   },
   {
