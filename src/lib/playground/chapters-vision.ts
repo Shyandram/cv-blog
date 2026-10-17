@@ -1,5 +1,5 @@
 import type { Experiment, Control, State } from "./types.ts";
-import { L, pick, fmt, svg, text, path } from "./types.ts";
+import { L, pick, fmt, svg, text, path, escape } from "./types.ts";
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 const n = (s: State, k: string) => Number(s[k]);
 const range = (
@@ -117,6 +117,33 @@ export function classificationThreshold(
     cost: (falsePositiveCost * fp + fn) / 10,
   };
 }
+/** ROC and precision-recall points from the same fixed scores, one vertex per distinct score (threshold = that score). */
+export function rocCurve() {
+  const { scores, truth } = classificationThreshold(0.5, 1);
+  const positives = truth.reduce((a, v) => a + v, 0),
+    negatives = truth.length - positives;
+  const roc: { threshold: number; fpr: number; tpr: number; precision: number }[] = [
+    { threshold: Infinity, fpr: 0, tpr: 0, precision: NaN },
+  ];
+  [...new Set(scores)]
+    .sort((x, y) => y - x)
+    .forEach((threshold) => {
+      const r = classificationThreshold(threshold, 1);
+      roc.push({
+        threshold,
+        fpr: r.fp / negatives,
+        tpr: r.tp / positives,
+        precision: r.tp / (r.tp + r.fp),
+      });
+    });
+  let auc = 0;
+  roc.slice(1).forEach((p, i) => {
+    auc += ((p.fpr - roc[i].fpr) * (p.tpr + roc[i].tpr)) / 2;
+  });
+  return { roc, auc, positives, negatives };
+}
+export const totalVariation = (values: number[]) =>
+  values.slice(1).reduce((a, v, i) => a + Math.abs(v - values[i]), 0);
 export function ambiguousRestoration(probability: number, mix: number) {
   const a = [0, 0, 1, 1, 0, 0, 1, 1],
     b = [1, 1, 0, 0, 1, 1, 0, 0];
@@ -258,17 +285,33 @@ export const chapterVisionExperiments: Experiment[] = [
       "DLCV 02・決策門檻改變錯誤的種類",
     ),
     description: L(
-      "Move the decision threshold on fixed classifier scores and inspect the confusion matrix, precision, recall and error cost.",
-      "移動固定分類分數的決策門檻，觀察混淆矩陣、精確率、召回率與錯誤成本。",
+      "Move the decision threshold on fixed classifier scores. The confusion matrix changes, and the operating point slides along the ROC and precision-recall curves built from the same scores.",
+      "移動固定分類分數的決策門檻。混淆矩陣隨之改變，操作點則沿著由同一組分數畫出的 ROC 與精確率–召回率曲線滑動。",
     ),
     challenge: L(
-      "Find a threshold with no false positives. How many positives are missed? Increase the false-positive cost and compare the preferred operating point.",
-      "找出沒有偽陽性的門檻。漏掉了多少正例？提高偽陽性成本，比較較合適的操作點。",
+      "Find a threshold with no false positives and note where the dot sits on the ROC curve. How many positives are missed? Then raise the false-positive cost c: the curves do not move, but which point has the lowest mean error cost does.",
+      "找出沒有偽陽性的門檻，並看操作點落在 ROC 曲線的哪裡。漏掉了多少正例？接著提高偽陽性成本 c：曲線不會動，但平均錯誤成本最低的點會改變。",
     ),
     note: L(
-      "Ten fixed synthetic scores with five positive labels. Predict class 1 when score ≥ threshold; no model is trained. Precision is undefined if nothing is predicted positive. Mean error cost = (c×FP+FN)/10, with false-negative cost fixed at 1. Adjusting c changes evaluation, not scores or decisions.",
-      "十筆固定合成分數包含五個正例。分數 ≥ 門檻時預測類別 1；未進行模型訓練。若未預測任何正例，精確率無定義。平均錯誤成本 = (c×FP+FN)/10，偽陰性成本固定為 1。調整 c 改變評估成本，不會改變分數或決策。",
+      "Ten fixed synthetic scores with five positive labels. Predict class 1 when score ≥ threshold; no model is trained. Each vertex of the curves is one threshold (one of the ten scores); lines between vertices are only drawn to guide the eye. ROC: x is FP/(FP+TN), y is recall TP/(TP+FN); AUC is the trapezoid area. Precision-recall: precision is undefined if nothing is predicted positive, so no dot is drawn. Mean error cost = (c×FP+FN)/10, with false-negative cost fixed at 1. Adjusting c changes evaluation, not scores, decisions or curves.",
+      "十筆固定合成分數包含五個正例。分數 ≥ 門檻時預測類別 1；未進行模型訓練。曲線上每個頂點對應一個門檻（十個分數之一），頂點之間的連線只是輔助視線。ROC：橫軸為 FP/(FP+TN)，縱軸為召回率 TP/(TP+FN)；AUC 以梯形法計算面積。精確率–召回率：若未預測任何正例，精確率無定義，因此不畫點。平均錯誤成本 = (c×FP+FN)/10，偽陰性成本固定為 1。調整 c 改變評估成本，不會改變分數、決策或曲線。",
     ),
+    predict: {
+      question: L(
+        "The threshold is 0.5. You lower it to 0.3. Where does the operating point move on the ROC curve?",
+        "門檻目前是 0.5，你把它降到 0.3。操作點在 ROC 曲線上會往哪裡移動？",
+      ),
+      options: [
+        { value: "up-right", label: L("Up and to the right: more recall, more false alarms", "往右上：召回率變高，誤報也變多") },
+        { value: "down-left", label: L("Down and to the left: fewer false alarms and lower recall", "往左下：誤報變少，召回率也變低") },
+        { value: "up-left", label: L("Up and to the left: better on both axes", "往左上：兩個軸都變好") },
+      ],
+      answer: "up-right",
+      explain: L(
+        "A lower threshold admits more samples as positive. At 0.5 the point is (FPR, TPR) = (0.4, 0.8); at 0.3 it is (0.6, 1.0). Recall rose from 4 of 5 positives to 5 of 5, but false positives rose from 2 to 3. No threshold can move up-left on this curve: it only slides along it.",
+        "較低的門檻會讓更多樣本被判為正例。門檻 0.5 時點在 (FPR, TPR) = (0.4, 0.8)；降到 0.3 時移到 (0.6, 1.0)。5 個正例中找到的數量從 4 個增加到 5 個，但偽陽性從 2 個增加為 3 個。在這條曲線上沒有任何門檻能往左上移動，只能沿著曲線滑動。",
+      ),
+    },
     related: [DL("dl-02-image-classification")],
     controls: [
       range("threshold", "Decision threshold", "決策門檻", 0.5, 0, 1, 0.01),
@@ -276,37 +319,136 @@ export const chapterVisionExperiments: Experiment[] = [
     ],
     compute(s, l) {
       const r = classificationThreshold(n(s, "threshold"), n(s, "cost"));
+      const curve = rocCurve();
+      const t = n(s, "threshold");
+      const fpr = r.fp / curve.negatives,
+        tpr = r.tp / curve.positives;
+      // Row 1: confusion matrix (left) and the scores on a line (right).
       let body =
-        text(160, 30, pick(l, "Predict 1", "預測 1")) +
-        text(380, 30, pick(l, "Predict 0", "預測 0")) +
-        text(20, 100, pick(l, "True 1", "真實 1")) +
-        text(20, 185, pick(l, "True 0", "真實 0"));
+        text(126, 30, pick(l, "Predict 1", "預測 1"), 'text-anchor="middle"') +
+        text(244, 30, pick(l, "Predict 0", "預測 0"), 'text-anchor="middle"') +
+        text(10, 78, pick(l, "True 1", "真實 1")) +
+        text(10, 148, pick(l, "True 0", "真實 0"));
       [r.tp, r.fn, r.fp, r.tn].forEach((v, i) => {
-        const x = 130 + (i % 2) * 220,
-          y = 50 + Math.floor(i / 2) * 85;
+        const x = 70 + (i % 2) * 118,
+          y = 40 + Math.floor(i / 2) * 70;
         body +=
-          `<rect x="${x}" y="${y}" width="195" height="70" rx="5" fill="var(--plot-${i === 0 || i === 3 ? "a" : "b"})" opacity=".2"/>` +
-          text(x + 65, y + 42, `${["TP", "FN", "FP", "TN"][i]} = ${v}`);
+          `<rect x="${x}" y="${y}" width="112" height="64" rx="5" fill="var(--plot-${i === 0 || i === 3 ? "a" : "b"})" opacity=".2"/>` +
+          text(x + 56, y + 38, `${["TP", "FN", "FP", "TN"][i]} = ${v}`, 'text-anchor="middle"');
       });
       body +=
         text(
-          40,
-          245,
+          10,
+          202,
           pick(
             l,
-            "Scores, descending (● = true positive class):",
-            "分數由高至低（●＝真實正類）：",
+            "Scores, high to low (● = true 1):",
+            "分數由高至低（●＝真實 1）：",
           ),
         ) +
         text(
-          40,
-          275,
+          10,
+          226,
           r.scores
+            .slice(0, 5)
             .map((v, i) => `${r.truth[i] ? "●" : "○"}${fmt(v, 2)}`)
             .join("  "),
+        ) +
+        text(
+          10,
+          250,
+          r.scores
+            .slice(5)
+            .map((v, i) => `${r.truth[i + 5] ? "●" : "○"}${fmt(v, 2)}`)
+            .join("  "),
         );
+      const sx = (v: number) => Math.round((350 + 260 * v) * 10) / 10,
+        tx = sx(clamp(t));
+      body +=
+        text(350, 24, pick(l, "Scores on a line", "分數排成一條線")) +
+        `<rect x="${tx}" y="52" width="${610 - tx}" height="94" fill="var(--plot-a)" opacity=".12"/>` +
+        `<line x1="350" y1="146" x2="610" y2="146" stroke="var(--plot-muted)"/>`;
+      [0, 0.5, 1].forEach((v) => {
+        body +=
+          `<line x1="${sx(v)}" y1="146" x2="${sx(v)}" y2="152" stroke="var(--plot-muted)"/>` +
+          text(sx(v), 168, fmt(v, 1), 'text-anchor="middle"');
+      });
+      r.scores.forEach((v, i) => {
+        body += r.truth[i]
+          ? `<circle cx="${sx(v)}" cy="82" r="6.5" fill="var(--plot-a)"/>`
+          : `<circle cx="${sx(v)}" cy="118" r="6" fill="none" stroke="var(--plot-b)" stroke-width="2.5"/>`;
+      });
+      body +=
+        `<line x1="${tx}" y1="52" x2="${tx}" y2="146" stroke="var(--plot-ink)" stroke-width="2" stroke-dasharray="5 3"/>` +
+        text(clamp(tx, 380, 580), 46, `t = ${fmt(t, 2)}`, 'text-anchor="middle"') +
+        text(480, 190, pick(l, "classifier score", "分類器分數"), 'text-anchor="middle"') +
+        text(350, 214, pick(l, "● true 1", "● 真實 1"), 'fill="var(--plot-a)"') +
+        text(450, 214, pick(l, "○ true 0", "○ 真實 0"), 'fill="var(--plot-b)"') +
+        text(350, 238, pick(l, "Shaded: predicted 1", "底色：預測為 1"));
+      // Row 2: ROC (left) and precision-recall (right), both built from the same ten scores.
+      const box = (x0: number, title: string, xl: string, yl: string) => {
+        const x1 = x0 + 210;
+        return (
+          text(x0, 300, title) +
+          `<rect x="${x0}" y="316" width="210" height="210" fill="none" stroke="var(--plot-muted)"/>` +
+          text(x0 - 8, 530, "0", 'text-anchor="end"') +
+          text(x0 - 8, 326, "1", 'text-anchor="end"') +
+          text(x0, 548, "0", 'text-anchor="middle"') +
+          text(x1, 548, "1", 'text-anchor="middle"') +
+          text(x0 + 105, 572, xl, 'text-anchor="middle"') +
+          `<text transform="rotate(-90 ${x0 - 40} 421)" x="${x0 - 40}" y="421" text-anchor="middle">${escape(yl)}</text>`
+        );
+      };
+      const px = (x0: number, v: number) => x0 + 210 * v,
+        py = (v: number) => 526 - 210 * v;
+      const dotAt = (x0: number, vx: number, vy: number) =>
+        `<line x1="${px(x0, vx)}" y1="${py(vy)}" x2="${px(x0, vx)}" y2="526" stroke="var(--plot-b)" stroke-dasharray="3 3"/>` +
+        `<line x1="${x0}" y1="${py(vy)}" x2="${px(x0, vx)}" y2="${py(vy)}" stroke="var(--plot-b)" stroke-dasharray="3 3"/>` +
+        `<circle cx="${px(x0, vx)}" cy="${py(vy)}" r="7.5" fill="var(--plot-b)" stroke="var(--plot-bg)" stroke-width="2"/>`;
+      body +=
+        box(
+          80,
+          pick(l, "ROC curve", "ROC 曲線"),
+          pick(l, "False-positive rate", "偽陽性率"),
+          pick(l, "Recall (TPR)", "召回率（TPR）"),
+        ) +
+        `<line x1="80" y1="526" x2="290" y2="316" stroke="var(--plot-grid)" stroke-dasharray="5 4"/>` +
+        path(
+          curve.roc.map((p) => [px(80, p.fpr), py(p.tpr)] as [number, number]),
+          'stroke="var(--plot-a)" stroke-width="2.5"',
+        ) +
+        curve.roc
+          .map(
+            (p) =>
+              `<circle cx="${px(80, p.fpr)}" cy="${py(p.tpr)}" r="3" fill="var(--plot-a)"/>`,
+          )
+          .join("") +
+        dotAt(80, fpr, tpr) +
+        box(
+          400,
+          pick(l, "Precision–recall curve", "精確率–召回率曲線"),
+          pick(l, "Recall", "召回率"),
+          pick(l, "Precision", "精確率"),
+        ) +
+        `<line x1="400" y1="${py(0.5)}" x2="610" y2="${py(0.5)}" stroke="var(--plot-grid)" stroke-dasharray="5 4"/>` +
+        path(
+          curve.roc
+            .slice(1)
+            .map((p) => [px(400, p.tpr), py(p.precision)] as [number, number]),
+          'stroke="var(--plot-a)" stroke-width="2.5"',
+        ) +
+        curve.roc
+          .slice(1)
+          .map(
+            (p) =>
+              `<circle cx="${px(400, p.tpr)}" cy="${py(p.precision)}" r="3" fill="var(--plot-a)"/>`,
+          )
+          .join("") +
+        (r.precision === null
+          ? text(505, 430, pick(l, "no positive predictions", "未預測任何正例"), 'text-anchor="middle"')
+          : dotAt(400, r.recall, r.precision));
       return {
-        svg: svg(body),
+        svg: svg(body, 590),
         summary: pick(
           l,
           `True positives (TP): ${r.tp}; false positives (FP): ${r.fp}; false negatives (FN): ${r.fn}; true negatives (TN): ${r.tn}. Lowering the threshold can recover missed positives while admitting false positives. Precision and recall use different denominators; accuracy alone cannot express unequal error costs.`,
@@ -320,6 +462,7 @@ export const chapterVisionExperiments: Experiment[] = [
             r.precision === null ? pick(l, "Undefined", "無定義") : r.precision,
           ),
           metric(l, "Recall", "召回率", r.recall),
+          metric(l, "ROC AUC (all thresholds)", "ROC AUC（所有門檻）", curve.auc),
           metric(l, "F1", "F1", r.f1),
           metric(l, "Accuracy", "正確率", r.accuracy),
           metric(l, "Mean error cost", "平均錯誤成本", r.cost),
@@ -335,17 +478,33 @@ export const chapterVisionExperiments: Experiment[] = [
       "DLCV 04・清晰的猜測可能較不忠實",
     ),
     description: L(
-      "Two sharp signals produce the same observation. Compare their conditional mean with a sharper, committed reconstruction.",
-      "兩個清晰訊號產生相同觀測。比較條件平均值與較清晰、但選定單一假設的重建。",
+      "A blurry observation fits two sharp clean signals. The blurry average has the lowest expected squared error; a sharp guess looks better but is usually farther from the truth.",
+      "一個模糊的觀測同時符合兩種清晰的乾淨訊號。模糊的平均值期望平方誤差最低；清晰的猜測看起來較好，但通常離真相較遠。",
     ),
     challenge: L(
-      "At equal probabilities, compare the mean with a complete guess of A. Which minimizes expected squared error? Does that make it a possible clean signal?",
-      "兩種情況等機率時，比較平均值與完全猜測 A。哪個最小化期望平方誤差？它就一定是可能的乾淨訊號嗎？",
+      "Start from the sharp copy of A (commitment 1): its risk is higher than the blurry mean's. Slide the commitment to 0 and watch the risk fall to the minimum. Then raise the probability of A to 0.9: does the sharp copy of A catch up, and can it ever win?",
+      "從清晰的 A（偏向程度 1）開始：它的風險比模糊平均值高。把偏向程度滑到 0，看風險降到最小。再把 A 的機率提高到 0.9：清晰的 A 追上來了嗎？它有可能勝過平均值嗎？",
     ),
     note: L(
-      "Two fixed binary patterns A and B share the same global mean observation. P(A|y)=p is supplied, not learned. The slider blends the conditional mean toward A. Expected MSE averages over both possible truths; sharpness here is adjacent-sample total variation, not a perceptual quality score.",
-      "兩個固定二值模式 A、B 具有相同的全域平均觀測。P(A|y)=p 由設定提供，並非學得。滑桿將條件平均值逐漸混合至 A。期望均方誤差涵蓋兩種可能真相；此處以相鄰取樣值的總變差表示清晰程度，並非感知品質分數。",
+      "Two fixed 8-sample patterns, A = 00110011 and B = 11001100, are the only clean signals that could have produced the same blurry observation. P(A|y) = p is supplied, not learned. The blurry mean is p·A + (1−p)·B. Your reconstruction blends the mean toward A: (1−m)·mean + m·A, so m = 1 is exactly A (a sharp sample) and m = 0 is the mean. Risk = the expected mean squared error, p·MSE(A, output) + (1−p)·MSE(B, output), averaged over which pattern is the truth. Sharpness is the total variation (sum of absolute differences between neighbouring samples), not a perceptual quality score.",
+      "兩個固定的 8 取樣值模式 A = 00110011 與 B = 11001100，是唯二可能產生同一個模糊觀測的乾淨訊號。P(A|y) = p 由設定提供，並非學得。模糊平均值為 p·A + (1−p)·B。你的重建把平均值混合向 A：(1−m)·平均值 + m·A，所以 m = 1 恰好是 A（清晰的單一樣本），m = 0 則是平均值。風險 = 期望均方誤差，即 p·MSE(A, 輸出) + (1−p)·MSE(B, 輸出)，對「哪個模式才是真相」取平均。清晰程度為總變差（相鄰取樣值差的絕對值總和），並非感知品質分數。",
     ),
+    predict: {
+      question: L(
+        "Set P(A) = 0.9. The sharp copy of A is now very likely correct. Does the blurry mean still have the lower expected squared error?",
+        "把 P(A) 設為 0.9。清晰的 A 現在很可能是對的。模糊平均值的期望平方誤差還是比較低嗎？",
+      ),
+      options: [
+        { value: "mean", label: L("Yes, the blurry mean is still lower", "是，模糊平均值仍然較低") },
+        { value: "sharp", label: L("No, the sharp copy of A is lower now", "不是，清晰的 A 現在較低") },
+        { value: "tie", label: L("They tie", "兩者相同") },
+      ],
+      answer: "mean",
+      explain: L(
+        "The mean has risk p(1−p) = 0.09 and the sharp copy of A has risk 1−p = 0.10. The gap shrinks as p approaches 1 but never closes, because the mean is the exact minimizer of expected squared error.",
+        "平均值的風險是 p(1−p) = 0.09，清晰的 A 的風險是 1−p = 0.10。p 越接近 1 差距越小，但永遠不會消失，因為平均值正是期望平方誤差的精確最小化者。",
+      ),
+    },
     related: [DL("dl-04-image-restoration")],
     controls: [
       range(
@@ -359,9 +518,9 @@ export const chapterVisionExperiments: Experiment[] = [
       ),
       range(
         "mix",
-        "Commitment toward pattern A",
-        "偏向模式 A 的程度",
-        0.5,
+        "Commitment m (0 = blurry mean, 1 = sharp A)",
+        "偏向程度 m（0＝模糊平均值，1＝清晰的 A）",
+        1,
         0,
         1,
         0.05,
@@ -369,18 +528,69 @@ export const chapterVisionExperiments: Experiment[] = [
     ],
     compute(s, l) {
       const r = ambiguousRestoration(n(s, "probability"), n(s, "mix"));
-      const variation = r.output
-        .slice(1)
-        .reduce((a, v, i) => a + Math.abs(v - r.output[i]), 0);
-      return {
-        svg: svg(
-          lines(
-            [r.a, r.b, r.output],
-            ["A", "B", pick(l, "Reconstruction", "重建")],
-            0,
-            1,
+      const p = n(s, "probability");
+      const variation = totalVariation(r.output);
+      // Rows of 8 samples: dark = 1, light = 0.
+      const rows: [string, number[]][] = [
+        [pick(l, `Clean A (P = ${fmt(p, 2)})`, `乾淨訊號 A（P = ${fmt(p, 2)}）`), r.a],
+        [pick(l, `Clean B (P = ${fmt(1 - p, 2)})`, `乾淨訊號 B（P = ${fmt(1 - p, 2)}）`), r.b],
+        [pick(l, "Blurry mean of A and B", "A、B 的模糊平均值"), r.mean],
+        [
+          pick(
+            l,
+            `Your reconstruction (m = ${fmt(n(s, "mix"), 2)})`,
+            `你的重建（m = ${fmt(n(s, "mix"), 2)}）`,
           ),
+          r.output,
+        ],
+      ];
+      let body = text(
+        10,
+        22,
+        pick(
+          l,
+          "Eight samples along a signal; darker = larger value",
+          "沿訊號排列的 8 個取樣值；越深代表數值越大",
         ),
+      );
+      rows.forEach(([label, values], k) => {
+        const y = 36 + k * 44;
+        body += text(10, y + 25, label);
+        values.forEach((v, i) => {
+          body +=
+            `<rect x="${262 + i * 46}" y="${y}" width="44" height="36" fill="var(--plot-ink)" fill-opacity="${fmt(v, 3)}" stroke="var(--plot-muted)" stroke-width="1"/>`;
+        });
+        if (k === 3)
+          body += `<rect x="260" y="${y - 2}" width="372" height="40" fill="none" stroke="var(--plot-b)" stroke-width="2.5" rx="3"/>`;
+      });
+      // Legend for the shades.
+      [0, 0.5, 1].forEach((v, i) => {
+        body +=
+          `<rect x="${262 + i * 110}" y="218" width="26" height="20" fill="var(--plot-ink)" fill-opacity="${v}" stroke="var(--plot-muted)"/>` +
+          text(294 + i * 110, 234, ["0", "0.5", "1"][i]);
+      });
+      body += text(10, 234, pick(l, "Shade legend:", "色階圖例："));
+      // Risk bars.
+      const barX = 262,
+        scale = 340;
+      body +=
+        text(
+          10,
+          272,
+          pick(
+            l,
+            "Risk = expected squared error (smaller is better)",
+            "風險 = 期望平方誤差（越小越好）",
+          ),
+        ) +
+        text(10, 302, pick(l, "Blurry mean", "模糊平均值")) +
+        `<rect x="${barX}" y="286" width="${fmt(scale * r.riskMean, 2)}" height="22" fill="var(--plot-a)"/>` +
+        text(barX + scale * r.riskMean + 8, 302, fmt(r.riskMean, 4)) +
+        text(10, 334, pick(l, "Your reconstruction", "你的重建")) +
+        `<rect x="${barX}" y="318" width="${fmt(scale * r.risk, 2)}" height="22" fill="var(--plot-b)"/>` +
+        text(barX + scale * r.risk + 8, 334, fmt(r.risk, 4));
+      return {
+        svg: svg(body, 356),
         summary: pick(
           l,
           "Averaging incompatible possibilities minimizes expected squared error, but can remove structures present in every valid clean outcome. Choosing one restores structure while risking the wrong structure.",
@@ -394,7 +604,7 @@ export const chapterVisionExperiments: Experiment[] = [
             "條件平均最小均方誤差",
             r.riskMean,
           ),
-          metric(l, "Adjacent total variation", "相鄰取樣總變差", variation),
+          metric(l, "Sharpness (adjacent total variation)", "清晰程度（相鄰取樣總變差）", variation),
         ],
       };
     },
