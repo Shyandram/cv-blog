@@ -32,13 +32,6 @@ def grids(axes, arrays, titles, cmap="viridis", vmin=None, vmax=None):
 
 
 def cnn():
-    x = np.zeros((15, 15)); x[4:11, 5:10] = 1
-    patch = np.zeros_like(x); patch[6:9, 6:9] = 1
-    rf = np.zeros_like(x); rf[4:11, 4:11] = 1
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3))
-    grids(axes, [x, patch, rf],
-          ["Input: local structure", "One 3 × 3 layer", "Three 3 × 3 layers: 7 × 7"], "Blues")
-    save(fig, "ml-03-convolutional-networks", "receptive-fields.png")
     c = np.arange(16, 257, 16)
     fig, ax = plt.subplots(figsize=(7, 3.5))
     ax.plot(c, 9*c*c, label="Dense 3×3: 9C²", color=BLUE)
@@ -141,16 +134,6 @@ def diffusion():
 
 
 def autoregression():
-    raster = np.arange(16).reshape(4, 4)
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3))
-    for ax, a, title in zip(axes, [raster, np.zeros((2, 2)), np.ones((4, 4))],
-                            ["Next pixel: raster order", "Scale 1: 2×2 map", "Scale 2: 4×4 map"]):
-        ax.imshow(a, cmap="Blues", vmin=0, vmax=16)
-        if ax is axes[0]:
-            for (i, j), v in np.ndenumerate(a):
-                ax.text(j, i, str(v), ha="center", va="center", fontsize=11)
-        ax.set_title(title); ax.set_xticks([]); ax.set_yticks([])
-    save(fig, "ml-08-autoregressive-vision", "generation-order.png")
     temp = np.array([.4, 1, 2])
     logits = np.array([2., 1., 0., -1.])
     fig, axes = plt.subplots(1, 3, figsize=(10, 3))
@@ -162,19 +145,6 @@ def autoregression():
 
 
 def foundation():
-    image = np.array([[1, .1, 0], [.1, 1, 0], [.5, .5, .2]])
-    text = np.eye(3)
-    image /= np.linalg.norm(image, axis=1, keepdims=True)
-    scores = image @ text.T
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    im = ax.imshow(scores, cmap="Blues", vmin=0, vmax=1)
-    for (i, j), s in np.ndenumerate(scores):
-        ax.text(j, i, f"{s:.2f}", ha="center", va="center")
-    ax.set_xticks(range(3), ["Text A", "Text B", "Text C"])
-    ax.set_yticks(range(3), ["Image A", "Image B", "Ambiguous image"])
-    ax.set_title("Synthetic normalized embeddings: cosine is not confidence")
-    fig.colorbar(im, ax=ax)
-    save(fig, "ml-09-foundation-models", "similarity.png")
     fig, ax = plt.subplots(figsize=(9, 3))
     labels = ["Frozen features\n+ linear head", "LoRA/adapters\n+ head", "Full fine-tuning"]
     # Illustrative parameter counts: d=1024, K=10, r=8, 12 adapted matrices.
@@ -186,21 +156,6 @@ def foundation():
 
 
 def practice():
-    p = np.linspace(.05, .95, 10)
-    fig, axes = plt.subplots(1, 2, figsize=(9, 3.5))
-    axes[0].plot([0, 1], [0, 1], "--", color="gray", label="Perfect calibration")
-    axes[0].plot(p, p, "o-", color=GREEN, label="Illustrative calibrated")
-    axes[0].plot(p, .65*p, "o-", color=ORANGE, label="Illustrative overconfident")
-    axes[0].set(xlabel="Confidence", ylabel="Observed accuracy", title="Calibration")
-    axes[0].legend(fontsize=9); axes[0].grid(alpha=.2)
-    latency = np.array([2, 5, 9, 18, 35])
-    quality = np.array([.80, .88, .85, .92, .90])
-    axes[1].scatter(latency, quality, color=BLUE)
-    axes[1].plot(latency[[0, 1, 3]], quality[[0, 1, 3]], color=GREEN, label="Pareto frontier")
-    axes[1].set(xlabel="Latency (illustrative ms)", ylabel="Quality (illustrative)",
-                title="A slower model can be dominated")
-    axes[1].legend(fontsize=9); axes[1].grid(alpha=.2)
-    save(fig, "ml-10-evaluation-deployment", "calibration-pareto.png")
     fig, ax = plt.subplots(figsize=(8, 3))
     for row, name in enumerate(["Random frame split", "Split by video"]):
         colors = ([BLUE, ORANGE, BLUE, ORANGE, BLUE, ORANGE] if row == 0

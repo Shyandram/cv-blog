@@ -9,7 +9,7 @@ This site is a computer vision course you can read in order or dip into. It star
 
 ## How it is organized
 
-The **Learn** section has six tracks: Foundations, Image Processing, Pattern Recognition, ML/DL, DL for Vision, and NLP. Each tutorial lists its prerequisites, so you can always see what to read first.
+The **Learn** section has eight tracks: Foundations, Image Processing, Natural Language Processing, Pattern Recognition, Machine Learning, Deep Learning for Computer Vision, Optimization and Information Theory. Each tutorial lists its prerequisites, so you can always see what to read first.
 
 ## Running the code
 
