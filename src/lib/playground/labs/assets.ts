@@ -8,9 +8,10 @@ import astronaut256 from '../../../assets/playground/astronaut-256.png';
 import coinsMask from '../../../assets/playground/coins-mask.png';
 import zoneplate256 from '../../../assets/playground/zoneplate-256.png';
 import coffee256 from '../../../assets/playground/coffee-256.png';
+import coinCrop144 from '../../../assets/playground/coin-crop-144.png';
 
 const table: Record<string, { src: string }> = {
-  'camera-256': camera256, 'camera-crop-128': cameraCrop128, doc, 'doc-truth': docTruth, coins, 'astronaut-256': astronaut256, 'coins-mask': coinsMask, 'zoneplate-256': zoneplate256, 'coffee-256': coffee256,
+  'camera-256': camera256, 'camera-crop-128': cameraCrop128, doc, 'doc-truth': docTruth, coins, 'astronaut-256': astronaut256, 'coins-mask': coinsMask, 'zoneplate-256': zoneplate256, 'coffee-256': coffee256, 'coin-crop-144': coinCrop144,
 };
 export function labAssetUrls(keys: string[]): Record<string, string> {
   return Object.fromEntries(keys.map(k => { if (!table[k]) throw new Error(`Unknown lab asset: ${k}`); return [k, table[k].src]; }));

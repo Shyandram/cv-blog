@@ -49,39 +49,8 @@ const lines = (
       .join("")
   );
 };
-const IP = (slug: string) => `image-processing/${slug}`;
 const DL = (slug: string) => `deep-learning/${slug}`;
 
-/** A real diagonal inverse problem in a cosine basis. DC is left unchanged. */
-/** A deliberately restricted circular snake: radius is the only degree of freedom. */
-export function radialSnake(initial: number, tension: number, steps: number) {
-  const energy = (r: number) =>
-    tension * r * r - Math.exp(-(((r - 1) / 0.16) ** 2));
-  const derivative = (r: number) =>
-    2 * tension * r +
-    ((2 * (r - 1)) / 0.16 ** 2) * Math.exp(-(((r - 1) / 0.16) ** 2));
-  let r = initial;
-  const history = [r];
-  for (let i = 0; i < steps; i++) {
-    const g = derivative(r);
-    let rate = 0.025;
-    for (
-      let j = 0;
-      j < 20 && energy(clamp(r - rate * g, 0, 1.8)) > energy(r);
-      j++
-    )
-      rate *= 0.5;
-    r = clamp(r - rate * g, 0, 1.8);
-    history.push(r);
-  }
-  return {
-    radius: r,
-    history,
-    energy,
-    initialEnergy: energy(initial),
-    finalEnergy: energy(r),
-  };
-}
 export function classificationThreshold(
   threshold: number,
   falsePositiveCost: number,
@@ -216,67 +185,6 @@ export function worldRollout(
 }
 
 export const chapterVisionExperiments: Experiment[] = [
-  {
-    id: "contour-energy",
-    track: "image-processing",
-    title: L(
-      "IP 11 · Why a contour can miss the boundary",
-      "IP 11・輪廓為何可能錯過邊界",
-    ),
-    description: L(
-      "Move a circular contour through a narrow edge-attraction energy and observe initialization and tension.",
-      "讓圓形輪廓沿狹窄的邊緣吸引能量移動，觀察初始化與張力的影響。",
-    ),
-    challenge: L(
-      "Use the same tension but start at radius 0.5 and 1.2. Why can decreasing energy lead to different final contours?",
-      "使用相同張力，分別從半徑 0.5 與 1.2 開始。為何能量都下降，最後輪廓卻不同？",
-    ),
-    note: L(
-      "A one-parameter circular restriction, not a full snake or level-set solver: E(r)=αr²−exp(−((r−1)/0.16)²). Radius lies in [0,1.8]. Projected gradient steps use backtracking to avoid increasing energy. The dashed circle is the target boundary.",
-      "這是只有一個參數的圓形限制模型，並非完整 snake 或水平集求解器：E(r)=αr²−exp(−((r−1)/0.16)²)，半徑限制在 [0,1.8]。投影梯度步驟使用回溯，避免能量增加。虛線圓為目標邊界。",
-    ),
-    related: [IP("dip-11-active-contours")],
-    controls: [
-      range("radius", "Initial radius", "初始半徑", 1.3, 0.1, 1.8, 0.05),
-      range("tension", "Tension α", "張力 α", 0.15, 0, 1, 0.05),
-      range("steps", "Descent steps", "下降步數", 30, 0, 80, 1),
-    ],
-    compute(s, l) {
-      const r = radialSnake(n(s, "radius"), n(s, "tension"), n(s, "steps"));
-      const energies = Array.from({ length: 81 }, (_, i) =>
-          r.energy((i * 1.8) / 80),
-        ),
-        lo = Math.min(...energies),
-        hi = Math.max(...energies),
-        py = (v: number) => 240 - (180 * (v - lo)) / (hi - lo);
-      const body =
-        `<circle cx="165" cy="155" r="65" fill="none" stroke="var(--plot-a)" stroke-dasharray="5 3"/><circle cx="165" cy="155" r="${65 * n(s, "radius")}" fill="none" stroke="var(--plot-muted)"/><circle cx="165" cy="155" r="${65 * r.radius}" fill="none" stroke="var(--plot-b)" stroke-width="3"/>` +
-        path(
-          energies.map((e, i) => [350 + i * 3.1, py(e)]),
-          `stroke="var(--plot-a)" stroke-width="2"`,
-        ) +
-        `<circle cx="${350 + (r.radius / 1.8) * 248}" cy="${py(r.finalEnergy)}" r="5" fill="var(--plot-b)"/>` +
-        text(
-          60,
-          285,
-          pick(l, "Gray: initial; color: final", "灰色：起點；彩色：終點"),
-        ) +
-        text(365, 285, pick(l, "Radius 0 → 1.8", "半徑 0 → 1.8"));
-      return {
-        svg: svg(body),
-        summary: pick(
-          l,
-          "Local descent balances shrinking tension against edge attraction. Outside the edge’s capture range, the contour can collapse even though every step lowers energy.",
-          "局部下降平衡收縮張力與邊緣吸引力。在邊緣的捕捉範圍之外，即使每一步都降低能量，輪廓仍可能塌縮。",
-        ),
-        metrics: [
-          metric(l, "Final radius", "最終半徑", r.radius),
-          metric(l, "Initial energy", "初始能量", r.initialEnergy),
-          metric(l, "Final energy", "最終能量", r.finalEnergy),
-        ],
-      };
-    },
-  },
   {
     id: "classification-threshold",
     track: "deep-learning",

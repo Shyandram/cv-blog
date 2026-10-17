@@ -167,6 +167,14 @@ def check_linear_transform(metrics, set_, zh):
     assert "∞" in w[3] and w[4].startswith("1"), w  # rank 1
 
 
+def check_contour_energy(metrics, set_, zh):
+    def dist():
+        return float(re.search(r"[\d.]+", list(metrics().values())[1]).group())
+    assert dist() > 15, metrics()      # default: stuck on neighbouring coins, 17.7 px
+    set_("radius", "28")
+    assert dist() < 1, metrics()       # found the rim, 0.5 px
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -176,7 +184,7 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
-    "bagging-trees": check_bagging, "linear-transform": check_linear_transform,
+    "bagging-trees": check_bagging, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
 }
 
 

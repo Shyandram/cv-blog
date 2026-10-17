@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  radialSnake,
   classificationThreshold,
   rocCurve,
   ambiguousRestoration,
@@ -12,22 +11,6 @@ import {
 } from "../../src/lib/playground/chapters-vision.ts";
 const near = (a: number, b: number, tol = 1e-9) =>
   assert.ok(Math.abs(a - b) < tol, `${a} != ${b}`);
-test("Circular contour descent never raises energy and can miss narrow edge attraction", () => {
-  for (const start of [0.1, 0.5, 1, 1.8])
-    for (const tension of [0, 0.15, 1]) {
-      const r = radialSnake(start, tension, 80);
-      r.history
-        .slice(1)
-        .forEach((v, i) =>
-          assert.ok(r.energy(v) <= r.energy(r.history[i]) + 1e-10),
-        );
-      assert.ok(r.radius >= 0 && r.radius <= 1.8);
-    }
-  const outside = radialSnake(0.5, 0.15, 80),
-    nearEdge = radialSnake(1.2, 0.15, 80);
-  assert.ok(outside.radius < 0.5);
-  assert.ok(nearEdge.radius > 0.9);
-});
 test("Threshold confusion counts, undefined precision and weighted error cost", () => {
   const all = classificationThreshold(0, 1),
     none = classificationThreshold(1, 1),
@@ -139,8 +122,8 @@ test("World model exact dynamics remove drift, refresh every step equals teacher
   const off = worldRollout(1.02, 60, 0.1, 0);
   near(off.openError, off.correctedError);
 });
-test("All five bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
-  assert.equal(chapterVisionExperiments.length, 5);
+test("All four bilingual experiments render finite SVGs at defaults and individual endpoint settings", () => {
+  assert.equal(chapterVisionExperiments.length, 4);
   const ids = new Set<string>();
   for (const e of chapterVisionExperiments) {
     assert.ok(!ids.has(e.id));
