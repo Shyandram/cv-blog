@@ -1,4 +1,6 @@
 import { L, pick, num, fmt, svg, text, path, type Experiment, type Control } from './types.ts';
+import { polygon, analyticCenter, centralPath, barrierState, optimum, type Vec } from './barrier.ts';
+const POLY = polygon([[-1.5, -0.9], [0.6, -1.2], [1.6, 0.0], [0.5, 1.3], [-1.2, 0.9]]);
 const range = (key: string, en: string, zh: string, min: number, max: number, step: number, value: number): Control => ({ key, label: L(en, zh), kind: 'range', min, max, step, value });
 const curve = (f: (x: number) => number, lo: number, hi: number, ymin: number, ymax: number, color = 'var(--plot-a)') => path(Array.from({ length: 121 }, (_, i) => { const x = lo + (hi - lo) * i / 120; return [50 + 540 * i / 120, 260 - 220 * (f(x) - ymin) / (ymax - ymin)] as [
     number,
@@ -46,20 +48,33 @@ export function locationFit(outlier: number, kind: string) {
     }
     return { data, m: (lo + hi) / 2, loss };
 }
-export function barrierPoint(t: number) { const x = 2 / (t + 2 + Math.hypot(t, 2)); const lower = 1 / (t * x), upper = 1 / (t * (1 - x)); return { x, lower, upper, gap: x + upper, stationarity: 1 - lower + upper }; }
 export const softThreshold = (v: number, lambda: number) => Math.sign(v) * Math.max(Math.abs(v) - lambda, 0);
 export const chapterOptimizationExperiments: Experiment[] = [
     {
         id: 'convex-combinations', track: 'optimization', title: L('Does the whole segment stay feasible?', '整條線段都可行嗎？'),
-        description: L('Move a convex combination between two feasible points and compare a disk with an annulus.', '在兩個可行點之間移動凸組合，比較圓盤與圓環。'),
+        description: L('Place two feasible points on a circle, slide along the segment between them, and compare a disk with an annulus.', '在圓上放兩個可行點，沿著它們之間的線段移動，並比較圓盤與圓環。'),
         related: ['optimization/opt-01-modeling-convex-sets'],
-        challenge: L('Choose the annulus. Find a mixing weight that makes the point infeasible even though both endpoints are feasible.', '選圓環，找出一個混合權重，使中間點不可行，但兩個端點仍可行。'),
-        note: L('Endpoints are (−1,0) and (1,0). The disk has radius 1; the annulus also requires radius ≥ 0.5. One counterexample disproves convexity; sampled examples alone do not prove it.', '端點為 (−1,0) 與 (1,0)。圓盤半徑為 1；圓環另要求半徑至少為 0.5。一個反例就能否定凸性，有限取樣本身不能證明凸性。'),
-        controls: [range('mix', 'Mixing weight λ', '混合權重 λ', 0, 1, .01, .5), { key: 'set', label: L('Feasible set', '可行集合'), kind: 'select', value: 'annulus', options: [{ value: 'disk', label: L('Disk', '圓盤') }, { value: 'annulus', label: L('Annulus', '圓環') }] }],
+        challenge: L('Choose the annulus and place both endpoints on the circle. Find two endpoints whose whole segment stays feasible, and two whose segment crosses the hole. How far apart in angle do they need to be?', '選圓環，並把兩個端點放在圓上。找出一組整段線段都可行的端點，以及一組線段穿過洞的端點。兩端點在角度上要相差多少？'),
+        predict: { question: L('Both endpoints lie on a circle of radius 0.85 and the annulus forbids radius below 0.5. When do the endpoints stay feasible but the segment between them does not?', '兩個端點都在半徑 0.85 的圓上，圓環禁止半徑小於 0.5。端點可行、但兩點之間的線段卻不可行，會發生在什麼時候？'),
+            options: [{ value: 'never', label: L('Never: both endpoints are feasible, so the segment is too', '不會：兩端點都可行，線段也就可行') }, { value: 'far', label: L('When the endpoints are far enough apart in angle', '兩端點在角度上相距夠遠時') }, { value: 'near', label: L('When the endpoints are close together', '兩端點靠得很近時') }],
+            answer: 'far',
+            explain: L('The midpoint of a chord at angle difference Δ lies at distance 0.85·cos(Δ/2) from the center. That drops below 0.5 once Δ exceeds about 108 degrees, so the segment crosses the hole although both ends are feasible: the annulus is not convex. For the disk this never happens.', '夾角為 Δ 的弦，其中點到圓心的距離是 0.85·cos(Δ/2)。當 Δ 超過約 108 度，這個距離就小於 0.5，線段會穿過洞，儘管兩端點都可行：圓環不是凸集合。圓盤則永遠不會這樣。') },
+        note: L('Endpoints are P = 0.85(cos α, sin α) and Q = 0.85(cos β, sin β). The disk has radius 1; the annulus also requires radius ≥ 0.5. The segment is x(λ) = (1−λ)P + λQ. One counterexample disproves convexity; sampled examples alone do not prove it.', '端點為 P = 0.85(cos α, sin α) 與 Q = 0.85(cos β, sin β)。圓盤半徑為 1；圓環另外要求半徑 ≥ 0.5。線段為 x(λ) = (1−λ)P + λQ。一個反例就能推翻凸性；只靠取樣的例子不能證明凸性。'),
+        controls: [range('alpha', 'Endpoint P angle (degrees)', '端點 P 的角度（度）', 0, 360, 5, 160), range('beta', 'Endpoint Q angle (degrees)', '端點 Q 的角度（度）', 0, 360, 5, 20), range('mix', 'Mixing weight λ', '混合權重 λ', 0, 1, .01, .5), { key: 'set', label: L('Feasible set', '可行集合'), kind: 'select', value: 'annulus', options: [{ value: 'annulus', label: L('Annulus', '圓環') }, { value: 'disk', label: L('Disk', '圓盤') }] }],
         compute(s, lang) {
-            const x = 2 * num(s, 'mix') - 1, hole = s.set === 'annulus', feasible = !hole || Math.abs(x) >= .5;
-            return { svg: svg(`<circle cx="320" cy="150" r="112" fill="var(--plot-a)" fill-opacity=".15" stroke="var(--plot-a)"/>${hole ? '<circle cx="320" cy="150" r="56" fill="var(--plot-bg)" stroke="var(--plot-b)"/>' : ''}` + path([[208, 150], [432, 150]], 'stroke="var(--plot-ink)" stroke-dasharray="4 3"') + [-1, 1].map(v => `<circle cx="${320 + 112 * v}" cy="150" r="5" fill="var(--plot-a)"/>`).join('') + `<circle cx="${320 + 112 * x}" cy="150" r="8" fill="var(--plot-${feasible ? 'c' : 'b'})"/>` + text(208, 285, '(−1, 0)') + text(432, 285, '(1, 0)', 'text-anchor="end"')),
-                summary: pick(lang, feasible ? 'The selected combination is feasible. Check the rest of the segment too.' : 'This point lies in the hole: the annulus is not convex.', feasible ? '目前的組合可行，也請檢查線段其他位置。' : '此點落在中間的孔洞內，因此圓環不是凸集合。'), metrics: [{ label: pick(lang, 'Point x', '點的 x 座標'), value: fmt(x) }, { label: pick(lang, 'Feasible', '可行'), value: pick(lang, feasible ? 'Yes' : 'No', feasible ? '是' : '否') }] };
+            const rad = 0.85, a = num(s, 'alpha') * Math.PI / 180, b = num(s, 'beta') * Math.PI / 180, lam = num(s, 'mix'), hole = s.set === 'annulus';
+            const P: [number, number] = [rad * Math.cos(a), rad * Math.sin(a)], Q: [number, number] = [rad * Math.cos(b), rad * Math.sin(b)];
+            const at = (l: number): [number, number] => [(1 - l) * P[0] + l * Q[0], (1 - l) * P[1] + l * Q[1]], dist = (v: [number, number]) => Math.hypot(v[0], v[1]);
+            let minR = Infinity; for (let i = 0; i <= 400; i++) minR = Math.min(minR, dist(at(i / 400)));
+            const x = at(lam), bad = hole && dist(x) < 0.5, segmentBad = hole && minR < 0.5;
+            const px = (v: [number, number]) => [320 + 112 * v[0] / 1, 150 - 112 * v[1] / 1] as [number, number];
+            const [p0, q0, xm] = [px(P), px(Q), px(x)];
+            const body = `<circle cx="320" cy="150" r="112" fill="var(--plot-a)" fill-opacity=".15" stroke="var(--plot-a)"/>${hole ? '<circle cx="320" cy="150" r="56" fill="var(--plot-bg)" stroke="var(--plot-b)"/>' : ''}`
+                + path([p0, q0], `stroke="${segmentBad ? 'var(--plot-b)' : 'var(--plot-c)'}" stroke-width="3"`) + `<circle cx="${p0[0]}" cy="${p0[1]}" r="6" fill="var(--plot-a)"/><circle cx="${q0[0]}" cy="${q0[1]}" r="6" fill="var(--plot-a)"/><circle cx="${xm[0]}" cy="${xm[1]}" r="7" fill="${bad ? 'var(--plot-b)' : 'var(--plot-c)'}"/>`
+                + text(p0[0] + (p0[0] < 320 ? -16 : 10), p0[1] + 4, 'P', p0[0] < 320 ? 'text-anchor="end"' : '') + text(q0[0] + (q0[0] < 320 ? -16 : 10), q0[1] + 4, 'Q', q0[0] < 320 ? 'text-anchor="end"' : '');
+            return { svg: svg(body, 300),
+                summary: pick(lang, bad ? 'The chosen point lies in the hole although both endpoints are feasible: the annulus is not convex.' : segmentBad ? 'This point is feasible, but another point on the same segment lies in the hole. Slide the weight to find it.' : 'The whole segment stays feasible for these endpoints. Try endpoints that are farther apart in angle.', bad ? '所選的點落在洞裡，但兩個端點都可行：圓環不是凸集合。' : segmentBad ? '這個點可行，但同一線段上的另一個點落在洞裡。移動權重就能找到它。' : '這組端點的整條線段都可行。試試角度相差更大的端點。'),
+                metrics: [{ label: pick(lang, 'Radius at weight λ', '權重 λ 處的半徑'), value: fmt(dist(x), 3) }, { label: pick(lang, 'Smallest radius on the segment', '線段上的最小半徑'), value: fmt(minR, 3) }, { label: pick(lang, 'Angle apart (degrees)', '角度差（度）'), value: fmt(Math.min(Math.abs(num(s, 'alpha') - num(s, 'beta')) % 360, 360 - Math.abs(num(s, 'alpha') - num(s, 'beta')) % 360), 0) }] };
         },
     },
     {
@@ -103,6 +118,7 @@ export const chapterOptimizationExperiments: Experiment[] = [
         id: 'robust-location', track: 'optimization', title: L('One outlier, three meanings of best fit', '一個離群值，三種最佳擬合'), description: L('Move one observation and compare squared, absolute and Huber losses for fitting a constant.', '移動一筆觀測，比較平方、絕對值與 Huber 損失擬合常數的結果。'), related: ['optimization/opt-05-fitting-estimation'],
         challenge: L('Increase the outlier from 2 to 12. Compare the movement of the squared-loss and Huber estimates.', '把離群值從 2 增加到 12，比較平方損失與 Huber 估計移動多少。'),
         note: L('Five fixed observations are −1, −0.5, 0, 0.5, 1. The sixth is adjustable. Squared loss includes ½; Huber uses δ=1. For absolute loss, any point in [0,0.5] minimizes the loss; the plot chooses 0.25.', '固定五筆觀測為 −1、−0.5、0、0.5、1，第六筆可調。平方損失含 ½，Huber 使用 δ=1。絕對損失在 [0,0.5] 內皆為極小值，圖中取 0.25。'),
+        predict: { question: L("The sixth observation moves from 2 up to 12 while the other five stay put. Which fit is dragged furthest?", "第六筆觀測從 2 移到 12，其餘五筆不動。哪一種擬合被拉得最遠？"), options: [{ value: "l2", label: L("Squared loss (the mean)", "平方損失（平均數）") }, { value: "l1", label: L("Absolute loss (the median)", "絕對值損失（中位數）") }, { value: "huber", label: L("Huber loss", "Huber 損失") }], answer: "l2", explain: L("The squared loss pulls with a force that grows with distance, so its fit moves from 0.33 to 2. The absolute and Huber losses cap each point's pull, so their fits stay at 0.25.", "平方損失的拉力隨距離增加，擬合值從 0.33 移到 2。絕對值與 Huber 損失限制每個點的拉力，擬合值維持在 0.25。") },
         controls: [range('outlier', 'Sixth observation', '第六筆觀測', 2, 12, .1, 8), { key: 'loss', label: L('Loss', '損失'), kind: 'select', value: 'l2', options: [{ value: 'l2', label: L('Squared', '平方') }, { value: 'l1', label: L('Absolute', '絕對值') }, { value: 'huber', label: L('Huber (δ=1)', 'Huber（δ=1）') }] }],
         compute(s, lang) {
             const r = locationFit(num(s, 'outlier'), String(s.loss)), ymax = Math.max(r.loss(-2), r.loss(12)), px = (x: number) => 50 + 540 * (x + 2) / 14;
@@ -110,17 +126,33 @@ export const chapterOptimizationExperiments: Experiment[] = [
         },
     },
     {
-        id: 'barrier-central-path', track: 'optimization', title: L('Approach a boundary through the interior', '從內部接近邊界'), description: L('Increase barrier weight t and track the central point, multipliers and exact duality gap.', '增加障礙法權重 t，追蹤中心點、乘數與精確對偶差距。'), related: ['optimization/opt-07-constrained-interior-point'],
-        challenge: L('Multiply t by ten. How do distance to the boundary and the duality gap change?', '把 t 乘以十。與邊界的距離及對偶差距如何改變？'),
-        note: L('Minimize x on 0≤x≤1. The barrier minimizes tx−log x−log(1−x) on (0,1). At its exact stationary point, λₗ=1/(tx), λᵤ=1/[t(1−x)], dual bound=−λᵤ, and gap=2/t.', '在 0≤x≤1 下最小化 x。障礙問題在 (0,1) 最小化 tx−log x−log(1−x)。精確中心點的 λₗ=1/(tx)、λᵤ=1/[t(1−x)]，對偶下界=−λᵤ，差距=2/t。'),
-        controls: [range('logt', 'log₁₀ t', 'log₁₀ t', -1, 3, .1, 1)],
+        id: 'barrier-central-path', track: 'optimization', title: L('Follow the central path to the optimal vertex', '沿著中心路徑走向最佳頂點'),
+        description: L('Raise the barrier weight t on a two-variable linear program and watch the central point, its dual bound and the gap m/t.', '在兩變數線性規劃上提高障礙權重 t，觀察中心點、對偶界與差距 m/t。'),
+        related: ['optimization/opt-07-constrained-interior-point'],
+        challenge: L('Multiply t by ten. How do the distance to the boundary, the true suboptimality and the bound m/t change? Then rotate the objective: does the path still end at a vertex?', '把 t 乘以十。與邊界的距離、真實的次佳程度與界限 m/t 如何改變？再旋轉目標方向：路徑仍然會停在頂點嗎？'),
+        note: L('Minimize c·x over a convex pentagon with m = 5 edge constraints a_i·x ≤ b_i. The central point minimizes t·c·x − Σ log(b_i − a_i·x) (damped Newton). With λ_i = 1/(t s_i), where s_i is the slack, the dual objective is −b·λ and the duality gap equals Σ λ_i s_i = m/t exactly. The true suboptimality c·x − p* is at most m/t.', '在有 m = 5 條邊限制 a_i·x ≤ b_i 的凸五邊形上最小化 c·x。中心點最小化 t·c·x − Σ log(b_i − a_i·x)（阻尼牛頓法）。令 λ_i = 1/(t s_i)（s_i 為鬆弛量），對偶目標為 −b·λ，對偶差距恰為 Σ λ_i s_i = m/t。真正的次佳程度 c·x − p* 不會超過 m/t。'),
+        predict: { question: L('You multiply the barrier weight t by 10. What happens to the duality gap m/t?', '你把障礙權重 t 乘以 10。對偶差距 m/t 會怎麼變？'),
+            options: [{ value: 'tenth', label: L('It shrinks by a factor of 10', '縮小為十分之一') }, { value: 'sqrt', label: L('It shrinks by a factor of about 3', '縮小為約三分之一') }, { value: 'same', label: L('It stays the same', '不變') }],
+            answer: 'tenth',
+            explain: L('The gap is exactly m/t, so it is inversely proportional to t. With m = 5 constraints it is 5/t: 0.5 at t = 10 and 0.05 at t = 100. The central point moves toward the optimal vertex, and its true suboptimality never exceeds that bound.', '差距恰為 m/t，所以與 t 成反比。有 m = 5 條限制時為 5/t：t = 10 時是 0.5，t = 100 時是 0.05。中心點朝最佳頂點移動，其真正的次佳程度絕不超過這個界限。') },
+        controls: [range('logt', 'log₁₀ t', 'log₁₀ t', -1, 3.5, .1, 1), range('angle', 'Objective direction (degrees)', '目標方向（度）', 0, 360, 5, 200)],
         compute(s, lang) {
-            const t = 10 ** num(s, 'logt'), r = barrierPoint(t);
-            const points = Array.from({ length: 100 }, (_, i) => { const u = -1 + 4 * i / 99; return [50 + 540 * i / 99, 260 - 440 * barrierPoint(10 ** u).x] as [
-                number,
-                number
-            ]; });
-            return { svg: svg(axes('log₁₀ t = −1', 'log₁₀ t = 3') + path(points, 'stroke="var(--plot-a)" stroke-width="3"') + `<circle cx="${50 + 540 * (num(s, 'logt') + 1) / 4}" cy="${260 - 440 * r.x}" r="6" fill="var(--plot-b)"/>` + text(65, 30, pick(lang, 'Vertical: central point x (0 to 0.5)', '縱軸：中心點 x（0 到 0.5）'))), summary: pick(lang, 'Every finite-t point is strictly inside the interval. The constrained optimum x=0 is approached as t grows.', '每個有限 t 的點都嚴格位於區間內；隨著 t 增大，逐漸接近限制問題的最佳解 x=0。'), metrics: [{ label: 't', value: fmt(t) }, { label: 'x', value: fmt(r.x, 6) }, { label: pick(lang, 'Exact gap 2/t', '精確差距 2/t'), value: fmt(r.gap, 6) }, { label: pick(lang, 'Stationarity residual', '定態殘差'), value: r.stationarity.toExponential(1) }] };
+            const c: Vec = [Math.cos(num(s, 'angle') * Math.PI / 180), Math.sin(num(s, 'angle') * Math.PI / 180)], t = 10 ** num(s, 'logt');
+            const center = analyticCenter(POLY, [0, 0]), path0 = centralPath(POLY, c, -1, 3.5, 70, center), at = barrierState(POLY, c, t, center), opt = optimum(POLY, c);
+            const px = (v: Vec) => [60 + (v[0] + 1.9) / 3.8 * 520, 160 - v[1] / 1.7 * 120] as [number, number];
+            const poly = POLY.vertices.map(v => px(v).join(',')).join(' ');
+            const lineAt = (k: number): [number, number][] => { const o = px(at.x), dir: Vec = [-c[1], c[0]]; return [[o[0] - 400 * dir[0] * k, o[1] + 400 * dir[1] * k], [o[0] + 400 * dir[0] * k, o[1] - 400 * dir[1] * k]]; };
+            let body = `<polygon points="${poly}" fill="var(--plot-a)" fill-opacity="0.08" stroke="var(--plot-a)" stroke-width="2"/>` + path(lineAt(1), 'stroke="var(--plot-muted)" stroke-dasharray="5 4"')
+                + path(path0.map(px), 'stroke="var(--plot-c)" stroke-width="3"');
+            const o = px(opt.vertex), a = px(center), q = px(at.x);
+            body += `<circle cx="${o[0]}" cy="${o[1]}" r="7" fill="var(--plot-d)"/>` + `<circle cx="${a[0]}" cy="${a[1]}" r="5" fill="var(--plot-muted)"/>` + `<circle cx="${q[0]}" cy="${q[1]}" r="7" fill="var(--plot-b)"/>`
+                + text(a[0] + 8, a[1] + 16, pick(lang, 'analytic center (t → 0)', '解析中心（t → 0）'), 'fill="var(--plot-muted)"') + text(Math.min(o[0] + 10, 470), o[1] - 10, pick(lang, 'optimal vertex', '最佳頂點'), 'fill="var(--plot-d)"')
+                + text(30, 24, pick(lang, 'Green: central path · orange: x*(t) · dashed: level line of c·x through x*(t)', '綠線：中心路徑 · 橘點：x*(t) · 虛線：通過 x*(t) 的 c·x 等高線'));
+            return {
+                svg: svg(body, 330),
+                summary: pick(lang, `At t = ${fmt(t, 3)} the central point is ${fmt(at.minSlack, 3)} from the nearest edge. Its suboptimality ${fmt(at.suboptimality, 4)} is at most the duality gap m/t = ${fmt(at.bound, 4)}, and the gap computed from the dual point λ = 1/(t·slack) is ${fmt(at.gap, 4)}.`, `t = ${fmt(t, 3)} 時，中心點離最近的邊 ${fmt(at.minSlack, 3)}。它的次佳程度 ${fmt(at.suboptimality, 4)} 不超過對偶差距 m/t = ${fmt(at.bound, 4)}；由對偶點 λ = 1/(t·鬆弛量) 算出的差距為 ${fmt(at.gap, 4)}。`),
+                metrics: [{ label: pick(lang, 'Gap m/t', '差距 m/t'), value: fmt(at.bound, 4) }, { label: pick(lang, 'Suboptimality c·x − p*', '次佳程度 c·x − p*'), value: fmt(at.suboptimality, 4) }, { label: pick(lang, 'Distance to nearest edge', '到最近邊的距離'), value: fmt(at.minSlack, 3) }],
+            };
         },
     },
     {

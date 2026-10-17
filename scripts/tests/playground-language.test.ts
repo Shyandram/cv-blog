@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ngramDistribution, stableSoftmax, word2vecExample, attentionExample, languageExperiments, ATTENTION_V, WORD_E, WORD_U } from '../../src/lib/playground/language.ts';
+import { ngramDistribution, stableSoftmax, attentionExample, languageExperiments, ATTENTION_V } from '../../src/lib/playground/language.ts';
 
 const close = (actual: number, expected: number, tolerance = 1e-12) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 const sum = (items: number[]) => items.reduce((a, b) => a + b, 0);
@@ -44,21 +44,6 @@ test('softmax remains stable for large negative scores and completely masked row
   close(result[0], 1 / (1 + Math.exp(-1)));
   assert.deepEqual(stableSoftmax([1, 2], [false, false]), [0, 0]);
   assert.deepEqual(stableSoftmax([1, 20000], [true, false]), [1, 0]);
-});
-
-test('CBOW averages context; Skip-gram produces separate targets and their mean loss', () => {
-  const cbow = word2vecExample(2, 2, 'cbow');
-  assert.deepEqual(cbow.neighbors, [0, 1, 3, 4]);
-  assert.deepEqual(cbow.targets, [2]);
-  cbow.hidden.forEach((v, d) => close(v, [0, 1, 3, 4].reduce((a, i) => a + WORD_E[i][d], 0) / 4));
-  const expectedScores = WORD_U.map(u => u.reduce((a, v, d) => a + v * cbow.hidden[d], 0));
-  const expectedP = Math.exp(expectedScores[2]) / sum(expectedScores.map(Math.exp));
-  close(cbow.loss, -Math.log(expectedP));
-  const sg = word2vecExample(2, 2, 'skipgram');
-  assert.deepEqual(sg.hidden, WORD_E[2]);
-  assert.deepEqual(sg.targets, [0, 1, 3, 4]);
-  close(sg.loss, sum(sg.targets.map(i => -Math.log(sg.probabilities[i]))) / 4);
-  assert.deepEqual(word2vecExample(0, 2, 'cbow').neighbors, [1, 2]);
 });
 
 test('causal attention excludes future values and returns an actual weighted sum', () => {

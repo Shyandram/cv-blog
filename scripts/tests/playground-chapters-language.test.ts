@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  chapterLanguageExperiments, scopeTruth, trainBpe, poolingExample, sequenceDecode,
-  lexicalRetrieval, dialogueBelief, decodingDistribution, maskingHeads, finiteDifference,
-  mlpProbability, selectiveMemory, contrastiveExample, bottleneckSignal, vaeObjective,
+  chapterLanguageExperiments, scopeTruth, trainBpe, poolingExample, poolingEmbeddings, sequenceDecode,
+  lexicalRetrieval, decodingDistribution, maskingHeads, finiteDifference,
+  mlpProbability, selectiveMemory, contrastiveExample, vaeObjective,
   flowTransform, transportSolve, binaryAutoregression, temperatureCalibration,
 } from '../../src/lib/playground/chapters-language.ts';
 import type { State } from '../../src/lib/playground/types.ts';
@@ -38,6 +38,28 @@ test('pooling exposes order invariance and padding denominator contamination', (
   close(poolingExample(false, 'unmasked', 3).pooled, poolingExample(false, 'mean', 0).pooled / 2);
 });
 
+test('pooling default makes the padding bug visible and the predict answer matches the code', () => {
+  const e = chapterLanguageExperiments.find(x => x.id === 'pooling-order')!;
+  const d = Object.fromEntries(e.controls.map(c => [c.key, c.value]));
+  assert.deepEqual([d.order, d.mode, d.pads], ['forward', 'unmasked', 6]);
+  const bug = poolingExample(d.order === 'reverse', String(d.mode), Number(d.pads));
+  close(bug.pooled, bug.reference * 3 / 9);
+  assert.ok(Math.abs(bug.probability - bug.referenceProbability) > 0.1);
+  // Padding never changes the correct masked mean, at any padding count and either word order.
+  for (let pads = 0; pads <= 9; pads++) for (const reverse of [false, true]) {
+    close(poolingExample(reverse, 'mean', pads).pooled, (poolingEmbeddings.dogs + poolingEmbeddings.chase + poolingEmbeddings.cats) / 3);
+    close(poolingExample(reverse, 'unmasked', pads).pooled, poolingExample(reverse, 'mean', 0).pooled * 3 / (3 + pads));
+  }
+  // Predict question and its explanation: nine pads give a quarter of the correct h (0.7 -> 0.175), P 0.971 -> 0.706.
+  const nine = poolingExample(false, 'unmasked', 9), ok = poolingExample(false, 'mean', 9);
+  close(nine.pooled / ok.pooled, 0.25);
+  close(ok.pooled, 0.7); close(nine.pooled, 0.175);
+  close(Number(ok.probability.toFixed(3)), 0.971, 1e-12); close(Number(nine.probability.toFixed(3)), 0.706, 1e-12);
+  assert.equal(e.predict!.answer, 'quarter');
+  // Word order only matters in the position-weighted mode.
+  assert.notEqual(poolingExample(false, 'position', 0).pooled, poolingExample(true, 'position', 0).pooled);
+});
+
 test('global sequence optimum respects BIO and improves over any legal local path', () => {
   for (const evidence of [-2, 0.8, 4]) for (const bonus of [-2, 1, 3]) {
     const r = sequenceDecode(evidence, bonus, true);
@@ -55,14 +77,6 @@ test('retrieval has no matches for OOV and k1=0 reduces each matched term to IDF
   assert.equal(docs.length, 3);
   docs.forEach(d => close(d.score, Math.log(2)));
   assert.deepEqual(lexicalRetrieval('red red', 1, 0), lexicalRetrieval('red', 1, 0));
-});
-
-test('dialogue odds multiply, neutral observations preserve prior and corrections reset evidence', () => {
-  close(dialogueBelief(0.5, 0.8, 1, false).at(-1)!, 0.8);
-  close(dialogueBelief(0.5, 0.8, 2, false).at(-1)!, 16 / 17);
-  close(dialogueBelief(0.2, 0.5, 3, false).at(-1)!, 0.2);
-  close(dialogueBelief(0.2, 0.8, 3, true).at(-1)!, 1 / 17);
-  assert.notEqual(dialogueBelief(0.2, 0.8, 3, true).at(-1), dialogueBelief(0.2, 0.8, 3, false).at(-1));
 });
 
 test('decoding normalizes truncated probabilities, and top-k precedes top-p', () => {
@@ -92,6 +106,26 @@ test('hand constructed nonlinear network solves XOR, linear network cannot', () 
   for (const bias of [-3, 0, 3]) assert.ok(corners.some(([x, y, label]) => Number(mlpProbability(x, y, 'linear', 1, bias) >= 0.5) !== label));
 });
 
+test('selective memory default: the first write survives the distractors; retention 1 writes nothing', () => {
+  const e = chapterLanguageExperiments.find(x => x.id === 'selective-memory')!;
+  const d = Object.fromEntries(e.controls.map(c => [c.key, c.value]));
+  assert.deepEqual([d.retain, d.noise, d.mode], [0.25, 1, 'selective']);
+  const sel = selectiveMemory(0.25, 1, true), fixed = selectiveMemory(0.25, 1, false);
+  close(sel.states[0], 0.75);
+  close(sel.states[7], 0.75);
+  assert.ok(sel.states.slice(0, 8).every(h => Math.abs(h - 0.75) < 1e-12));
+  close(sel.states.at(-1)!, -0.5625);
+  close(fixed.states[7], -0.24776916503906254);
+  assert.ok(Math.abs(fixed.states[7] - 0.75) > 0.9);
+  assert.deepEqual(sel.gates.map(a => a < 1), [true, false, false, false, false, false, false, false, true, false, false, false]);
+  // Predict question: retention 1 at the write positions keeps the state at 0 everywhere, derivative 1.
+  const one = selectiveMemory(1, 1, true);
+  assert.ok(one.states.every(h => h === 0));
+  close(one.derivative, 1);
+  assert.equal(e.predict!.answer, 'zero');
+  assert.deepEqual(e.predict!.options.map(o => o.value), ['zero', 'first', 'last']);
+});
+
 test('selective recurrence rejects distractors and gate endpoints have clear semantics', () => {
   assert.deepEqual(selectiveMemory(0.25, 0, true).states, selectiveMemory(0.25, 2, true).states);
   assert.notDeepEqual(selectiveMemory(0.25, 0, false).states, selectiveMemory(0.25, 2, false).states);
@@ -104,15 +138,6 @@ test('contrastive collapse has log candidate-count loss and hard negatives penal
   for (const t of [0.05, 0.2, 1]) close(contrastiveExample(20, 60, t, true).loss, Math.log(4));
   assert.ok(contrastiveExample(60, 0, 0.05, false).loss > contrastiveExample(60, 0, 1, false).loss);
   close(sum(contrastiveExample(20, 60, 0.2, false).probabilities), 1);
-});
-
-test('orthogonal bottleneck exactly reconstructs full rank and obeys discarded-energy identity', () => {
-  for (const detail of [0, 0.6, 1]) for (const kept of [1, 4, 12, 16]) {
-    const r = bottleneckSignal(kept, detail);
-    close(r.mse, sum(r.coefficients.slice(kept).map(v => v * v)) / 16);
-    if (kept === 16) assert.ok(r.mse < 1e-25);
-    if (kept === 4) close(r.mse, detail ** 2 / 2);
-  }
 });
 
 test('Gaussian VAE KL is nonnegative and zero at prior; beta acts only on KL', () => {
@@ -154,7 +179,7 @@ test('temperature changes probability scoring without changing any decision', ()
 });
 
 test('all chapter demos render finite bilingual results at range endpoints and select options', () => {
-  assert.equal(chapterLanguageExperiments.length, 18);
+  assert.equal(chapterLanguageExperiments.length, 16);
   for (const experiment of chapterLanguageExperiments) {
     const base = Object.fromEntries(experiment.controls.map(c => [c.key, c.value]));
     const states: State[] = [base];

@@ -22,6 +22,12 @@ for (const file of process.argv.slice(2)) {
       : ['title', 'description', 'published'];
     for (const k of need) if (!new RegExp(`^${k}:`, 'm').test(fm[1])) problems.push(`frontmatter missing "${k}"`);
   }
+  // Components must be imported at the top level: an import inside a code fence compiles but fails at build time.
+  if (file.endsWith('.mdx')) {
+    const prose = body.replace(/^(```|~~~)[\s\S]*?^\1/gm, '').replace(/`[^`\n]*`/g, '').replace(/\$\$[\s\S]*?\$\$/g, '').replace(/(?<!\\)\$[^$\n]*\$/g, '');
+    const imported = new Set([...prose.matchAll(/^import\s+(?:\{([^}]*)\}|(\w+))\s+from\s+/gm)].flatMap(m => (m[1] ?? m[2]).split(',').map(s => s.trim().split(/\s+as\s+/).pop())));
+    for (const tag of new Set([...prose.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)].map(m => m[1]))) if (!imported.has(tag)) problems.push(`component <${tag}> is used but not imported at the top level`);
+  }
   try {
     const out = await compile(body, {
       format: file.endsWith('.md') ? 'md' : 'mdx',

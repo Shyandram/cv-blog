@@ -109,6 +109,7 @@ export const mathExperiments: Experiment[] = [
     challenge: L('Set k = 10. Compare step sizes 0.1, 0.2 and 0.3. What happens to the y coordinate at the stability boundary?', '設定 k = 10，比較步長 0.1、0.2 與 0.3。在穩定邊界上，y 座標有什麼變化？'),
     note: L('An exact quadratic: f(x,y) = (x² + ky²)/2, starting at (3,2). Updates are x ← (1−η)x and y ← (1−ηk)y. The contour plot has a fixed viewing window; displayed objective values are never clipped.', '精確的二次函數：f(x,y) = (x² + ky²)/2，起點為 (3,2)。更新式為 x ← (1−η)x、y ← (1−ηk)y。等高線圖使用固定視窗，顯示的目標函數值不會截斷。'),
     related: ['optimization/opt-06-gradient-newton'],
+    predict: { question: L("The curvature ratio is k = 5. Which step size makes the iterate blow up instead of settling?", "曲率比是 k = 5。哪一個步長會讓迭代發散而不是收斂？"), options: [{ value: "0.15", label: L("η = 0.15", "η = 0.15") }, { value: "0.30", label: L("η = 0.30", "η = 0.30") }, { value: "0.45", label: L("η = 0.45", "η = 0.45") }], answer: "0.45", explain: L("The steep direction is multiplied by 1 − ηk each step, which has magnitude below 1 only when η is below 2/k = 0.4. So 0.15 and 0.30 converge (0.30 overshoots back and forth) and 0.45 diverges.", "陡峭方向每步乘上 1 − ηk，只有在 η 小於 2/k = 0.4 時，其絕對值才小於 1。因此 0.15 與 0.30 會收斂（0.30 會來回越過最低點），0.45 則發散。") },
     controls: [
       { key: 'condition', label: L('Curvature ratio k', '曲率比 k'), kind: 'range', min: 1, max: 20, step: 1, value: 5 },
       { key: 'step', label: L('Step size η', '步長 η'), kind: 'range', min: 0.01, max: 1, step: 0.01, value: 0.15 },
@@ -152,6 +153,7 @@ export const mathExperiments: Experiment[] = [
     challenge: L('With crossover p = 0.1, move the input prior away from 0.5. Does the channel capacity change? Does the transmitted information change?', '固定翻轉機率 p = 0.1，將輸入先驗機率移離 0.5。通道容量會改變嗎？實際傳遞的資訊會改變嗎？'),
     note: L('Independent bit flips define a binary symmetric channel. q = P(X=1), p = P(Y≠X), and P(Y=1) = p + q(1−2p). All values are bits per channel use. Capacity maximizes mutual information over q; here q = 0.5 achieves it.', '獨立的位元翻轉構成二元對稱通道。q = P(X=1)、p = P(Y≠X)，且 P(Y=1) = p + q(1−2p)。數值單位皆為每次通道使用的位元數。容量是對 q 最大化後的互資訊；此處 q = 0.5 可達到容量。'),
     related: ['information-theory/it-01-entropy-mutual-information', 'information-theory/it-04-channel-capacity'],
+    predict: { question: L("Move the input probability q = P(X=1) away from 0.5 with the flip probability fixed. What happens to the channel capacity C?", "固定位元翻轉機率，把輸入機率 q = P(X=1) 從 0.5 移開。通道容量 C 會怎麼變？"), options: [{ value: "down", label: L("C shrinks", "C 變小") }, { value: "same", label: L("C stays the same", "C 不變") }, { value: "up", label: L("C grows", "C 變大") }], answer: "same", explain: L("Capacity is the largest I(X;Y) over all input distributions, so it is a property of the channel (here 1 − h₂(p)). Moving q lowers I(X;Y) below C; it does not change C.", "容量是所有輸入分布中最大的 I(X;Y)，所以它是通道本身的性質（此處為 1 − h₂(p)）。移動 q 會讓 I(X;Y) 低於 C，但不會改變 C。") },
     controls: [
       { key: 'prior', label: L('Input prior q = P(X=1)', '輸入先驗機率 q = P(X=1)'), kind: 'range', min: 0, max: 1, step: 0.01, value: 0.5 },
       { key: 'crossover', label: L('Bit-flip probability p', '位元翻轉機率 p'), kind: 'range', min: 0, max: 0.5, step: 0.01, value: 0.1 },

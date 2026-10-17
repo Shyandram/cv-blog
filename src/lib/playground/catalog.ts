@@ -1,5 +1,4 @@
 import { TRACKS, type Track } from '../taxonomy';
-import { geometryExperiments } from './geometry';
 import { visionExperiments } from './vision';
 import { languageExperiments } from './language';
 import { mathExperiments } from './math';
@@ -9,7 +8,7 @@ import { chapterInformationExperiments } from './chapters-information';
 import { chapterRecognitionExperiments } from './chapters-recognition';
 import { chapterVisionExperiments } from './chapters-vision';
 import { chapterLanguageExperiments } from './chapters-language';
-export const experiments = [...geometryExperiments, ...visionExperiments, ...languageExperiments, ...mathExperiments, ...chapterFoundationsExperiments, ...chapterOptimizationExperiments, ...chapterInformationExperiments, ...chapterRecognitionExperiments, ...chapterVisionExperiments, ...chapterLanguageExperiments]
+export const experiments = [...visionExperiments, ...languageExperiments, ...mathExperiments, ...chapterFoundationsExperiments, ...chapterOptimizationExperiments, ...chapterInformationExperiments, ...chapterRecognitionExperiments, ...chapterVisionExperiments, ...chapterLanguageExperiments]
     .sort((a, b) => TRACKS.indexOf(a.track) - TRACKS.indexOf(b.track));
 export interface Source {
     title: string;
@@ -34,13 +33,8 @@ export const experimentSources: Record<string, Source[]> = {
     'contrastive-alignment': [source('Ting Chen, Simon Kornblith, Mohammad Norouzi & Geoffrey Hinton, A Simple Framework for Contrastive Learning of Visual Representations, ICML, 2020', 'https://proceedings.mlr.press/v119/chen20j.html'), source('Alec Radford et al., Learning Transferable Visual Models From Natural Language Supervision, ICML, 2021', 'https://proceedings.mlr.press/v139/radford21a.html')],
     'selective-memory': [source('Albert Gu & Tri Dao, Mamba: Linear-Time Sequence Modeling with Selective State Spaces, arXiv, 2023', 'https://arxiv.org/abs/2312.00752'), sources.ml[0]],
     'transport-steps': [source('Yaron Lipman et al., Flow Matching for Generative Modeling, ICLR, 2023', 'https://arxiv.org/abs/2210.02747')],
-    'array-dtype': [sources.foundations[0]],
-    'color-clipping': [...sources['image-processing'], source('International Color Consortium, How to interpret the sRGB color space, technical note', 'https://www.w3.org/Graphics/Color/srgb')],
-    'receptive-field': [source('André Araujo, Wade Norris & Jack Sim, Computing Receptive Fields of Convolutional Neural Networks, Distill, 2019', 'https://distill.pub/2019/computing-receptive-fields/')],
     'classification-threshold': [sources['pattern-recognition'][1]],
     'temperature-calibration': [calibrationSource],
     'restoration-ambiguity': [source('Yochai Blau & Tomer Michaeli, The Perception-Distortion Tradeoff, CVPR, 2018', 'https://arxiv.org/abs/1711.06077')],
-    'lowlight-photons': [source('Alessandro Foi, Mejdi Trimeche, Vladimir Katkovnik & Karen Egiazarian, Practical Poissonian-Gaussian noise modeling and fitting for single-image raw-data, IEEE TIP, 2008', 'https://researchportal.tuni.fi/en/publications/practical-poissonian-gaussian-noise-modeling-and-fitting-for-sing/')],
-    'tracking-association': [source('Alex Bewley et al., Simple Online and Realtime Tracking, ICIP, 2016', 'https://arxiv.org/abs/1602.00763')],
     'world-model-rollout': [source('David Ha & Jürgen Schmidhuber, World Models, arXiv, 2018', 'https://arxiv.org/abs/1803.10122')],
 };

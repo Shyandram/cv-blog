@@ -1,40 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 // Node's built-in TypeScript runner requires an explicit extension.
-import { samplePixels, lowpassSignal, diffusionSignal, intersectionOverUnion, suppressBoxes, visionExperiments } from '../../src/lib/playground/vision.ts';
-
-test('pixel quantization uses the chosen levels and dense 8-bit sampling has bounded error', () => {
-  const binary = samplePixels(1, 1);
-  assert.ok(binary.output.every((x: number) => x === 0 || x === 1));
-  const dense = samplePixels(1, 8);
-  assert.ok(dense.error <= (0.5 / 255) ** 2);
-  const coarse = samplePixels(4, 8);
-  assert.ok(coarse.error > dense.error);
-  assert.equal(coarse.output[0], coarse.output[3]);
-  assert.equal(coarse.output[0], coarse.output[3 * 24 + 3]);
-});
-
-test('ideal low-pass has exact frequency boundaries and Parseval mean-square loss', () => {
-  const all = lowpassSignal(12), low = lowpassSignal(11), none = lowpassSignal(1);
-  assert.equal(all.error, 0);
-  assert.deepEqual(low.retained, [1, 0]);
-  assert.ok(Math.abs(low.error - 0.45 ** 2 / 2) < 1e-12);
-  assert.ok(Math.abs(none.error - (1 + 0.45 ** 2) / 2) < 1e-12);
-  assert.ok(none.filtered.every((v: number) => v === 0));
-});
-
-test('all oracle targets invert the forward identity whenever identifiable', () => {
-  for (const alpha of [0, 0.01, 0.5, 0.99, 1]) {
-    for (const target of ['epsilon', 'x0', 'v']) {
-      const r = diffusionSignal(alpha, target);
-      if (alpha === 0 && target === 'epsilon') assert.equal(r.error, null);
-      else assert.ok(r.error !== null && r.error < 1e-25);
-    }
-  }
-  assert.deepEqual(diffusionSignal(0.1, 'v').noise, diffusionSignal(0.9, 'epsilon').noise);
-  const clean = diffusionSignal(1, 'epsilon');
-  assert.deepEqual(clean.xt, clean.x0);
-});
+import { intersectionOverUnion, suppressBoxes, visionExperiments } from '../../src/lib/playground/vision.ts';
 
 test('IoU geometry and greedy NMS distinguish score filtering, strict overlap and suppressed boxes', () => {
   const a = { id: 'A', x: 0, y: 0, width: 10, height: 10, score: 0.9 };
