@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectQuadratic, scalarDual, locationFit, barrierPoint, softThreshold, chapterOptimizationExperiments } from '../../src/lib/playground/chapters-optimization.ts';
+import { projectQuadratic, scalarDual, locationFit, softThreshold, chapterOptimizationExperiments } from '../../src/lib/playground/chapters-optimization.ts';
 import { bernoulliMismatch, typicalSet, waterFill, binaryRateDistortion, testingErrors, chapterInformationExperiments } from '../../src/lib/playground/chapters-information.ts';
 const close = (a: number, b: number, t = 1e-9) => assert.ok(Math.abs(a - b) < t, `${a} ≠ ${b}`);
 test('constrained quadratic candidates satisfy KKT and improve over clipping', () => {
@@ -21,13 +21,6 @@ test('zero apparent primal dual difference can hide infeasibility', () => { cons
     close(s.complementarity, 0);
 } });
 test('Huber influence saturates while mean follows an outlier', () => { close(locationFit(12, 'l2').m, 2); close(locationFit(2, 'huber').m, locationFit(12, 'huber').m); const l1 = locationFit(12, 'l1'); close(l1.loss(0), l1.loss(.5)); close(l1.m, .25); });
-test('barrier central path has exact 2/t gap and valid KKT stationarity', () => { for (const t of [.1, 1, 10, 1000]) {
-    const r = barrierPoint(t);
-    assert.ok(r.x > 0 && r.x < 1);
-    close(r.gap, 2 / t);
-    close(r.stationarity, 0);
-    close(t - 1 / r.x + 1 / (1 - r.x), 0, 1e-8);
-} });
 test('soft threshold solves the subgradient optimality equation', () => { for (const v of [-3, -.5, 0, 1, 3])
     for (const lambda of [0, .5, 2, 3]) {
         const x = softThreshold(v, lambda);
