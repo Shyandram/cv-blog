@@ -56,6 +56,7 @@ const en = {
   'search.title': 'Search',
   'about.title': 'About',
   'footer.rss': 'RSS',
+  'footer.pdf': 'PDF',
   'footer.source': 'Source on GitHub',
   'notfound.title': 'Page not found',
 } as const;
@@ -113,6 +114,7 @@ const zhTw: Record<Key, string> = {
   'search.title': '搜尋',
   'about.title': '關於',
   'footer.rss': 'RSS',
+  'footer.pdf': 'PDF 下載',
   'footer.source': 'GitHub 原始碼',
   'notfound.title': '找不到頁面',
 };

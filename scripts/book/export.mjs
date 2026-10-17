@@ -15,6 +15,9 @@ const root = path.resolve(import.meta.dirname, '../..');
 const out = path.resolve(process.env.BOOK_OUTPUT || path.join(root, 'book-output'));
 const pandoc = process.env.PANDOC || 'pandoc';
 const fontDir = process.env.BOOK_FONTS;
+// Pandoc 3.8 renamed --no-highlight to --syntax-highlighting=none; accept either.
+const pandocVersion = execFileSync(pandoc, ['--version'], { encoding: 'utf8' }).match(/pandoc(?:\.exe)? (\d+)\.(\d+)/);
+const noHighlight = pandocVersion && (Number(pandocVersion[1]) > 3 || (Number(pandocVersion[1]) === 3 && Number(pandocVersion[2]) >= 8)) ? ['--syntax-highlighting=none'] : ['--no-highlight'];
 const langs = process.argv.slice(2).length ? process.argv.slice(2) : ['en', 'zh-tw'];
 const tracks = ['foundations', 'image-processing', 'nlp', 'pattern-recognition', 'ml', 'deep-learning', 'optimization', 'information-theory'];
 const names = {
@@ -101,7 +104,7 @@ for (const lang of langs) {
      stats.comparisons++;
      return [...figure(attrs.before, attrs.beforeLabel), ...figure(attrs.after, attrs.afterLabel), para([text(attrs.alt || '')])];
     }
-    if (node.name === 'KernelPlayground' || node.name === 'ImageCompare') {
+    if (node.name === 'KernelPlayground' || node.name === 'ImageCompare' || node.name === 'Lab') {
      stats.interactiveLinks++;
      return [{ type: 'blockquote', children: [para([strong(zh ? '互動示範（網站版）' : 'Interactive demonstration (online)'), text(zh ? '：請開啟本篇教學的網站版本，操作此示範。' : ': open the online edition of this tutorial to use this demonstration.'), { type: 'link', url: online, children: [text(zh ? '開啟示範' : 'Open demonstration')] }])] }];
     }
@@ -125,7 +128,7 @@ for (const lang of langs) {
  fs.writeFileSync(path.join(out, `${stem}.md`), content.join('\n\n'));
  const metadata = { booktitle: 'Pixels → Perception', edition: zh ? '繁體中文版' : 'English Edition', subtitle: zh ? '從像素到理解：視覺、語言與學習' : 'From Pixels to Understanding', tagline: zh ? '基礎・影像・語言・學習・理論' : 'Foundations · Vision · Language · Learning · Theory', date, revision, zh, tutorials: stats.tutorials, posts: stats.posts };
  fs.writeFileSync(path.join(out, `${stem}.json`), JSON.stringify(metadata, null, 2));
- execFileSync(pandoc, [path.join(out, `${stem}.md`), '--from=markdown+raw_tex-implicit_figures', '--to=latex', '--standalone', '--top-level-division=section', '--syntax-highlighting=none', `--template=${path.join(root, 'scripts/book/template.tex')}`, `--lua-filter=${path.join(root, 'scripts/book/layout.lua')}`, `--metadata-file=${path.join(out, `${stem}.json`)}`, '-o', path.join(out, `${stem}.tex`)], { cwd: out, stdio: 'inherit' });
+ execFileSync(pandoc, [path.join(out, `${stem}.md`), '--from=markdown+raw_tex-implicit_figures', '--to=latex', '--standalone', '--top-level-division=section', ...noHighlight, `--template=${path.join(root, 'scripts/book/template.tex')}`, `--lua-filter=${path.join(root, 'scripts/book/layout.lua')}`, `--metadata-file=${path.join(out, `${stem}.json`)}`, '-o', path.join(out, `${stem}.tex`)], { cwd: out, stdio: 'inherit' });
  manifest.editions[lang] = stats;
  console.log(`${lang}: ${stats.tutorials} tutorials, ${stats.posts} posts, ${stats.figures} figures, ${stats.codeBlocks} code blocks`);
 }

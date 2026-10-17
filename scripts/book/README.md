@@ -40,3 +40,16 @@ python3 scripts/book/check_pdf.py
 ```
 
 This checks chapter coverage, code/equation/figure counts against the manifest, embedded fonts, internal link destinations, unresolved references, missing glyphs, and text outside page boundaries. It writes `validation.json` and preview contact sheets under `book-output/previews/`. Review those previews along with the LaTeX logs before distributing an updated edition.
+
+## Publish the PDFs on the site
+
+The site has a download page at `/en/download/` and `/zh-tw/download/` (also linked from the footer and the Learn page). It lists the PDFs in `public/books/` using the sizes and counts in `src/data/books.json`. Cloudflare builds the site from `main` and cannot compile LaTeX, so the PDFs are built here and committed.
+
+```bash
+export BOOK_FONTS=/path/to/book-fonts TECTONIC=/path/to/tectonic     # see Requirements above
+npm run book                                                          # both languages, or: npm run book -- en
+```
+
+`npm run book` runs the export, shrinks the figures in the output folder (`optimize_figures.py`, needs Pillow: plots stay palette PNGs, photographs become JPEG, width capped at 800 px; the originals in `src/assets` are untouched), rewrites the LaTeX sources for the renamed files, compiles with Tectonic, and copies `pixels-perception-<lang>.pdf` to `public/books/`. It refuses to publish a PDF over 25 MiB, the Cloudflare Pages limit for a single file. Commit `public/books/*.pdf` and `src/data/books.json` together, after reviewing the PDFs with `check_pdf.py`. `--skip-build` publishes PDFs that are already compiled in `BOOK_OUTPUT`.
+
+Pandoc 3.8 renamed `--no-highlight` to `--syntax-highlighting=none`; the exporter detects the installed version and uses the right flag.
