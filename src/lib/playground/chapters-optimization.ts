@@ -52,15 +52,29 @@ export const softThreshold = (v: number, lambda: number) => Math.sign(v) * Math.
 export const chapterOptimizationExperiments: Experiment[] = [
     {
         id: 'convex-combinations', track: 'optimization', title: L('Does the whole segment stay feasible?', '整條線段都可行嗎？'),
-        description: L('Move a convex combination between two feasible points and compare a disk with an annulus.', '在兩個可行點之間移動凸組合，比較圓盤與圓環。'),
+        description: L('Place two feasible points on a circle, slide along the segment between them, and compare a disk with an annulus.', '在圓上放兩個可行點，沿著它們之間的線段移動，並比較圓盤與圓環。'),
         related: ['optimization/opt-01-modeling-convex-sets'],
-        challenge: L('Choose the annulus. Find a mixing weight that makes the point infeasible even though both endpoints are feasible.', '選圓環，找出一個混合權重，使中間點不可行，但兩個端點仍可行。'),
-        note: L('Endpoints are (−1,0) and (1,0). The disk has radius 1; the annulus also requires radius ≥ 0.5. One counterexample disproves convexity; sampled examples alone do not prove it.', '端點為 (−1,0) 與 (1,0)。圓盤半徑為 1；圓環另要求半徑至少為 0.5。一個反例就能否定凸性，有限取樣本身不能證明凸性。'),
-        controls: [range('mix', 'Mixing weight λ', '混合權重 λ', 0, 1, .01, .5), { key: 'set', label: L('Feasible set', '可行集合'), kind: 'select', value: 'annulus', options: [{ value: 'disk', label: L('Disk', '圓盤') }, { value: 'annulus', label: L('Annulus', '圓環') }] }],
+        challenge: L('Choose the annulus and place both endpoints on the circle. Find two endpoints whose whole segment stays feasible, and two whose segment crosses the hole. How far apart in angle do they need to be?', '選圓環，並把兩個端點放在圓上。找出一組整段線段都可行的端點，以及一組線段穿過洞的端點。兩端點在角度上要相差多少？'),
+        predict: { question: L('Both endpoints lie on a circle of radius 0.85 and the annulus forbids radius below 0.5. When do the endpoints stay feasible but the segment between them does not?', '兩個端點都在半徑 0.85 的圓上，圓環禁止半徑小於 0.5。端點可行、但兩點之間的線段卻不可行，會發生在什麼時候？'),
+            options: [{ value: 'never', label: L('Never: both endpoints are feasible, so the segment is too', '不會：兩端點都可行，線段也就可行') }, { value: 'far', label: L('When the endpoints are far enough apart in angle', '兩端點在角度上相距夠遠時') }, { value: 'near', label: L('When the endpoints are close together', '兩端點靠得很近時') }],
+            answer: 'far',
+            explain: L('The midpoint of a chord at angle difference Δ lies at distance 0.85·cos(Δ/2) from the center. That drops below 0.5 once Δ exceeds about 108 degrees, so the segment crosses the hole although both ends are feasible: the annulus is not convex. For the disk this never happens.', '夾角為 Δ 的弦，其中點到圓心的距離是 0.85·cos(Δ/2)。當 Δ 超過約 108 度，這個距離就小於 0.5，線段會穿過洞，儘管兩端點都可行：圓環不是凸集合。圓盤則永遠不會這樣。') },
+        note: L('Endpoints are P = 0.85(cos α, sin α) and Q = 0.85(cos β, sin β). The disk has radius 1; the annulus also requires radius ≥ 0.5. The segment is x(λ) = (1−λ)P + λQ. One counterexample disproves convexity; sampled examples alone do not prove it.', '端點為 P = 0.85(cos α, sin α) 與 Q = 0.85(cos β, sin β)。圓盤半徑為 1；圓環另外要求半徑 ≥ 0.5。線段為 x(λ) = (1−λ)P + λQ。一個反例就能推翻凸性；只靠取樣的例子不能證明凸性。'),
+        controls: [range('alpha', 'Endpoint P angle (degrees)', '端點 P 的角度（度）', 0, 360, 5, 160), range('beta', 'Endpoint Q angle (degrees)', '端點 Q 的角度（度）', 0, 360, 5, 20), range('mix', 'Mixing weight λ', '混合權重 λ', 0, 1, .01, .5), { key: 'set', label: L('Feasible set', '可行集合'), kind: 'select', value: 'annulus', options: [{ value: 'annulus', label: L('Annulus', '圓環') }, { value: 'disk', label: L('Disk', '圓盤') }] }],
         compute(s, lang) {
-            const x = 2 * num(s, 'mix') - 1, hole = s.set === 'annulus', feasible = !hole || Math.abs(x) >= .5;
-            return { svg: svg(`<circle cx="320" cy="150" r="112" fill="var(--plot-a)" fill-opacity=".15" stroke="var(--plot-a)"/>${hole ? '<circle cx="320" cy="150" r="56" fill="var(--plot-bg)" stroke="var(--plot-b)"/>' : ''}` + path([[208, 150], [432, 150]], 'stroke="var(--plot-ink)" stroke-dasharray="4 3"') + [-1, 1].map(v => `<circle cx="${320 + 112 * v}" cy="150" r="5" fill="var(--plot-a)"/>`).join('') + `<circle cx="${320 + 112 * x}" cy="150" r="8" fill="var(--plot-${feasible ? 'c' : 'b'})"/>` + text(208, 285, '(−1, 0)') + text(432, 285, '(1, 0)', 'text-anchor="end"')),
-                summary: pick(lang, feasible ? 'The selected combination is feasible. Check the rest of the segment too.' : 'This point lies in the hole: the annulus is not convex.', feasible ? '目前的組合可行，也請檢查線段其他位置。' : '此點落在中間的孔洞內，因此圓環不是凸集合。'), metrics: [{ label: pick(lang, 'Point x', '點的 x 座標'), value: fmt(x) }, { label: pick(lang, 'Feasible', '可行'), value: pick(lang, feasible ? 'Yes' : 'No', feasible ? '是' : '否') }] };
+            const rad = 0.85, a = num(s, 'alpha') * Math.PI / 180, b = num(s, 'beta') * Math.PI / 180, lam = num(s, 'mix'), hole = s.set === 'annulus';
+            const P: [number, number] = [rad * Math.cos(a), rad * Math.sin(a)], Q: [number, number] = [rad * Math.cos(b), rad * Math.sin(b)];
+            const at = (l: number): [number, number] => [(1 - l) * P[0] + l * Q[0], (1 - l) * P[1] + l * Q[1]], dist = (v: [number, number]) => Math.hypot(v[0], v[1]);
+            let minR = Infinity; for (let i = 0; i <= 400; i++) minR = Math.min(minR, dist(at(i / 400)));
+            const x = at(lam), bad = hole && dist(x) < 0.5, segmentBad = hole && minR < 0.5;
+            const px = (v: [number, number]) => [320 + 112 * v[0] / 1, 150 - 112 * v[1] / 1] as [number, number];
+            const [p0, q0, xm] = [px(P), px(Q), px(x)];
+            const body = `<circle cx="320" cy="150" r="112" fill="var(--plot-a)" fill-opacity=".15" stroke="var(--plot-a)"/>${hole ? '<circle cx="320" cy="150" r="56" fill="var(--plot-bg)" stroke="var(--plot-b)"/>' : ''}`
+                + path([p0, q0], `stroke="${segmentBad ? 'var(--plot-b)' : 'var(--plot-c)'}" stroke-width="3"`) + `<circle cx="${p0[0]}" cy="${p0[1]}" r="6" fill="var(--plot-a)"/><circle cx="${q0[0]}" cy="${q0[1]}" r="6" fill="var(--plot-a)"/><circle cx="${xm[0]}" cy="${xm[1]}" r="7" fill="${bad ? 'var(--plot-b)' : 'var(--plot-c)'}"/>`
+                + text(p0[0] + (p0[0] < 320 ? -16 : 10), p0[1] + 4, 'P', p0[0] < 320 ? 'text-anchor="end"' : '') + text(q0[0] + (q0[0] < 320 ? -16 : 10), q0[1] + 4, 'Q', q0[0] < 320 ? 'text-anchor="end"' : '');
+            return { svg: svg(body, 300),
+                summary: pick(lang, bad ? 'The chosen point lies in the hole although both endpoints are feasible: the annulus is not convex.' : segmentBad ? 'This point is feasible, but another point on the same segment lies in the hole. Slide the weight to find it.' : 'The whole segment stays feasible for these endpoints. Try endpoints that are farther apart in angle.', bad ? '所選的點落在洞裡，但兩個端點都可行：圓環不是凸集合。' : segmentBad ? '這個點可行，但同一線段上的另一個點落在洞裡。移動權重就能找到它。' : '這組端點的整條線段都可行。試試角度相差更大的端點。'),
+                metrics: [{ label: pick(lang, 'Radius at weight λ', '權重 λ 處的半徑'), value: fmt(dist(x), 3) }, { label: pick(lang, 'Smallest radius on the segment', '線段上的最小半徑'), value: fmt(minR, 3) }, { label: pick(lang, 'Angle apart (degrees)', '角度差（度）'), value: fmt(Math.min(Math.abs(num(s, 'alpha') - num(s, 'beta')) % 360, 360 - Math.abs(num(s, 'alpha') - num(s, 'beta')) % 360), 0) }] };
         },
     },
     {
