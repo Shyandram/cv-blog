@@ -19,7 +19,11 @@ const pagefindIndex = () => ({
   hooks: {
     'astro:build:done': async ({ dir, logger }) => {
       const out = fileURLToPath(dir);
-      const { index, errors } = await pagefind.createIndex();
+      // KaTeX renders each formula three times (HTML glyphs, MathML, TeX annotation); index only the MathML text so
+      // search excerpts do not show raw TeX or tripled glyphs. UI-only text is left out too.
+      const { index, errors } = await pagefind.createIndex({
+        excludeSelectors: ['.katex-html', '.katex-mathml annotation', '.rt-copy', '.fig-badge'],
+      });
       if (!index) throw new Error(`Pagefind failed to start: ${errors.join('; ')}`);
       const { page_count } = await index.addDirectory({ path: out });
       await index.writeFiles({ outputPath: `${out}pagefind` });
