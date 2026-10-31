@@ -3,6 +3,8 @@ export type Lang = (typeof LANGS)[number];
 export const DEFAULT_LANG: Lang = 'en';
 
 export const LANG_LABEL: Record<Lang, string> = { en: 'English', 'zh-tw': '繁體中文' };
+/** Short language names for the phone header. */
+export const LANG_SHORT: Record<Lang, string> = { en: 'EN', 'zh-tw': '中文' };
 export const HTML_LANG: Record<Lang, string> = { en: 'en', 'zh-tw': 'zh-Hant-TW' };
 
 const en = {
@@ -49,6 +51,11 @@ const en = {
   'tut.edit': 'Edit this page on GitHub',
   'tut.notTranslated': 'This page has not been translated yet. You are reading the English version.',
   'tut.pager': 'Previous and next tutorials',
+  'tut.navigate': 'Navigate: this page and this track',
+  'tut.sectionPos': '{i}/{n}',
+  'tut.left': '{m} min left',
+  'tut.read': '(read)',
+  'tut.top': 'Back to top',
   'tut.copy': 'Copy',
   'tut.copyCode': 'Copy code',
   'tut.copied': 'Copied',
@@ -119,6 +126,11 @@ const zhTw: Record<Key, string> = {
   'tut.edit': '在 GitHub 上編輯此頁',
   'tut.notTranslated': '本頁尚未翻譯，以下為英文版本。',
   'tut.pager': '上一篇與下一篇',
+  'tut.navigate': '導覽：本頁與本系列',
+  'tut.sectionPos': '第 {i}/{n} 節',
+  'tut.left': '剩 {m} 分鐘',
+  'tut.read': '（已讀）',
+  'tut.top': '回到頂端',
   'tut.copy': '複製',
   'tut.copyCode': '複製程式碼',
   'tut.copied': '已複製',

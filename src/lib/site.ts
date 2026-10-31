@@ -62,12 +62,45 @@ export async function postsFor(lang: Lang, { includeUntranslated = false } = {})
     .sort((a, b) => b.entry.data.published.valueOf() - a.entry.data.published.valueOf());
 }
 
-export function readingMinutes(body: string | undefined, lang: Lang): number {
-  if (!body) return 1;
+/** Unrounded reading time of a Markdown/MDX fragment in minutes (code blocks and display math are skipped). */
+function readingUnits(body: string, lang: Lang): number {
   const text = body.replace(/```[\s\S]*?```/g, '').replace(/\$\$[\s\S]*?\$\$/g, '');
   // English ~220 words/min; Chinese ~400 characters/min.
-  const units = lang === 'zh-tw' ? (text.match(/[一-鿿]/g) ?? []).length / 400 + text.split(/\s+/).filter((w) => /[a-z]/i.test(w)).length / 220 : text.split(/\s+/).length / 220;
-  return Math.max(1, Math.round(units));
+  return lang === 'zh-tw' ? (text.match(/[一-鿿]/g) ?? []).length / 400 + text.split(/\s+/).filter((w) => /[a-z]/i.test(w)).length / 220 : text.split(/\s+/).length / 220;
+}
+
+export function readingMinutes(body: string | undefined, lang: Lang): number {
+  if (!body) return 1;
+  return Math.max(1, Math.round(readingUnits(body, lang)));
+}
+
+/** Sections that are not part of a tutorial's main reading line: optional pages of their own, and the reference list. */
+export const OPTIONAL_SECTION = /^(supplementary notes|補充資料|paper guides|論文導讀|references|參考文獻)$/i;
+
+/**
+ * Reading time of each "## " section of a tutorial body, in order (headings inside fenced code are ignored). Optional
+ * sections (notes, paper guides, references) get 0 minutes because the main page only shows a short card or a list.
+ */
+export function sectionMinutes(body: string | undefined, lang: Lang): { title: string; minutes: number; units: number }[] {
+  if (!body) return [];
+  const out: { title: string; lines: string[] }[] = [];
+  let fence = false;
+  for (const line of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (!fence && /^## /.test(line)) { out.push({ title: line.slice(3).trim(), lines: [] }); continue; }
+    out.at(-1)?.lines.push(line);
+  }
+  return out.map(({ title, lines }) => {
+    const units = OPTIONAL_SECTION.test(title) ? 0 : readingUnits(lines.join('\n'), lang);
+    return { title, units, minutes: units > 0 ? Math.max(1, Math.round(units)) : 0 };
+  });
+}
+
+/** Reading time of a tutorial's main line: every section except the optional ones. */
+export function tutorialMinutes(body: string | undefined, lang: Lang): number {
+  const sections = sectionMinutes(body, lang);
+  if (sections.length === 0) return readingMinutes(body, lang);
+  return Math.max(1, Math.round(sections.reduce((a, x) => a + x.units, 0)));
 }
 
 export function formatDate(d: Date, lang: Lang) {
