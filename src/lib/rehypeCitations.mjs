@@ -10,7 +10,7 @@ const classList = (n) => {
 };
 const CITATION = /\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]/g;
 
-function linkify(value, count) {
+function linkify(value, count, label) {
   const out = [];
   let last = 0, changed = false;
   for (const m of value.matchAll(CITATION)) {
@@ -22,7 +22,7 @@ function linkify(value, count) {
     out.push({ type: 'text', value: '[' });
     parts.forEach((part, i) => {
       if (i % 2 === 1) out.push({ type: 'text', value: part });
-      else out.push({ type: 'element', tagName: 'a', properties: { href: `#ref-${part}`, className: ['cite'] }, children: [{ type: 'text', value: part }] });
+      else out.push({ type: 'element', tagName: 'a', properties: { href: `#ref-${part}`, className: ['cite'], ariaLabel: label.replace('{n}', part) }, children: [{ type: 'text', value: part }] });
     });
     out.push({ type: 'text', value: ']' });
     last = m.index + m[0].length;
@@ -32,23 +32,26 @@ function linkify(value, count) {
   return out;
 }
 
-function walk(node, count) {
+function walk(node, count, label) {
   if (!node.children) return;
   const next = [];
   for (const child of node.children) {
     if (child.type === 'text') {
-      const parts = linkify(child.value, count);
+      const parts = linkify(child.value, count, label);
       if (parts) next.push(...parts); else next.push(child);
       continue;
     }
-    if (isElement(child) && !SKIP.has(child.tagName ?? child.name) && !classList(child).some((c) => c.startsWith('katex'))) walk(child, count);
+    if (isElement(child) && !SKIP.has(child.tagName ?? child.name) && !classList(child).some((c) => c.startsWith('katex'))) walk(child, count, label);
     next.push(child);
   }
   node.children = next;
 }
 
 export default function rehypeCitations() {
-  return (tree) => {
+  return (tree, file) => {
+    // Screen readers would otherwise announce a bare number; the label names it as a reference in the page's language.
+    const zh = /[\\/]zh-tw[\\/]/.test(String(file?.path ?? file?.history?.[0] ?? ''));
+    const label = zh ? '參考文獻 {n}' : 'Reference {n}';
     const top = tree.children;
     const h = top.findIndex((n) => n.type === 'element' && n.tagName === 'h2' && REF_HEADINGS.has(textOf(n).trim().toLowerCase()));
     if (h < 0) return;
@@ -57,7 +60,7 @@ export default function rehypeCitations() {
     const items = list.children.filter((n) => n.type === 'element' && n.tagName === 'li');
     items.forEach((li, i) => { li.properties = { ...li.properties, id: `ref-${i + 1}` }; });
     const before = { children: top.slice(0, h) };
-    walk(before, items.length);
+    walk(before, items.length, label);
     tree.children = [...before.children, ...top.slice(h)];
   };
 }
