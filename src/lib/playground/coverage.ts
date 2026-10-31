@@ -46,6 +46,7 @@ export const chapterPlan: Record<string, string[]> = {
     'deep-learning/dl-01-deep-learning-for-image-processing': ['receptive-field'],
     'deep-learning/dl-02-image-classification': ['classification-threshold', 'temperature-calibration'],
     'deep-learning/dl-03-object-detection': ['detection-nms'],
+    'deep-learning/dl-03a-real-time-detection': ['detection-nms'],
     'deep-learning/dl-04-image-restoration': ['restoration-ambiguity'],
     'deep-learning/dl-04a-super-resolution': ['restoration-ambiguity', 'pixel-sampling'],
     'deep-learning/dl-05-low-light-enhancement': ['lowlight-photons'],
