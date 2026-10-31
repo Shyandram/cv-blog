@@ -101,6 +101,7 @@ for (const lang of langs) {
      if (node.name === 'strong') return [{ type: 'strong', children }];
      if (node.name === 'Callout') return [{ type: 'blockquote', children: [para([strong(attrs.title || (zh ? '提示' : 'Note'))]), ...children] }];
      if (node.name === 'details') return [{ type: 'blockquote', children }];
+     if (node.name === 'Supplement') return [{ type: 'blockquote', children: [para([strong(zh ? '補充' : 'Supplementary'), ...(attrs.summary ? [text(`${zh ? '：' : ': '}${attrs.summary}`)] : [])]), ...children] }];
      if (node.name === 'summary') return [para([{ type: 'strong', children }])];
      if (node.name === 'Figure') { stats.figures++; return figure(attrs.src, attrs.caption || attrs.alt); }
      if (node.name === 'ImageCompare' && attrs.before && attrs.after) {

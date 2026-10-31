@@ -104,6 +104,21 @@ the PNG with a Chinese caption. Show figures with `<Figure src={img} alt="..." c
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
 
+**Supplementary subsections** (`Supplement`). A subsection that is optional reading (the background or
+introduction of an algorithm the main line does not need, a variant, a historical note, a longer derivation) keeps its
+`###` heading as plain Markdown and puts its *body* in `<Supplement summary="...">`; the body is collapsed on the site
+and shown as a labelled block in the PDF. Use it only when ALL of these hold:
+- nothing outside the subsection depends on it: no later section, code snippet, figure, exercise or other tutorial
+  uses a term, function or result first defined there (grep for it before wrapping);
+- it is a whole `###` subsection (never a `##` section, never a part of one), and the tutorial keeps at least
+  three-quarters of its subsections outside `Supplement`; "What you'll learn", "Key takeaways", "Exercises",
+  "References" and the `Modern view` are never wrapped;
+- the English and zh-tw files wrap the same subsections, with `summary` one short sentence saying what the reader gets
+  (English: "How exact histogram specification breaks ties"; zh-tw: the same meaning, no word-for-word copy needed).
+Import it at the top: `import Supplement from '../../../../components/Supplement.astro';`. Blank line before and after the
+component and the content inside; a heading inside the body is fine (`####`), but do not repeat the subsection's own heading.
+
+
 **Titles and link text:** tutorials are named by track prefix and two-digit number, e.g. `IP 05`,
 `ML 03a`, `DLCV 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's
 chapter order, but the site calls them IP 01–13). Link text to a tutorial uses the same name.
