@@ -68,7 +68,8 @@ Tutorials live in `src/content/tutorials/<lang>/<track>/<slug>.mdx`, one file pe
 5. `## Key takeaways` / `## 重點整理` — 5–8 bullets.
 6. `## Exercises` / `## 練習` — 4–6 original exercises; hints inside `<details>` with `<summary>` on
    its **own line** (the one-line form does not compile).
-7. *(optional)* `## Supplementary notes` / `## 補充資料` — see "Supplementary notes" below.
+7. *(optional)* `## Supplementary notes` / `## 補充資料` — concept details; see "Supplementary notes" below.
+7b. *(optional)* `## Paper guides` / `## 論文導讀` — reading guides to single papers; see "Paper guides" below.
 8. `## References` / `## 參考文獻` — numbered `1. Authors, "Title," Venue, Year. [link](url)`, cited
    in text as `[1]`, `[2]`. Every entry cited; every citation has an entry.
 
@@ -116,7 +117,15 @@ notes are optional. The site shows that section on a **separate page** (`/<lang>
 `src/lib/rehypeSupplementZones.mjs`); the main page shows a short card that lists the notes. Write links normally: an
 in-page `[…](#note-slug)` in the main text is rewritten to `notes/#note-slug` at build time (and a note's link to the main
 text to `../#slug`); a link from another page to a note must point to `…/<slug>/notes/#note-slug`. The PDF keeps the notes
-at the end of the chapter. Where the main text touches the topic it leaves a single italic pointer line with a link to
+at the end of the chapter.
+
+**Paper guides** are kept apart from the notes: a reading guide to a single paper or survey (the problem it poses, the idea,
+what it showed, how to read its tables and comparisons, its limits, why it matters here; grounded in the paper, in the guide's
+own words) goes in its own final section `## Paper guides` / `## 論文導讀`, placed after `## Supplementary notes` and before
+`## References`, one `###` per paper, opening with one sentence saying the guides are optional. The site shows it on its own
+page (`…/<slug>/papers/`); the pointer line reads `*Optional: [U-Net](#u-net-...) (in the Paper guides). …*` / zh-tw
+`*選讀：[…](#…)（見「論文導讀」頁）。…*`. Concept details, algorithms and sub-field background stay in the Supplementary notes;
+a section may be absent when a chapter has nothing of that kind. Where the main text touches the topic it leaves a single italic pointer line with a link to
 the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One sentence on what it adds.*`; zh-tw
 `*選讀：[…](#…)（見「補充資料」頁）。…*`). Rules:
 - nothing in the main text, code, figures or exercises may depend on a note: before moving or writing one, grep for
