@@ -249,6 +249,8 @@ $$
 
 where $\mathbf{x}$ is the block input, $F$ is typically conv–BN–ReLU–conv–BN with weights $W$ (BN is batch normalization), and $\sigma$ is ReLU. When channel counts or resolution change, the shortcut uses a $1 \times 1$ convolution instead of the identity.
 
+*Optional: [Batch normalization](#batch-normalization-standardize-inside-the-network) (see Supplementary notes at the end). What the BN layer computes, and why it behaves differently in training and at test time.*
+
 Why it works:
 
 - **Identity is easy.** If extra depth is not useful, the block only has to drive $F$ toward zero, which is far easier than making a stack of nonlinear layers imitate the identity. Initializing the last BN scale of $F$ at zero makes each block start as the identity.
@@ -355,6 +357,8 @@ $$
 $$
 
 where $V$ is the set of all views, $P_t$ and $P_s$ are the softmax outputs of teacher and student, and $\theta_s$ are the student's weights. The teacher is not trained by gradients. Its weights are an exponential moving average of the student's, $\theta_t \leftarrow \lambda \theta_t + (1 - \lambda)\theta_s$ with $\lambda$ close to 1, and its outputs are centered and sharpened so that training does not collapse to a constant output. Matching "small crop" to "whole image" forces the network to recognize objects from parts. A remarkable emergent property is that the attention maps of a DINO ViT segment the main objects without ever seeing a mask.
+
+*Optional: [Knowledge distillation](#knowledge-distillation-learning-from-a-teachers-soft-answers) (see Supplementary notes at the end). The soft-target loss that DINO and "distilled into smaller models" build on.*
 
 **MAE: masked prediction** [20]. The masked autoencoder hides a large random subset of patches (75 % works best), encodes only the visible ones with a ViT, and asks a light decoder to reconstruct the missing pixels:
 
@@ -556,6 +560,161 @@ Set `conv.weight.requires_grad_(False)` after assigning the weights, and pass on
 
 </details>
 
+## Supplementary notes
+
+These notes are optional background that the main text does not depend on.
+
+### Batch normalization: standardize inside the network
+
+Imagine grading every exam on a curve: whatever the difficulty, scores are shifted and stretched so the class average is 0 and the typical spread is 1. **Batch normalization** (BN) does this to every channel of a layer's output, using the images in the current mini-batch as "the class", and then lets the network re-stretch the result with two learned numbers [37].
+
+Take one channel $k$ of a convolutional layer. Let $B$ be the set of all values of that channel over the $m$ images of the mini-batch and over all $H \times W$ positions, so $|B| = m H W$ (every position of a feature map is thus normalized in the same way [37]). Then
+
+$$
+\mu_B = \frac{1}{|B|} \sum_{x \in B} x, \qquad
+\sigma_B^2 = \frac{1}{|B|} \sum_{x \in B} (x - \mu_B)^2, \qquad
+y = \gamma\, \frac{x - \mu_B}{\sqrt{\sigma_B^2 + \epsilon}} + \beta ,
+$$
+
+where $\mu_B$ and $\sigma_B^2$ are the mean and variance of the channel in this mini-batch, $\epsilon$ is a tiny constant that avoids division by zero, and $\gamma$ and $\beta$ are a learned scale and shift for the channel. If the network wants the original values back, it can learn $\gamma = \sqrt{\sigma_B^2 + \epsilon}$ and $\beta = \mu_B$, so no capacity is lost. In the residual block above, BN sits between the convolution and the ReLU; setting the last $\gamma$ to zero (with $\beta$ at its initial value 0) makes the branch output $F(\mathbf{x}) = 0$, which is the zero-initialization trick used in the code of that section.
+
+**Training versus inference.** At test time one image should not depend on whichever other images happen to share its batch. So during training we also keep running averages, $\mu_{\text{run}} \leftarrow (1-\rho)\,\mu_{\text{run}} + \rho\,\mu_B$ (the same for the variance), with momentum $\rho$ (0.1 in the code below). At inference these frozen values replace $\mu_B$ and $\sigma_B^2$, so BN becomes a fixed per-channel linear map, which can even be folded into the preceding convolution. The original paper averages the statistics over training mini-batches [37]; the exponential moving average is the usual implementation.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+C, eps, momentum = 3, 1e-5, 0.1
+gamma, beta = np.ones(C), np.zeros(C)             # learned scale and shift (one pair per channel)
+run_mu, run_var = np.zeros(C), np.ones(C)         # running statistics used at inference
+
+def batch(n=32):
+    # feature maps (N, C, H, W) whose channels have very different statistics
+    scale = np.array([1.0, 5.0, 0.2]).reshape(1, C, 1, 1)
+    offset = np.array([0.0, 10.0, -3.0]).reshape(1, C, 1, 1)
+    return rng.normal(size=(n, C, 8, 8)) * scale + offset
+
+def bn_train(x):
+    global run_mu, run_var
+    mu, var = x.mean(axis=(0, 2, 3)), x.var(axis=(0, 2, 3))     # statistics of this mini-batch
+    run_mu = (1 - momentum) * run_mu + momentum * mu
+    run_var = (1 - momentum) * run_var + momentum * var
+    xhat = (x - mu.reshape(1, C, 1, 1)) / np.sqrt(var.reshape(1, C, 1, 1) + eps)
+    return gamma.reshape(1, C, 1, 1) * xhat + beta.reshape(1, C, 1, 1)
+
+def bn_eval(x):
+    xhat = (x - run_mu.reshape(1, C, 1, 1)) / np.sqrt(run_var.reshape(1, C, 1, 1) + eps)
+    return gamma.reshape(1, C, 1, 1) * xhat + beta.reshape(1, C, 1, 1)
+
+x = batch()
+y = bn_train(x)
+print("input  mean per channel:", x.mean(axis=(0, 2, 3)).round(2))
+print("output mean per channel:", y.mean(axis=(0, 2, 3)).round(3))
+print("output std  per channel:", y.std(axis=(0, 2, 3)).round(3))
+
+for _ in range(100):                               # many training batches update the running statistics
+    bn_train(batch())
+print("running mean:", run_mu.round(2), " running var:", run_var.round(3))
+
+x_new = batch()
+print("eval-mode output mean:", bn_eval(x_new).mean(axis=(0, 2, 3)).round(2),
+      " std:", bn_eval(x_new).std(axis=(0, 2, 3)).round(2))
+
+one = x_new[:1]                                    # a single image
+print("single image, eval mode, depends on batch? ",
+      np.allclose(bn_eval(one), bn_eval(x_new)[:1]))
+print("single image, batch statistics of itself: max |train - eval| =",
+      np.abs(bn_train(one) - bn_eval(one)).max().round(2))
+```
+
+Run with the seed shown, this prints:
+
+```text
+input  mean per channel: [-0.02  9.89 -2.99]
+output mean per channel: [-0.  0. -0.]
+output std  per channel: [1. 1. 1.]
+running mean: [ 0.01 10.   -3.  ]  running var: [ 1.011 24.831  0.04 ]
+eval-mode output mean: [ 0.02 -0.    0.02]  std: [1.   0.99 1.  ]
+single image, eval mode, depends on batch?  True
+single image, batch statistics of itself: max |train - eval| = 0.34
+```
+
+The three channels start with very different means and spreads and leave BN with mean 0 and standard deviation 1. After 101 training batches the running statistics are close to the values the data was generated with (means 0, 10, -3; variances 1, 25, 0.04). In eval mode an image gets the same output whether it is alone or inside a batch (the `True` line), whereas normalizing one image by its own statistics would give a different result (the last line).
+
+**Common mistakes.** Forgetting to switch the model to inference mode (`model.eval()` in PyTorch), so the layer keeps using batch statistics; training with very small batches, where $\mu_B$ and $\sigma_B^2$ are noisy and differ from the running values; and evaluating on data whose statistics differ from the training data, where the stored running values no longer fit. Transformers such as ViT use **layer normalization** instead, which computes the statistics over the features of one token and therefore behaves the same in training and inference.
+
+**Why does it help?** The original explanation was "reducing internal covariate shift", the drift of each layer's input distribution during training [37]. Santurkar et al. [38] tested this and reported that distributional stability of layer inputs has little to do with BN's success, and that BN instead makes the optimization landscape smoother, giving more predictive gradients. They note that the exact reasons for BN's effectiveness were still poorly understood. See [ML 02](/en/learn/ml/ml-02-neural-networks/) for BN next to LayerNorm and RMSNorm.
+
+### Knowledge distillation: learning from a teacher's soft answers
+
+A student who only sees the answer key learns "this photo is a tabby cat". A student who also hears the teacher say "mostly tabby cat, a little tiger cat, almost certainly not a car" learns which classes resemble each other. **Knowledge distillation** trains a (usually smaller) student network to imitate the full output distribution of a (usually larger) teacher [39].
+
+Let the teacher produce logits $\mathbf{v}$ and the student logits $\mathbf{z}$ for one input. A softmax with temperature $T$ turns logits into probabilities,
+
+$$
+q_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}, \qquad
+p_i = \frac{\exp(v_i / T)}{\sum_j \exp(v_j / T)},
+$$
+
+where $q_i$ and $p_i$ are the student's and teacher's probability for class $i$ and $T = 1$ is the ordinary softmax; a larger $T$ flattens the distribution, so the small probabilities of wrong classes become visible. Hinton et al. train the student with a weighted sum of two cross-entropies [39]:
+
+$$
+\mathcal{L} = \alpha\, T^2 \left( -\sum_i p_i \log q_i \right) + (1 - \alpha) \left( -\log q^{(1)}_y \right),
+$$
+
+where $y$ is the true class, $q^{(1)}_y$ is the student's probability of $y$ at $T = 1$, and $\alpha \in [0, 1]$ weights the soft term against the hard-label term (the paper found a considerably lower weight on the hard term to work best). The gradient of the soft term with respect to the student logit $z_i$ is $(q_i - p_i)/T$. Its size shrinks as $T$ grows, which is why the paper multiplies it by $T^2$ [39]. After training, the student is run at $T = 1$.
+
+```python
+import numpy as np
+
+def softmax(z, T=1.0):
+    z = np.asarray(z, dtype=float) / T
+    e = np.exp(z - z.max())
+    return e / e.sum()
+
+teacher = np.array([9.0, 6.0, 2.0, -3.0])      # logits for: tabby cat, tiger cat, dog, car
+for T in (1, 4):
+    print(f"T={T}: teacher probabilities", softmax(teacher, T).round(3))
+
+def soft_ce(zs, zt, T):
+    return -(softmax(zt, T) * np.log(softmax(zs, T))).sum()   # cross-entropy with soft targets
+
+def kd_loss(zs, zt, y, T, alpha):
+    hard = -np.log(softmax(zs, 1.0)[y])                      # ordinary cross-entropy at T = 1
+    return alpha * T**2 * soft_ce(zs, zt, T) + (1 - alpha) * hard
+
+student = np.array([5.0, 4.0, 3.0, 0.0])
+print("loss T=4, alpha=0.9, true class 0:", round(kd_loss(student, teacher, 0, 4, 0.9), 3))
+
+# the gradient of the soft term with respect to the student logits is (q - p) / T
+T = 4.0
+analytic = (softmax(student, T) - softmax(teacher, T)) / T
+numeric = np.array([(soft_ce(student + 1e-6 * np.eye(4)[i], teacher, T)
+                     - soft_ce(student - 1e-6 * np.eye(4)[i], teacher, T)) / 2e-6 for i in range(4)])
+print("max |analytic - numeric| gradient:", np.abs(analytic - numeric).max())
+
+for T in (1, 4, 16, 64):                        # why the T^2 factor: gradient size shrinks like 1/T^2
+    g = (softmax(student, T) - softmax(teacher, T)) / T
+    print(f"T={T}: gradient norm {np.linalg.norm(g):.4f}, times T^2: {T**2 * np.linalg.norm(g):.4f}")
+```
+
+Output:
+
+```text
+T=1: teacher probabilities [0.952 0.047 0.001 0.   ]
+T=4: teacher probabilities [0.59  0.279 0.102 0.029]
+loss T=4, alpha=0.9, true class 0: 16.462
+max |analytic - numeric| gradient: 1.0457410631881103e-10
+T=1: gradient norm 0.3608, times T^2: 0.3608
+T=4: gradient norm 0.0653, times T^2: 1.0441
+T=16: gradient norm 0.0051, times T^2: 1.2975
+T=64: gradient norm 0.0003, times T^2: 1.3377
+```
+
+At $T = 1$ the teacher is almost certain (0.952 for the first class) and the second class is barely visible; at $T = 4$ the cat-versus-dog-versus-car ordering shows up. The analytic gradient matches a finite-difference check. The last four lines show that the soft-term gradient norm falls steeply with $T$, while the product with $T^2$ levels off (about 1.34 at $T = 64$): the $1/T^2$ scaling is an approximation that holds at high temperature.
+
+**Link to this tutorial.** DINO's loss $H(a, b) = -a^\top \log b$ is the same soft-target cross-entropy, with two differences: the teacher is not a bigger pretrained network but a moving average of the student, and no labels are used. Its "sharpening" of the teacher is a softmax with a low temperature. Compressing a large model into smaller ones, as the text says is done for DINOv2, is the classic teacher-to-student setting. In the paper's preliminary MNIST experiment, a large regularized network made 67 test errors, a smaller unregularized one made 146, and the smaller one trained to match the large one's soft targets at $T = 20$ made 74 [39]. This is one dataset and one setting, so treat it as an illustration, not a general rate. Common mistakes: using different temperatures for teacher and student in the soft term, forgetting the $T^2$ factor when mixing with the hard loss, and evaluating the student at $T > 1$.
+
 ## References
 
 1. Shyandram, "深度學習的數位影像處理介紹 (An introduction to digital image processing with deep learning)," Medium post, 2024; updated 2026. [link](https://medium.com/@shyangen104/%E6%B7%B1%E5%BA%A6%E5%AD%B8%E7%BF%92%E7%9A%84%E6%95%B8%E4%BD%8D%E5%BD%B1%E5%83%8F%E8%99%95%E7%90%86%E4%BB%8B%E7%B4%B9-fc5400ac21b3)
@@ -594,3 +753,6 @@ Set `conv.weight.requires_grad_(False)` after assigning the weights, and pass on
 34. M. Awais, M. Naseer, S. Khan, R. M. Anwer, H. Cholakkal, M. Shah, M.-H. Yang, and F. S. Khan, "Foundation models defining a new era in vision: A survey and outlook," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 47, 2025. [doi:10.1109/TPAMI.2024.3506283](https://doi.org/10.1109/TPAMI.2024.3506283) · [arXiv:2307.13721](https://arxiv.org/abs/2307.13721)
 35. J. Zhang, J. Huang, S. Jin, and S. Lu, "Vision-language models for vision tasks: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, 2024. [doi:10.1109/TPAMI.2024.3369699](https://doi.org/10.1109/TPAMI.2024.3369699) · [arXiv:2304.00685](https://arxiv.org/abs/2304.00685)
 36. scikit-learn developers, "sklearn.datasets.load_digits" (a copy of the test set of the UCI optical recognition of handwritten digits dataset). [docs](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_digits.html)
+37. S. Ioffe and C. Szegedy, "Batch normalization: Accelerating deep network training by reducing internal covariate shift," *ICML*, PMLR 37, pp. 448–456, 2015. [PMLR](https://proceedings.mlr.press/v37/ioffe15.html) · [arXiv:1502.03167](https://arxiv.org/abs/1502.03167)
+38. S. Santurkar, D. Tsipras, A. Ilyas, and A. Madry, "How does batch normalization help optimization?" *NeurIPS*, vol. 31, 2018. [proceedings](https://papers.nips.cc/paper_files/paper/2018/hash/905056c1ac1dad141560467e0a99e1cf-Abstract.html) · [arXiv:1805.11604](https://arxiv.org/abs/1805.11604)
+39. G. Hinton, O. Vinyals, and J. Dean, "Distilling the knowledge in a neural network," NIPS 2014 Deep Learning Workshop, arXiv preprint, 2015. [arXiv:1503.02531](https://arxiv.org/abs/1503.02531)
