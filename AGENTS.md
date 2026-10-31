@@ -130,9 +130,11 @@ the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One se
 `*選讀：[…](#…)（見「補充資料」頁）。…*`). Rules:
 - nothing in the main text, code, figures or exercises may depend on a note: before moving or writing one, grep for
   its terms, functions and figure names; a term the main line needs must be explained in the main line;
-- the English and zh-tw files carry the same notes in the same order, each with the house structure of section 3 in
-  miniature (plain statement first, then the precise version with every symbol defined, one tested snippet if useful)
-  and with verified references like any other text;
+- the English and zh-tw files carry the same notes in the same order, with verified references like any other text;
+- a note does not try to cover everything the way a chapter does: it takes ONE specific point (a sub-field, an algorithm,
+  a derivation, a design choice) and treats it in finer detail than the main text could — precise definitions with every
+  symbol defined, the steps, the edge cases, a worked example or a tested snippet where it helps. Open with one plain
+  sentence saying what the note is about;
 - "What you'll learn", "Key takeaways" and "Exercises" are never moved into the notes, and the notes stay
   shorter than the main text (a few items per tutorial).
 
