@@ -49,6 +49,7 @@ export const chapterPlan: Record<string, string[]> = {
     'deep-learning/dl-03a-real-time-detection': ['detection-nms'],
     'deep-learning/dl-04-image-restoration': ['restoration-ambiguity'],
     'deep-learning/dl-04a-super-resolution': ['restoration-ambiguity', 'pixel-sampling'],
+    'deep-learning/dl-04c-generative-restoration': ['restoration-ambiguity'],
     'deep-learning/dl-05-low-light-enhancement': ['lowlight-photons'],
     'deep-learning/dl-06-object-tracking': ['tracking-association'],
     'deep-learning/dl-07-world-models': ['world-model-rollout'],
