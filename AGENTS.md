@@ -68,7 +68,8 @@ Tutorials live in `src/content/tutorials/<lang>/<track>/<slug>.mdx`, one file pe
 5. `## Key takeaways` / `## 重點整理` — 5–8 bullets.
 6. `## Exercises` / `## 練習` — 4–6 original exercises; hints inside `<details>` with `<summary>` on
    its **own line** (the one-line form does not compile).
-7. `## References` / `## 參考文獻` — numbered `1. Authors, "Title," Venue, Year. [link](url)`, cited
+7. *(optional)* `## Supplementary notes` / `## 補充資料` — see "Supplementary notes" below.
+8. `## References` / `## 參考文獻` — numbered `1. Authors, "Title," Venue, Year. [link](url)`, cited
    in text as `[1]`, `[2]`. Every entry cited; every citation has an entry.
 
 **Depth:** complete, professional, very clear. Typical English length 4,000–8,000 words of prose.
@@ -104,20 +105,20 @@ the PNG with a Chinese caption. Show figures with `<Figure src={img} alt="..." c
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
 
-**Supplementary subsections** (`Supplement`). A subsection that is optional reading (the background or
-introduction of an algorithm the main line does not need, a variant, a historical note, a longer derivation) keeps its
-`###` heading as plain Markdown and puts its *body* in `<Supplement summary="...">`; the body is collapsed on the site
-and shown as a labelled block in the PDF. Use it only when ALL of these hold:
-- nothing outside the subsection depends on it: no later section, code snippet, figure, exercise or other tutorial
-  uses a term, function or result first defined there (grep for it before wrapping);
-- it is a whole `###` subsection (never a `##` section, never a part of one), and the tutorial keeps at least
-  three-quarters of its subsections outside `Supplement`; "What you'll learn", "Key takeaways", "Exercises",
-  "References" and the `Modern view` are never wrapped;
-- the English and zh-tw files wrap the same subsections, with `summary` one short sentence saying what the reader gets
-  (English: "How exact histogram specification breaks ties"; zh-tw: the same meaning, no word-for-word copy needed).
-Import it at the top: `import Supplement from '../../../../components/Supplement.astro';`. Blank line before and after the
-component and the content inside; a heading inside the body is fine (`####`), but do not repeat the subsection's own heading.
-
+**Supplementary notes.** Optional background (the introduction of a named algorithm the text only uses or
+mentions, such as RANSAC or the guided filter; a variant; a historical note; a longer derivation) does **not** sit in
+the middle of a section. It goes in a final `## Supplementary notes` / `## 補充資料` section, placed after
+`## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the notes are optional.
+Where the main text touches the topic it leaves a single italic pointer line with a link to the item
+(`*Optional: [RANSAC](#ransac-...) (see Supplementary notes at the end). One sentence on what it adds.*`; zh-tw
+`*選讀：[…](#…)（見文末「補充資料」）。…*`). Rules:
+- nothing in the main text, code, figures or exercises may depend on a note: before moving or writing one, grep for
+  its terms, functions and figure names; a term the main line needs must be explained in the main line;
+- the English and zh-tw files carry the same notes in the same order, each with the house structure of section 3 in
+  miniature (plain statement first, then the precise version with every symbol defined, one tested snippet if useful)
+  and with verified references like any other text;
+- "What you'll learn", "Key takeaways" and "Exercises" are never moved into the notes, and the notes stay
+  shorter than the main text (a few items per tutorial).
 
 **Titles and link text:** tutorials are named by track prefix and two-digit number, e.g. `IP 05`,
 `ML 03a`, `DLCV 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's
