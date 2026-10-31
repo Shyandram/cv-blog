@@ -133,7 +133,8 @@ the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One se
 - the English and zh-tw files carry the same notes in the same order, with verified references like any other text;
 - a note does not try to cover everything the way a chapter does: it takes ONE specific point (a sub-field, an algorithm,
   a derivation, a design choice) and treats it in finer detail than the main text could — precise definitions with every
-  symbol defined, the steps, the edge cases, a worked example or a tested snippet where it helps. Open with one plain
+  symbol defined, the steps, the edge cases, a worked example where it helps. A note needs no experiment or code
+  (a tested snippet is welcome but optional). Open with one plain
   sentence saying what the note is about;
 - "What you'll learn", "Key takeaways" and "Exercises" are never moved into the notes, and the notes stay
   shorter than the main text (a few items per tutorial).
