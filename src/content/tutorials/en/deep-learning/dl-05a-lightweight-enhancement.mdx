@@ -1,0 +1,788 @@
+---
+title: "DLCV 05A · Lightweight Image Enhancement: Curves, Bilateral Grids and Lookup Tables"
+description: "How enhancement models stay small and fast enough for phones and 4K video: what to count, why predicting a transform beats predicting an image, and how curves, bilateral grids, learnable 3D lookup tables and tiny networks do it."
+track: deep-learning
+order: 55
+level: advanced
+prereqs: [deep-learning/dl-05-low-light-enhancement, image-processing/dip-03-intensity-spatial-filtering]
+tags: [image-enhancement, efficient-networks, bilateral-grid, lookup-tables, hdrnet, low-light-enhancement, quantization]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import ImageCompare from '../../../../components/ImageCompare.astro';
+import lutFig from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/lut-trilinear.png';
+import gridFig from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/bilateral-grid.png';
+import costFig from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/cost-vs-resolution.png';
+import toyFig from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/toy-comparison.png';
+import toyIn from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/toy-input.png';
+import toyGrid from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/toy-grid.png';
+import bandingFig from '../../../../assets/deep-learning/dl-05a-lightweight-enhancement/banding.png';
+
+## What you'll learn
+
+- What "lightweight" means for an enhancement model: parameters, multiply–accumulates (MACs) per megapixel, memory traffic, and measured latency on the target device, and why 4K inputs change the picture.
+- Why enhancement is unusually well suited to tiny models: the output is mostly a smooth remapping of the input's own values, so a model can **predict a transform** instead of painting every output pixel.
+- The four families of fast enhancers: curve estimation, bilateral grids and guided upsampling (HDRNet, the deep guided filter), learnable 3D lookup tables (and their successors), and very small CNN or transformer networks.
+- How a 3D lookup table is applied with **trilinear interpolation**, and how a bilateral grid is fitted at low resolution and **sliced** back to full resolution, with NumPy code you can run in seconds.
+- How to report efficiency fairly (what to count, how to time, what to state) and how these models fail: banding, halos, color shifts, noise and flicker.
+
+## The big picture
+
+Most enhancement networks in [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/) are judged by how good their pictures look. This chapter adds a second requirement: the model must run on a phone, inside a camera, or on every frame of a video, often at 4K resolution, within a few milliseconds and a small power budget. That requirement changes the design more than any loss function does.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine you must recolor a huge mural, and you are allowed only a tiny helper. A slow way is to have the helper repaint every brick. A fast way is to have the helper look at a small photo of the mural and write a short recipe card: "make the dark bricks a bit lighter, make the reds a little warmer, and do it more on the left wall than on the right." Then a simple machine follows the card brick by brick, which is quick because it never has to think. Lightweight enhancers are recipe writers: a small network writes the card (a curve, a color table or a grid of small recipes), and a cheap rule applies it to every pixel.
+</Callout>
+
+Why it matters:
+
+- **Every pixel, every frame.** A phone camera preview or a video pipeline enhances tens of frames per second. A model that is fine for one photo on a server can be far too slow, too hot or too memory-hungry for that.
+- **Resolution keeps growing.** A 4K frame has 8.3 million pixels and a 12-megapixel photo 12 million. Most of the cost of a full-resolution convolutional network grows in proportion to the number of pixels, so a network that is cheap at 512 × 512 can be 30 times more expensive on a 4K frame.
+- **Enhancement has structure we can exploit.** Unlike denoising or super-resolution, tone and color enhancement mostly *rearranges values that are already there*. That one observation leads to designs that cost a few hundred arithmetic operations per pixel instead of tens of thousands.
+
+This chapter builds on DLCV 05 (Retinex, Zero-DCE curves, low-light datasets and evaluation) and on the classical tools of [IP 03](/en/learn/image-processing/dip-03-intensity-spatial-filtering/) (intensity transformations, the guided and bilateral filters). It does not repeat them; it explains how they become fast learned models.
+
+## What "lightweight" means
+
+**Plain version.** "Lightweight" is not one number. A model can be small on disk but slow, fast on a GPU but slow on a phone, or cheap in arithmetic but limited by memory. You need to say which cost you mean, at which resolution and on which device.
+
+**Precise version.** Five costs matter for an enhancement model. The general background (MACs versus FLOPs, why FLOPs are not latency, a latency protocol) is in [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#efficiency-flops-memory-and-latency); here is what each means for enhancement.
+
+1. **Parameters** $P$: the number of learned values. They decide the size of the model file and the weight memory. Zero-DCE++ has about 10K parameters [1]; the U-Net-like design counted below has about 1.9 million.
+2. **Arithmetic** per image, counted in multiply–accumulates. For a convolution layer,
+
+$$
+\mathrm{MACs} = H_{\text{out}}\, W_{\text{out}}\; k^2\, C_{\text{in}}\, C_{\text{out}},
+$$
+
+where $H_{\text{out}} \times W_{\text{out}}$ is the size of the output feature map, $k \times k$ the kernel size, and $C_{\text{in}}$, $C_{\text{out}}$ the numbers of input and output channels. One MAC is one multiplication and one addition, so 1 MAC ≈ 2 FLOPs; state which unit you use.
+3. **MACs per pixel** (or per megapixel): the arithmetic divided by the number of *input* pixels $HW$. This is the fairest single number for enhancement, because the same model is applied at very different resolutions. A layer that runs at full resolution contributes $k^2 C_{\text{in}} C_{\text{out}}$ MACs per pixel; a layer that runs on a fixed-size thumbnail contributes almost nothing per pixel at 4K.
+4. **Memory traffic.** Every feature map has to be written to memory and read back by the next layer. A feature map with $C$ channels at full resolution occupies $H W C b$ bytes, where $b$ is the bytes per value (2 for fp16, 1 for int8). On phones and embedded chips, moving these bytes often costs more time and energy than the arithmetic.
+5. **Latency and energy** on the target device: the measured time from input frame to output frame, and the energy per frame. These are what users feel, and they can only be measured, not computed.
+
+The code below counts the first four costs for three designs, by pure arithmetic: (1) a seven-layer, 32-channel CNN that runs at full resolution, in the spirit of the DCE-Net of Zero-DCE [2] (the real DCE-Net has skip connections, so its count differs); (2) a U-Net-like restorer [3] with four levels and 32 to 256 channels; and (3) an HDRNet-like design [4] in which a small CNN looks at a fixed 256 × 256 copy of the image and predicts a 16 × 16 × 8 grid of color transforms, followed by a cheap per-pixel step that applies them (explained in the bilateral-grid section).
+
+```python
+def conv(cin, cout, k=3, scale=1.0, fixed=None):
+    """A k x k convolution on (scale x the input pixels), or on a fixed number of pixels."""
+    return dict(params=k * k * cin * cout + cout, macs=k * k * cin * cout, cout=cout, scale=scale, fixed=fixed)
+
+def cost(layers, H, W, per_pixel_apply=0):
+    """Parameters, multiply-accumulates (MACs) and the largest feature map (fp16 bytes)."""
+    px = [l["fixed"] or H * W * l["scale"] for l in layers]
+    macs = sum(l["macs"] * p for l, p in zip(layers, px)) + per_pixel_apply * H * W
+    peak = max(2 * l["cout"] * p for l, p in zip(layers, px))
+    return sum(l["params"] for l in layers), macs, peak
+
+# (1) a seven-layer, 32-channel CNN at full resolution (in the spirit of DCE-Net)
+tiny = [conv(3, 32)] + [conv(32, 32) for _ in range(5)] + [conv(32, 24)]
+# (2) a U-Net-like restorer: 4 levels, 32-64-128-256 channels, two convs per level
+unet = [conv(3, 32), conv(32, 32), conv(32, 64, scale=1/4), conv(64, 64, scale=1/4),
+        conv(64, 128, scale=1/16), conv(128, 128, scale=1/16),
+        conv(128, 256, scale=1/64), conv(256, 256, scale=1/64),
+        conv(256 + 128, 128, scale=1/16), conv(128, 128, scale=1/16),
+        conv(128 + 64, 64, scale=1/4), conv(64, 64, scale=1/4),
+        conv(64 + 32, 32), conv(32, 32), conv(32, 3, k=1)]
+# (3) HDRNet-like: a CNN on a fixed 256 x 256 copy predicts a 16x16x8 grid of 3x4 affine maps
+grid_net = [conv(3, 8, fixed=128**2), conv(8, 16, fixed=64**2), conv(16, 32, fixed=32**2),
+            conv(32, 64, fixed=16**2), conv(64, 64, fixed=16**2), conv(64, 64, fixed=16**2),
+            conv(64, 96, k=1, fixed=16**2)]
+apply = 9 + 48 + 8 * 12 + 12   # guide (3x3 matrix + 16-piece curves), trilinear slice, affine
+
+for H, W, name in [(1080, 1920, "1080p"), (2160, 3840, "4K")]:
+    print(f"--- {name}: {H * W / 1e6:.2f} megapixels")
+    for label, layers, extra in [("tiny full-res CNN", tiny, 0), ("U-Net-like", unet, 0),
+                                 ("low-res grid + slicing", grid_net, apply)]:
+        p, m, peak = cost(layers, H, W, extra)
+        print(f"{label:23s} params {p:>9,d}  GMACs {m / 1e9:7.1f}  MACs/pixel {m / (H * W):8.0f}"
+              f"  largest feature map {peak / 2**20:7.2f} MiB")
+```
+
+```text
+--- 1080p: 2.07 megapixels
+tiny full-res CNN       params    54,072  GMACs   111.7  MACs/pixel    53856  largest feature map  126.56 MiB
+U-Net-like              params 1,946,947  GMACs   336.4  MACs/pixel   162240  largest feature map  126.56 MiB
+low-res grid + slicing  params   104,624  GMACs     0.4  MACs/pixel      183  largest feature map    0.25 MiB
+--- 4K: 8.29 megapixels
+tiny full-res CNN       params    54,072  GMACs   446.7  MACs/pixel    53856  largest feature map  506.25 MiB
+U-Net-like              params 1,946,947  GMACs  1345.7  MACs/pixel   162240  largest feature map  506.25 MiB
+low-res grid + slicing  params   104,624  GMACs     1.4  MACs/pixel      170  largest feature map    0.25 MiB
+```
+
+Three lessons are in these numbers (all from our own arithmetic, not from any paper):
+
+- **Parameters mislead.** The "tiny" CNN has half the parameters of the grid design, yet it needs about 300 times more arithmetic, because every one of its layers runs at full resolution. Parameter count says almost nothing about the cost of a full-resolution network.
+- **Resolution multiplies everything at full resolution.** Going from 1080p to 4K multiplies the MACs of designs (1) and (2) by exactly 4, the ratio of pixel counts. The grid design grows only through its small per-pixel step.
+- **Memory traffic can be the real limit.** One 32-channel fp16 feature map at 4K is $3840 \times 2160 \times 32 \times 2$ bytes, about 506 MiB, and a full-resolution network writes and reads several of them per frame. The grid design's largest feature map is a quarter of a mebibyte.
+
+<Figure src={costFig} alt="Two log-log plots against image size from 0.3 to 33 megapixels, with dashed lines at 1080p and 4K. Left: GMACs per image; the U-Net-like and tiny full-resolution CNN lines rise in parallel from about 50 and 16 GMACs to several thousand, while the low-resolution grid line stays two to three orders of magnitude lower. Right: the largest feature map in MiB; the two full-resolution designs coincide and rise to about 2000 MiB, while the grid design stays flat at 0.25 MiB." caption="Figure 1 — Cost versus resolution for the three designs of the snippet (our arithmetic). Full-resolution networks scale with the pixel count; a network that runs on a fixed thumbnail does not, and only its cheap per-pixel step grows." />
+
+## Why enhancement suits tiny models
+
+**Plain version.** When you brighten or recolor a photo, the edges, textures and objects stay exactly where they were. Only the *values* change, and they change in a smooth, predictable way: similar colors in the same neighborhood get similar treatment. So a model does not have to redraw the image; it only has to describe how to remap it.
+
+**Precise version.** Write the enhanced image as a pixel-wise function of the input,
+
+$$
+O(\mathbf{x}) = T_{\mathbf{x}}\big(I(\mathbf{x})\big),
+$$
+
+where $\mathbf{x}$ is the pixel position, $I(\mathbf{x}) \in [0, 1]^3$ the input RGB value, $O(\mathbf{x})$ the output value, and $T_{\mathbf{x}} : [0,1]^3 \to [0,1]^3$ a color transform that may depend on the position. Two assumptions make $T$ cheap to represent:
+
+1. **Smooth in space.** $T_{\mathbf{x}}$ changes slowly with $\mathbf{x}$, except across edges of the image. Lighting, exposure and a photographer's local edits are all low-frequency.
+2. **Smooth in color.** For a fixed position, $T_{\mathbf{x}}$ is a smooth function of the color, so a few parameters (a curve, a $3 \times 4$ matrix, a coarse table) describe it.
+
+Under these assumptions $T$ has far fewer degrees of freedom than the image. It can be **predicted at low resolution** by a small network and then **applied at full resolution** by a fixed, cheap rule. The image's fine detail is never processed by the network at all; it passes through $T$ untouched, which is why these methods keep edges sharp even though their networks see only a thumbnail.
+
+The families in this chapter differ only in how they represent $T$:
+
+| Family | Representation of $T$ | Depends on position? | Per-pixel cost of applying it |
+| --- | --- | --- | --- |
+| Global curves (1D LUTs) | One curve per channel | No | 3 lookups |
+| Per-pixel curves (Zero-DCE) | Curve parameters per pixel | Yes, but predicted at full resolution or upsampled | a few MACs per iteration |
+| Bilateral grid (HDRNet) | $3 \times 4$ affine maps on a coarse (x, y, intensity) grid | Yes, edge-aware | slicing plus a matrix–vector product |
+| 3D LUT | A table over the RGB cube | No (unless extended) | one trilinear interpolation |
+
+**When the assumptions fail.** Denoising, deblurring, super-resolution and inpainting must create or remove fine structure, so they are *not* smooth remappings, and these tricks do not apply to them. Low-light enhancement is in between: the tone part is a smooth remapping, but the noise part is not, which is the split between tone enhancement and detail restoration described in [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#goal-and-difficulty). Keep this limit in mind for every method below: a fast transform can brighten noise, but it cannot remove it.
+
+## Family 1: curves and tone mapping
+
+**Plain version.** The cheapest transform is a tone curve: a rule that says "input value 0.1 becomes 0.3", stored as a small table. A network only has to choose the curve, once per image or once per pixel.
+
+**Precise version.** A **global per-channel curve** (a 1D LUT) maps each channel independently, $O_c(\mathbf{x}) = T_c(I_c(\mathbf{x}))$ for $c \in \{R, G, B\}$, where each $T_c : [0,1] \to [0,1]$ is stored as a table of, say, 256 values. The gamma curve and histogram equalization of IP 03 are curves of this kind. Applying it costs one table lookup (or one interpolation) per channel per pixel, independent of how complicated the curve is.
+
+Global curves have two limits. They cannot treat a dark corner differently from a bright window, because they ignore position. And because each channel is mapped on its own, they cannot express transforms that mix channels, such as "make skin tones warmer but leave the sky alone" or a change of saturation that depends on hue.
+
+**Per-pixel curves.** Zero-DCE [2] predicts the parameters of an iterated quadratic curve for every pixel, which makes the curve local; its curve and its zero-reference losses are explained in [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#deep-learning-llie). From the efficiency angle, the important design is its successor Zero-DCE++ [1]: it uses depthwise separable convolutions, predicts only three curve-parameter maps that are reused across iterations, and estimates them on an input **downsampled by a factor of 12** (the default) before resizing the maps back to full resolution. The authors report a network of about 10K parameters running at 1000 frames per second on a GPU and 11 on a CPU for a 1200 × 900 image [1]. The step "estimate on a thumbnail, resize the *parameter maps*, apply at full resolution" is the core idea of this chapter in its simplest form: the curve parameters are smooth in space, so resizing them loses little, while resizing the *image* would lose its detail.
+
+**The lesson of curves.** A curve is a transform that a small network can choose and a cheap rule can apply. The rest of the chapter makes that transform richer: local and edge-aware (bilateral grids) or able to mix colors (3D LUTs).
+
+## Family 2: bilateral grids and guided upsampling
+
+**Plain version.** Imagine cutting the image into large tiles, and inside each tile, also sorting the pixels into a few brightness levels. For each (tile, brightness level) box, store one small color recipe. A pixel finds its box by *where it is* and *how bright it is*, so two neighboring pixels on opposite sides of an edge (one dark, one bright) use different recipes, and the edge stays sharp even though the tiles are big.
+
+**Precise version.** A **bilateral grid** [5] is a 3D array indexed by two coarse spatial coordinates and one coarse intensity coordinate. Chen, Paris and Durand introduced it to accelerate edge-aware filters such as the bilateral filter [6] by working in this downsampled space, building on the signal-processing view of the bilateral filter by Paris and Durand [7] that is mentioned in the [IP 03 notes](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-bilateral-filter-averaging-only-with-pixels-that-look-alike). For enhancement, each grid node stores a color transform. HDRNet [4] stores a $3 \times 4$ affine matrix per node:
+
+$$
+A[i, j, k] \in \mathbb{R}^{3 \times 4}, \qquad i = 0, \dots, G_y - 1,\; j = 0, \dots, G_x - 1,\; k = 0, \dots, G_z - 1,
+$$
+
+where $G_y \times G_x$ is the number of spatial nodes and $G_z$ the number of intensity nodes. To process a full-resolution pixel at row $y$ and column $x$, three steps follow.
+
+**1. Guide.** Compute a scalar guide value $g(\mathbf{x}) \in [0, 1]$ at full resolution, for example the luma, or (as in HDRNet) a learned per-pixel function of the RGB value.
+
+**2. Slice.** Map the pixel to continuous grid coordinates $(u_y, u_x, u_z) = \big(y\, s_y,\; x\, s_x,\; g(\mathbf{x})\,(G_z - 1)\big)$, where $s_y$ and $s_x$ convert pixel coordinates to grid coordinates, and interpolate the grid there:
+
+$$
+\bar{A}(\mathbf{x}) = \sum_{i, j, k} \tau(u_y - i)\, \tau(u_x - j)\, \tau(u_z - k)\; A[i, j, k], \qquad \tau(t) = \max(1 - |t|, 0),
+$$
+
+where $\tau$ is the "tent" (linear interpolation) weight. Only the 8 nodes around the pixel have non-zero weight, so this is a **trilinear interpolation** in (row, column, guide). HDRNet calls this operation **slicing**; it has no learned parameters and is differentiable with respect to both the grid and the guide [4].
+
+**3. Apply.** Multiply the pixel's color by its interpolated matrix:
+
+$$
+O(\mathbf{x}) = \bar{A}(\mathbf{x}) \begin{bmatrix} I(\mathbf{x}) \\ 1 \end{bmatrix},
+$$
+
+where $I(\mathbf{x})$ is the RGB column vector and the appended 1 lets the fourth column of $\bar{A}$ act as an offset. Each output channel is thus an affine combination of the three input channels.
+
+<Figure src={gridFig} alt="Left: the luma of one image row plotted against x position, over a grid of 13 vertical lines (spatial nodes) and 8 horizontal lines (intensity nodes); one pixel at x 330 with luma 0.38 is marked with a star, and the cell around it is shaded with its four corner nodes marked. Right: a block diagram. Full-resolution input goes to a downsample box and then to a small CNN or least-squares box that outputs a grid of 3 by 4 affine maps. The full-resolution input also produces a guide map g. A slice box takes the grid and the guide and does a trilinear lookup at x, y, g; an apply box multiplies A by r, g, b, 1; the result is the full-resolution output." caption="Figure 2 — A bilateral grid of affine color transforms. Left: in one image row, each pixel is located by its position and its guide value, so pixels on the two sides of an edge fall into different intensity cells. Right: the expensive part (the network or the fit) runs on a thumbnail; slicing and applying cost a fixed, small number of operations per full-resolution pixel." />
+
+**Why the intensity axis matters.** If the grid had only spatial axes, neighboring pixels would always get nearly the same transform, and a strong edge inside a cell would be blurred into a halo (a bright fringe on the dark side or a dark fringe on the bright side). The intensity axis separates them: a dark pixel and a bright pixel at the same position read different nodes. This is the same "only average with pixels that look alike" idea as the bilateral filter.
+
+**HDRNet.** Gharbi et al. [4] train a CNN that takes a fixed 256 × 256 copy of the image, splits into a local path (convolutions at 16 × 16) and a global path (fully connected layers that summarize the whole image), fuses them, and outputs a 16 × 16 × 8 grid with 12 coefficients per node. The guide is a learned pointwise function: a $3 \times 3$ color matrix followed by a learned piecewise-linear curve per channel, summed. The loss is computed on the full-resolution output, so the network learns a grid that looks right *after* slicing. The authors report that it processes high-resolution images on a smartphone in milliseconds and provides a real-time viewfinder at 1080p [4]. They trained it to imitate many operators, including human retouching from MIT-Adobe FiveK [8], and note that the outputs are slightly softer than the reference and that operators which create new edges or need non-local information (sharpening, dehazing, matting) fit the local affine model poorly.
+
+*Optional: [Paper guide: HDRNet](#hdrnet-deep-bilateral-learning-for-real-time-image-enhancement) (in the Paper guides). The architecture, the training data, and what to check in its tables.*
+
+**Bilateral guided upsampling.** The same machinery can accelerate *any* slow operator, learned or not. Chen et al. [9] run the operator on a downsampled image, fit a bilateral grid of affine transforms that maps the downsampled input to the downsampled output, and slice that grid with the full-resolution input. The code below does exactly this, in a simplified form.
+
+**The deep guided filter.** Wu et al. [10] use the guided filter [11] (see the [IP 03 note](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-guided-filter-smoothing-that-follows-a-guide-image)) as a differentiable layer for the same purpose. A network produces a low-resolution output $O_l$; the layer fits the guided filter's local linear model $O_l \approx A_l \circ I_l + b_l$ in small windows of the low-resolution guide $I_l$, upsamples the coefficient maps $A_l$, $b_l$ bilinearly to $A_h$, $b_h$, and returns $O_h = A_h \circ I_h + b_h$, where $I_h$ is the full-resolution guide and $\circ$ is element-wise multiplication. The guide itself can be learned by two $1 \times 1$ convolutions. Compared with a bilateral grid, it has no intensity axis, so it relies on the window model rather than on intensity bins to keep edges.
+
+### Code: fit a grid at low resolution, slice at full resolution
+
+The experiment: a dark coffee image (15% of the light) is the full-resolution input. A "retouching operator" brightens it locally, Retinex-style (darker surroundings get a stronger gamma lift, see [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#non-deep-learning-llie-and-the-characteristics-of-low-light-images)), and boosts saturation. Pretend this operator is too slow to run at full resolution. We run it only on a 4× smaller copy, then compare three ways of producing the full-resolution result against what the operator would have produced at full resolution: (a) upsample the small output image; (b) fit one global tone curve per channel on the small pair; (c) fit a 9 × 13 × 8 bilateral grid of affine transforms on the small pair and slice it with the full-resolution input.
+
+The fit is weighted least squares per node: each low-resolution pixel $p$ contributes to its 8 surrounding nodes with its trilinear weights $w_p$, and each node solves $\min_A \sum_p w_p \lVert A [I_p; 1] - O_p \rVert^2 + \lambda \lVert A - A_{\text{id}} \rVert^2$, where $A_{\text{id}}$ is the identity transform and the small ridge $\lambda$ keeps empty nodes at the identity.
+
+```python
+import numpy as np
+from scipy.ndimage import gaussian_filter
+from skimage import data, img_as_float
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.transform import resize
+
+luma = lambda x: x @ np.array([0.299, 0.587, 0.114])
+
+def local_brighten(x):
+    """The 'expensive' operator to imitate: a Retinex-style local gamma plus a saturation boost."""
+    Y = luma(x)
+    base = gaussian_filter(Y, x.shape[1] / 40)             # smooth illumination estimate
+    Y2 = Y ** (0.35 + 0.9 * base)                           # darker surroundings -> stronger lift
+    out = x * (Y2 / np.maximum(Y, 1e-3))[..., None]         # same brightness change on R, G, B
+    return np.clip(Y2[..., None] + 1.3 * (out - Y2[..., None]), 0, 1)   # 30% more saturation
+
+full = (0.15 * img_as_float(data.coffee()) ** 2.2) ** (1 / 2.2)   # 400 x 600, 15% of the light
+low = resize(full, (100, 150), anti_aliasing=True)          # 4x smaller in each direction
+target_low = local_brighten(low)                             # the operator runs only at low resolution
+reference = local_brighten(full)                             # ground truth, for scoring only
+
+def corners(x, shape):
+    """For every pixel: the 8 surrounding grid nodes (rows, cols, luma) and their trilinear weights."""
+    H, W = x.shape[:2]
+    gy, gx, gz = shape
+    rows, cols = np.meshgrid(np.linspace(0, gy - 1, H), np.linspace(0, gx - 1, W), indexing="ij")
+    u = np.stack([rows, cols, luma(x) * (gz - 1)], -1)      # continuous grid coordinates
+    i0 = np.minimum(u.astype(int), np.array(shape) - 2)
+    d = u - i0
+    for c in np.ndindex(2, 2, 2):
+        w = np.prod(np.where(c, d, 1 - d), axis=-1)
+        yield tuple((i0 + c).reshape(-1, 3).T), w.ravel()
+
+def fit_grid(x, y, shape=(9, 13, 8), lam=1e-4):
+    """One 3x4 affine color transform per node, by weighted least squares with a small ridge."""
+    X = np.concatenate([x.reshape(-1, 3), np.ones((x[..., 0].size, 1))], 1)   # N x 4: (R, G, B, 1)
+    Y = y.reshape(-1, 3)
+    XtX, XtY = np.zeros(shape + (4, 4)), np.zeros(shape + (4, 3))
+    for idx, w in corners(x, shape):
+        np.add.at(XtX, idx, w[:, None, None] * X[:, :, None] * X[:, None, :])
+        np.add.at(XtY, idx, w[:, None, None] * X[:, :, None] * Y[:, None, :])
+    eye = np.eye(4)[:, :3]                                   # empty nodes fall back to the identity
+    return np.linalg.solve(XtX + lam * np.eye(4), XtY + lam * eye)   # (gy, gx, gz, 4, 3)
+
+def slice_apply(A, x):
+    """Slice: interpolate the grid at every full-resolution pixel (guide = luma), then apply."""
+    X = np.concatenate([x.reshape(-1, 3), np.ones((x[..., 0].size, 1))], 1)
+    Ap = sum(w[:, None, None] * A[idx] for idx, w in corners(x, A.shape[:3]))
+    return np.clip(np.einsum("nk,nkc->nc", X, Ap).reshape(x.shape), 0, 1)
+
+def fit_curves(x, y, bins=64):
+    """Baseline: one global tone curve per channel (mean output for each input level)."""
+    curves = []
+    for c in range(3):
+        k = np.minimum((x[..., c] * bins).astype(int), bins - 1).ravel()
+        n = np.bincount(k, minlength=bins)
+        mean = np.bincount(k, y[..., c].ravel(), bins) / np.maximum(n, 1)
+        centers = (np.arange(bins) + 0.5) / bins
+        curves.append((centers[n > 0], mean[n > 0]))
+    return lambda z: np.stack([np.interp(z[..., c], *curves[c]) for c in range(3)], -1)
+
+A = fit_grid(low, target_low)
+results = {
+    "upsample the low-res output": resize(target_low, full.shape, order=1),
+    "global tone curve per channel": fit_curves(low, target_low)(full),
+    "bilateral grid 9x13x8, sliced": slice_apply(A, full),
+}
+print(f"grid coefficients: {A.size}   mean brightness {full.mean():.2f} -> {reference.mean():.2f}")
+for name, out in results.items():
+    print(f"{name:30s} PSNR vs full-resolution operator {psnr(reference, out, data_range=1):5.2f} dB")
+```
+
+```text
+grid coefficients: 11232   mean brightness 0.16 -> 0.37
+upsample the low-res output    PSNR vs full-resolution operator 28.48 dB
+global tone curve per channel  PSNR vs full-resolution operator 23.02 dB
+bilateral grid 9x13x8, sliced  PSNR vs full-resolution operator 36.01 dB
+```
+
+<Figure src={toyFig} alt="Top row: the dark coffee input; the upsampled low-resolution output, bright but visibly blurred (PSNR 28.48 dB); the global tone curve result, bright but with the wrong local balance, for example the table edge too dark (23.02 dB); and the bilateral grid result, sharp and close to the reference (36.01 dB). Bottom row: the reference produced at full resolution, followed by error maps magnified five times: the upsampled image has bright errors along every edge and texture, the global curve has large smooth errors over whole regions, and the grid has faint errors mainly along the cup rim." caption="Figure 3 — Upsample the transform, not the image (our toy). Upsampling the small output loses detail at every edge; a global curve keeps detail but cannot vary across the image; a bilateral grid fitted on the small pair keeps both. Its residual errors sit along strong edges, where one cell must serve both sides." />
+
+Drag the slider to compare the dark input with the grid's output:
+
+<ImageCompare before={toyIn} after={toyGrid} beforeLabel="Dark input" afterLabel="Grid, fitted at 1/4 size" alt="The dark coffee-cup image and the bilateral-grid result, which is much brighter, with vivid red cup and saucer and sharp wood grain." />
+
+What the numbers say (one image, one operator, our own run):
+
+- **The image is the wrong thing to upsample.** The upsampled output has the right colors but has lost the fine detail, so it loses about 7.5 dB to the grid. The grid never resizes the image; the detail comes straight from the full-resolution input through $\bar{A}$.
+- **A global transform is not enough.** The operator brightens dark surroundings more, so no single curve fits; the global curve is the worst of the three.
+- **About 11 thousand numbers describe the whole edit.** The grid holds $9 \times 13 \times 8 \times 12 = 11{,}232$ coefficients for a 240,000-pixel image, and applying it costs a fixed amount of work per pixel.
+
+*Optional: [Fitting and slicing a bilateral grid in detail](#fitting-and-slicing-a-bilateral-grid-in-detail) (in the Supplementary notes). The normal equations per node, the role of the ridge, hard versus soft binning, and how grid size trades accuracy against halos.*
+
+## Family 3: learnable 3D lookup tables
+
+**Plain version.** A 3D lookup table (3D LUT) is a color cube: for a grid of input colors it stores the output color. Any pixel's color falls inside one small box of the cube, and its output is blended from the box's 8 corners. Fixed, hand-tuned 3D LUTs are widely used for color and tone adjustment in camera imaging pipelines and photo editing tools [12]; the learned version lets a small network choose the table for each photo.
+
+**Precise version.** A 3D LUT with $M$ nodes per axis is an array $\Phi \in \mathbb{R}^{M \times M \times M \times 3}$; node $(i, j, k)$ holds the output color for the input color $\big(\tfrac{i}{M-1}, \tfrac{j}{M-1}, \tfrac{k}{M-1}\big)$. For an input color $(r, g, b) \in [0, 1]^3$, compute the continuous lattice coordinates and split them into an integer corner and a fractional offset:
+
+$$
+u_r = r\,(M - 1), \quad i = \min\big(\lfloor u_r \rfloor,\, M - 2\big), \quad d_r = u_r - i,
+$$
+
+and likewise $j, d_g$ for green and $k, d_b$ for blue, where $\lfloor \cdot \rfloor$ rounds down, the cap $M - 2$ keeps the upper corner $i + 1$ inside the table when $r = 1$, and $d_r, d_g, d_b \in [0, 1]$ are the offsets inside the cell. **Trilinear interpolation** blends the 8 corners of the cell:
+
+$$
+\Phi(r, g, b) = \sum_{a, b', c \in \{0, 1\}} w_a(d_r)\, w_{b'}(d_g)\, w_c(d_b)\; \Phi[i + a,\, j + b',\, k + c], \qquad w_0(d) = 1 - d,\; w_1(d) = d,
+$$
+
+where $a, b', c$ select the lower (0) or upper (1) corner along each axis. The 8 weights are non-negative and sum to 1, so the output is a weighted average of the 8 stored colors. It is the same formula as slicing a bilateral grid, with the axes being (R, G, B) instead of (row, column, intensity).
+
+<Figure src={lutFig} alt="Three panels. Left: a 5 by 5 by 5 lattice of colored dots in an R, G, B cube, with one input color shown as a red star and lines to the 8 black-circled corners of its cell. Middle: the cell drawn as two square faces, one for the lower and one for the upper blue index, each with four labeled corners and the star at the same relative position, with offsets dr and db marked, and the rule that a corner's weight is the product of d or 1 minus d along each axis. Right: the curve x to the power 1 over 2.2 and its piecewise-linear approximations from 5 and 9 nodes; both are close except near zero, where the true curve is much steeper than the first linear piece." caption="Figure 4 — A 3D LUT and trilinear interpolation. (a) The lattice; an input color is located in one cell. (b) The 8 corner weights are products of the offsets. (c) Along one axis, interpolation is piecewise linear, so a curve that bends sharply between nodes (here, a gamma curve near black) is approximated poorly unless the lattice is fine there." />
+
+**Why LUTs are fast.** Applying a LUT costs 8 table reads and about 24 multiply–adds per pixel, *regardless of how complicated the color transform is*. A transform built from dozens of color operations, or one that no formula describes, costs the same as the identity once it is baked into the table. The work is a few memory reads and multiply–adds per pixel with no data-dependent branching, which suits GPUs and fixed-function hardware well. The price is memory and smoothness: the table has $3M^3$ values, and it can only represent transforms that are close to linear inside each cell.
+
+**Image-adaptive 3D LUTs.** Zeng et al. [12] made LUTs learnable and content-dependent. They learn $N$ basis LUTs $\Phi_1, \dots, \Phi_N$ and a small CNN that looks at a 256 × 256 downsampled copy of the image and predicts weights $w_1, \dots, w_N$. The image's own LUT is the weighted sum
+
+$$
+\Phi = \sum_{n=1}^{N} w_n\, \Phi_n,
+$$
+
+which is applied to the full-resolution image with one trilinear interpolation per pixel. Because the interpolation is linear in the table entries, fusing the tables first and interpolating once gives the same result as interpolating each table and fusing the outputs. In the paper, $M = 33$ and $N = 3$; each LUT has $3 \cdot 33^3 = 107{,}811$ values, the whole model has fewer than 600K parameters, and it processes a 4K image in under 2 ms on one Titan RTX GPU [12]. Training adds two regularizers on the tables: a smoothness term that penalizes differences between neighboring nodes, and a monotonicity term that penalizes outputs that decrease when an input channel increases, so that brightness order is preserved. The authors also state the limits clearly: one LUT per image applies the same color transform everywhere, so local adjustments are impossible, and since each color is transformed independently, noise in a night image is amplified rather than removed [12].
+
+The snippet below implements the trilinear LUT, checks it against direct formulas, and times it against a long color pipeline.
+
+```python
+import time
+import numpy as np
+from skimage import data, img_as_float
+
+img = img_as_float(data.coffee())                   # 400 x 600 x 3, RGB in [0, 1]
+
+def build_lut(f, M=33):
+    """Sample a color transform f on an M x M x M lattice: table of shape (M, M, M, 3)."""
+    g = np.linspace(0, 1, M)
+    r, gr, b = np.meshgrid(g, g, g, indexing="ij")
+    return f(np.stack([r, gr, b], axis=-1))
+
+def apply_lut(lut, x):
+    """Trilinear interpolation of the table at every RGB value of x."""
+    M = lut.shape[0]
+    u = x * (M - 1)                                  # continuous lattice coordinates
+    i0 = np.minimum(u.astype(int), M - 2)            # lower corner of the enclosing cell
+    d = u - i0                                       # fractional offsets in [0, 1]
+    out = np.zeros_like(x)
+    for cr in (0, 1):
+        for cg in (0, 1):
+            for cb in (0, 1):
+                w = ((d[..., 0] if cr else 1 - d[..., 0]) * (d[..., 1] if cg else 1 - d[..., 1])
+                     * (d[..., 2] if cb else 1 - d[..., 2]))
+                out += w[..., None] * lut[i0[..., 0] + cr, i0[..., 1] + cg, i0[..., 2] + cb]
+    return out
+
+identity = lambda x: x
+gamma = lambda x: x ** (1 / 2.2)
+print(f"identity, M=33: max error {np.abs(apply_lut(build_lut(identity), img) - img).max():.1e}")
+for M in (9, 17, 33, 65):
+    err = np.abs(apply_lut(build_lut(gamma, M), img) - gamma(img))
+    worst = img.ravel()[err.argmax()]
+    print(f"gamma 1/2.2, M={M:2d}: mean error {err.mean():.4f}  max error {err.max():.4f} (at input {worst:.3f})")
+
+def grade(x, n_ops):
+    """A long color pipeline: n_ops small rounds of channel mixing and a soft S-curve."""
+    mix = np.array([[0.80, 0.15, 0.05], [0.10, 0.80, 0.10], [0.05, 0.15, 0.80]])
+    step = np.eye(3) + (mix - np.eye(3)) / n_ops     # n_ops small steps, same total effect
+    for _ in range(n_ops):
+        x = np.clip(x @ step.T, 0, 1)
+        x = x + (0.3 / n_ops) * np.sin(2 * np.pi * x) / (2 * np.pi)
+    return x
+
+def ms(fn, reps=5):
+    fn(); t = time.perf_counter()
+    for _ in range(reps): fn()
+    return 1000 * (time.perf_counter() - t) / reps
+
+for n in (1, 8, 64):
+    lut = build_lut(lambda x: grade(x, n))
+    err = np.abs(apply_lut(lut, img) - grade(img, n)).max()
+    print(f"n_ops={n:2d}: direct {ms(lambda: grade(img, n)):6.1f} ms | apply LUT "
+          f"{ms(lambda: apply_lut(lut, img)):5.1f} ms | max difference {err:.4f}")
+```
+
+```text
+identity, M=33: max error 3.3e-16
+gamma 1/2.2, M= 9: mean error 0.0210  max error 0.1098 (at input 0.031)
+gamma 1/2.2, M=17: mean error 0.0090  max error 0.0801 (at input 0.016)
+gamma 1/2.2, M=33: mean error 0.0041  max error 0.0585 (at input 0.008)
+gamma 1/2.2, M=65: mean error 0.0014  max error 0.0427 (at input 0.004)
+n_ops= 1: direct   16.5 ms | apply LUT  78.3 ms | max difference 0.0002
+n_ops= 8: direct   84.6 ms | apply LUT  83.1 ms | max difference 0.0002
+n_ops=64: direct  645.1 ms | apply LUT  87.8 ms | max difference 0.0002
+```
+
+(The timings are from one run on a 4-core CPU and will differ on yours; the errors will not.) Three observations:
+
+- **The identity LUT is exact** up to floating-point rounding, because trilinear interpolation reproduces any function that is linear in each channel.
+- **Steep curves need fine lattices where they are steep.** The gamma curve has an infinite slope at black, so the worst error is always in the darkest input bin, and doubling $M$ shrinks the *mean* error by a factor of 2 to 3 but the *worst* error much more slowly. This is exactly the problem that non-uniform lattices address (AdaInt, below), and it matters for low light, where most pixels are near black.
+- **The cost is flat.** The direct pipeline's time grows with its length; the LUT's time stays about the same for 1, 8 or 64 operations, and its output matches to 0.0002. In NumPy the LUT is slower than a one-step pipeline, because eight gathers are expensive in Python; on hardware with texture interpolation the lookup is nearly free. Building the table costs $33^3 = 35{,}937$ evaluations of the pipeline, about 15% of this image's 240,000 pixels and a vanishing fraction of a 4K frame's.
+
+**Successors.** Later work kept the "small CNN chooses a LUT" idea and attacked its limits; each is described in one line here and in more detail in the notes:
+
+- **Spatial-aware 3D LUTs** (Wang et al. [13]) predict pixel-wise weight maps as well as global weights, so different regions blend the basis LUTs differently; the authors report about 4 ms for a 4K image on one V100 GPU.
+- **AdaInt** (Yang et al. [14]) learns **non-uniform** node positions along each axis, so the lattice is dense where the transform bends and sparse where it is nearly linear.
+- **SepLUT** (Yang et al. [15]) splits the transform into per-channel 1D LUTs followed by a smaller 3D LUT: the 1D curves spread the input colors over the cube so that more of the 3D LUT's cells are used.
+- **4D LUT** (Liu et al. [16]) adds a fourth input, a learned **context** value per pixel, so two pixels with the same RGB but different content (sky versus sea) can be mapped differently; interpolation becomes quadrilinear.
+- **LUTs with bilateral grids** (Kim and Cho [17]) bring spatial information into the LUT model through bilateral grids and replace a long decoder with slicing operations.
+
+*Optional: [Learnable LUT variants in detail](#learnable-lut-variants-in-detail) (in the Supplementary notes). How AdaInt locates a color in a non-uniform lattice, what SepLUT's 1D stage does to cell usage, and the memory of 3D and 4D tables.*
+
+*Optional: [Paper guide: image-adaptive 3D LUTs](#image-adaptive-3d-luts-zeng-et-al-tpami-2022) (in the Paper guides). The problem, the idea, what the tables show and how to read the timing claims.*
+
+## Family 4: very small enhancement networks
+
+**Plain version.** Some methods stay with an ordinary network that outputs the image (or an illumination map), but make that network extremely small, or arrange the training so that only a tiny part of it is needed at test time.
+
+**Precise version.** Three representative designs, each verified against its paper:
+
+- **SCI** (self-calibrated illumination, Ma et al. [18]) learns illumination with a cascade of weight-sharing stages during training. A self-calibration module makes the stages' results converge, so that at inference a **single basic block** is used, which cuts the computation drastically. It is trained with unsupervised losses. The lesson for efficiency: a training-time structure can be much larger than the inference-time network.
+- **IAT** (Illumination Adaptive Transformer, Cui et al. [19]) splits a simplified camera pipeline into local and global components. A local branch, built from depthwise convolutions and kept at the input resolution, predicts a per-pixel multiply map and add map. A global branch uses a few attention queries (nine for a $3 \times 3$ color matrix, one for a gamma value) to predict the parameters of global operations, which are then applied to the locally adjusted image. The authors report about 90K parameters and an average inference time of about 0.004 s per image [19]. Its global part is a parametric transform in the sense of this chapter, chosen by attention instead of a lookup.
+- **Prior-guided lightweight networks.** CPGA-Net (Weng et al. [20]) combines channel priors with gamma correction in a lightweight network for low-light enhancement, so that classical image-formation knowledge replaces some of the capacity a larger network would need.
+
+The **NTIRE 2026 Efficient Low-Light Image Enhancement challenge** [21] shows what such designs look like under a fixed budget. Its data are phone photographs at 3024 × 4032, the submitted model size had to be below 1 MB, and the ranking aggregated several full-reference and no-reference quality metrics, with fewer parameters breaking ties. The report groups the submissions into lightweight U-Net or encoder–decoder designs with depthwise separable convolutions, Retinex-style decompositions, small attention modules, color-space decoupling (for example HVI), classical priors such as histogram equalization, and structural re-parameterization or partial convolutions [21].
+
+## Efficiency techniques
+
+**Plain version.** A handful of tricks recur in every fast enhancer. The most important one is the theme of this chapter: think at low resolution, and only *apply* at full resolution. The others make the low-resolution thinking itself cheaper.
+
+### Run at low resolution, upsample the transform
+
+The total cost of a predict-then-apply design is
+
+$$
+\mathrm{cost} = C_{\text{net}}(h \times w) + c_{\text{apply}} \cdot H W,
+$$
+
+where $C_{\text{net}}(h \times w)$ is the cost of the network on an $h \times w$ thumbnail, which does not depend on the full resolution $H \times W$, and $c_{\text{apply}}$ is the per-pixel cost of slicing or lookup (165 MACs in our HDRNet-like count; for a 3D LUT, about 24 multiply–adds for the 8-corner blend plus the weights). At 4K the second term dominates, and it is small. The design choices are what to upsample (curve parameters, affine coefficients, LUT weights; never the output image) and how (bilinear for smooth maps; slicing with a guide where edges must be respected).
+
+### Separable and depthwise layers
+
+A depthwise separable convolution replaces one $k \times k$ convolution from $C_{\text{in}}$ to $C_{\text{out}}$ channels by a $k \times k$ convolution per channel followed by a $1 \times 1$ convolution that mixes channels, which reduces the cost by the factor $1/C_{\text{out}} + 1/k^2$ (MobileNet [22]; derivation in [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#mobilenet-factorize-the-convolution) and [ML 03](/en/learn/ml/ml-03-convolutional-networks/#efficient-cnns-separate-spatial-filtering-from-channel-mixing)). Zero-DCE++ [1] and many challenge entries [21] use it. Two cautions: depthwise layers have low arithmetic intensity, so on some hardware they run slower than their MAC count suggests, and in a very small network the $1 \times 1$ layers dominate, so the saving is smaller than the formula implies for large $C$. MobileNetV2's inverted residual blocks [23] are a common building block in this setting.
+
+### Structural re-parameterization
+
+**Plain version.** Train a block with several parallel branches (which trains well), then merge the branches into one plain convolution for deployment (which runs fast). The merged network computes exactly the same function.
+
+RepVGG [24] trains blocks with a $3 \times 3$ convolution, a $1 \times 1$ convolution and an identity branch, each followed by batch normalization, and sums them. At inference, every branch is linear, so each batch normalization can be folded into its kernel and bias, the $1 \times 1$ kernel and the identity can be written as $3 \times 3$ kernels with zeros around the center, and the three kernels can be added into one. Efficient enhancement networks, including entries in the NTIRE 2026 efficient challenge [21], use this to get multi-branch training with single-branch inference cost.
+
+*Optional: [Structural re-parameterization step by step](#structural-re-parameterization-step-by-step) (in the Supplementary notes). The folding formulas and a NumPy check that the fused convolution matches the three-branch block to about $10^{-15}$.*
+
+### Quantization
+
+Storing and computing with 8-bit integers instead of 32-bit floats cuts memory by 4 and usually speeds up inference on mobile hardware; integer-only inference was made practical by Jacob et al. [25], and the affine quantization scheme is explained in [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#quantization). Two points are specific to enhancement. First, the *output* is an image that people look at, so quantization error is directly visible, especially as banding in smooth dark gradients after strong brightening (see Failure modes). Second, the per-pixel step (slicing, LUT interpolation, curve application) is cheap but runs on every pixel, so its numeric format matters too: an 8-bit LUT output is fine for display, but intermediate coordinates need enough fractional bits for smooth interpolation. Re-measure quality after quantizing, at full resolution.
+
+### Other recurring tricks
+
+Space-to-depth (pixel unshuffle) at the input folds each $s \times s$ block into channels so that every layer runs at $1/s^2$ of the pixels ([DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution)). Weight sharing across iterations (Zero-DCE++ reuses one set of curve maps; SCI shares weights across stages) keeps the parameter count low. And global information is gathered cheaply, by a few fully connected layers on a tiny map (HDRNet's global path) or a few attention queries (IAT), instead of by deep stacks of convolutions.
+
+## Measuring efficiency honestly
+
+**Plain version.** Efficiency claims are easy to make and hard to compare. A fair comparison says exactly what was counted, at which resolution, on which hardware, and includes every step from input frame to output frame.
+
+**Counting.** Dehghani et al. show that parameters, FLOPs, throughput and latency can disagree and that reporting only one of them gives a misleading picture [26]. For enhancement:
+
+- **Count at the deployment resolution**, and also report MACs per megapixel so that readers can rescale. A FLOP count at 256 × 256 says nothing about 4K for a full-resolution network, and the opposite is true for thumbnail-based designs.
+- **Include the full-resolution step.** Slicing, LUT interpolation, guided-filter upsampling and resizing are often custom operators that automatic FLOP counters skip. They are the part of a predict-then-apply design that grows with resolution, so leaving them out understates the cost exactly where it matters.
+- **State MACs or FLOPs**, and whether a "parameter" includes LUT entries (a 33-node 3D LUT is about 108K values, more than the whole of Zero-DCE++ at about 10K parameters [1] or IAT at about 90K [19]).
+- **Report memory**: peak activation memory at the deployment resolution, not only the parameter count.
+
+**Timing.** Follow the protocol in [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#a-latency-protocol): fix and report device, runtime, precision, batch size 1, resolution and thread count; warm up; report percentiles; synchronize the GPU before stopping the clock; and time the whole path, including color conversion, resizing and memory transfers. Challenge series that measure runtime on real phones make this concrete: the Mobile AI 2022 learned-ISP challenge, for example, evaluated runtime on a Snapdragon 8 Gen 1 GPU with TensorFlow Lite, and its report states that the solutions process Full HD photos in less than 20–50 ms on that platform [27]. A GPU number from a paper (such as the Titan RTX or V100 timings above) tells you about relative speed on that GPU, not about your phone.
+
+**Quality.** Fast models must also be judged on quality, with the metrics and pitfalls of [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#evaluation-metrics) and the low-light specifics of [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#evaluation). Photo-enhancement papers in this chapter mostly evaluate on MIT-Adobe FiveK [8] (raw photos retouched by five experts) with PSNR, SSIM and a color difference; low-light models use the datasets in [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#benchmark-datasets). Two additions matter for fast models: evaluate at **full resolution**, because halos and banding from coarse grids or tables may vanish when the output is downsampled for scoring; and evaluate **after quantization and export**, on the actual runtime, because that is the model users get.
+
+**What to report**, as a checklist: parameters (including tables); MACs at the deployment resolution and per megapixel, including the per-pixel step; peak memory; latency percentiles with the full hardware and software description; quality at full resolution, after quantization; and a few full-resolution crops of the hardest cases.
+
+## Failure modes
+
+**Plain version.** Fast enhancers fail in characteristic ways that follow from their shortcuts: tables are coarse, grids are coarse, transforms ignore noise, and each frame is processed alone.
+
+- **Banding from quantization and coarse tables.** Strong brightening stretches the few gray levels of a dark 8-bit image apart, so a smooth gradient becomes visible steps. A coarse or 8-bit-stored LUT adds its own steps and piecewise-linear kinks. The snippet below brightens a smooth dark ramp after quantizing it at different bit depths.
+
+```python
+import numpy as np
+
+ramp = np.linspace(0, 0.1, 4000)                 # a smooth dark gradient (e.g. a night sky)
+curve = lambda x: x ** (1 / 2.2)                 # a strong brightening curve
+for bits in (8, 10, 12):
+    q = np.round(ramp * (2**bits - 1)) / (2**bits - 1)          # sensor / file bit depth
+    out = np.round(curve(q) * 255)                              # 8-bit display output
+    levels = np.unique(out)
+    print(f"{bits:2d}-bit input: {len(np.unique(q)):4d} input levels -> {len(levels):3d} output levels,"
+          f" largest jump {np.diff(levels).max():.0f} display levels")
+```
+
+```text
+ 8-bit input:   27 input levels ->  27 output levels, largest jump 21 display levels
+10-bit input:  103 input levels ->  67 output levels, largest jump 11 display levels
+12-bit input:  411 input levels ->  84 output levels, largest jump 6 display levels
+```
+
+The brightened ramp spans about 90 display levels (from 0 to $0.1^{1/2.2} \approx 0.35$ of 255), but an 8-bit input provides only 27 of them, so the gradient is shown as 27 bands; the largest jump is the first step above black, where the curve is steepest. No enhancer can invent the missing levels without adding noise or dithering, which is one reason raw or higher-bit-depth inputs matter for low light ([DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#deep-learning-llie)).
+
+<Figure src={bandingFig} alt="Three horizontal gray gradients from black to light gray. The top one, from an 8-bit input, shows 27 clearly visible bands; the middle one, from a 10-bit input, shows 67 finer bands; the bottom one, from a 12-bit input, shows 84 bands and looks almost smooth." caption="Figure 5 — Banding after strong brightening (our synthetic ramp). The same curve applied to an 8-, 10- and 12-bit version of one dark gradient; the number of distinct output levels limits how smooth the result can look." />
+
+- **Halos from coarse grids.** A grid cell spans many pixels; where an edge separates two regions that need different transforms but fall into the same intensity bin, both sides receive a blend, and a fringe appears along the edge. Figure 3's residual errors along the cup rim are this effect in miniature. Finer intensity bins, a better (learned) guide, or a finer grid reduce it at a cost. HDRNet's authors also note slightly softer outputs from the heavy downsampling [4].
+- **Color shifts.** Per-channel curves change hue whenever they treat R, G and B differently; a LUT trained on one dataset may map colors it never saw (saturated neon, skin under colored light) unpredictably, because nodes far from the training colors are constrained only by the smoothness regularizer. Gray-world-style losses push colorful scenes toward gray (see the toy in DLCV 05).
+- **Amplified noise.** A transform that brightens shadows multiplies their noise by the local slope of the curve, and pointwise or local-affine transforms cannot average noise away. The 3D LUT authors report exactly this on night images [12]. A fast enhancer for real low light needs a denoiser somewhere, or a curve whose slope is limited where the signal-to-noise ratio is low.
+- **Temporal flicker on video.** When each frame is processed independently, the predicted LUT weights, curve parameters or grid coefficients jump a little from frame to frame, and the whole image pulses in brightness or color. Smoothing the predicted parameters over time (for example, an exponential moving average of the LUT weights) is cheap because the parameters are few. Lai et al. [28] proposed a general post-processing network that makes per-frame processed video temporally consistent without knowing which operator was applied.
+
+## Modern view
+
+**Surveys and reports.** There is no dedicated survey of lightweight enhancement that this chapter could verify, so four documents together give the overview:
+
+- **Li et al., TPAMI 2022 [29]**, the deep low-light survey already used in DLCV 05, includes a computational-efficiency comparison of LLIE methods (runtime, trainable parameters and FLOPs, averaged over 32 images of 1200 × 900 on one GPU). Its conclusion is that curve estimation (Zero-DCE) had the shortest runtime among the compared methods because it only estimates a few curve parameters with a small network.
+- **Dehghani et al., ICLR 2022 [26]** is about efficiency reporting in general: cost indicators contradict each other, and incomplete reporting leads to wrong conclusions about which model is more efficient.
+- **The NTIRE 2026 efficient low-light challenge report [21]** is the most recent snapshot of what works under a hard size limit (below 1 MB) on high-resolution phone photographs.
+- **The Mobile AI and AIM 2022 learned-ISP challenge report [27]** shows how runtime can be measured on a real phone GPU under a common protocol, for a closely related task (turning raw sensor data into a finished photo).
+
+*Optional: [Paper guide: NTIRE 2026 efficient low-light challenge](#ntire-2026-efficient-low-light-image-enhancement-challenge-report) (in the Paper guides). How the challenge was set up, how its ranking works, and what its tables can and cannot tell you.*
+
+**State of the art (2023–2026).** Three lines are active. First, **lookup tables keep gaining locality and context**: 4D LUTs with a learned context channel [16] and LUTs combined with bilateral grids [17] narrow the gap between global tables and local operators while keeping per-pixel cost tiny. Second, **efficient low-light networks are converging on a recipe**: small encoder–decoders with depthwise convolutions, a Retinex-style or color-space decomposition, a little attention, and re-parameterization for inference, as the NTIRE 2026 submissions show [21]. Third, **parametric ISP-style models** such as IAT [19] predict a few interpretable global parameters (color matrix, gamma) plus a light local correction, which makes them both small and easy to constrain.
+
+**Open problems.**
+
+- **Local, noise-aware and fast at once.** Transform-based models are fast because they do not touch fine structure, which is also why they cannot denoise. Combining them with a cheap denoiser without losing the speed advantage is unsolved in general.
+- **Video.** Temporal consistency at a few milliseconds per 4K frame, without optical flow, remains hard; per-frame models flicker and video models are heavier.
+- **Fair, comparable efficiency numbers.** Papers time on different GPUs, at different resolutions, with or without the full-resolution step; on-device measurements are rare outside challenges.
+- **Quantization-aware enhancement.** Most methods are trained in floating point and evaluated there; the visible effects of 8-bit deployment (banding, color steps) are seldom reported.
+- **Generalization.** Small models have little capacity to cover unusual lighting, cameras and scenes; image-adaptive tables and grids help, but behavior far from the training data is poorly understood.
+
+## Key takeaways
+
+- "Lightweight" has several meanings: parameters, MACs per megapixel, memory traffic and measured latency. For full-resolution networks, arithmetic and memory grow with the pixel count, so a 4K frame costs four times a 1080p frame.
+- Tone and color enhancement is mostly a **smooth remapping** of the input's values, so a model can **predict a transform at low resolution and apply it at full resolution**. Upsample the transform, never the image.
+- The transform can be a curve (Zero-DCE++), a **bilateral grid** of affine maps sliced with a guide (HDRNet, bilateral guided upsampling), a guided-filter coefficient map (deep guided filter), or a **3D LUT** applied by trilinear interpolation (image-adaptive 3D LUTs and successors).
+- Trilinear interpolation blends 8 corners with weights that are products of the fractional offsets; it is exact for functions that are linear in each channel and weakest where the transform bends sharply, such as gamma near black.
+- Applying a LUT costs the same for any transform, but a single LUT is global; spatial weights, 4D context, bilateral grids and non-uniform lattices add locality and accuracy.
+- Very small networks (SCI, IAT, prior-guided networks) and techniques such as depthwise separable layers, structural re-parameterization and quantization shrink the low-resolution part further.
+- Report parameters (including tables), MACs at the deployment resolution including the per-pixel step, peak memory, on-device latency percentiles and full-resolution quality after quantization; watch for banding, halos, color shifts, amplified noise and flicker.
+
+## Exercises
+
+1. **MACs per megapixel.** A full-resolution network has five $3 \times 3$ convolutions with 16 channels in and out, plus a first layer $3 \to 16$ and a last layer $16 \to 3$. Compute its MACs per pixel and its total GMACs at 1080p and at a 12-megapixel photo. Then redesign it so that the five middle layers run after a $2 \times 2$ pixel unshuffle (64 channels at a quarter of the pixels). What happens to MACs per pixel?
+
+<details>
+<summary>Hint</summary>
+
+Per pixel: $9 \cdot 3 \cdot 16 + 5 \cdot 9 \cdot 16 \cdot 16 + 9 \cdot 16 \cdot 3 = 432 + 11{,}520 + 432 = 12{,}384$ MACs. Multiply by $2.07 \times 10^6$ and $12 \times 10^6$ pixels: about 25.7 and 148.6 GMACs. After unshuffling, each middle layer has $9 \cdot 64 \cdot 64 = 36{,}864$ MACs per *low-resolution* pixel, which is $9{,}216$ per input pixel, four times *more* than before ($2{,}304$). Unshuffling saves only if you also reduce the channel count; the quantity to keep fixed is (channels)² × (pixel fraction).
+
+</details>
+
+2. **Exactness of trilinear interpolation.** Show that trilinear interpolation reproduces exactly any function of the form $f(r, g, b) = \alpha + \beta r + \gamma g + \delta b + \ldots$ that is linear in each variable separately (it may contain $rg$, $rb$, $gb$ and $rgb$ terms), and that it does not reproduce $r^2$. Use this to explain why a color matrix, but not a gamma curve, is represented exactly by any $M \ge 2$.
+
+<details>
+<summary>Hint</summary>
+
+Along one axis, interpolation between two nodes reproduces any linear function of that variable exactly. Trilinear interpolation is the composition of three 1D interpolations, one per axis, so it reproduces products of linear functions, i.e. every multilinear polynomial. For $r^2$ on $[0, 1]$ with nodes at 0 and 1, the interpolant at $r = 0.5$ is $0.5$ while $r^2 = 0.25$. A color matrix with offset is linear, hence exact; a gamma curve is not multilinear, so its error depends on $M$ (and, as in the snippet, is worst where the curve is steepest).
+
+</details>
+
+3. **Grid size versus halos.** In the bilateral-grid snippet, change the grid to $(5, 7, 8)$, $(17, 25, 8)$ and $(9, 13, 4)$, and add one more experiment: fit the $(9, 13, 8)$ grid on the *full-resolution* pair instead of the low-resolution one. Report PSNR for each and explain which error comes from the grid model and which from running the operator at low resolution.
+
+<details>
+<summary>Hint</summary>
+
+In our run, $(5, 7, 8)$ gave 33.79 dB, $(9, 13, 4)$ 34.71 dB, $(9, 13, 8)$ 36.01 dB and $(17, 25, 8)$ 37.49 dB; fitting $(9, 13, 8)$ on the full-resolution pair gave 37.23 dB. Fewer spatial cells or intensity bins means each cell must serve more different content, which shows up as errors along edges (halos). The full-resolution fit is an upper bound for that grid size: the remaining gap to it comes from the operator's output at low resolution not being exactly the downsampled full-resolution output.
+
+</details>
+
+4. **LUT memory.** Compute the number of stored values and the memory in fp16 for: a 33-node 3D LUT; three of them as basis LUTs; a 17-node 3D LUT; and a 4D LUT with 33 nodes on each color axis and 8 on a context axis. Compare with the 10K parameters reported for Zero-DCE++. Why do LUT methods often use fewer, smaller tables in later work?
+
+<details>
+<summary>Hint</summary>
+
+$3 \cdot 33^3 = 107{,}811$ values (about 211 KiB in fp16); three basis LUTs about 323K values; $3 \cdot 17^3 = 14{,}739$; and $3 \cdot 33^3 \cdot 8 = 862{,}488$ for the 4D LUT. Tables grow with the cube (or fourth power) of the node count, so they quickly dominate a model's size even though they cost almost nothing to apply. This is the motivation of SepLUT (a small 3D LUT after 1D LUTs) and AdaInt (put nodes only where needed).
+
+</details>
+
+5. **Temporal smoothing.** Simulate a video: for 200 frames, scale the coffee image by a light level $k_t$ that rises slowly from 0.1 to 0.2. A "model" predicts one gamma per frame: the value $\gamma_t$ that makes the mean of $x^{\gamma_t}$ equal to 0.4, plus a random prediction error with standard deviation 0.02. Measure the mean absolute frame-to-frame change of the output's mean brightness with the raw $\gamma_t$ and with an exponential moving average $\bar\gamma_t = \beta \bar\gamma_{t-1} + (1 - \beta)\gamma_t$, $\beta = 0.8$. Then derive the reduction factor and discuss the lag that smoothing introduces.
+
+<details>
+<summary>Hint</summary>
+
+Find $\gamma_t$ by 1D root finding (for example `scipy.optimize.brentq`). In our run the mean absolute change of the output mean was about 0.025 per frame without smoothing and about 0.0039 with it, a ratio of 0.15. For white prediction noise, the frame-to-frame difference of the moving average has standard deviation $(1 - \beta)\sqrt{2/(1 + \beta)}\,\sigma$ against $\sqrt{2}\,\sigma$ for the raw values, a ratio of $(1 - \beta)/\sqrt{1 + \beta} \approx 0.149$ for $\beta = 0.8$, which matches. The price is lag: the average responds to a real change of lighting with a mean delay of $\beta/(1 - \beta) = 4$ frames. Real systems trade these against each other, or detect scene cuts and reset the average.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional. Each takes one point from the main text and goes into finer detail; nothing in the main text, code or exercises depends on them.
+
+### Fitting and slicing a bilateral grid in detail
+
+This note writes out the least-squares fit used in the bilateral-grid snippet, the choices it makes, and how they relate to bilateral guided upsampling [9].
+
+**The model.** Each node $n = (i, j, k)$ of a $G_y \times G_x \times G_z$ grid holds a matrix $A_n \in \mathbb{R}^{4 \times 3}$ (the transpose of the $3 \times 4$ form in the main text, which is convenient for least squares). A pixel $p$ with input color $I_p \in \mathbb{R}^3$ has the augmented vector $\mathbf{x}_p = [I_p^\top, 1]^\top \in \mathbb{R}^4$, a target color $O_p \in \mathbb{R}^3$, and trilinear weights $w_{pn} \ge 0$ for its 8 surrounding nodes ($w_{pn} = 0$ for all other nodes, and $\sum_n w_{pn} = 1$).
+
+**The local fit.** The snippet minimizes, separately for each node,
+
+$$
+E_n(A_n) = \sum_{p} w_{pn}\, \big\lVert A_n^\top \mathbf{x}_p - O_p \big\rVert^2 + \lambda\, \lVert A_n - A_{\text{id}} \rVert_F^2,
+$$
+
+where $\lVert \cdot \rVert_F$ is the Frobenius norm, $A_{\text{id}} = [\,I_3;\ \mathbf{0}^\top]$ is the identity transform (no change, zero offset) and $\lambda > 0$ is a small ridge weight. Setting the gradient to zero gives the normal equations
+
+$$
+\Big(\underbrace{\textstyle\sum_p w_{pn}\, \mathbf{x}_p \mathbf{x}_p^\top}_{S_n \,\in\, \mathbb{R}^{4\times4}} + \lambda I_4\Big) A_n = \underbrace{\textstyle\sum_p w_{pn}\, \mathbf{x}_p O_p^\top}_{T_n \,\in\, \mathbb{R}^{4\times3}} + \lambda A_{\text{id}},
+$$
+
+which is exactly what `XtX`, `XtY` and `np.linalg.solve` compute. Accumulating $S_n$ and $T_n$ needs one pass over the low-resolution pixels; solving needs one $4 \times 4$ system per node.
+
+**Why the ridge is needed.** $S_n$ is a weighted scatter matrix of the colors near node $n$. If a node sees no pixels (an intensity bin that does not occur in that region), $S_n = 0$ and the ridge alone gives $A_n = A_{\text{id}}$. If it sees pixels of almost one color, $S_n$ is close to rank 1: the fit can match the target at that color, but the slopes in other color directions are arbitrary. The ridge pulls them toward the identity. Without it, a full-resolution pixel whose color is slightly different from what the node saw can receive an extreme slope, which shows up as speckles or color blotches. Too large a $\lambda$ makes every node close to the identity and the edit too weak.
+
+**Soft versus hard assignment.** The snippet uses the same trilinear weights for fitting and slicing ("soft" binning), so each node's matrix is fitted to the pixels that will later read it. Assigning each pixel only to its nearest node ("hard" binning) is simpler but fits each node to a slightly different set of pixels than slicing uses, which adds error at cell boundaries.
+
+**What bilateral guided upsampling adds.** Chen et al. [9] add a smoothness term on the affine matrices to the data term, which, in their words, prevents false edges and amplified noise. The resulting energy couples neighboring nodes, so empty or poorly constrained nodes are filled from their neighbors instead of falling back to the identity. They either solve it as one global optimization (a large sparse linear system instead of many $4 \times 4$ ones) or approximate it by fitting the matrices locally and then blurring them in grid space; depending on the parameters, that fast approximation reduces to known methods such as the guided filter [11]. They report that fitting takes about 10 ms on mobile devices and that applying the curves at full resolution can be done by a simple GPU shader.
+
+**Grid size.** More spatial cells follow spatial changes of the edit more closely; more intensity bins separate the two sides of an edge better. Both reduce halos, but each node then sees fewer pixels, so the fit becomes noisier and the ridge or smoothness term must do more work. Exercise 3 measures this trade-off on the toy.
+
+**Pitfalls.** The guide must be computed identically at fitting and slicing time (the snippet uses luma for both); a guide in a different color space or gamma encoding shifts every pixel to the wrong intensity bin. The grid's spatial coordinates must map the image corners to the grid corners at both resolutions (the snippet uses `linspace(0, G - 1, H)`), or the edit shifts by a fraction of a cell.
+
+### Learnable LUT variants in detail
+
+This note describes, at the level of their key mechanism, the LUT variants listed in the main text.
+
+**Spatial-aware 3D LUTs** [13]. A two-head weight predictor outputs a weight vector for image-level adaptation and a weight *map* for pixel-wise fusion of several spatial-aware LUTs. Two pixels with the same color can therefore be mapped differently if they lie in different regions, at the cost of fusing tables (or outputs) per pixel instead of once per image.
+
+**AdaInt** [14]. A uniform lattice places nodes at $0, \tfrac{1}{M-1}, \dots, 1$ on every axis. AdaInt predicts, per image and per axis, $M - 1$ positive **intervals** $\Delta_1, \dots, \Delta_{M-1}$ that sum to 1 (for example with a softmax), and places node $m$ at the cumulative sum $q_m = \sum_{l \le m} \Delta_l$ with $q_0 = 0$. To look up a value $r$ on that axis, find the interval with $q_i \le r \lt q_{i+1}$ (a search over the sorted node positions) and use the offset
+
+$$
+d_r = \frac{r - q_i}{q_{i+1} - q_i},
+$$
+
+where $q_i$ and $q_{i+1}$ are the positions of the two nodes around $r$. The 8 corner weights are then formed exactly as in the uniform case. The paper's operator for this lookup, AiLUT-Transform, also passes gradients to the interval sizes, so the lattice positions are learned end to end. The effect is the one our gamma experiment asked for: dense nodes where the transform bends (for example near black for a brightening curve) and sparse nodes where it is nearly linear.
+
+**SepLUT** [15]. The transform is split into a per-channel 1D LUT stage followed by a 3D LUT. The 1D curves are cheap and can be fine, so they handle each channel's tone curve; they also redistribute the input colors so that they spread over more of the 3D LUT's cells. The authors argue that this better **cell utilization** lets the 3D stage be much smaller. Memory goes from $3M^3$ to $3M^3_{\text{small}} + 3K$, where $K$ is the number of entries per 1D LUT.
+
+**4D LUT** [16]. A context encoder predicts a per-pixel context value $c(\mathbf{x})$, and the table is indexed by $(r, g, b, c)$. Interpolation becomes **quadrilinear**: 16 corners, with weights that are products of four offsets. With $M_c$ nodes on the context axis the table has $3M^3 M_c$ values, which is why such tables use few context nodes.
+
+**LUTs with bilateral grids** [17]. Kim and Cho transform bilateral grids into a spatial feature domain to bring spatial information into a 3D LUT model, and use slicing operations in place of the long decoding path of earlier spatially aware designs, which reduces inference time and parameters.
+
+**A common pitfall.** All these methods are trained on photo-retouching data (most often FiveK [8]), whose inputs cover the RGB cube unevenly. Nodes in rarely visited corners of the cube are set only by the smoothness and monotonicity regularizers, so they behave sensibly but are not learned from data. Check outputs on saturated and very dark colors, which are exactly those corners.
+
+### Structural re-parameterization step by step
+
+This note shows why a RepVGG-style block [24] with three branches can be replaced at inference by a single $3 \times 3$ convolution, and checks the claim numerically.
+
+**Batch normalization at inference is affine.** With learned scale $\gamma_o$ and shift $\beta_o$ and stored running mean $\mu_o$ and variance $\sigma_o^2$ for output channel $o$,
+
+$$
+\mathrm{BN}(y)_o = \gamma_o \frac{y_o - \mu_o}{\sqrt{\sigma_o^2 + \epsilon}} + \beta_o = s_o\, y_o + (\beta_o - s_o \mu_o), \qquad s_o = \frac{\gamma_o}{\sqrt{\sigma_o^2 + \epsilon}},
+$$
+
+where $y_o$ is the convolution output in channel $o$ and $\epsilon$ a small constant. So BN after a convolution with kernel $W$ (no bias) equals a convolution with kernel $s_o W_o$ and bias $\beta_o - s_o \mu_o$.
+
+**Every branch is a $3 \times 3$ convolution.** A $1 \times 1$ kernel is a $3 \times 3$ kernel that is zero except at the center. The identity map is a $3 \times 3$ kernel with a 1 at the center of the $(o, o)$ slice and zeros elsewhere. Convolution is linear in the kernel, so the sum of three convolutions of the same input is one convolution with the summed kernel and the summed bias:
+
+$$
+W_{\text{fused}} = \sum_{\text{branch } m} s^{(m)} \odot W^{(m)}, \qquad b_{\text{fused}} = \sum_{m} \big(\beta^{(m)} - s^{(m)} \mu^{(m)}\big),
+$$
+
+where $W^{(m)}$ is branch $m$'s kernel written in $3 \times 3$ form, $s^{(m)}, \beta^{(m)}, \mu^{(m)}$ are its BN quantities, and $\odot$ scales each output channel's kernel by its $s_o$. The ReLU comes *after* the sum, so it is not affected.
+
+```python
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+def conv3x3(x, w, b):
+    """x: (C, H, W), w: (Cout, C, 3, 3), b: (Cout,). Zero padding keeps the size."""
+    patches = sliding_window_view(np.pad(x, ((0, 0), (1, 1), (1, 1))), (3, 3), axis=(1, 2))
+    return np.einsum("chwij,ocij->ohw", patches, w) + b[:, None, None]
+
+def bn(y, gamma, beta, mean, var, eps=1e-5):
+    """Batch normalization at inference: a fixed per-channel scale and shift."""
+    s = gamma / np.sqrt(var + eps)
+    return s[:, None, None] * (y - mean[:, None, None]) + beta[:, None, None]
+
+rng = np.random.default_rng(0)
+C, H, W = 8, 32, 32
+x = rng.standard_normal((C, H, W))
+w3, w1 = rng.standard_normal((C, C, 3, 3)) * 0.1, rng.standard_normal((C, C, 1, 1)) * 0.1
+bns = [(rng.uniform(0.5, 1.5, C), rng.normal(0, 0.1, C), rng.normal(0, 0.1, C), rng.uniform(0.5, 2, C))
+       for _ in range(3)]                                   # (gamma, beta, mean, var) per branch
+zero_b = np.zeros(C)
+
+# Training-time block: 3x3 conv + BN, 1x1 conv + BN, identity + BN, summed
+w1_as_3 = np.pad(w1, ((0, 0), (0, 0), (1, 1), (1, 1)))     # a 1x1 kernel is a 3x3 kernel with zeros
+w_id = np.zeros((C, C, 3, 3)); w_id[np.arange(C), np.arange(C), 1, 1] = 1   # identity as a 3x3 kernel
+branches = [w3, w1_as_3, w_id]
+y_train = sum(bn(conv3x3(x, w, zero_b), *p) for w, p in zip(branches, bns))
+
+# Inference-time block: fold each BN into its kernel, then add the three kernels
+w_fused, b_fused = np.zeros_like(w3), np.zeros(C)
+for w, (g, beta, mean, var) in zip(branches, bns):
+    s = g / np.sqrt(var + 1e-5)
+    w_fused += s[:, None, None, None] * w
+    b_fused += beta - s * mean
+y_infer = conv3x3(x, w_fused, b_fused)
+print(f"max difference: {np.abs(y_train - y_infer).max():.1e}")
+print("weights: training", w3.size + w1.size, "+ 3 BNs -> inference", w_fused.size, "+ bias")
+```
+
+```text
+max difference: 2.7e-15
+weights: training 640 + 3 BNs -> inference 576 + bias
+```
+
+**Edge cases.** The identity branch exists only when the input and output have the same number of channels and the same size (stride 1). Padding must match: the $3 \times 3$ branch uses one pixel of zero padding, and the $1 \times 1$ branch must be padded so that its output aligns, which writing it as a centered $3 \times 3$ kernel does automatically. Folding is exact only with BN in inference mode (fixed running statistics). And the saving is in latency and memory traffic, not in the arithmetic of the $3 \times 3$ branch itself: the inference block does one convolution instead of three plus an addition.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### HDRNet: deep bilateral learning for real-time image enhancement
+
+**Problem.** Phone cameras need complex, content-dependent photographic edits (tone mapping, a retoucher's style) at viewfinder rates on full-resolution frames, which a full-resolution CNN cannot deliver on a phone [4].
+
+**Idea.** Let a CNN see only a 256 × 256 copy of the frame and predict a $16 \times 16 \times 8$ bilateral grid of $3 \times 4$ affine color transforms, combining a local path and a global path (fully connected layers) so that decisions can depend on the whole image. A learned pointwise guide and a parameter-free, differentiable **slicing** layer bring the transforms back to full resolution, where they are applied pixel by pixel. The loss is computed on the full-resolution output.
+
+**What it showed.** The same architecture can imitate many operators, including hand-engineered pipelines, Photoshop actions and expert retouching from FiveK [8], and the authors report a real-time 1080p viewfinder on a phone. Its training is offline from input/output pairs, so it can learn edits for which no algorithm exists.
+
+**What to check when you read it.** Separate the timing of the network (on the thumbnail) from that of slicing and applying (at full resolution), and note on which processor each runs. Read the limitations section: outputs are slightly softer than the reference, and operators that create edges or need non-local reasoning (sharpening, dehazing, matting) fit the local affine model poorly. Note that the global path's fully connected layers fix the input size of the thumbnail.
+
+**Why it matters here.** It is the clearest statement of this chapter's principle, "predict the transform at low resolution, apply it at full resolution", and its slicing operation reappears in later LUT and grid methods [17].
+
+### Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)
+
+**Problem.** Learned photo enhancers either gave unsatisfying results or needed too much computation and memory for high-resolution photos of 12 megapixels and more [12].
+
+**Idea.** Learn a few basis 3D LUTs and a small CNN on a 256 × 256 thumbnail that predicts content-dependent weights to fuse them into one LUT per image, trained end to end with pairwise or unpaired learning, with smoothness and monotonicity regularizers on the tables.
+
+**What it showed.** A model with fewer than 600K parameters that processes a 4K image in under 2 ms on one Titan RTX GPU, while scoring well on FiveK and HDR+ benchmarks by PSNR, SSIM and a color-difference metric [12]. It started a line of work on learnable LUTs (spatial-aware LUTs, AdaInt, SepLUT, 4D LUTs).
+
+**What to check when you read it.** The timing tables are on a desktop GPU with a custom interpolation kernel; check whether a comparison includes data transfer and the thumbnail resize. Check which expert's retouching is the target on FiveK and which split is used, because published numbers differ with both. Read the limitations: one LUT per image cannot make local adjustments, and noise is amplified on night images.
+
+**Why it matters here.** It shows how far a purely global, per-image transform can go, and its stated limits are exactly what the successors in this chapter address.
+
+### NTIRE 2026 efficient low-light image enhancement challenge report
+
+**Problem.** Efficient low-light enhancement had no common benchmark with a hard resource limit on realistic, high-resolution phone photographs [21].
+
+**Idea.** A challenge with phone images at 3024 × 4032 covering dim, extremely dark, backlit, unevenly lit and night scenes, a model-size limit of 1 MB, and a ranking that aggregates each team's ranks over several full-reference and no-reference quality metrics, with fewer parameters breaking ties.
+
+**What it showed.** 207 registered participants, 27 teams with valid entries and 17 with valid fact sheets, and a set of recurring design patterns: lightweight encoder–decoders with depthwise separable convolutions, Retinex-style decomposition, small attention modules, color-space decoupling, classical priors and re-parameterization [21].
+
+**What to check when you read it.** The efficiency constraint is model size, not runtime or FLOPs on a fixed device, so the tables tell you which designs fit in 1 MB, not which run fastest on a phone. Rank aggregation over metrics means a team can win without being best on any single metric; look at the individual metric columns. Training hardware listed by teams is not an efficiency measurement.
+
+**Why it matters here.** It is the most recent independent snapshot of efficient low-light design, and it shows how strongly the measurement protocol shapes what "efficient" means.
+
+## References
+
+1. C. Li, C. Guo and C. C. Loy, "Learning to enhance low-light image via zero-reference deep curve estimation," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 8, 2022. [doi](https://doi.org/10.1109/TPAMI.2021.3063604) [arXiv](https://arxiv.org/abs/2103.00860)
+2. C. Guo, C. Li, J. Guo, C. C. Loy, J. Hou, S. Kwong and R. Cong, "Zero-reference deep curve estimation for low-light image enhancement," in *Proc. IEEE/CVF CVPR*, 2020, pp. 1777–1786. [doi](https://doi.org/10.1109/CVPR42600.2020.00185) [arXiv](https://arxiv.org/abs/2001.06826)
+3. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional networks for biomedical image segmentation," in *Proc. Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, 2015, pp. 234–241. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) [arXiv](https://arxiv.org/abs/1505.04597)
+4. M. Gharbi, J. Chen, J. T. Barron, S. W. Hasinoff and F. Durand, "Deep bilateral learning for real-time image enhancement," *ACM Transactions on Graphics* (Proc. SIGGRAPH), vol. 36, no. 4, art. 118, 2017. [doi](https://doi.org/10.1145/3072959.3073592) [arXiv](https://arxiv.org/abs/1707.02880)
+5. J. Chen, S. Paris and F. Durand, "Real-time edge-aware image processing with the bilateral grid," *ACM Transactions on Graphics* (Proc. SIGGRAPH), vol. 26, no. 3, art. 103, 2007. [doi](https://doi.org/10.1145/1276377.1276506)
+6. C. Tomasi and R. Manduchi, "Bilateral filtering for gray and color images," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 1998, pp. 839–846. [doi](https://doi.org/10.1109/ICCV.1998.710815)
+7. S. Paris and F. Durand, "A fast approximation of the bilateral filter using a signal processing approach," *International Journal of Computer Vision*, vol. 81, no. 1, pp. 24–52, 2009. [doi](https://doi.org/10.1007/s11263-007-0110-8)
+8. V. Bychkovsky, S. Paris, E. Chan and F. Durand, "Learning photographic global tonal adjustment with a database of input/output image pairs," in *Proc. IEEE CVPR*, 2011, pp. 97–104. [doi](https://doi.org/10.1109/CVPR.2011.5995413) [dataset](https://data.csail.mit.edu/graphics/fivek/)
+9. J. Chen, A. Adams, N. Wadhwa and S. W. Hasinoff, "Bilateral guided upsampling," *ACM Transactions on Graphics* (Proc. SIGGRAPH Asia), vol. 35, no. 6, 2016. [doi](https://doi.org/10.1145/2980179.2982423) [project](https://research.google/pubs/bilateral-guided-upsampling/)
+10. H. Wu, S. Zheng, J. Zhang and K. Huang, "Fast end-to-end trainable guided filter," in *Proc. IEEE/CVF CVPR*, 2018, pp. 1838–1847. [doi](https://doi.org/10.1109/CVPR.2018.00197) [arXiv](https://arxiv.org/abs/1803.05619)
+11. K. He, J. Sun and X. Tang, "Guided image filtering," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 35, no. 6, pp. 1397–1409, 2013. [doi](https://doi.org/10.1109/TPAMI.2012.213)
+12. H. Zeng, J. Cai, L. Li, Z. Cao and L. Zhang, "Learning image-adaptive 3D lookup tables for high performance photo enhancement in real-time," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 4, 2022. [doi](https://doi.org/10.1109/TPAMI.2020.3026740) [arXiv](https://arxiv.org/abs/2009.14468)
+13. T. Wang, Y. Li, J. Peng, Y. Ma, X. Wang, F. Song and Y. Yan, "Real-time image enhancer via learnable spatial-aware 3D lookup tables," in *Proc. IEEE/CVF ICCV*, 2021, pp. 2471–2480. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Wang_Real-Time_Image_Enhancer_via_Learnable_Spatial-Aware_3D_Lookup_Tables_ICCV_2021_paper.html) [arXiv](https://arxiv.org/abs/2108.08697)
+14. C. Yang, M. Jin, X. Jia, Y. Xu and Y. Chen, "AdaInt: Learning adaptive intervals for 3D lookup tables on real-time image enhancement," in *Proc. IEEE/CVF CVPR*, 2022, pp. 17522–17531. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Yang_AdaInt_Learning_Adaptive_Intervals_for_3D_Lookup_Tables_on_Real-Time_CVPR_2022_paper.html) [arXiv](https://arxiv.org/abs/2204.13983)
+15. C. Yang, M. Jin, Y. Xu, R. Zhang, Y. Chen and H. Liu, "SepLUT: Separable image-adaptive lookup tables for real-time image enhancement," in *Proc. European Conference on Computer Vision (ECCV)*, 2022, pp. 201–217. [doi](https://doi.org/10.1007/978-3-031-19797-0_12) [arXiv](https://arxiv.org/abs/2207.08351)
+16. C. Liu, H. Yang, J. Fu and X. Qian, "4D LUT: Learnable context-aware 4D lookup table for image enhancement," *IEEE Transactions on Image Processing*, vol. 32, pp. 4742–4756, 2023. [doi](https://doi.org/10.1109/TIP.2023.3290849) [arXiv](https://arxiv.org/abs/2209.01749)
+17. W. Kim and N. I. Cho, "Image-adaptive 3D lookup tables for real-time image enhancement with bilateral grids," in *Proc. European Conference on Computer Vision (ECCV)*, 2024, pp. 91–108. [doi](https://doi.org/10.1007/978-3-031-72967-6_6) [ECCV](https://eccv2024.ecva.net/virtual/2024/poster/2536)
+18. L. Ma, T. Ma, R. Liu, X. Fan and Z. Luo, "Toward fast, flexible, and robust low-light image enhancement," in *Proc. IEEE/CVF CVPR*, 2022, pp. 5627–5636. [doi](https://doi.org/10.1109/CVPR52688.2022.00555) [arXiv](https://arxiv.org/abs/2204.10137)
+19. Z. Cui, K. Li, L. Gu, S. Su, P. Gao, Z. Jiang, Y. Qiao and T. Harada, "You only need 90K parameters to adapt light: A light weight transformer for image enhancement and exposure correction," in *Proc. British Machine Vision Conference (BMVC)*, 2022. [paper](https://bmvc2022.mpi-inf.mpg.de/0238.pdf) [arXiv](https://arxiv.org/abs/2205.14871)
+20. S.-E. Weng, S.-G. Miaou and R. Christanto, "A lightweight low-light image enhancement network via channel prior and gamma correction," *International Journal of Pattern Recognition and Artificial Intelligence*, vol. 39, no. 12, art. 2554013, 2025. [doi](https://doi.org/10.1142/S0218001425540138)
+21. J. Yan, C. Tu, W. Zhang, Z. Wang, P. Cao, Q. Lin, Y. Fang, X. Liu, Z. Wu, Z. Zhou and R. Timofte, "NTIRE 2026 challenge on efficient low light image enhancement: Methods and results," NTIRE 2026 workshop report, arXiv:2605.02212, 2026. [arXiv](https://arxiv.org/abs/2605.02212)
+22. A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand, M. Andreetto and H. Adam, "MobileNets: Efficient convolutional neural networks for mobile vision applications," arXiv:1704.04861, 2017. [arXiv](https://arxiv.org/abs/1704.04861)
+23. M. Sandler, A. Howard, M. Zhu, A. Zhmoginov and L.-C. Chen, "MobileNetV2: Inverted residuals and linear bottlenecks," in *Proc. IEEE/CVF CVPR*, 2018, pp. 4510–4520. [doi](https://doi.org/10.1109/CVPR.2018.00474) [arXiv](https://arxiv.org/abs/1801.04381)
+24. X. Ding, X. Zhang, N. Ma, J. Han, G. Ding and J. Sun, "RepVGG: Making VGG-style ConvNets great again," in *Proc. IEEE/CVF CVPR*, 2021, pp. 13728–13737. [doi](https://doi.org/10.1109/CVPR46437.2021.01352) [arXiv](https://arxiv.org/abs/2101.03697)
+25. B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam and D. Kalenichenko, "Quantization and training of neural networks for efficient integer-arithmetic-only inference," in *Proc. IEEE/CVF CVPR*, 2018, pp. 2704–2713. [doi](https://doi.org/10.1109/CVPR.2018.00286) [arXiv](https://arxiv.org/abs/1712.05877)
+26. M. Dehghani, A. Arnab, L. Beyer, A. Vaswani and Y. Tay, "The efficiency misnomer," in *Proc. International Conference on Learning Representations (ICLR)*, 2022. [ICLR](https://iclr.cc/virtual/2022/poster/6607) [arXiv](https://arxiv.org/abs/2110.12894)
+27. A. Ignatov, R. Timofte, S. Liu, et al., "Learned smartphone ISP on mobile GPUs with deep learning, Mobile AI & AIM 2022 challenge: Report," in *Proc. European Conference on Computer Vision (ECCV) Workshops*, 2023, pp. 44–70. [doi](https://doi.org/10.1007/978-3-031-25066-8_3) [arXiv](https://arxiv.org/abs/2211.03885)
+28. W.-S. Lai, J.-B. Huang, O. Wang, E. Shechtman, E. Yumer and M.-H. Yang, "Learning blind video temporal consistency," in *Proc. European Conference on Computer Vision (ECCV)*, 2018, pp. 179–195. [doi](https://doi.org/10.1007/978-3-030-01267-0_11) [arXiv](https://arxiv.org/abs/1808.00449)
+29. C. Li, C. Guo, L. Han, J. Jiang, M.-M. Cheng, J. Gu and C. C. Loy, "Low-light image and video enhancement using deep learning: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 12, pp. 9396–9416, 2022. [doi](https://doi.org/10.1109/TPAMI.2021.3126387) [arXiv](https://arxiv.org/abs/2104.10729)

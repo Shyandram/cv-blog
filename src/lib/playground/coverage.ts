@@ -52,6 +52,7 @@ export const chapterPlan: Record<string, string[]> = {
     'deep-learning/dl-04b-video-super-resolution': ['pixel-sampling'],
     'deep-learning/dl-04c-generative-restoration': ['restoration-ambiguity'],
     'deep-learning/dl-05-low-light-enhancement': ['lowlight-photons'],
+    'deep-learning/dl-05a-lightweight-enhancement': ['lowlight-photons'],
     'deep-learning/dl-06-object-tracking': ['tracking-association'],
     'deep-learning/dl-07-world-models': ['world-model-rollout'],
     'ml/ml-01a-linear-algebra': ['linear-transform'],
