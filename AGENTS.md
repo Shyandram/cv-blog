@@ -109,11 +109,16 @@ only where they teach.
 section. Typical items: the introduction of a named algorithm the text only uses or mentions (RANSAC, the guided
 filter); a short guide to one paper (what problem it poses, the idea, what it showed, its limits, with the verified
 reference; in the notes' own words, never copied from the abstract); a primer on a concept the text takes for granted;
-a variant, a historical note or a longer derivation. It goes in a final `## Supplementary notes` / `## 補充資料` section, placed after
-`## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the notes are optional.
-Where the main text touches the topic it leaves a single italic pointer line with a link to the item
-(`*Optional: [RANSAC](#ransac-...) (see Supplementary notes at the end). One sentence on what it adds.*`; zh-tw
-`*選讀：[…](#…)（見文末「補充資料」）。…*`). Rules:
+a variant, a historical note or a longer derivation; detail that crowds the main line (long derivations, extra variants,
+historical surveys, long method lists) belongs here too. It goes in a final `## Supplementary notes` / `## 補充資料`
+section, placed after `## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the
+notes are optional. The site shows that section on a **separate page** (`/<lang>/learn/<track>/<slug>/notes/`, built by
+`src/lib/rehypeSupplementZones.mjs`); the main page shows a short card that lists the notes. Write links normally: an
+in-page `[…](#note-slug)` in the main text is rewritten to `notes/#note-slug` at build time (and a note's link to the main
+text to `../#slug`); a link from another page to a note must point to `…/<slug>/notes/#note-slug`. The PDF keeps the notes
+at the end of the chapter. Where the main text touches the topic it leaves a single italic pointer line with a link to
+the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One sentence on what it adds.*`; zh-tw
+`*選讀：[…](#…)（見「補充資料」頁）。…*`). Rules:
 - nothing in the main text, code, figures or exercises may depend on a note: before moving or writing one, grep for
   its terms, functions and figure names; a term the main line needs must be explained in the main line;
 - the English and zh-tw files carry the same notes in the same order, each with the house structure of section 3 in
