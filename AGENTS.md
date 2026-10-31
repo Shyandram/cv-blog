@@ -105,9 +105,11 @@ the PNG with a Chinese caption. Show figures with `<Figure src={img} alt="..." c
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
 
-**Supplementary notes.** Optional background (the introduction of a named algorithm the text only uses or
-mentions, such as RANSAC or the guided filter; a variant; a historical note; a longer derivation) does **not** sit in
-the middle of a section. It goes in a final `## Supplementary notes` / `## 補充資料` section, placed after
+**Supplementary notes.** Additional information that is optional for the main line does **not** sit in the middle of a
+section. Typical items: the introduction of a named algorithm the text only uses or mentions (RANSAC, the guided
+filter); a short guide to one paper (what problem it poses, the idea, what it showed, its limits, with the verified
+reference; in the notes' own words, never copied from the abstract); a primer on a concept the text takes for granted;
+a variant, a historical note or a longer derivation. It goes in a final `## Supplementary notes` / `## 補充資料` section, placed after
 `## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the notes are optional.
 Where the main text touches the topic it leaves a single italic pointer line with a link to the item
 (`*Optional: [RANSAC](#ransac-...) (see Supplementary notes at the end). One sentence on what it adds.*`; zh-tw
