@@ -68,7 +68,8 @@ Tutorials live in `src/content/tutorials/<lang>/<track>/<slug>.mdx`, one file pe
 5. `## Key takeaways` / `## 重點整理` — 5–8 bullets.
 6. `## Exercises` / `## 練習` — 4–6 original exercises; hints inside `<details>` with `<summary>` on
    its **own line** (the one-line form does not compile).
-7. `## References` / `## 參考文獻` — numbered `1. Authors, "Title," Venue, Year. [link](url)`, cited
+7. *(optional)* `## Supplementary notes` / `## 補充資料` — see "Supplementary notes" below.
+8. `## References` / `## 參考文獻` — numbered `1. Authors, "Title," Venue, Year. [link](url)`, cited
    in text as `[1]`, `[2]`. Every entry cited; every citation has an entry.
 
 **Depth:** complete, professional, very clear. Typical English length 4,000–8,000 words of prose.
@@ -103,6 +104,23 @@ the PNG with a Chinese caption. Show figures with `<Figure src={img} alt="..." c
 **Components** (`src/components/`): `Callout`, `Figure`, `ImageCompare` (before/after slider, two
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
+
+**Supplementary notes.** Additional information that is optional for the main line does **not** sit in the middle of a
+section. Typical items: the introduction of a named algorithm the text only uses or mentions (RANSAC, the guided
+filter); a short guide to one paper (what problem it poses, the idea, what it showed, its limits, with the verified
+reference; in the notes' own words, never copied from the abstract); a primer on a concept the text takes for granted;
+a variant, a historical note or a longer derivation. It goes in a final `## Supplementary notes` / `## 補充資料` section, placed after
+`## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the notes are optional.
+Where the main text touches the topic it leaves a single italic pointer line with a link to the item
+(`*Optional: [RANSAC](#ransac-...) (see Supplementary notes at the end). One sentence on what it adds.*`; zh-tw
+`*選讀：[…](#…)（見文末「補充資料」）。…*`). Rules:
+- nothing in the main text, code, figures or exercises may depend on a note: before moving or writing one, grep for
+  its terms, functions and figure names; a term the main line needs must be explained in the main line;
+- the English and zh-tw files carry the same notes in the same order, each with the house structure of section 3 in
+  miniature (plain statement first, then the precise version with every symbol defined, one tested snippet if useful)
+  and with verified references like any other text;
+- "What you'll learn", "Key takeaways" and "Exercises" are never moved into the notes, and the notes stay
+  shorter than the main text (a few items per tutorial).
 
 **Titles and link text:** tutorials are named by track prefix and two-digit number, e.g. `IP 05`,
 `ML 03a`, `DLCV 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's

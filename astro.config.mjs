@@ -6,6 +6,7 @@ import { unified } from '@astrojs/markdown-remark';
 import remarkMath from 'remark-math';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import rehypeKatex from 'rehype-katex';
+import rehypeCitations from './src/lib/rehypeCitations.mjs';
 import { fileURLToPath } from 'node:url';
 import * as pagefind from 'pagefind';
 
@@ -95,7 +96,7 @@ export default defineConfig({
   },
   markdown: {
     // Astro 7 defaults to Sätteri; we use unified for remark-math + rehype-katex.
-    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex] }),
+    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations] }),
     shikiConfig: { themes: { light: 'github-light', dark: 'github-dark' }, wrap: false },
   },
 });
