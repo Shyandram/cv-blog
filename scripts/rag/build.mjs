@@ -1,3 +1,4 @@
+import { chapterPath } from '../../src/lib/chapter-paths.mjs';
 // Builds a retrieval corpus (for RAG and for agents) from the course source: every tutorial (en and zh-tw) and blog post is split
 // into section-sized chunks with their place in the course, the site URL with anchor (a note or paper guide: its own page,
 // …/notes/<id>/ or …/papers/<id>/), and the source file and line range.
@@ -110,7 +111,7 @@ for (const t of index.tutorials) {
   for (const lang of ['en', 'zh-tw']) {
     const file = lang === 'en' ? join(root, t.files.en) : t.files.zh && join(root, t.files.zh);
     if (!file || !existsSync(file)) continue;
-    all.push(...chunkFile(file, { id: `${lang}/${t.slug}`, kind: 'tutorial', lang, track: t.track, slug: t.slug, tutorial: t, url: `/${lang}/learn/${t.slug}/` }));
+    all.push(...chunkFile(file, { id: `${lang}/${t.slug}`, kind: 'tutorial', lang, track: t.track, slug: t.slug, tutorial: t, url: chapterPath(`/${lang}/learn/${t.slug}/`) }));
   }
 }
 for (const lang of ['en', 'zh-tw']) {

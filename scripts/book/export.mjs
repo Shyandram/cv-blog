@@ -1,3 +1,4 @@
+import { chapterPath } from '../../src/lib/chapter-paths.mjs';
 // Convert published MDX to a portable LaTeX book without executing its expressions.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,7 +86,7 @@ for (const lang of langs) {
     const title = current === 'posts' ? (zh ? '部落格文章' : 'Blog Essays') : names[lang][tracks.indexOf(current)];
     content.push(`\\part{${tex(title)}}`); lastPart = current;
    }
-   const online = `https://blog.shyandram.dev/${lang}/${kind === 'tutorials' ? 'learn' : 'blog'}/${slug}/`;
+   const online = chapterPath(`https://blog.shyandram.dev/${lang}/${kind === 'tutorials' ? 'learn' : 'blog'}/${slug}/`);
    // A main chapter is a book chapter; a sub-chapter (tree depth 2, 3, …) is a section (subsection, …) under it in the
    // contents and the PDF bookmarks, and its own headings move down by as many levels.
    const depth = entry.place?.depth ?? 1;

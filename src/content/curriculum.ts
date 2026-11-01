@@ -59,9 +59,8 @@ export const curriculum: CurriculumTree = {
       { slug: 'ml/ml-01c-numerical-computation' },
     ] },
     { slug: 'ml/ml-02-neural-networks' },
-    { slug: 'ml/ml-03-convolutional-networks', children: [
-      { slug: 'ml/ml-03a-recurrent-recursive-networks' },
-    ] },
+    { slug: 'ml/ml-03-convolutional-networks' },
+    { slug: 'ml/ml-03a-recurrent-recursive-networks' },
     { slug: 'ml/ml-04-vision-transformers' },
     { slug: 'ml/ml-05-representation-learning', children: [
       { slug: 'ml/ml-05a-factor-models-autoencoders' },
@@ -83,32 +82,31 @@ export const curriculum: CurriculumTree = {
     ] },
     { slug: 'deep-learning/dl-03-object-detection', children: [
       { slug: 'deep-learning/dl-03a-real-time-detection' },
-      { slug: 'deep-learning/dl-03b-image-segmentation' },
+      { slug: 'deep-learning/dl-09-3d-object-detection' },
     ] },
+    { slug: 'deep-learning/dl-03b-image-segmentation' },
+    { slug: 'deep-learning/dl-06a-pose-keypoints' },
+    { slug: 'deep-learning/dl-11a-text-in-images' },
+    { slug: 'deep-learning/dl-06-object-tracking' },
+    { slug: 'deep-learning/dl-06b-video-understanding' },
     { slug: 'deep-learning/dl-04-image-restoration', children: [
-      { slug: 'deep-learning/dl-04a-super-resolution' },
-      { slug: 'deep-learning/dl-04b-video-super-resolution' },
+      { slug: 'deep-learning/dl-04a-super-resolution', children: [
+        { slug: 'deep-learning/dl-04b-video-super-resolution' },
+      ] },
       { slug: 'deep-learning/dl-04c-generative-restoration' },
+      { slug: 'deep-learning/dl-05-low-light-enhancement', children: [
+        { slug: 'deep-learning/dl-05a-lightweight-enhancement' },
+      ] },
     ] },
-    { slug: 'deep-learning/dl-05-low-light-enhancement', children: [
-      { slug: 'deep-learning/dl-05a-lightweight-enhancement' },
-      { slug: 'deep-learning/dl-05b-image-fusion' },
-    ] },
-    { slug: 'deep-learning/dl-06-object-tracking', children: [
-      { slug: 'deep-learning/dl-06a-pose-keypoints' },
-      { slug: 'deep-learning/dl-06b-video-understanding' },
-    ] },
-    { slug: 'deep-learning/dl-07-world-models' },
+    { slug: 'deep-learning/dl-05b-image-fusion' },
     { slug: 'deep-learning/dl-08-3d-reconstruction', children: [
       { slug: 'deep-learning/dl-08a-depth-optical-flow' },
     ] },
-    { slug: 'deep-learning/dl-09-3d-object-detection' },
     { slug: 'deep-learning/dl-10-image-generation', children: [
       { slug: 'deep-learning/dl-10a-video-generation' },
     ] },
-    { slug: 'deep-learning/dl-11-robustness', children: [
-      { slug: 'deep-learning/dl-11a-text-in-images' },
-    ] },
+    { slug: 'deep-learning/dl-07-world-models' },
+    { slug: 'deep-learning/dl-11-robustness' },
   ],
   'optimization': [
     { slug: 'optimization/opt-01-modeling-convex-sets' },

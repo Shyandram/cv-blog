@@ -89,7 +89,7 @@ data, metrics, datasets/benchmarks, failure modes) but still open each section i
 
 **Frontmatter** (validated by `src/content.config.ts`):
 ```yaml
-title: "..."            # "<PREFIX> NN · Title" / zh-tw "<PREFIX> NN・標題" (IP, PR, ML, DLCV, NLP, OPT, IT)
+title: "..."            # title text only; src/content/curriculum.ts supplies the displayed number
 description: "..."      # one sentence
 track: <track>
 order: <int>            # position in the track
@@ -129,7 +129,7 @@ where `<note-slug>` is the `###` heading's id; the section's intro and a list of
 in-page `[…](#note-slug)` or `[…](#id-inside-a-note)` is rewritten at build time to the page that holds the target
 (`notes/<note-slug>/` or `notes/<note-slug>/#id` from the main text, `../../#slug` from a note to the main text, `../<other-note>/#id`
 between notes); a link from another page to a note must point to `…/<slug>/notes/<note-slug>/` (or `…/notes/<note-slug>/#id` for an
-id inside it). The PDF keeps the notes at the end of the chapter.
+id inside it). The PDF omits optional notes and paper guides; pointers retain their online URLs.
 
 **Paper guides** are kept apart from the notes: a reading guide to a single paper or survey (the problem it poses, the idea,
 what it showed, how to read its tables and comparisons, its limits, why it matters here; grounded in the paper, in the guide's
@@ -156,8 +156,8 @@ the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One se
 `ML 03a`, `DLCV 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's
 chapter order, but the site calls them IP 01–13). Link text to a tutorial uses the same name.
 
-**Links:** internal links are absolute with a trailing slash, e.g.
-`/en/learn/image-processing/dip-05-restoration-reconstruction/`; the target must exist. When you
+**Links:** public tutorial URLs have no chapter number, e.g.
+`/en/learn/image-processing/restoration-reconstruction/`, with a trailing slash. Source filenames and curriculum slugs remain stable internal identifiers; `src/lib/chapter-paths.mjs` maps them to public paths. Existing numbered URLs redirect through `src/content/legacy-chapter-redirects.json`. The target must exist. When you
 remove or rename a page, add a redirect in `astro.config.mjs` (`redirects`) and update every link to
 it. Do **not** also add `public/_redirects`: Cloudflare's deploy step already turns the Astro redirects
 into 301 rules, and duplicate rules make the deploy fail ("Duplicate rule for path").

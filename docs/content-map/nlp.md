@@ -6,18 +6,18 @@
 
 | # | Tutorial | Level | Needs | File |
 | --- | --- | --- | --- | --- |
-| 10 | [NLP 01 · Introduction to Natural Language Processing](#nlp-01-introduction) | beginner | Start Here | `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` |
-| 20 | [NLP 02 · Linguistic Essentials](#nlp-02-linguistic-essentials) | beginner | NLP 01 | `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` |
-| 30 | [NLP 03 · Neural Networks for NLP](#nlp-03-neural-networks-for-nlp) | beginner | NLP 02, ML 02 | `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx` |
-| 40 | [NLP 04 · Lexical Semantics and Word Embeddings](#nlp-04-lexical-semantics-word-embeddings) | beginner | NLP 03 | `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` |
-| 50 | [NLP 05 · Recurrent Neural Networks for Language](#nlp-05-recurrent-neural-networks) | intermediate | NLP 04, ML 03A | `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` |
-| 60 | [NLP 06 · Sequence Labeling with RNNs (POS Tagging, Information Extraction)](#nlp-06-sequence-labeling) | intermediate | NLP 05 | `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` |
-| 70 | [NLP 07 · Attention Mechanism and Transformers](#nlp-07-attention-transformers) | intermediate | NLP 06 | `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx` |
-| 80 | [NLP 08 · Sequence-to-Sequence Models with Transformers (Machine Translation, Chatbots)](#nlp-08-seq2seq-transformers) | intermediate | NLP 07 | `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` |
-| 90 | [NLP 09 · Language Modeling with Transformers (Natural Language Generation)](#nlp-09-language-modeling-transformers) | advanced | NLP 08 | `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` |
-| 100 | [NLP 10 · Pretrained Models: BERT](#nlp-10-pretrained-bert) | advanced | NLP 09 | `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` |
-| 110 | [NLP 11 · Classification with BERT (Sentiment Analysis, Natural Language Inference)](#nlp-11-classification-bert) | advanced | NLP 10 | `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` |
-| 120 | [NLP 12 · Syntactic and Semantic Tasks](#nlp-12-syntactic-semantic-tasks) | advanced | NLP 11, NLP 06 | `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` |
+| NLP 01 | [NLP 01 · Introduction to Natural Language Processing](#nlp-01-introduction) | beginner | Start Here | `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` |
+| NLP 02 | [NLP 02 · Linguistic Essentials](#nlp-02-linguistic-essentials) | beginner | NLP 01 | `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` |
+| NLP 03 | [NLP 03 · Neural Networks for NLP](#nlp-03-neural-networks-for-nlp) | beginner | NLP 02, ML 02 | `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx` |
+| NLP 04 | [NLP 04 · Lexical Semantics and Word Embeddings](#nlp-04-lexical-semantics-word-embeddings) | beginner | NLP 03 | `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` |
+| NLP 05 | [NLP 05 · Recurrent Neural Networks for Language](#nlp-05-recurrent-neural-networks) | intermediate | NLP 04, ML 04 | `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` |
+| NLP 06 | [NLP 06 · Sequence Labeling with RNNs (POS Tagging, Information Extraction)](#nlp-06-sequence-labeling) | intermediate | NLP 05 | `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` |
+| NLP 07 | [NLP 07 · Attention Mechanism and Transformers](#nlp-07-attention-transformers) | intermediate | NLP 06 | `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx` |
+| NLP 08 | [NLP 08 · Sequence-to-Sequence Models with Transformers (Machine Translation, Chatbots)](#nlp-08-seq2seq-transformers) | intermediate | NLP 07 | `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` |
+| NLP 09 | [NLP 09 · Language Modeling with Transformers (Natural Language Generation)](#nlp-09-language-modeling-transformers) | advanced | NLP 08 | `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` |
+| NLP 10 | [NLP 10 · Pretrained Models: BERT](#nlp-10-pretrained-bert) | advanced | NLP 09 | `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` |
+| NLP 11 | [NLP 11 · Classification with BERT (Sentiment Analysis, Natural Language Inference)](#nlp-11-classification-bert) | advanced | NLP 10 | `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` |
+| NLP 12 | [NLP 12 · Syntactic and Semantic Tasks](#nlp-12-syntactic-semantic-tasks) | advanced | NLP 11, NLP 06 | `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` |
 
 ## nlp-01-introduction
 
@@ -25,30 +25,30 @@
 What NLP is, why language is hard for computers, how the field moved from rules to statistics to pretrained models, the main tasks, Chinese-specific issues, and a practical pipeline from task definition to error diagnosis.
 
 - Files: `src/content/tutorials/en/nlp/nlp-01-introduction.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-01-introduction.mdx`
-- Pages: `/en/learn/nlp/nlp-01-introduction/`
-- Level beginner · order 10 · needs: `foundations/getting-started` · tags: nlp, introduction, history, text-processing, tokenization, chinese, data, evaluation
+- Pages: `/en/learn/nlp/introduction/`
+- Level beginner · depth 1 · needs: `foundations/getting-started` · tags: nlp, introduction, history, text-processing, tokenization, chinese, data, evaluation
 - Figures: 2 (script `scripts/figures/nlp_01_introduction.py`) · references: 19 · experiments: ngram, subword-merges
 
-- [What you'll learn](/en/learn/nlp/nlp-01-introduction/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-01-introduction/#the-big-picture) `the-big-picture`
-- [1. Why language is hard for computers](/en/learn/nlp/nlp-01-introduction/#1-why-language-is-hard-for-computers) `1-why-language-is-hard-for-computers`
-- [2. A short history: rules, statistics, neural networks and pretraining](/en/learn/nlp/nlp-01-introduction/#2-a-short-history-rules-statistics-neural-networks-and-pretraining) `2-a-short-history-rules-statistics-neural-networks-and-pretraining`
-- [3. The main tasks and applications](/en/learn/nlp/nlp-01-introduction/#3-the-main-tasks-and-applications) `3-the-main-tasks-and-applications`
-- [4. Specify the task before choosing a model](/en/learn/nlp/nlp-01-introduction/#4-specify-the-task-before-choosing-a-model) `4-specify-the-task-before-choosing-a-model`
-- [5. Preserve the original text and the evidence](/en/learn/nlp/nlp-01-introduction/#5-preserve-the-original-text-and-the-evidence) `5-preserve-the-original-text-and-the-evidence`
-  - [A worked normalization and span example](/en/learn/nlp/nlp-01-introduction/#a-worked-normalization-and-span-example) `a-worked-normalization-and-span-example`
-- [6. Decide which units the computation will use](/en/learn/nlp/nlp-01-introduction/#6-decide-which-units-the-computation-will-use) `6-decide-which-units-the-computation-will-use`
-  - [Vocabulary coverage and unknown inputs](/en/learn/nlp/nlp-01-introduction/#vocabulary-coverage-and-unknown-inputs) `vocabulary-coverage-and-unknown-inputs`
-- [7. Chinese text: segmentation and two character sets](/en/learn/nlp/nlp-01-introduction/#7-chinese-text-segmentation-and-two-character-sets) `7-chinese-text-segmentation-and-two-character-sets`
-  - [Word segmentation](/en/learn/nlp/nlp-01-introduction/#word-segmentation) `word-segmentation`
-  - [Traditional and Simplified characters](/en/learn/nlp/nlp-01-introduction/#traditional-and-simplified-characters) `traditional-and-simplified-characters`
-- [8. Build examples and labels that answer the task](/en/learn/nlp/nlp-01-introduction/#8-build-examples-and-labels-that-answer-the-task) `8-build-examples-and-labels-that-answer-the-task`
-  - [Use a small baseline to diagnose the representation](/en/learn/nlp/nlp-01-introduction/#use-a-small-baseline-to-diagnose-the-representation) `use-a-small-baseline-to-diagnose-the-representation`
-- [9. Evaluate the output and diagnose the cause](/en/learn/nlp/nlp-01-introduction/#9-evaluate-the-output-and-diagnose-the-cause) `9-evaluate-the-output-and-diagnose-the-cause`
-- [10. Roadmap of the NLP track](/en/learn/nlp/nlp-01-introduction/#10-roadmap-of-the-nlp-track) `10-roadmap-of-the-nlp-track`
-- [Modern view](/en/learn/nlp/nlp-01-introduction/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-01-introduction/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-01-introduction/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/introduction/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/introduction/#the-big-picture) `the-big-picture`
+- [1. Why language is hard for computers](/en/learn/nlp/introduction/#1-why-language-is-hard-for-computers) `1-why-language-is-hard-for-computers`
+- [2. A short history: rules, statistics, neural networks and pretraining](/en/learn/nlp/introduction/#2-a-short-history-rules-statistics-neural-networks-and-pretraining) `2-a-short-history-rules-statistics-neural-networks-and-pretraining`
+- [3. The main tasks and applications](/en/learn/nlp/introduction/#3-the-main-tasks-and-applications) `3-the-main-tasks-and-applications`
+- [4. Specify the task before choosing a model](/en/learn/nlp/introduction/#4-specify-the-task-before-choosing-a-model) `4-specify-the-task-before-choosing-a-model`
+- [5. Preserve the original text and the evidence](/en/learn/nlp/introduction/#5-preserve-the-original-text-and-the-evidence) `5-preserve-the-original-text-and-the-evidence`
+  - [A worked normalization and span example](/en/learn/nlp/introduction/#a-worked-normalization-and-span-example) `a-worked-normalization-and-span-example`
+- [6. Decide which units the computation will use](/en/learn/nlp/introduction/#6-decide-which-units-the-computation-will-use) `6-decide-which-units-the-computation-will-use`
+  - [Vocabulary coverage and unknown inputs](/en/learn/nlp/introduction/#vocabulary-coverage-and-unknown-inputs) `vocabulary-coverage-and-unknown-inputs`
+- [7. Chinese text: segmentation and two character sets](/en/learn/nlp/introduction/#7-chinese-text-segmentation-and-two-character-sets) `7-chinese-text-segmentation-and-two-character-sets`
+  - [Word segmentation](/en/learn/nlp/introduction/#word-segmentation) `word-segmentation`
+  - [Traditional and Simplified characters](/en/learn/nlp/introduction/#traditional-and-simplified-characters) `traditional-and-simplified-characters`
+- [8. Build examples and labels that answer the task](/en/learn/nlp/introduction/#8-build-examples-and-labels-that-answer-the-task) `8-build-examples-and-labels-that-answer-the-task`
+  - [Use a small baseline to diagnose the representation](/en/learn/nlp/introduction/#use-a-small-baseline-to-diagnose-the-representation) `use-a-small-baseline-to-diagnose-the-representation`
+- [9. Evaluate the output and diagnose the cause](/en/learn/nlp/introduction/#9-evaluate-the-output-and-diagnose-the-cause) `9-evaluate-the-output-and-diagnose-the-cause`
+- [10. Roadmap of the NLP track](/en/learn/nlp/introduction/#10-roadmap-of-the-nlp-track) `10-roadmap-of-the-nlp-track`
+- [Modern view](/en/learn/nlp/introduction/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/introduction/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/introduction/#exercises) `exercises`
 
 ## nlp-02-linguistic-essentials
 
@@ -56,50 +56,50 @@ What NLP is, why language is hard for computers, how the field moved from rules 
 The language structure every NLP system works with: units and morphology, tokens and subwords, parts of speech, phrase and dependency structure, meaning, context and discourse, corpora, annotation and Zipf's law.
 
 - Files: `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-02-linguistic-essentials.mdx`
-- Pages: `/en/learn/nlp/nlp-02-linguistic-essentials/`
-- Level beginner · order 20 · needs: `nlp/nlp-01-introduction` · tags: nlp, linguistics, morphology, tokenization, subwords, part-of-speech, syntax, semantics, pragmatics, corpora
+- Pages: `/en/learn/nlp/linguistic-essentials/`
+- Level beginner · depth 1 · needs: `nlp/nlp-01-introduction` · tags: nlp, linguistics, morphology, tokenization, subwords, part-of-speech, syntax, semantics, pragmatics, corpora
 - Figures: 4 (script `scripts/figures/nlp_02_linguistic_essentials.py`) · references: 30 · experiments: quantifier-scope, subword-merges
 
-- [What you'll learn](/en/learn/nlp/nlp-02-linguistic-essentials/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-02-linguistic-essentials/#the-big-picture) `the-big-picture`
-- [1. Language, modality and units](/en/learn/nlp/nlp-02-linguistic-essentials/#1-language-modality-and-units) `1-language-modality-and-units`
-  - [Sounds and written symbols answer different questions](/en/learn/nlp/nlp-02-linguistic-essentials/#sounds-and-written-symbols-answer-different-questions) `sounds-and-written-symbols-answer-different-questions`
-  - [Characters, words and tokens](/en/learn/nlp/nlp-02-linguistic-essentials/#characters-words-and-tokens) `characters-words-and-tokens`
-- [2. Morphology: structure inside words](/en/learn/nlp/nlp-02-linguistic-essentials/#2-morphology-structure-inside-words) `2-morphology-structure-inside-words`
-  - [Inflection, derivation and productive formation](/en/learn/nlp/nlp-02-linguistic-essentials/#inflection-derivation-and-productive-formation) `inflection-derivation-and-productive-formation`
-  - [Stemming versus lemmatization](/en/learn/nlp/nlp-02-linguistic-essentials/#stemming-versus-lemmatization) `stemming-versus-lemmatization`
-  - [The same pieces can combine in different orders](/en/learn/nlp/nlp-02-linguistic-essentials/#the-same-pieces-can-combine-in-different-orders) `the-same-pieces-can-combine-in-different-orders`
-  - [Chinese segmentation is an interpretation problem](/en/learn/nlp/nlp-02-linguistic-essentials/#chinese-segmentation-is-an-interpretation-problem) `chinese-segmentation-is-an-interpretation-problem`
-- [3. Tokens and subwords](/en/learn/nlp/nlp-02-linguistic-essentials/#3-tokens-and-subwords) `3-tokens-and-subwords`
-  - [Work through one subword method: BPE](/en/learn/nlp/nlp-02-linguistic-essentials/#work-through-one-subword-method-bpe) `work-through-one-subword-method-bpe`
-  - [Why the merge sequence matters](/en/learn/nlp/nlp-02-linguistic-essentials/#why-the-merge-sequence-matters) `why-the-merge-sequence-matters`
-  - [WordPiece, the unigram model and SentencePiece](/en/learn/nlp/nlp-02-linguistic-essentials/#wordpiece-the-unigram-model-and-sentencepiece) `wordpiece-the-unigram-model-and-sentencepiece`
-  - [Use a complete tokenizer, not just a merge list](/en/learn/nlp/nlp-02-linguistic-essentials/#use-a-complete-tokenizer-not-just-a-merge-list) `use-a-complete-tokenizer-not-just-a-merge-list`
-- [4. Parts of speech](/en/learn/nlp/nlp-02-linguistic-essentials/#4-parts-of-speech) `4-parts-of-speech`
-  - [The Universal Dependencies tag set](/en/learn/nlp/nlp-02-linguistic-essentials/#the-universal-dependencies-tag-set) `the-universal-dependencies-tag-set`
-- [5. Syntax: order, grouping and grammatical relations](/en/learn/nlp/nlp-02-linguistic-essentials/#5-syntax-order-grouping-and-grammatical-relations) `5-syntax-order-grouping-and-grammatical-relations`
-  - [Why word counts lose role information](/en/learn/nlp/nlp-02-linguistic-essentials/#why-word-counts-lose-role-information) `why-word-counts-lose-role-information`
-  - [Constituency and dependency describe different aspects](/en/learn/nlp/nlp-02-linguistic-essentials/#constituency-and-dependency-describe-different-aspects) `constituency-and-dependency-describe-different-aspects`
-- [6. Semantics: meanings and truth conditions](/en/learn/nlp/nlp-02-linguistic-essentials/#6-semantics-meanings-and-truth-conditions) `6-semantics-meanings-and-truth-conditions`
-  - [Lexical meaning is contextual and relational](/en/learn/nlp/nlp-02-linguistic-essentials/#lexical-meaning-is-contextual-and-relational) `lexical-meaning-is-contextual-and-relational`
-  - [Composition depends on structure](/en/learn/nlp/nlp-02-linguistic-essentials/#composition-depends-on-structure) `composition-depends-on-structure`
-  - [Quantifier scope changes what is required](/en/learn/nlp/nlp-02-linguistic-essentials/#quantifier-scope-changes-what-is-required) `quantifier-scope-changes-what-is-required`
-  - [Negation and scope must also be kept apart](/en/learn/nlp/nlp-02-linguistic-essentials/#negation-and-scope-must-also-be-kept-apart) `negation-and-scope-must-also-be-kept-apart`
-- [7. Pragmatics: interpretation in a situation](/en/learn/nlp/nlp-02-linguistic-essentials/#7-pragmatics-interpretation-in-a-situation) `7-pragmatics-interpretation-in-a-situation`
-  - [Reference and the speaker's viewpoint](/en/learn/nlp/nlp-02-linguistic-essentials/#reference-and-the-speakers-viewpoint) `reference-and-the-speakers-viewpoint`
-  - [Assertion, presupposition and implicature](/en/learn/nlp/nlp-02-linguistic-essentials/#assertion-presupposition-and-implicature) `assertion-presupposition-and-implicature`
-  - [A grammatical question can perform a request](/en/learn/nlp/nlp-02-linguistic-essentials/#a-grammatical-question-can-perform-a-request) `a-grammatical-question-can-perform-a-request`
-- [8. Discourse: meaning across sentences and turns](/en/learn/nlp/nlp-02-linguistic-essentials/#8-discourse-meaning-across-sentences-and-turns) `8-discourse-meaning-across-sentences-and-turns`
-- [9. Corpora, annotation and Zipf's law](/en/learn/nlp/nlp-02-linguistic-essentials/#9-corpora-annotation-and-zipfs-law) `9-corpora-annotation-and-zipfs-law`
-  - [Annotation guidelines and agreement](/en/learn/nlp/nlp-02-linguistic-essentials/#annotation-guidelines-and-agreement) `annotation-guidelines-and-agreement`
-  - [Zipf's law: a few words are very common, most are rare](/en/learn/nlp/nlp-02-linguistic-essentials/#zipfs-law-a-few-words-are-very-common-most-are-rare) `zipfs-law-a-few-words-are-very-common-most-are-rare`
-- [10. Linguistic diversity and model assumptions](/en/learn/nlp/nlp-02-linguistic-essentials/#10-linguistic-diversity-and-model-assumptions) `10-linguistic-diversity-and-model-assumptions`
-  - [Translation does not preserve every structure](/en/learn/nlp/nlp-02-linguistic-essentials/#translation-does-not-preserve-every-structure) `translation-does-not-preserve-every-structure`
-  - [Variety, setting and mixed-language expression](/en/learn/nlp/nlp-02-linguistic-essentials/#variety-setting-and-mixed-language-expression) `variety-setting-and-mixed-language-expression`
-- [11. A complete worked reading](/en/learn/nlp/nlp-02-linguistic-essentials/#11-a-complete-worked-reading) `11-a-complete-worked-reading`
-- [Modern view](/en/learn/nlp/nlp-02-linguistic-essentials/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-02-linguistic-essentials/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-02-linguistic-essentials/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/linguistic-essentials/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/linguistic-essentials/#the-big-picture) `the-big-picture`
+- [1. Language, modality and units](/en/learn/nlp/linguistic-essentials/#1-language-modality-and-units) `1-language-modality-and-units`
+  - [Sounds and written symbols answer different questions](/en/learn/nlp/linguistic-essentials/#sounds-and-written-symbols-answer-different-questions) `sounds-and-written-symbols-answer-different-questions`
+  - [Characters, words and tokens](/en/learn/nlp/linguistic-essentials/#characters-words-and-tokens) `characters-words-and-tokens`
+- [2. Morphology: structure inside words](/en/learn/nlp/linguistic-essentials/#2-morphology-structure-inside-words) `2-morphology-structure-inside-words`
+  - [Inflection, derivation and productive formation](/en/learn/nlp/linguistic-essentials/#inflection-derivation-and-productive-formation) `inflection-derivation-and-productive-formation`
+  - [Stemming versus lemmatization](/en/learn/nlp/linguistic-essentials/#stemming-versus-lemmatization) `stemming-versus-lemmatization`
+  - [The same pieces can combine in different orders](/en/learn/nlp/linguistic-essentials/#the-same-pieces-can-combine-in-different-orders) `the-same-pieces-can-combine-in-different-orders`
+  - [Chinese segmentation is an interpretation problem](/en/learn/nlp/linguistic-essentials/#chinese-segmentation-is-an-interpretation-problem) `chinese-segmentation-is-an-interpretation-problem`
+- [3. Tokens and subwords](/en/learn/nlp/linguistic-essentials/#3-tokens-and-subwords) `3-tokens-and-subwords`
+  - [Work through one subword method: BPE](/en/learn/nlp/linguistic-essentials/#work-through-one-subword-method-bpe) `work-through-one-subword-method-bpe`
+  - [Why the merge sequence matters](/en/learn/nlp/linguistic-essentials/#why-the-merge-sequence-matters) `why-the-merge-sequence-matters`
+  - [WordPiece, the unigram model and SentencePiece](/en/learn/nlp/linguistic-essentials/#wordpiece-the-unigram-model-and-sentencepiece) `wordpiece-the-unigram-model-and-sentencepiece`
+  - [Use a complete tokenizer, not just a merge list](/en/learn/nlp/linguistic-essentials/#use-a-complete-tokenizer-not-just-a-merge-list) `use-a-complete-tokenizer-not-just-a-merge-list`
+- [4. Parts of speech](/en/learn/nlp/linguistic-essentials/#4-parts-of-speech) `4-parts-of-speech`
+  - [The Universal Dependencies tag set](/en/learn/nlp/linguistic-essentials/#the-universal-dependencies-tag-set) `the-universal-dependencies-tag-set`
+- [5. Syntax: order, grouping and grammatical relations](/en/learn/nlp/linguistic-essentials/#5-syntax-order-grouping-and-grammatical-relations) `5-syntax-order-grouping-and-grammatical-relations`
+  - [Why word counts lose role information](/en/learn/nlp/linguistic-essentials/#why-word-counts-lose-role-information) `why-word-counts-lose-role-information`
+  - [Constituency and dependency describe different aspects](/en/learn/nlp/linguistic-essentials/#constituency-and-dependency-describe-different-aspects) `constituency-and-dependency-describe-different-aspects`
+- [6. Semantics: meanings and truth conditions](/en/learn/nlp/linguistic-essentials/#6-semantics-meanings-and-truth-conditions) `6-semantics-meanings-and-truth-conditions`
+  - [Lexical meaning is contextual and relational](/en/learn/nlp/linguistic-essentials/#lexical-meaning-is-contextual-and-relational) `lexical-meaning-is-contextual-and-relational`
+  - [Composition depends on structure](/en/learn/nlp/linguistic-essentials/#composition-depends-on-structure) `composition-depends-on-structure`
+  - [Quantifier scope changes what is required](/en/learn/nlp/linguistic-essentials/#quantifier-scope-changes-what-is-required) `quantifier-scope-changes-what-is-required`
+  - [Negation and scope must also be kept apart](/en/learn/nlp/linguistic-essentials/#negation-and-scope-must-also-be-kept-apart) `negation-and-scope-must-also-be-kept-apart`
+- [7. Pragmatics: interpretation in a situation](/en/learn/nlp/linguistic-essentials/#7-pragmatics-interpretation-in-a-situation) `7-pragmatics-interpretation-in-a-situation`
+  - [Reference and the speaker's viewpoint](/en/learn/nlp/linguistic-essentials/#reference-and-the-speakers-viewpoint) `reference-and-the-speakers-viewpoint`
+  - [Assertion, presupposition and implicature](/en/learn/nlp/linguistic-essentials/#assertion-presupposition-and-implicature) `assertion-presupposition-and-implicature`
+  - [A grammatical question can perform a request](/en/learn/nlp/linguistic-essentials/#a-grammatical-question-can-perform-a-request) `a-grammatical-question-can-perform-a-request`
+- [8. Discourse: meaning across sentences and turns](/en/learn/nlp/linguistic-essentials/#8-discourse-meaning-across-sentences-and-turns) `8-discourse-meaning-across-sentences-and-turns`
+- [9. Corpora, annotation and Zipf's law](/en/learn/nlp/linguistic-essentials/#9-corpora-annotation-and-zipfs-law) `9-corpora-annotation-and-zipfs-law`
+  - [Annotation guidelines and agreement](/en/learn/nlp/linguistic-essentials/#annotation-guidelines-and-agreement) `annotation-guidelines-and-agreement`
+  - [Zipf's law: a few words are very common, most are rare](/en/learn/nlp/linguistic-essentials/#zipfs-law-a-few-words-are-very-common-most-are-rare) `zipfs-law-a-few-words-are-very-common-most-are-rare`
+- [10. Linguistic diversity and model assumptions](/en/learn/nlp/linguistic-essentials/#10-linguistic-diversity-and-model-assumptions) `10-linguistic-diversity-and-model-assumptions`
+  - [Translation does not preserve every structure](/en/learn/nlp/linguistic-essentials/#translation-does-not-preserve-every-structure) `translation-does-not-preserve-every-structure`
+  - [Variety, setting and mixed-language expression](/en/learn/nlp/linguistic-essentials/#variety-setting-and-mixed-language-expression) `variety-setting-and-mixed-language-expression`
+- [11. A complete worked reading](/en/learn/nlp/linguistic-essentials/#11-a-complete-worked-reading) `11-a-complete-worked-reading`
+- [Modern view](/en/learn/nlp/linguistic-essentials/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/linguistic-essentials/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/linguistic-essentials/#exercises) `exercises`
 
 ## nlp-03-neural-networks-for-nlp
 
@@ -107,35 +107,35 @@ The language structure every NLP system works with: units and morphology, tokens
 From count features and logistic classification to embedding layers, the neural probabilistic language model and 1-D convolutional text classifiers, with padding, masking, regularization and a complete PyTorch experiment.
 
 - Files: `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-03-neural-networks-for-nlp.mdx`
-- Pages: `/en/learn/nlp/nlp-03-neural-networks-for-nlp/`
-- Level beginner · order 30 · needs: `nlp/nlp-02-linguistic-essentials`, `ml/ml-02-neural-networks` · tags: nlp, text-classification, tf-idf, logistic-regression, embeddings, neural-language-model, cnn, masking, regularization, pytorch
+- Pages: `/en/learn/nlp/neural-networks-for-nlp/`
+- Level beginner · depth 1 · needs: `nlp/nlp-02-linguistic-essentials`, `ml/ml-02-neural-networks` · tags: nlp, text-classification, tf-idf, logistic-regression, embeddings, neural-language-model, cnn, masking, regularization, pytorch
 - Figures: 4 (script `scripts/figures/nlp_03_neural_networks_for_nlp.py`) · references: 18 · experiments: nonlinear-network, pooling-order
 
-- [What you'll learn](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#the-big-picture) `the-big-picture`
-- [Define the prediction contract](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#define-the-prediction-contract) `define-the-prediction-contract`
-- [Count features and the vocabulary](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#count-features-and-the-vocabulary) `count-features-and-the-vocabulary`
-- [TF–IDF and vector normalization](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#tfidf-and-vector-normalization) `tfidf-and-vector-normalization`
-- [Logistic classification and its loss](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#logistic-classification-and-its-loss) `logistic-classification-and-its-loss`
-- [A complete CPU classification experiment](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#a-complete-cpu-classification-experiment) `a-complete-cpu-classification-experiment`
-- [A controlled negation test](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#a-controlled-negation-test) `a-controlled-negation-test`
-- [From word IDs to learned vectors: the embedding layer](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#from-word-ids-to-learned-vectors-the-embedding-layer) `from-word-ids-to-learned-vectors-the-embedding-layer`
-  - [Pool, then classify: the bag-of-embeddings MLP](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#pool-then-classify-the-bag-of-embeddings-mlp) `pool-then-classify-the-bag-of-embeddings-mlp`
-- [The neural probabilistic language model](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#the-neural-probabilistic-language-model) `the-neural-probabilistic-language-model`
-- [Convolutional text classifiers](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#convolutional-text-classifiers) `convolutional-text-classifiers`
-  - [The mathematics of one filter](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#the-mathematics-of-one-filter) `the-mathematics-of-one-filter`
-  - [What the pieces buy, and what they lose](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#what-the-pieces-buy-and-what-they-lose) `what-the-pieces-buy-and-what-they-lose`
-- [Padding, masking and batching](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#padding-masking-and-batching) `padding-masking-and-batching`
-- [Regularization for small text classifiers](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#regularization-for-small-text-classifiers) `regularization-for-small-text-classifiers`
-- [A complete PyTorch experiment](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#a-complete-pytorch-experiment) `a-complete-pytorch-experiment`
-  - [Read the results by category](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#read-the-results-by-category) `read-the-results-by-category`
-  - [Read the curves](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#read-the-curves) `read-the-curves`
-  - [Error analysis as a habit](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#error-analysis-as-a-habit) `error-analysis-as-a-habit`
-- [Evaluate errors and probabilities separately](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#evaluate-errors-and-probabilities-separately) `evaluate-errors-and-probabilities-separately`
-- [Imbalance, error analysis and deployment changes](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#imbalance-error-analysis-and-deployment-changes) `imbalance-error-analysis-and-deployment-changes`
-- [Modern view](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-03-neural-networks-for-nlp/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/neural-networks-for-nlp/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/neural-networks-for-nlp/#the-big-picture) `the-big-picture`
+- [Define the prediction contract](/en/learn/nlp/neural-networks-for-nlp/#define-the-prediction-contract) `define-the-prediction-contract`
+- [Count features and the vocabulary](/en/learn/nlp/neural-networks-for-nlp/#count-features-and-the-vocabulary) `count-features-and-the-vocabulary`
+- [TF–IDF and vector normalization](/en/learn/nlp/neural-networks-for-nlp/#tfidf-and-vector-normalization) `tfidf-and-vector-normalization`
+- [Logistic classification and its loss](/en/learn/nlp/neural-networks-for-nlp/#logistic-classification-and-its-loss) `logistic-classification-and-its-loss`
+- [A complete CPU classification experiment](/en/learn/nlp/neural-networks-for-nlp/#a-complete-cpu-classification-experiment) `a-complete-cpu-classification-experiment`
+- [A controlled negation test](/en/learn/nlp/neural-networks-for-nlp/#a-controlled-negation-test) `a-controlled-negation-test`
+- [From word IDs to learned vectors: the embedding layer](/en/learn/nlp/neural-networks-for-nlp/#from-word-ids-to-learned-vectors-the-embedding-layer) `from-word-ids-to-learned-vectors-the-embedding-layer`
+  - [Pool, then classify: the bag-of-embeddings MLP](/en/learn/nlp/neural-networks-for-nlp/#pool-then-classify-the-bag-of-embeddings-mlp) `pool-then-classify-the-bag-of-embeddings-mlp`
+- [The neural probabilistic language model](/en/learn/nlp/neural-networks-for-nlp/#the-neural-probabilistic-language-model) `the-neural-probabilistic-language-model`
+- [Convolutional text classifiers](/en/learn/nlp/neural-networks-for-nlp/#convolutional-text-classifiers) `convolutional-text-classifiers`
+  - [The mathematics of one filter](/en/learn/nlp/neural-networks-for-nlp/#the-mathematics-of-one-filter) `the-mathematics-of-one-filter`
+  - [What the pieces buy, and what they lose](/en/learn/nlp/neural-networks-for-nlp/#what-the-pieces-buy-and-what-they-lose) `what-the-pieces-buy-and-what-they-lose`
+- [Padding, masking and batching](/en/learn/nlp/neural-networks-for-nlp/#padding-masking-and-batching) `padding-masking-and-batching`
+- [Regularization for small text classifiers](/en/learn/nlp/neural-networks-for-nlp/#regularization-for-small-text-classifiers) `regularization-for-small-text-classifiers`
+- [A complete PyTorch experiment](/en/learn/nlp/neural-networks-for-nlp/#a-complete-pytorch-experiment) `a-complete-pytorch-experiment`
+  - [Read the results by category](/en/learn/nlp/neural-networks-for-nlp/#read-the-results-by-category) `read-the-results-by-category`
+  - [Read the curves](/en/learn/nlp/neural-networks-for-nlp/#read-the-curves) `read-the-curves`
+  - [Error analysis as a habit](/en/learn/nlp/neural-networks-for-nlp/#error-analysis-as-a-habit) `error-analysis-as-a-habit`
+- [Evaluate errors and probabilities separately](/en/learn/nlp/neural-networks-for-nlp/#evaluate-errors-and-probabilities-separately) `evaluate-errors-and-probabilities-separately`
+- [Imbalance, error analysis and deployment changes](/en/learn/nlp/neural-networks-for-nlp/#imbalance-error-analysis-and-deployment-changes) `imbalance-error-analysis-and-deployment-changes`
+- [Modern view](/en/learn/nlp/neural-networks-for-nlp/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/neural-networks-for-nlp/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/neural-networks-for-nlp/#exercises) `exercises`
 
 ## nlp-04-lexical-semantics-word-embeddings
 
@@ -143,40 +143,40 @@ From count features and logistic classification to embedding layers, the neural 
 From word senses, lexical relations and WordNet to distributional vectors: PPMI, Word2Vec, GloVe and fastText, how to evaluate them, the biases they absorb, sentence embeddings and the step to contextual representations.
 
 - Files: `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-04-lexical-semantics-word-embeddings.mdx`
-- Pages: `/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/`
-- Level beginner · order 40 · needs: `nlp/nlp-03-neural-networks-for-nlp` · tags: nlp, lexical-semantics, wordnet, distributional-semantics, word-embeddings, word2vec, glove, fasttext, embedding-bias, sentence-embeddings
+- Pages: `/en/learn/nlp/lexical-semantics-word-embeddings/`
+- Level beginner · depth 1 · needs: `nlp/nlp-03-neural-networks-for-nlp` · tags: nlp, lexical-semantics, wordnet, distributional-semantics, word-embeddings, word2vec, glove, fasttext, embedding-bias, sentence-embeddings
 - Figures: 2 · references: 25 · experiments: pooling-order, contrastive-alignment
 
-- [What you'll learn](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#the-big-picture) `the-big-picture`
-- [Lexical semantics: senses and relations](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#lexical-semantics-senses-and-relations) `lexical-semantics-senses-and-relations`
-  - [Word forms, lemmas and senses](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#word-forms-lemmas-and-senses) `word-forms-lemmas-and-senses`
-  - [Relations between senses](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#relations-between-senses) `relations-between-senses`
-  - [WordNet: a hand-built lexical database](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#wordnet-a-hand-built-lexical-database) `wordnet-a-hand-built-lexical-database`
-- [Distributional evidence: contexts are observations](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#distributional-evidence-contexts-are-observations) `distributional-evidence-contexts-are-observations`
-- [Count-based embeddings: inspect the shared-context assumption](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#count-based-embeddings-inspect-the-shared-context-assumption) `count-based-embeddings-inspect-the-shared-context-assumption`
-- [Word2Vec: learn a word by predicting its neighbors](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#word2vec-learn-a-word-by-predicting-its-neighbors) `word2vec-learn-a-word-by-predicting-its-neighbors`
-  - [Turn a sentence into training examples](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#turn-a-sentence-into-training-examples) `turn-a-sentence-into-training-examples`
-  - [Two embedding tables and a softmax](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#two-embedding-tables-and-a-softmax) `two-embedding-tables-and-a-softmax`
-  - [Negative sampling: compare observed pairs with random draws](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#negative-sampling-compare-observed-pairs-with-random-draws) `negative-sampling-compare-observed-pairs-with-random-draws`
-  - [Why prediction changes vector geometry](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#why-prediction-changes-vector-geometry) `why-prediction-changes-vector-geometry`
-  - [What negative-sampling scores estimate](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#what-negative-sampling-scores-estimate) `what-negative-sampling-scores-estimate`
-  - [Train CBOW and Skip-gram on CPU](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#train-cbow-and-skip-gram-on-cpu) `train-cbow-and-skip-gram-on-cpu`
-- [GloVe: fit log co-occurrence counts directly](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#glove-fit-log-co-occurrence-counts-directly) `glove-fit-log-co-occurrence-counts-directly`
-- [fastText: vectors from character n-grams](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#fasttext-vectors-from-character-n-grams) `fasttext-vectors-from-character-n-grams`
-- [Dense word and document representations](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#dense-word-and-document-representations) `dense-word-and-document-representations`
-  - [Cosine measures direction, not truth](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#cosine-measures-direction-not-truth) `cosine-measures-direction-not-truth`
-- [Evaluating word embeddings](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#evaluating-word-embeddings) `evaluating-word-embeddings`
-  - [Similarity: correlate cosines with human ratings](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#similarity-correlate-cosines-with-human-ratings) `similarity-correlate-cosines-with-human-ratings`
-  - [Analogy: the vector-offset test and its caveats](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#analogy-the-vector-offset-test-and-its-caveats) `analogy-the-vector-offset-test-and-its-caveats`
-  - [Intrinsic versus extrinsic](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#intrinsic-versus-extrinsic) `intrinsic-versus-extrinsic`
-- [Bias in embeddings](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#bias-in-embeddings) `bias-in-embeddings`
-- [From word vectors to sentence embeddings](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#from-word-vectors-to-sentence-embeddings) `from-word-vectors-to-sentence-embeddings`
-  - [Similarity and contrastive sentence learning](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#similarity-and-contrastive-sentence-learning) `similarity-and-contrastive-sentence-learning`
-- [Preview: contextual embeddings](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#preview-contextual-embeddings) `preview-contextual-embeddings`
-- [Modern view](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/lexical-semantics-word-embeddings/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/lexical-semantics-word-embeddings/#the-big-picture) `the-big-picture`
+- [Lexical semantics: senses and relations](/en/learn/nlp/lexical-semantics-word-embeddings/#lexical-semantics-senses-and-relations) `lexical-semantics-senses-and-relations`
+  - [Word forms, lemmas and senses](/en/learn/nlp/lexical-semantics-word-embeddings/#word-forms-lemmas-and-senses) `word-forms-lemmas-and-senses`
+  - [Relations between senses](/en/learn/nlp/lexical-semantics-word-embeddings/#relations-between-senses) `relations-between-senses`
+  - [WordNet: a hand-built lexical database](/en/learn/nlp/lexical-semantics-word-embeddings/#wordnet-a-hand-built-lexical-database) `wordnet-a-hand-built-lexical-database`
+- [Distributional evidence: contexts are observations](/en/learn/nlp/lexical-semantics-word-embeddings/#distributional-evidence-contexts-are-observations) `distributional-evidence-contexts-are-observations`
+- [Count-based embeddings: inspect the shared-context assumption](/en/learn/nlp/lexical-semantics-word-embeddings/#count-based-embeddings-inspect-the-shared-context-assumption) `count-based-embeddings-inspect-the-shared-context-assumption`
+- [Word2Vec: learn a word by predicting its neighbors](/en/learn/nlp/lexical-semantics-word-embeddings/#word2vec-learn-a-word-by-predicting-its-neighbors) `word2vec-learn-a-word-by-predicting-its-neighbors`
+  - [Turn a sentence into training examples](/en/learn/nlp/lexical-semantics-word-embeddings/#turn-a-sentence-into-training-examples) `turn-a-sentence-into-training-examples`
+  - [Two embedding tables and a softmax](/en/learn/nlp/lexical-semantics-word-embeddings/#two-embedding-tables-and-a-softmax) `two-embedding-tables-and-a-softmax`
+  - [Negative sampling: compare observed pairs with random draws](/en/learn/nlp/lexical-semantics-word-embeddings/#negative-sampling-compare-observed-pairs-with-random-draws) `negative-sampling-compare-observed-pairs-with-random-draws`
+  - [Why prediction changes vector geometry](/en/learn/nlp/lexical-semantics-word-embeddings/#why-prediction-changes-vector-geometry) `why-prediction-changes-vector-geometry`
+  - [What negative-sampling scores estimate](/en/learn/nlp/lexical-semantics-word-embeddings/#what-negative-sampling-scores-estimate) `what-negative-sampling-scores-estimate`
+  - [Train CBOW and Skip-gram on CPU](/en/learn/nlp/lexical-semantics-word-embeddings/#train-cbow-and-skip-gram-on-cpu) `train-cbow-and-skip-gram-on-cpu`
+- [GloVe: fit log co-occurrence counts directly](/en/learn/nlp/lexical-semantics-word-embeddings/#glove-fit-log-co-occurrence-counts-directly) `glove-fit-log-co-occurrence-counts-directly`
+- [fastText: vectors from character n-grams](/en/learn/nlp/lexical-semantics-word-embeddings/#fasttext-vectors-from-character-n-grams) `fasttext-vectors-from-character-n-grams`
+- [Dense word and document representations](/en/learn/nlp/lexical-semantics-word-embeddings/#dense-word-and-document-representations) `dense-word-and-document-representations`
+  - [Cosine measures direction, not truth](/en/learn/nlp/lexical-semantics-word-embeddings/#cosine-measures-direction-not-truth) `cosine-measures-direction-not-truth`
+- [Evaluating word embeddings](/en/learn/nlp/lexical-semantics-word-embeddings/#evaluating-word-embeddings) `evaluating-word-embeddings`
+  - [Similarity: correlate cosines with human ratings](/en/learn/nlp/lexical-semantics-word-embeddings/#similarity-correlate-cosines-with-human-ratings) `similarity-correlate-cosines-with-human-ratings`
+  - [Analogy: the vector-offset test and its caveats](/en/learn/nlp/lexical-semantics-word-embeddings/#analogy-the-vector-offset-test-and-its-caveats) `analogy-the-vector-offset-test-and-its-caveats`
+  - [Intrinsic versus extrinsic](/en/learn/nlp/lexical-semantics-word-embeddings/#intrinsic-versus-extrinsic) `intrinsic-versus-extrinsic`
+- [Bias in embeddings](/en/learn/nlp/lexical-semantics-word-embeddings/#bias-in-embeddings) `bias-in-embeddings`
+- [From word vectors to sentence embeddings](/en/learn/nlp/lexical-semantics-word-embeddings/#from-word-vectors-to-sentence-embeddings) `from-word-vectors-to-sentence-embeddings`
+  - [Similarity and contrastive sentence learning](/en/learn/nlp/lexical-semantics-word-embeddings/#similarity-and-contrastive-sentence-learning) `similarity-and-contrastive-sentence-learning`
+- [Preview: contextual embeddings](/en/learn/nlp/lexical-semantics-word-embeddings/#preview-contextual-embeddings) `preview-contextual-embeddings`
+- [Modern view](/en/learn/nlp/lexical-semantics-word-embeddings/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/lexical-semantics-word-embeddings/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/lexical-semantics-word-embeddings/#exercises) `exercises`
 
 ## nlp-05-recurrent-neural-networks
 
@@ -184,36 +184,36 @@ From word senses, lexical relations and WordNet to distributional vectors: PPMI,
 Start from n-gram language models and their memory ceiling, then build, train and evaluate recurrent language models: Elman RNNs, LSTMs and GRUs, character-level modeling, sampling and practical training.
 
 - Files: `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-05-recurrent-neural-networks.mdx`
-- Pages: `/en/learn/nlp/nlp-05-recurrent-neural-networks/`
-- Level intermediate · order 50 · needs: `nlp/nlp-04-lexical-semantics-word-embeddings`, `ml/ml-03a-recurrent-recursive-networks` · tags: nlp, language-models, ngrams, smoothing, perplexity, rnn, lstm, gru, character-level
+- Pages: `/en/learn/nlp/recurrent-neural-networks/`
+- Level intermediate · depth 1 · needs: `nlp/nlp-04-lexical-semantics-word-embeddings`, `ml/ml-03a-recurrent-recursive-networks` · tags: nlp, language-models, ngrams, smoothing, perplexity, rnn, lstm, gru, character-level
 - Figures: 4 (script `scripts/figures/nlp_05_recurrent_neural_networks.py`) · references: 24 · experiments: selective-memory
 
-- [What you'll learn](/en/learn/nlp/nlp-05-recurrent-neural-networks/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-05-recurrent-neural-networks/#the-big-picture) `the-big-picture`
-- [1. Three meanings of “n-gram”](/en/learn/nlp/nlp-05-recurrent-neural-networks/#1-three-meanings-of-n-gram) `1-three-meanings-of-n-gram`
-- [2. Exact factorization, limited history](/en/learn/nlp/nlp-05-recurrent-neural-networks/#2-exact-factorization-limited-history) `2-exact-factorization-limited-history`
-  - [A worked count comparison](/en/learn/nlp/nlp-05-recurrent-neural-networks/#a-worked-count-comparison) `a-worked-count-comparison`
-- [3. From counts to normalized probabilities](/en/learn/nlp/nlp-05-recurrent-neural-networks/#3-from-counts-to-normalized-probabilities) `3-from-counts-to-normalized-probabilities`
-  - [Code: train, score and sample a bigram model](/en/learn/nlp/nlp-05-recurrent-neural-networks/#code-train-score-and-sample-a-bigram-model) `code-train-score-and-sample-a-bigram-model`
-  - [Distinguish smoothing from longer memory](/en/learn/nlp/nlp-05-recurrent-neural-networks/#distinguish-smoothing-from-longer-memory) `distinguish-smoothing-from-longer-memory`
-  - [Interpolate evidence from several history lengths](/en/learn/nlp/nlp-05-recurrent-neural-networks/#interpolate-evidence-from-several-history-lengths) `interpolate-evidence-from-several-history-lengths`
-- [4. What held-out perplexity measures](/en/learn/nlp/nlp-05-recurrent-neural-networks/#4-what-held-out-perplexity-measures) `4-what-held-out-perplexity-measures`
-- [5. Generation, stopping and the memory ceiling](/en/learn/nlp/nlp-05-recurrent-neural-networks/#5-generation-stopping-and-the-memory-ceiling) `5-generation-stopping-and-the-memory-ceiling`
-  - [A failure that more training cannot remove](/en/learn/nlp/nlp-05-recurrent-neural-networks/#a-failure-that-more-training-cannot-remove) `a-failure-that-more-training-cannot-remove`
-- [6. A recurrent language model](/en/learn/nlp/nlp-05-recurrent-neural-networks/#6-a-recurrent-language-model) `6-a-recurrent-language-model`
-  - [The training loss is next-token cross-entropy](/en/learn/nlp/nlp-05-recurrent-neural-networks/#the-training-loss-is-next-token-cross-entropy) `the-training-loss-is-next-token-cross-entropy`
-- [7. Training through time: what gradients can reach](/en/learn/nlp/nlp-05-recurrent-neural-networks/#7-training-through-time-what-gradients-can-reach) `7-training-through-time-what-gradients-can-reach`
-- [8. Gated cells: LSTM and GRU](/en/learn/nlp/nlp-05-recurrent-neural-networks/#8-gated-cells-lstm-and-gru) `8-gated-cells-lstm-and-gru`
-- [9. Stacked and bidirectional recurrent networks](/en/learn/nlp/nlp-05-recurrent-neural-networks/#9-stacked-and-bidirectional-recurrent-networks) `9-stacked-and-bidirectional-recurrent-networks`
-- [10. Character-level language models](/en/learn/nlp/nlp-05-recurrent-neural-networks/#10-character-level-language-models) `10-character-level-language-models`
-- [11. Sampling and temperature](/en/learn/nlp/nlp-05-recurrent-neural-networks/#11-sampling-and-temperature) `11-sampling-and-temperature`
-- [12. Practical training, then a complete experiment](/en/learn/nlp/nlp-05-recurrent-neural-networks/#12-practical-training-then-a-complete-experiment) `12-practical-training-then-a-complete-experiment`
-  - [The training checklist](/en/learn/nlp/nlp-05-recurrent-neural-networks/#the-training-checklist) `the-training-checklist`
-  - [Code: a character-level LSTM against an interpolated n-gram](/en/learn/nlp/nlp-05-recurrent-neural-networks/#code-a-character-level-lstm-against-an-interpolated-n-gram) `code-a-character-level-lstm-against-an-interpolated-n-gram`
-  - [Reading the results](/en/learn/nlp/nlp-05-recurrent-neural-networks/#reading-the-results) `reading-the-results`
-- [Modern view](/en/learn/nlp/nlp-05-recurrent-neural-networks/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-05-recurrent-neural-networks/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-05-recurrent-neural-networks/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/recurrent-neural-networks/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/recurrent-neural-networks/#the-big-picture) `the-big-picture`
+- [1. Three meanings of “n-gram”](/en/learn/nlp/recurrent-neural-networks/#1-three-meanings-of-n-gram) `1-three-meanings-of-n-gram`
+- [2. Exact factorization, limited history](/en/learn/nlp/recurrent-neural-networks/#2-exact-factorization-limited-history) `2-exact-factorization-limited-history`
+  - [A worked count comparison](/en/learn/nlp/recurrent-neural-networks/#a-worked-count-comparison) `a-worked-count-comparison`
+- [3. From counts to normalized probabilities](/en/learn/nlp/recurrent-neural-networks/#3-from-counts-to-normalized-probabilities) `3-from-counts-to-normalized-probabilities`
+  - [Code: train, score and sample a bigram model](/en/learn/nlp/recurrent-neural-networks/#code-train-score-and-sample-a-bigram-model) `code-train-score-and-sample-a-bigram-model`
+  - [Distinguish smoothing from longer memory](/en/learn/nlp/recurrent-neural-networks/#distinguish-smoothing-from-longer-memory) `distinguish-smoothing-from-longer-memory`
+  - [Interpolate evidence from several history lengths](/en/learn/nlp/recurrent-neural-networks/#interpolate-evidence-from-several-history-lengths) `interpolate-evidence-from-several-history-lengths`
+- [4. What held-out perplexity measures](/en/learn/nlp/recurrent-neural-networks/#4-what-held-out-perplexity-measures) `4-what-held-out-perplexity-measures`
+- [5. Generation, stopping and the memory ceiling](/en/learn/nlp/recurrent-neural-networks/#5-generation-stopping-and-the-memory-ceiling) `5-generation-stopping-and-the-memory-ceiling`
+  - [A failure that more training cannot remove](/en/learn/nlp/recurrent-neural-networks/#a-failure-that-more-training-cannot-remove) `a-failure-that-more-training-cannot-remove`
+- [6. A recurrent language model](/en/learn/nlp/recurrent-neural-networks/#6-a-recurrent-language-model) `6-a-recurrent-language-model`
+  - [The training loss is next-token cross-entropy](/en/learn/nlp/recurrent-neural-networks/#the-training-loss-is-next-token-cross-entropy) `the-training-loss-is-next-token-cross-entropy`
+- [7. Training through time: what gradients can reach](/en/learn/nlp/recurrent-neural-networks/#7-training-through-time-what-gradients-can-reach) `7-training-through-time-what-gradients-can-reach`
+- [8. Gated cells: LSTM and GRU](/en/learn/nlp/recurrent-neural-networks/#8-gated-cells-lstm-and-gru) `8-gated-cells-lstm-and-gru`
+- [9. Stacked and bidirectional recurrent networks](/en/learn/nlp/recurrent-neural-networks/#9-stacked-and-bidirectional-recurrent-networks) `9-stacked-and-bidirectional-recurrent-networks`
+- [10. Character-level language models](/en/learn/nlp/recurrent-neural-networks/#10-character-level-language-models) `10-character-level-language-models`
+- [11. Sampling and temperature](/en/learn/nlp/recurrent-neural-networks/#11-sampling-and-temperature) `11-sampling-and-temperature`
+- [12. Practical training, then a complete experiment](/en/learn/nlp/recurrent-neural-networks/#12-practical-training-then-a-complete-experiment) `12-practical-training-then-a-complete-experiment`
+  - [The training checklist](/en/learn/nlp/recurrent-neural-networks/#the-training-checklist) `the-training-checklist`
+  - [Code: a character-level LSTM against an interpolated n-gram](/en/learn/nlp/recurrent-neural-networks/#code-a-character-level-lstm-against-an-interpolated-n-gram) `code-a-character-level-lstm-against-an-interpolated-n-gram`
+  - [Reading the results](/en/learn/nlp/recurrent-neural-networks/#reading-the-results) `reading-the-results`
+- [Modern view](/en/learn/nlp/recurrent-neural-networks/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/recurrent-neural-networks/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/recurrent-neural-networks/#exercises) `exercises`
 
 ## nlp-06-sequence-labeling
 
@@ -221,34 +221,34 @@ Start from n-gram language models and their memory ceiling, then build, train an
 Label every token of a sentence: part-of-speech tags with HMMs and Viterbi decoding, entity spans with BIO labels and exact span evaluation, and neural taggers built from BiLSTMs, character features and a CRF output layer.
 
 - Files: `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-06-sequence-labeling.mdx`
-- Pages: `/en/learn/nlp/nlp-06-sequence-labeling/`
-- Level intermediate · order 60 · needs: `nlp/nlp-05-recurrent-neural-networks` · tags: nlp, sequence-labeling, pos-tagging, named-entities, information-extraction, hmm, viterbi, crf, bilstm
+- Pages: `/en/learn/nlp/sequence-labeling/`
+- Level intermediate · depth 1 · needs: `nlp/nlp-05-recurrent-neural-networks` · tags: nlp, sequence-labeling, pos-tagging, named-entities, information-extraction, hmm, viterbi, crf, bilstm
 - Figures: 4 (script `scripts/figures/nlp_06_sequence_labeling.py`) · references: 23 · experiments: sequence-decoding
 
-- [What you'll learn](/en/learn/nlp/nlp-06-sequence-labeling/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-06-sequence-labeling/#the-big-picture) `the-big-picture`
-- [Words, morphology and grammatical categories](/en/learn/nlp/nlp-06-sequence-labeling/#words-morphology-and-grammatical-categories) `words-morphology-and-grammatical-categories`
-- [Local classification versus sequence prediction](/en/learn/nlp/nlp-06-sequence-labeling/#local-classification-versus-sequence-prediction) `local-classification-versus-sequence-prediction`
-- [Hidden Markov models for tags](/en/learn/nlp/nlp-06-sequence-labeling/#hidden-markov-models-for-tags) `hidden-markov-models-for-tags`
-- [Maximum-path decoding](/en/learn/nlp/nlp-06-sequence-labeling/#maximum-path-decoding) `maximum-path-decoding`
-  - [Read the path score as evidence, not just an argmax](/en/learn/nlp/nlp-06-sequence-labeling/#read-the-path-score-as-evidence-not-just-an-argmax) `read-the-path-score-as-evidence-not-just-an-argmax`
-  - [Conditional structured scores connect neural features to decoding](/en/learn/nlp/nlp-06-sequence-labeling/#conditional-structured-scores-connect-neural-features-to-decoding) `conditional-structured-scores-connect-neural-features-to-decoding`
-- [Entity recognition starts with a schema](/en/learn/nlp/nlp-06-sequence-labeling/#entity-recognition-starts-with-a-schema) `entity-recognition-starts-with-a-schema`
-- [Sequence labels and span prediction](/en/learn/nlp/nlp-06-sequence-labeling/#sequence-labels-and-span-prediction) `sequence-labels-and-span-prediction`
-  - [Boundary modeling changes which errors are possible](/en/learn/nlp/nlp-06-sequence-labeling/#boundary-modeling-changes-which-errors-are-possible) `boundary-modeling-changes-which-errors-are-possible`
-- [Exact span evaluation](/en/learn/nlp/nlp-06-sequence-labeling/#exact-span-evaluation) `exact-span-evaluation`
-- [A complete CPU extraction experiment](/en/learn/nlp/nlp-06-sequence-labeling/#a-complete-cpu-extraction-experiment) `a-complete-cpu-extraction-experiment`
-- [Information extraction beyond entity spans](/en/learn/nlp/nlp-06-sequence-labeling/#information-extraction-beyond-entity-spans) `information-extraction-beyond-entity-spans`
-- [Neural taggers: a BiLSTM over the sentence](/en/learn/nlp/nlp-06-sequence-labeling/#neural-taggers-a-bilstm-over-the-sentence) `neural-taggers-a-bilstm-over-the-sentence`
-- [BiLSTM-CRF: scoring the whole label sequence](/en/learn/nlp/nlp-06-sequence-labeling/#bilstm-crf-scoring-the-whole-label-sequence) `bilstm-crf-scoring-the-whole-label-sequence`
-- [Character-level features](/en/learn/nlp/nlp-06-sequence-labeling/#character-level-features) `character-level-features`
-- [Datasets for tagging and extraction](/en/learn/nlp/nlp-06-sequence-labeling/#datasets-for-tagging-and-extraction) `datasets-for-tagging-and-extraction`
-- [A complete PyTorch tagging experiment](/en/learn/nlp/nlp-06-sequence-labeling/#a-complete-pytorch-tagging-experiment) `a-complete-pytorch-tagging-experiment`
-  - [Reading the results](/en/learn/nlp/nlp-06-sequence-labeling/#reading-the-results) `reading-the-results`
-- [Modern view](/en/learn/nlp/nlp-06-sequence-labeling/#modern-view) `modern-view`
-  - [New labels test both representation and interpretation](/en/learn/nlp/nlp-06-sequence-labeling/#new-labels-test-both-representation-and-interpretation) `new-labels-test-both-representation-and-interpretation`
-- [Key takeaways](/en/learn/nlp/nlp-06-sequence-labeling/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-06-sequence-labeling/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/sequence-labeling/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/sequence-labeling/#the-big-picture) `the-big-picture`
+- [Words, morphology and grammatical categories](/en/learn/nlp/sequence-labeling/#words-morphology-and-grammatical-categories) `words-morphology-and-grammatical-categories`
+- [Local classification versus sequence prediction](/en/learn/nlp/sequence-labeling/#local-classification-versus-sequence-prediction) `local-classification-versus-sequence-prediction`
+- [Hidden Markov models for tags](/en/learn/nlp/sequence-labeling/#hidden-markov-models-for-tags) `hidden-markov-models-for-tags`
+- [Maximum-path decoding](/en/learn/nlp/sequence-labeling/#maximum-path-decoding) `maximum-path-decoding`
+  - [Read the path score as evidence, not just an argmax](/en/learn/nlp/sequence-labeling/#read-the-path-score-as-evidence-not-just-an-argmax) `read-the-path-score-as-evidence-not-just-an-argmax`
+  - [Conditional structured scores connect neural features to decoding](/en/learn/nlp/sequence-labeling/#conditional-structured-scores-connect-neural-features-to-decoding) `conditional-structured-scores-connect-neural-features-to-decoding`
+- [Entity recognition starts with a schema](/en/learn/nlp/sequence-labeling/#entity-recognition-starts-with-a-schema) `entity-recognition-starts-with-a-schema`
+- [Sequence labels and span prediction](/en/learn/nlp/sequence-labeling/#sequence-labels-and-span-prediction) `sequence-labels-and-span-prediction`
+  - [Boundary modeling changes which errors are possible](/en/learn/nlp/sequence-labeling/#boundary-modeling-changes-which-errors-are-possible) `boundary-modeling-changes-which-errors-are-possible`
+- [Exact span evaluation](/en/learn/nlp/sequence-labeling/#exact-span-evaluation) `exact-span-evaluation`
+- [A complete CPU extraction experiment](/en/learn/nlp/sequence-labeling/#a-complete-cpu-extraction-experiment) `a-complete-cpu-extraction-experiment`
+- [Information extraction beyond entity spans](/en/learn/nlp/sequence-labeling/#information-extraction-beyond-entity-spans) `information-extraction-beyond-entity-spans`
+- [Neural taggers: a BiLSTM over the sentence](/en/learn/nlp/sequence-labeling/#neural-taggers-a-bilstm-over-the-sentence) `neural-taggers-a-bilstm-over-the-sentence`
+- [BiLSTM-CRF: scoring the whole label sequence](/en/learn/nlp/sequence-labeling/#bilstm-crf-scoring-the-whole-label-sequence) `bilstm-crf-scoring-the-whole-label-sequence`
+- [Character-level features](/en/learn/nlp/sequence-labeling/#character-level-features) `character-level-features`
+- [Datasets for tagging and extraction](/en/learn/nlp/sequence-labeling/#datasets-for-tagging-and-extraction) `datasets-for-tagging-and-extraction`
+- [A complete PyTorch tagging experiment](/en/learn/nlp/sequence-labeling/#a-complete-pytorch-tagging-experiment) `a-complete-pytorch-tagging-experiment`
+  - [Reading the results](/en/learn/nlp/sequence-labeling/#reading-the-results) `reading-the-results`
+- [Modern view](/en/learn/nlp/sequence-labeling/#modern-view) `modern-view`
+  - [New labels test both representation and interpretation](/en/learn/nlp/sequence-labeling/#new-labels-test-both-representation-and-interpretation) `new-labels-test-both-representation-and-interpretation`
+- [Key takeaways](/en/learn/nlp/sequence-labeling/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/sequence-labeling/#exercises) `exercises`
 
 ## nlp-07-attention-transformers
 
@@ -256,29 +256,29 @@ Label every token of a sentence: part-of-speech tags with HMMs and Viterbi decod
 From the encoder–decoder bottleneck to Bahdanau and Luong attention, scaled dot-product and multi-head attention, masks, positions and the Transformer encoder and decoder blocks, with attention and an encoder block built from scratch.
 
 - Files: `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-07-attention-transformers.mdx`
-- Pages: `/en/learn/nlp/nlp-07-attention-transformers/`
-- Level intermediate · order 70 · needs: `nlp/nlp-06-sequence-labeling` · tags: nlp, attention, transformers, self-attention, cross-attention, positional-encoding, masks
+- Pages: `/en/learn/nlp/attention-transformers/`
+- Level intermediate · depth 1 · needs: `nlp/nlp-06-sequence-labeling` · tags: nlp, attention, transformers, self-attention, cross-attention, positional-encoding, masks
 - Figures: 4 (script `scripts/figures/nlp_07_attention_transformers.py`) · references: 21 · experiments: attention
 
-- [What you'll learn](/en/learn/nlp/nlp-07-attention-transformers/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-07-attention-transformers/#the-big-picture) `the-big-picture`
-- [1. The encoder–decoder bottleneck](/en/learn/nlp/nlp-07-attention-transformers/#1-the-encoderdecoder-bottleneck) `1-the-encoderdecoder-bottleneck`
-- [2. Additive attention (Bahdanau)](/en/learn/nlp/nlp-07-attention-transformers/#2-additive-attention-bahdanau) `2-additive-attention-bahdanau`
-- [3. Multiplicative attention (Luong)](/en/learn/nlp/nlp-07-attention-transformers/#3-multiplicative-attention-luong) `3-multiplicative-attention-luong`
-- [4. Queries, keys and values: from alignment to self-attention](/en/learn/nlp/nlp-07-attention-transformers/#4-queries-keys-and-values-from-alignment-to-self-attention) `4-queries-keys-and-values-from-alignment-to-self-attention`
-- [5. Scaled dot-product attention](/en/learn/nlp/nlp-07-attention-transformers/#5-scaled-dot-product-attention) `5-scaled-dot-product-attention`
-  - [Code: attention from scratch on a toy sentence](/en/learn/nlp/nlp-07-attention-transformers/#code-attention-from-scratch-on-a-toy-sentence) `code-attention-from-scratch-on-a-toy-sentence`
-- [6. Multi-head attention](/en/learn/nlp/nlp-07-attention-transformers/#6-multi-head-attention) `6-multi-head-attention`
-- [7. Self-attention and cross-attention](/en/learn/nlp/nlp-07-attention-transformers/#7-self-attention-and-cross-attention) `7-self-attention-and-cross-attention`
-- [8. Masks: padding and causal](/en/learn/nlp/nlp-07-attention-transformers/#8-masks-padding-and-causal) `8-masks-padding-and-causal`
-  - [Inspect attention and test its information flow](/en/learn/nlp/nlp-07-attention-transformers/#inspect-attention-and-test-its-information-flow) `inspect-attention-and-test-its-information-flow`
-- [9. Position: telling attention where tokens are](/en/learn/nlp/nlp-07-attention-transformers/#9-position-telling-attention-where-tokens-are) `9-position-telling-attention-where-tokens-are`
-- [10. The Transformer encoder and decoder blocks](/en/learn/nlp/nlp-07-attention-transformers/#10-the-transformer-encoder-and-decoder-blocks) `10-the-transformer-encoder-and-decoder-blocks`
-  - [Code: a tiny Transformer encoder block from scratch](/en/learn/nlp/nlp-07-attention-transformers/#code-a-tiny-transformer-encoder-block-from-scratch) `code-a-tiny-transformer-encoder-block-from-scratch`
-- [11. Cost and long-context variants](/en/learn/nlp/nlp-07-attention-transformers/#11-cost-and-long-context-variants) `11-cost-and-long-context-variants`
-- [Modern view](/en/learn/nlp/nlp-07-attention-transformers/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-07-attention-transformers/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-07-attention-transformers/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/attention-transformers/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/attention-transformers/#the-big-picture) `the-big-picture`
+- [1. The encoder–decoder bottleneck](/en/learn/nlp/attention-transformers/#1-the-encoderdecoder-bottleneck) `1-the-encoderdecoder-bottleneck`
+- [2. Additive attention (Bahdanau)](/en/learn/nlp/attention-transformers/#2-additive-attention-bahdanau) `2-additive-attention-bahdanau`
+- [3. Multiplicative attention (Luong)](/en/learn/nlp/attention-transformers/#3-multiplicative-attention-luong) `3-multiplicative-attention-luong`
+- [4. Queries, keys and values: from alignment to self-attention](/en/learn/nlp/attention-transformers/#4-queries-keys-and-values-from-alignment-to-self-attention) `4-queries-keys-and-values-from-alignment-to-self-attention`
+- [5. Scaled dot-product attention](/en/learn/nlp/attention-transformers/#5-scaled-dot-product-attention) `5-scaled-dot-product-attention`
+  - [Code: attention from scratch on a toy sentence](/en/learn/nlp/attention-transformers/#code-attention-from-scratch-on-a-toy-sentence) `code-attention-from-scratch-on-a-toy-sentence`
+- [6. Multi-head attention](/en/learn/nlp/attention-transformers/#6-multi-head-attention) `6-multi-head-attention`
+- [7. Self-attention and cross-attention](/en/learn/nlp/attention-transformers/#7-self-attention-and-cross-attention) `7-self-attention-and-cross-attention`
+- [8. Masks: padding and causal](/en/learn/nlp/attention-transformers/#8-masks-padding-and-causal) `8-masks-padding-and-causal`
+  - [Inspect attention and test its information flow](/en/learn/nlp/attention-transformers/#inspect-attention-and-test-its-information-flow) `inspect-attention-and-test-its-information-flow`
+- [9. Position: telling attention where tokens are](/en/learn/nlp/attention-transformers/#9-position-telling-attention-where-tokens-are) `9-position-telling-attention-where-tokens-are`
+- [10. The Transformer encoder and decoder blocks](/en/learn/nlp/attention-transformers/#10-the-transformer-encoder-and-decoder-blocks) `10-the-transformer-encoder-and-decoder-blocks`
+  - [Code: a tiny Transformer encoder block from scratch](/en/learn/nlp/attention-transformers/#code-a-tiny-transformer-encoder-block-from-scratch) `code-a-tiny-transformer-encoder-block-from-scratch`
+- [11. Cost and long-context variants](/en/learn/nlp/attention-transformers/#11-cost-and-long-context-variants) `11-cost-and-long-context-variants`
+- [Modern view](/en/learn/nlp/attention-transformers/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/attention-transformers/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/attention-transformers/#exercises) `exercises`
 
 ## nlp-08-seq2seq-transformers
 
@@ -286,36 +286,36 @@ From the encoder–decoder bottleneck to Bahdanau and Luong attention, scaled do
 Build and train an encoder–decoder Transformer for translation, decode it with greedy and beam search, score it with BLEU written from scratch, and carry the same conditional-generation ideas into dialogue state, clarification and conversation evaluation.
 
 - Files: `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-08-seq2seq-transformers.mdx`
-- Pages: `/en/learn/nlp/nlp-08-seq2seq-transformers/`
-- Level intermediate · order 80 · needs: `nlp/nlp-07-attention-transformers` · tags: nlp, seq2seq, machine-translation, transformers, beam-search, bleu, dialogue, chatbots
+- Pages: `/en/learn/nlp/seq2seq-transformers/`
+- Level intermediate · depth 1 · needs: `nlp/nlp-07-attention-transformers` · tags: nlp, seq2seq, machine-translation, transformers, beam-search, bleu, dialogue, chatbots
 - Figures: 3 (script `scripts/figures/nlp_08_seq2seq_transformers.py`) · references: 30 · experiments: attention, decoding-controls
 
-- [What you'll learn](/en/learn/nlp/nlp-08-seq2seq-transformers/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-08-seq2seq-transformers/#the-big-picture) `the-big-picture`
-- [1. From statistical to neural machine translation](/en/learn/nlp/nlp-08-seq2seq-transformers/#1-from-statistical-to-neural-machine-translation) `1-from-statistical-to-neural-machine-translation`
-- [2. Conditional sequence learning](/en/learn/nlp/nlp-08-seq2seq-transformers/#2-conditional-sequence-learning) `2-conditional-sequence-learning`
-  - [Teacher forcing and exposure bias](/en/learn/nlp/nlp-08-seq2seq-transformers/#teacher-forcing-and-exposure-bias) `teacher-forcing-and-exposure-bias`
-- [3. The encoder–decoder Transformer for translation](/en/learn/nlp/nlp-08-seq2seq-transformers/#3-the-encoderdecoder-transformer-for-translation) `3-the-encoderdecoder-transformer-for-translation`
-- [4. Decoding: greedy search, beam search and length normalization](/en/learn/nlp/nlp-08-seq2seq-transformers/#4-decoding-greedy-search-beam-search-and-length-normalization) `4-decoding-greedy-search-beam-search-and-length-normalization`
-  - [Length normalization](/en/learn/nlp/nlp-08-seq2seq-transformers/#length-normalization) `length-normalization`
-- [5. Evaluating translations: BLEU, chrF and COMET](/en/learn/nlp/nlp-08-seq2seq-transformers/#5-evaluating-translations-bleu-chrf-and-comet) `5-evaluating-translations-bleu-chrf-and-comet`
-  - [BLEU](/en/learn/nlp/nlp-08-seq2seq-transformers/#bleu) `bleu`
-  - [chrF](/en/learn/nlp/nlp-08-seq2seq-transformers/#chrf) `chrf`
-  - [Learned metrics: COMET](/en/learn/nlp/nlp-08-seq2seq-transformers/#learned-metrics-comet) `learned-metrics-comet`
-  - [A metric that ranks systems is not automatically an output gate](/en/learn/nlp/nlp-08-seq2seq-transformers/#a-metric-that-ranks-systems-is-not-automatically-an-output-gate) `a-metric-that-ranks-systems-is-not-automatically-an-output-gate`
-  - [Overlap, recall and human judgment](/en/learn/nlp/nlp-08-seq2seq-transformers/#overlap-recall-and-human-judgment) `overlap-recall-and-human-judgment`
-- [6. Hands-on: a tiny Transformer translator](/en/learn/nlp/nlp-08-seq2seq-transformers/#6-hands-on-a-tiny-transformer-translator) `6-hands-on-a-tiny-transformer-translator`
-- [7. Translation preserves meaning across form](/en/learn/nlp/nlp-08-seq2seq-transformers/#7-translation-preserves-meaning-across-form) `7-translation-preserves-meaning-across-form`
-  - [Preserve the proposition, not only its words](/en/learn/nlp/nlp-08-seq2seq-transformers/#preserve-the-proposition-not-only-its-words) `preserve-the-proposition-not-only-its-words`
-- [8. Chatbots: conversation as sequence-to-sequence](/en/learn/nlp/nlp-08-seq2seq-transformers/#8-chatbots-conversation-as-sequence-to-sequence) `8-chatbots-conversation-as-sequence-to-sequence`
-- [9. Turns, dialogue acts and state](/en/learn/nlp/nlp-08-seq2seq-transformers/#9-turns-dialogue-acts-and-state) `9-turns-dialogue-acts-and-state`
-  - [A deterministic state tracker with correction tests](/en/learn/nlp/nlp-08-seq2seq-transformers/#a-deterministic-state-tracker-with-correction-tests) `a-deterministic-state-tracker-with-correction-tests`
-- [10. Belief states and useful clarification](/en/learn/nlp/nlp-08-seq2seq-transformers/#10-belief-states-and-useful-clarification) `10-belief-states-and-useful-clarification`
-- [11. Context, memory and tool boundaries](/en/learn/nlp/nlp-08-seq2seq-transformers/#11-context-memory-and-tool-boundaries) `11-context-memory-and-tool-boundaries`
-- [12. Evaluate a conversation, not just a reply](/en/learn/nlp/nlp-08-seq2seq-transformers/#12-evaluate-a-conversation-not-just-a-reply) `12-evaluate-a-conversation-not-just-a-reply`
-- [Modern view](/en/learn/nlp/nlp-08-seq2seq-transformers/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-08-seq2seq-transformers/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-08-seq2seq-transformers/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/seq2seq-transformers/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/seq2seq-transformers/#the-big-picture) `the-big-picture`
+- [1. From statistical to neural machine translation](/en/learn/nlp/seq2seq-transformers/#1-from-statistical-to-neural-machine-translation) `1-from-statistical-to-neural-machine-translation`
+- [2. Conditional sequence learning](/en/learn/nlp/seq2seq-transformers/#2-conditional-sequence-learning) `2-conditional-sequence-learning`
+  - [Teacher forcing and exposure bias](/en/learn/nlp/seq2seq-transformers/#teacher-forcing-and-exposure-bias) `teacher-forcing-and-exposure-bias`
+- [3. The encoder–decoder Transformer for translation](/en/learn/nlp/seq2seq-transformers/#3-the-encoderdecoder-transformer-for-translation) `3-the-encoderdecoder-transformer-for-translation`
+- [4. Decoding: greedy search, beam search and length normalization](/en/learn/nlp/seq2seq-transformers/#4-decoding-greedy-search-beam-search-and-length-normalization) `4-decoding-greedy-search-beam-search-and-length-normalization`
+  - [Length normalization](/en/learn/nlp/seq2seq-transformers/#length-normalization) `length-normalization`
+- [5. Evaluating translations: BLEU, chrF and COMET](/en/learn/nlp/seq2seq-transformers/#5-evaluating-translations-bleu-chrf-and-comet) `5-evaluating-translations-bleu-chrf-and-comet`
+  - [BLEU](/en/learn/nlp/seq2seq-transformers/#bleu) `bleu`
+  - [chrF](/en/learn/nlp/seq2seq-transformers/#chrf) `chrf`
+  - [Learned metrics: COMET](/en/learn/nlp/seq2seq-transformers/#learned-metrics-comet) `learned-metrics-comet`
+  - [A metric that ranks systems is not automatically an output gate](/en/learn/nlp/seq2seq-transformers/#a-metric-that-ranks-systems-is-not-automatically-an-output-gate) `a-metric-that-ranks-systems-is-not-automatically-an-output-gate`
+  - [Overlap, recall and human judgment](/en/learn/nlp/seq2seq-transformers/#overlap-recall-and-human-judgment) `overlap-recall-and-human-judgment`
+- [6. Hands-on: a tiny Transformer translator](/en/learn/nlp/seq2seq-transformers/#6-hands-on-a-tiny-transformer-translator) `6-hands-on-a-tiny-transformer-translator`
+- [7. Translation preserves meaning across form](/en/learn/nlp/seq2seq-transformers/#7-translation-preserves-meaning-across-form) `7-translation-preserves-meaning-across-form`
+  - [Preserve the proposition, not only its words](/en/learn/nlp/seq2seq-transformers/#preserve-the-proposition-not-only-its-words) `preserve-the-proposition-not-only-its-words`
+- [8. Chatbots: conversation as sequence-to-sequence](/en/learn/nlp/seq2seq-transformers/#8-chatbots-conversation-as-sequence-to-sequence) `8-chatbots-conversation-as-sequence-to-sequence`
+- [9. Turns, dialogue acts and state](/en/learn/nlp/seq2seq-transformers/#9-turns-dialogue-acts-and-state) `9-turns-dialogue-acts-and-state`
+  - [A deterministic state tracker with correction tests](/en/learn/nlp/seq2seq-transformers/#a-deterministic-state-tracker-with-correction-tests) `a-deterministic-state-tracker-with-correction-tests`
+- [10. Belief states and useful clarification](/en/learn/nlp/seq2seq-transformers/#10-belief-states-and-useful-clarification) `10-belief-states-and-useful-clarification`
+- [11. Context, memory and tool boundaries](/en/learn/nlp/seq2seq-transformers/#11-context-memory-and-tool-boundaries) `11-context-memory-and-tool-boundaries`
+- [12. Evaluate a conversation, not just a reply](/en/learn/nlp/seq2seq-transformers/#12-evaluate-a-conversation-not-just-a-reply) `12-evaluate-a-conversation-not-just-a-reply`
+- [Modern view](/en/learn/nlp/seq2seq-transformers/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/seq2seq-transformers/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/seq2seq-transformers/#exercises) `exercises`
 
 ## nlp-09-language-modeling-transformers
 
@@ -323,52 +323,52 @@ Build and train an encoder–decoder Transformer for translation, decode it with
 Train a tiny decoder-only Transformer language model, decode it with greedy, beam, temperature, top-k and nucleus search, and evaluate summaries, data-to-text and grounded generation.
 
 - Files: `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-09-language-modeling-transformers.mdx`
-- Pages: `/en/learn/nlp/nlp-09-language-modeling-transformers/`
-- Level advanced · order 90 · needs: `nlp/nlp-08-seq2seq-transformers` · tags: nlp, language-models, transformers, gpt, decoding, generation, summarization, rag, evaluation
+- Pages: `/en/learn/nlp/language-modeling-transformers/`
+- Level advanced · depth 1 · needs: `nlp/nlp-08-seq2seq-transformers` · tags: nlp, language-models, transformers, gpt, decoding, generation, summarization, rag, evaluation
 - Figures: 6 (script `scripts/figures/nlp_09_language_modeling_transformers.py`) · references: 36 · experiments: decoding-controls, retrieval-ranking
 
-- [What you'll learn](/en/learn/nlp/nlp-09-language-modeling-transformers/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-09-language-modeling-transformers/#the-big-picture) `the-big-picture`
-- [1. Causal sequence probability](/en/learn/nlp/nlp-09-language-modeling-transformers/#1-causal-sequence-probability) `1-causal-sequence-probability`
-  - [Why teacher-forced loss misses some rollout errors](/en/learn/nlp/nlp-09-language-modeling-transformers/#why-teacher-forced-loss-misses-some-rollout-errors) `why-teacher-forced-loss-misses-some-rollout-errors`
-- [2. Decoder-only Transformer language models](/en/learn/nlp/nlp-09-language-modeling-transformers/#2-decoder-only-transformer-language-models) `2-decoder-only-transformer-language-models`
-  - [The GPT line](/en/learn/nlp/nlp-09-language-modeling-transformers/#the-gpt-line) `the-gpt-line`
-- [3. A runnable causal model](/en/learn/nlp/nlp-09-language-modeling-transformers/#3-a-runnable-causal-model) `3-a-runnable-causal-model`
-- [4. Training objective and scaling](/en/learn/nlp/nlp-09-language-modeling-transformers/#4-training-objective-and-scaling) `4-training-objective-and-scaling`
-- [5. Perplexity and meaningful comparison](/en/learn/nlp/nlp-09-language-modeling-transformers/#5-perplexity-and-meaningful-comparison) `5-perplexity-and-meaningful-comparison`
-  - [A reproducible language-model experiment](/en/learn/nlp/nlp-09-language-modeling-transformers/#a-reproducible-language-model-experiment) `a-reproducible-language-model-experiment`
-- [6. Decoding: from a distribution to a text](/en/learn/nlp/nlp-09-language-modeling-transformers/#6-decoding-from-a-distribution-to-a-text) `6-decoding-from-a-distribution-to-a-text`
-  - [Temperature](/en/learn/nlp/nlp-09-language-modeling-transformers/#temperature) `temperature`
-  - [Greedy and beam search](/en/learn/nlp/nlp-09-language-modeling-transformers/#greedy-and-beam-search) `greedy-and-beam-search`
-  - [Search error, model error and a wrong objective](/en/learn/nlp/nlp-09-language-modeling-transformers/#search-error-model-error-and-a-wrong-objective) `search-error-model-error-and-a-wrong-objective`
-  - [Top-k and nucleus sampling](/en/learn/nlp/nlp-09-language-modeling-transformers/#top-k-and-nucleus-sampling) `top-k-and-nucleus-sampling`
-  - [Stopping and length](/en/learn/nlp/nlp-09-language-modeling-transformers/#stopping-and-length) `stopping-and-length`
-- [7. Natural language generation tasks](/en/learn/nlp/nlp-09-language-modeling-transformers/#7-natural-language-generation-tasks) `7-natural-language-generation-tasks`
-  - [Define the generation problem before choosing a model](/en/learn/nlp/nlp-09-language-modeling-transformers/#define-the-generation-problem-before-choosing-a-model) `define-the-generation-problem-before-choosing-a-model`
-  - [Data-to-text: a template baseline](/en/learn/nlp/nlp-09-language-modeling-transformers/#data-to-text-a-template-baseline) `data-to-text-a-template-baseline`
-  - [Extractive summarization: select evidence under a budget](/en/learn/nlp/nlp-09-language-modeling-transformers/#extractive-summarization-select-evidence-under-a-budget) `extractive-summarization-select-evidence-under-a-budget`
-  - [Relevance, feasibility and content preservation are different objectives](/en/learn/nlp/nlp-09-language-modeling-transformers/#relevance-feasibility-and-content-preservation-are-different-objectives) `relevance-feasibility-and-content-preservation-are-different-objectives`
-  - [Abstractive summarization](/en/learn/nlp/nlp-09-language-modeling-transformers/#abstractive-summarization) `abstractive-summarization`
-  - [Story generation and open-ended text](/en/learn/nlp/nlp-09-language-modeling-transformers/#story-generation-and-open-ended-text) `story-generation-and-open-ended-text`
-- [8. Evaluating generated text](/en/learn/nlp/nlp-09-language-modeling-transformers/#8-evaluating-generated-text) `8-evaluating-generated-text`
-  - [Human evaluation and error categories](/en/learn/nlp/nlp-09-language-modeling-transformers/#human-evaluation-and-error-categories) `human-evaluation-and-error-categories`
-  - [Language models as judges](/en/learn/nlp/nlp-09-language-modeling-transformers/#language-models-as-judges) `language-models-as-judges`
-- [9. Retrieval: finding the evidence to generate from](/en/learn/nlp/nlp-09-language-modeling-transformers/#9-retrieval-finding-the-evidence-to-generate-from) `9-retrieval-finding-the-evidence-to-generate-from`
-  - [Corpus design before model choice](/en/learn/nlp/nlp-09-language-modeling-transformers/#corpus-design-before-model-choice) `corpus-design-before-model-choice`
-  - [Lexical retrieval and sparse vectors](/en/learn/nlp/nlp-09-language-modeling-transformers/#lexical-retrieval-and-sparse-vectors) `lexical-retrieval-and-sparse-vectors`
-  - [Saturation and document length](/en/learn/nlp/nlp-09-language-modeling-transformers/#saturation-and-document-length) `saturation-and-document-length`
-  - [Dense retrieval and joint reranking](/en/learn/nlp/nlp-09-language-modeling-transformers/#dense-retrieval-and-joint-reranking) `dense-retrieval-and-joint-reranking`
-  - [Ranking evaluation](/en/learn/nlp/nlp-09-language-modeling-transformers/#ranking-evaluation) `ranking-evaluation`
-- [10. Hallucination and retrieval-augmented generation](/en/learn/nlp/nlp-09-language-modeling-transformers/#10-hallucination-and-retrieval-augmented-generation) `10-hallucination-and-retrieval-augmented-generation`
-  - [Retrieval-augmented generation](/en/learn/nlp/nlp-09-language-modeling-transformers/#retrieval-augmented-generation) `retrieval-augmented-generation`
-  - [Errors propagate through retrieval, interpretation and realization](/en/learn/nlp/nlp-09-language-modeling-transformers/#errors-propagate-through-retrieval-interpretation-and-realization) `errors-propagate-through-retrieval-interpretation-and-realization`
-  - [Boundaries around retrieved content](/en/learn/nlp/nlp-09-language-modeling-transformers/#boundaries-around-retrieved-content) `boundaries-around-retrieved-content`
-- [11. Adapting a pretrained generator](/en/learn/nlp/nlp-09-language-modeling-transformers/#11-adapting-a-pretrained-generator) `11-adapting-a-pretrained-generator`
-- [12. Training practices meet serving constraints](/en/learn/nlp/nlp-09-language-modeling-transformers/#12-training-practices-meet-serving-constraints) `12-training-practices-meet-serving-constraints`
-  - [A reproducible serving contract](/en/learn/nlp/nlp-09-language-modeling-transformers/#a-reproducible-serving-contract) `a-reproducible-serving-contract`
-- [Modern view](/en/learn/nlp/nlp-09-language-modeling-transformers/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-09-language-modeling-transformers/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-09-language-modeling-transformers/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/language-modeling-transformers/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/language-modeling-transformers/#the-big-picture) `the-big-picture`
+- [1. Causal sequence probability](/en/learn/nlp/language-modeling-transformers/#1-causal-sequence-probability) `1-causal-sequence-probability`
+  - [Why teacher-forced loss misses some rollout errors](/en/learn/nlp/language-modeling-transformers/#why-teacher-forced-loss-misses-some-rollout-errors) `why-teacher-forced-loss-misses-some-rollout-errors`
+- [2. Decoder-only Transformer language models](/en/learn/nlp/language-modeling-transformers/#2-decoder-only-transformer-language-models) `2-decoder-only-transformer-language-models`
+  - [The GPT line](/en/learn/nlp/language-modeling-transformers/#the-gpt-line) `the-gpt-line`
+- [3. A runnable causal model](/en/learn/nlp/language-modeling-transformers/#3-a-runnable-causal-model) `3-a-runnable-causal-model`
+- [4. Training objective and scaling](/en/learn/nlp/language-modeling-transformers/#4-training-objective-and-scaling) `4-training-objective-and-scaling`
+- [5. Perplexity and meaningful comparison](/en/learn/nlp/language-modeling-transformers/#5-perplexity-and-meaningful-comparison) `5-perplexity-and-meaningful-comparison`
+  - [A reproducible language-model experiment](/en/learn/nlp/language-modeling-transformers/#a-reproducible-language-model-experiment) `a-reproducible-language-model-experiment`
+- [6. Decoding: from a distribution to a text](/en/learn/nlp/language-modeling-transformers/#6-decoding-from-a-distribution-to-a-text) `6-decoding-from-a-distribution-to-a-text`
+  - [Temperature](/en/learn/nlp/language-modeling-transformers/#temperature) `temperature`
+  - [Greedy and beam search](/en/learn/nlp/language-modeling-transformers/#greedy-and-beam-search) `greedy-and-beam-search`
+  - [Search error, model error and a wrong objective](/en/learn/nlp/language-modeling-transformers/#search-error-model-error-and-a-wrong-objective) `search-error-model-error-and-a-wrong-objective`
+  - [Top-k and nucleus sampling](/en/learn/nlp/language-modeling-transformers/#top-k-and-nucleus-sampling) `top-k-and-nucleus-sampling`
+  - [Stopping and length](/en/learn/nlp/language-modeling-transformers/#stopping-and-length) `stopping-and-length`
+- [7. Natural language generation tasks](/en/learn/nlp/language-modeling-transformers/#7-natural-language-generation-tasks) `7-natural-language-generation-tasks`
+  - [Define the generation problem before choosing a model](/en/learn/nlp/language-modeling-transformers/#define-the-generation-problem-before-choosing-a-model) `define-the-generation-problem-before-choosing-a-model`
+  - [Data-to-text: a template baseline](/en/learn/nlp/language-modeling-transformers/#data-to-text-a-template-baseline) `data-to-text-a-template-baseline`
+  - [Extractive summarization: select evidence under a budget](/en/learn/nlp/language-modeling-transformers/#extractive-summarization-select-evidence-under-a-budget) `extractive-summarization-select-evidence-under-a-budget`
+  - [Relevance, feasibility and content preservation are different objectives](/en/learn/nlp/language-modeling-transformers/#relevance-feasibility-and-content-preservation-are-different-objectives) `relevance-feasibility-and-content-preservation-are-different-objectives`
+  - [Abstractive summarization](/en/learn/nlp/language-modeling-transformers/#abstractive-summarization) `abstractive-summarization`
+  - [Story generation and open-ended text](/en/learn/nlp/language-modeling-transformers/#story-generation-and-open-ended-text) `story-generation-and-open-ended-text`
+- [8. Evaluating generated text](/en/learn/nlp/language-modeling-transformers/#8-evaluating-generated-text) `8-evaluating-generated-text`
+  - [Human evaluation and error categories](/en/learn/nlp/language-modeling-transformers/#human-evaluation-and-error-categories) `human-evaluation-and-error-categories`
+  - [Language models as judges](/en/learn/nlp/language-modeling-transformers/#language-models-as-judges) `language-models-as-judges`
+- [9. Retrieval: finding the evidence to generate from](/en/learn/nlp/language-modeling-transformers/#9-retrieval-finding-the-evidence-to-generate-from) `9-retrieval-finding-the-evidence-to-generate-from`
+  - [Corpus design before model choice](/en/learn/nlp/language-modeling-transformers/#corpus-design-before-model-choice) `corpus-design-before-model-choice`
+  - [Lexical retrieval and sparse vectors](/en/learn/nlp/language-modeling-transformers/#lexical-retrieval-and-sparse-vectors) `lexical-retrieval-and-sparse-vectors`
+  - [Saturation and document length](/en/learn/nlp/language-modeling-transformers/#saturation-and-document-length) `saturation-and-document-length`
+  - [Dense retrieval and joint reranking](/en/learn/nlp/language-modeling-transformers/#dense-retrieval-and-joint-reranking) `dense-retrieval-and-joint-reranking`
+  - [Ranking evaluation](/en/learn/nlp/language-modeling-transformers/#ranking-evaluation) `ranking-evaluation`
+- [10. Hallucination and retrieval-augmented generation](/en/learn/nlp/language-modeling-transformers/#10-hallucination-and-retrieval-augmented-generation) `10-hallucination-and-retrieval-augmented-generation`
+  - [Retrieval-augmented generation](/en/learn/nlp/language-modeling-transformers/#retrieval-augmented-generation) `retrieval-augmented-generation`
+  - [Errors propagate through retrieval, interpretation and realization](/en/learn/nlp/language-modeling-transformers/#errors-propagate-through-retrieval-interpretation-and-realization) `errors-propagate-through-retrieval-interpretation-and-realization`
+  - [Boundaries around retrieved content](/en/learn/nlp/language-modeling-transformers/#boundaries-around-retrieved-content) `boundaries-around-retrieved-content`
+- [11. Adapting a pretrained generator](/en/learn/nlp/language-modeling-transformers/#11-adapting-a-pretrained-generator) `11-adapting-a-pretrained-generator`
+- [12. Training practices meet serving constraints](/en/learn/nlp/language-modeling-transformers/#12-training-practices-meet-serving-constraints) `12-training-practices-meet-serving-constraints`
+  - [A reproducible serving contract](/en/learn/nlp/language-modeling-transformers/#a-reproducible-serving-contract) `a-reproducible-serving-contract`
+- [Modern view](/en/learn/nlp/language-modeling-transformers/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/language-modeling-transformers/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/language-modeling-transformers/#exercises) `exercises`
 
 ## nlp-10-pretrained-bert
 
@@ -376,30 +376,30 @@ Train a tiny decoder-only Transformer language model, decode it with greedy, bea
 Understand BERT from WordPiece input to bidirectional encoder, pretrain a tiny BERT-style model with masked language modeling from scratch, and probe what its contextual representations contain.
 
 - Files: `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-10-pretrained-bert.mdx`
-- Pages: `/en/learn/nlp/nlp-10-pretrained-bert/`
-- Level advanced · order 100 · needs: `nlp/nlp-09-language-modeling-transformers` · tags: nlp, bert, pretraining, masked-language-modeling, transformers, contextual-embeddings, probing, multilingual
+- Pages: `/en/learn/nlp/pretrained-bert/`
+- Level advanced · depth 1 · needs: `nlp/nlp-09-language-modeling-transformers` · tags: nlp, bert, pretraining, masked-language-modeling, transformers, contextual-embeddings, probing, multilingual
 - Figures: 3 (script `scripts/figures/nlp_10_pretrained_bert.py`) · references: 27 · experiments: masked-objectives, subword-merges
 
-- [What you'll learn](/en/learn/nlp/nlp-10-pretrained-bert/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-10-pretrained-bert/#the-big-picture) `the-big-picture`
-- [1. Pretraining, then fine-tuning](/en/learn/nlp/nlp-10-pretrained-bert/#1-pretraining-then-fine-tuning) `1-pretraining-then-fine-tuning`
-- [2. Masked and conditional objectives](/en/learn/nlp/nlp-10-pretrained-bert/#2-masked-and-conditional-objectives) `2-masked-and-conditional-objectives`
-- [3. From text to BERT input](/en/learn/nlp/nlp-10-pretrained-bert/#3-from-text-to-bert-input) `3-from-text-to-bert-input`
-  - [WordPiece](/en/learn/nlp/nlp-10-pretrained-bert/#wordpiece) `wordpiece`
-  - [Pack one text or a text pair](/en/learn/nlp/nlp-10-pretrained-bert/#pack-one-text-or-a-text-pair) `pack-one-text-or-a-text-pair`
-- [4. The encoder](/en/learn/nlp/nlp-10-pretrained-bert/#4-the-encoder) `4-the-encoder`
-- [5. What BERT learns before task labels are available](/en/learn/nlp/nlp-10-pretrained-bert/#5-what-bert-learns-before-task-labels-are-available) `5-what-bert-learns-before-task-labels-are-available`
-  - [Masked language modeling](/en/learn/nlp/nlp-10-pretrained-bert/#masked-language-modeling) `masked-language-modeling`
-  - [Next sentence prediction and its critique](/en/learn/nlp/nlp-10-pretrained-bert/#next-sentence-prediction-and-its-critique) `next-sentence-prediction-and-its-critique`
-- [6. A runnable bidirectional encoder](/en/learn/nlp/nlp-10-pretrained-bert/#6-a-runnable-bidirectional-encoder) `6-a-runnable-bidirectional-encoder`
-- [7. Pretraining a tiny BERT from scratch](/en/learn/nlp/nlp-10-pretrained-bert/#7-pretraining-a-tiny-bert-from-scratch) `7-pretraining-a-tiny-bert-from-scratch`
-- [8. Contextual versus static embeddings](/en/learn/nlp/nlp-10-pretrained-bert/#8-contextual-versus-static-embeddings) `8-contextual-versus-static-embeddings`
-- [9. Probing what the representations contain](/en/learn/nlp/nlp-10-pretrained-bert/#9-probing-what-the-representations-contain) `9-probing-what-the-representations-contain`
-- [10. The BERT family](/en/learn/nlp/nlp-10-pretrained-bert/#10-the-bert-family) `10-the-bert-family`
-- [11. Multilingual and Chinese BERT](/en/learn/nlp/nlp-10-pretrained-bert/#11-multilingual-and-chinese-bert) `11-multilingual-and-chinese-bert`
-- [Modern view](/en/learn/nlp/nlp-10-pretrained-bert/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-10-pretrained-bert/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-10-pretrained-bert/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/pretrained-bert/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/pretrained-bert/#the-big-picture) `the-big-picture`
+- [1. Pretraining, then fine-tuning](/en/learn/nlp/pretrained-bert/#1-pretraining-then-fine-tuning) `1-pretraining-then-fine-tuning`
+- [2. Masked and conditional objectives](/en/learn/nlp/pretrained-bert/#2-masked-and-conditional-objectives) `2-masked-and-conditional-objectives`
+- [3. From text to BERT input](/en/learn/nlp/pretrained-bert/#3-from-text-to-bert-input) `3-from-text-to-bert-input`
+  - [WordPiece](/en/learn/nlp/pretrained-bert/#wordpiece) `wordpiece`
+  - [Pack one text or a text pair](/en/learn/nlp/pretrained-bert/#pack-one-text-or-a-text-pair) `pack-one-text-or-a-text-pair`
+- [4. The encoder](/en/learn/nlp/pretrained-bert/#4-the-encoder) `4-the-encoder`
+- [5. What BERT learns before task labels are available](/en/learn/nlp/pretrained-bert/#5-what-bert-learns-before-task-labels-are-available) `5-what-bert-learns-before-task-labels-are-available`
+  - [Masked language modeling](/en/learn/nlp/pretrained-bert/#masked-language-modeling) `masked-language-modeling`
+  - [Next sentence prediction and its critique](/en/learn/nlp/pretrained-bert/#next-sentence-prediction-and-its-critique) `next-sentence-prediction-and-its-critique`
+- [6. A runnable bidirectional encoder](/en/learn/nlp/pretrained-bert/#6-a-runnable-bidirectional-encoder) `6-a-runnable-bidirectional-encoder`
+- [7. Pretraining a tiny BERT from scratch](/en/learn/nlp/pretrained-bert/#7-pretraining-a-tiny-bert-from-scratch) `7-pretraining-a-tiny-bert-from-scratch`
+- [8. Contextual versus static embeddings](/en/learn/nlp/pretrained-bert/#8-contextual-versus-static-embeddings) `8-contextual-versus-static-embeddings`
+- [9. Probing what the representations contain](/en/learn/nlp/pretrained-bert/#9-probing-what-the-representations-contain) `9-probing-what-the-representations-contain`
+- [10. The BERT family](/en/learn/nlp/pretrained-bert/#10-the-bert-family) `10-the-bert-family`
+- [11. Multilingual and Chinese BERT](/en/learn/nlp/pretrained-bert/#11-multilingual-and-chinese-bert) `11-multilingual-and-chinese-bert`
+- [Modern view](/en/learn/nlp/pretrained-bert/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/pretrained-bert/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/pretrained-bert/#exercises) `exercises`
 
 ## nlp-11-classification-bert
 
@@ -407,38 +407,38 @@ Understand BERT from WordPiece input to bidirectional encoder, pretrain a tiny B
 Fine-tune a pretrained bidirectional encoder for single-text and text-pair decisions, read span answers from passage tokens, and evaluate labels, probabilities and shortcuts honestly.
 
 - Files: `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-11-classification-bert.mdx`
-- Pages: `/en/learn/nlp/nlp-11-classification-bert/`
-- Level advanced · order 110 · needs: `nlp/nlp-10-pretrained-bert` · tags: nlp, bert, fine-tuning, sentiment-analysis, natural-language-inference, question-answering, evaluation
+- Pages: `/en/learn/nlp/classification-bert/`
+- Level advanced · depth 1 · needs: `nlp/nlp-10-pretrained-bert` · tags: nlp, bert, fine-tuning, sentiment-analysis, natural-language-inference, question-answering, evaluation
 - Figures: 4 (script `scripts/figures/nlp_11_classification_bert.py`) · references: 26 · experiments: masked-objectives, temperature-calibration
 
-- [What you'll learn](/en/learn/nlp/nlp-11-classification-bert/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-11-classification-bert/#the-big-picture) `the-big-picture`
-- [BERT applications: choose the output head](/en/learn/nlp/nlp-11-classification-bert/#bert-applications-choose-the-output-head) `bert-applications-choose-the-output-head`
-  - [Sequence classification and text-pair decisions](/en/learn/nlp/nlp-11-classification-bert/#sequence-classification-and-text-pair-decisions) `sequence-classification-and-text-pair-decisions`
-  - [Token labeling](/en/learn/nlp/nlp-11-classification-bert/#token-labeling) `token-labeling`
-  - [Extractive question answering](/en/learn/nlp/nlp-11-classification-bert/#extractive-question-answering) `extractive-question-answering`
-  - [Retrieval: joint scoring or reusable vectors?](/en/learn/nlp/nlp-11-classification-bert/#retrieval-joint-scoring-or-reusable-vectors) `retrieval-joint-scoring-or-reusable-vectors`
-- [Single-text classification: sentiment analysis](/en/learn/nlp/nlp-11-classification-bert/#single-text-classification-sentiment-analysis) `single-text-classification-sentiment-analysis`
-  - [Two benchmark datasets and what they measure](/en/learn/nlp/nlp-11-classification-bert/#two-benchmark-datasets-and-what-they-measure) `two-benchmark-datasets-and-what-they-measure`
-  - [What a contextual encoder adds, and what it does not](/en/learn/nlp/nlp-11-classification-bert/#what-a-contextual-encoder-adds-and-what-it-does-not) `what-a-contextual-encoder-adds-and-what-it-does-not`
-- [Text pairs: natural language inference](/en/learn/nlp/nlp-11-classification-bert/#text-pairs-natural-language-inference) `text-pairs-natural-language-inference`
-  - [SNLI and MultiNLI](/en/learn/nlp/nlp-11-classification-bert/#snli-and-multinli) `snli-and-multinli`
-  - [Annotation artifacts and hypothesis-only baselines](/en/learn/nlp/nlp-11-classification-bert/#annotation-artifacts-and-hypothesis-only-baselines) `annotation-artifacts-and-hypothesis-only-baselines`
-- [Extractive QA as a pair task: answers need support](/en/learn/nlp/nlp-11-classification-bert/#extractive-qa-as-a-pair-task-answers-need-support) `extractive-qa-as-a-pair-task-answers-need-support`
-  - [A local evidence-backed answerer](/en/learn/nlp/nlp-11-classification-bert/#a-local-evidence-backed-answerer) `a-local-evidence-backed-answerer`
-  - [Relevance is not answerability](/en/learn/nlp/nlp-11-classification-bert/#relevance-is-not-answerability) `relevance-is-not-answerability`
-  - [Diagnose failures with controlled substitutions](/en/learn/nlp/nlp-11-classification-bert/#diagnose-failures-with-controlled-substitutions) `diagnose-failures-with-controlled-substitutions`
-- [Benchmarks: GLUE and SuperGLUE](/en/learn/nlp/nlp-11-classification-bert/#benchmarks-glue-and-superglue) `benchmarks-glue-and-superglue`
-- [Fine-tuning practice](/en/learn/nlp/nlp-11-classification-bert/#fine-tuning-practice) `fine-tuning-practice`
-  - [Learning rate, epochs and schedule](/en/learn/nlp/nlp-11-classification-bert/#learning-rate-epochs-and-schedule) `learning-rate-epochs-and-schedule`
-  - [Instability and random restarts](/en/learn/nlp/nlp-11-classification-bert/#instability-and-random-restarts) `instability-and-random-restarts`
-  - [Class imbalance](/en/learn/nlp/nlp-11-classification-bert/#class-imbalance) `class-imbalance`
-  - [Calibration](/en/learn/nlp/nlp-11-classification-bert/#calibration) `calibration`
-- [Evaluation: accuracy, macro-F1 and selective decisions](/en/learn/nlp/nlp-11-classification-bert/#evaluation-accuracy-macro-f1-and-selective-decisions) `evaluation-accuracy-macro-f1-and-selective-decisions`
-- [A runnable experiment: pretrain, then fine-tune](/en/learn/nlp/nlp-11-classification-bert/#a-runnable-experiment-pretrain-then-fine-tune) `a-runnable-experiment-pretrain-then-fine-tune`
-- [Modern view](/en/learn/nlp/nlp-11-classification-bert/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/nlp/nlp-11-classification-bert/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-11-classification-bert/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/classification-bert/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/classification-bert/#the-big-picture) `the-big-picture`
+- [BERT applications: choose the output head](/en/learn/nlp/classification-bert/#bert-applications-choose-the-output-head) `bert-applications-choose-the-output-head`
+  - [Sequence classification and text-pair decisions](/en/learn/nlp/classification-bert/#sequence-classification-and-text-pair-decisions) `sequence-classification-and-text-pair-decisions`
+  - [Token labeling](/en/learn/nlp/classification-bert/#token-labeling) `token-labeling`
+  - [Extractive question answering](/en/learn/nlp/classification-bert/#extractive-question-answering) `extractive-question-answering`
+  - [Retrieval: joint scoring or reusable vectors?](/en/learn/nlp/classification-bert/#retrieval-joint-scoring-or-reusable-vectors) `retrieval-joint-scoring-or-reusable-vectors`
+- [Single-text classification: sentiment analysis](/en/learn/nlp/classification-bert/#single-text-classification-sentiment-analysis) `single-text-classification-sentiment-analysis`
+  - [Two benchmark datasets and what they measure](/en/learn/nlp/classification-bert/#two-benchmark-datasets-and-what-they-measure) `two-benchmark-datasets-and-what-they-measure`
+  - [What a contextual encoder adds, and what it does not](/en/learn/nlp/classification-bert/#what-a-contextual-encoder-adds-and-what-it-does-not) `what-a-contextual-encoder-adds-and-what-it-does-not`
+- [Text pairs: natural language inference](/en/learn/nlp/classification-bert/#text-pairs-natural-language-inference) `text-pairs-natural-language-inference`
+  - [SNLI and MultiNLI](/en/learn/nlp/classification-bert/#snli-and-multinli) `snli-and-multinli`
+  - [Annotation artifacts and hypothesis-only baselines](/en/learn/nlp/classification-bert/#annotation-artifacts-and-hypothesis-only-baselines) `annotation-artifacts-and-hypothesis-only-baselines`
+- [Extractive QA as a pair task: answers need support](/en/learn/nlp/classification-bert/#extractive-qa-as-a-pair-task-answers-need-support) `extractive-qa-as-a-pair-task-answers-need-support`
+  - [A local evidence-backed answerer](/en/learn/nlp/classification-bert/#a-local-evidence-backed-answerer) `a-local-evidence-backed-answerer`
+  - [Relevance is not answerability](/en/learn/nlp/classification-bert/#relevance-is-not-answerability) `relevance-is-not-answerability`
+  - [Diagnose failures with controlled substitutions](/en/learn/nlp/classification-bert/#diagnose-failures-with-controlled-substitutions) `diagnose-failures-with-controlled-substitutions`
+- [Benchmarks: GLUE and SuperGLUE](/en/learn/nlp/classification-bert/#benchmarks-glue-and-superglue) `benchmarks-glue-and-superglue`
+- [Fine-tuning practice](/en/learn/nlp/classification-bert/#fine-tuning-practice) `fine-tuning-practice`
+  - [Learning rate, epochs and schedule](/en/learn/nlp/classification-bert/#learning-rate-epochs-and-schedule) `learning-rate-epochs-and-schedule`
+  - [Instability and random restarts](/en/learn/nlp/classification-bert/#instability-and-random-restarts) `instability-and-random-restarts`
+  - [Class imbalance](/en/learn/nlp/classification-bert/#class-imbalance) `class-imbalance`
+  - [Calibration](/en/learn/nlp/classification-bert/#calibration) `calibration`
+- [Evaluation: accuracy, macro-F1 and selective decisions](/en/learn/nlp/classification-bert/#evaluation-accuracy-macro-f1-and-selective-decisions) `evaluation-accuracy-macro-f1-and-selective-decisions`
+- [A runnable experiment: pretrain, then fine-tune](/en/learn/nlp/classification-bert/#a-runnable-experiment-pretrain-then-fine-tune) `a-runnable-experiment-pretrain-then-fine-tune`
+- [Modern view](/en/learn/nlp/classification-bert/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/nlp/classification-bert/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/classification-bert/#exercises) `exercises`
 
 ## nlp-12-syntactic-semantic-tasks
 
@@ -446,39 +446,39 @@ Fine-tune a pretrained bidirectional encoder for single-text and text-pair decis
 Parse constituents with CKY and dependencies with transitions or spanning trees, label semantic roles, resolve coreference, sketch AMR, and evaluate each structure with its own metric.
 
 - Files: `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-12-syntactic-semantic-tasks.mdx`
-- Pages: `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/`
-- Level advanced · order 120 · needs: `nlp/nlp-11-classification-bert`, `nlp/nlp-06-sequence-labeling` · tags: nlp, parsing, dependency-parsing, semantic-role-labeling, coreference, amr, evaluation
+- Pages: `/en/learn/nlp/syntactic-semantic-tasks/`
+- Level advanced · depth 1 · needs: `nlp/nlp-11-classification-bert`, `nlp/nlp-06-sequence-labeling` · tags: nlp, parsing, dependency-parsing, semantic-role-labeling, coreference, amr, evaluation
 - Figures: 5 (script `scripts/figures/nlp_12_syntactic_semantic_tasks.py`) · references: 39 · experiments: quantifier-scope, sequence-decoding
 
-- [What you'll learn](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#the-big-picture) `the-big-picture`
-- [Constituents and context-free grammars](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#constituents-and-context-free-grammars) `constituents-and-context-free-grammars`
-- [Chart parsing by spans: the CKY algorithm](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#chart-parsing-by-spans-the-cky-algorithm) `chart-parsing-by-spans-the-cky-algorithm`
-  - [Top-down hypotheses and bottom-up evidence](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#top-down-hypotheses-and-bottom-up-evidence) `top-down-hypotheses-and-bottom-up-evidence`
-  - [The span recurrence](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#the-span-recurrence) `the-span-recurrence`
-  - [A parser that preserves two analyses](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#a-parser-that-preserves-two-analyses) `a-parser-that-preserves-two-analyses`
-- [Probabilities over structures](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#probabilities-over-structures) `probabilities-over-structures`
-- [Neural constituency parsing: score spans, decode with a chart](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#neural-constituency-parsing-score-spans-decode-with-a-chart) `neural-constituency-parsing-score-spans-decode-with-a-chart`
-- [Dependency structure and grammatical roles](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#dependency-structure-and-grammatical-roles) `dependency-structure-and-grammatical-roles`
-  - [Attachment ambiguity reveals a model's inductive bias](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#attachment-ambiguity-reveals-a-models-inductive-bias) `attachment-ambiguity-reveals-a-models-inductive-bias`
-- [Transition-based dependency parsing](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#transition-based-dependency-parsing) `transition-based-dependency-parsing`
-- [Graph-based dependency parsing](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#graph-based-dependency-parsing) `graph-based-dependency-parsing`
-- [Evaluating parsers: PARSEVAL, UAS and LAS](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#evaluating-parsers-parseval-uas-and-las) `evaluating-parsers-parseval-uas-and-las`
-- [Semantic role labeling: who did what to whom](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#semantic-role-labeling-who-did-what-to-whom) `semantic-role-labeling-who-did-what-to-whom`
-  - [PropBank roles and the SRL task](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#propbank-roles-and-the-srl-task) `propbank-roles-and-the-srl-task`
-  - [SRL as predicate-conditioned tagging](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#srl-as-predicate-conditioned-tagging) `srl-as-predicate-conditioned-tagging`
-- [Scope in semantic representations](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#scope-in-semantic-representations) `scope-in-semantic-representations`
-  - [Composition is a calculation over roles and scope](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#composition-is-a-calculation-over-roles-and-scope) `composition-is-a-calculation-over-roles-and-scope`
-- [Relations, events and provenance](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#relations-events-and-provenance) `relations-events-and-provenance`
-- [Discourse, mentions and coreference](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#discourse-mentions-and-coreference) `discourse-mentions-and-coreference`
-  - [An antecedent-ranking model](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#an-antecedent-ranking-model) `an-antecedent-ranking-model`
-  - [A recency baseline and its failure](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#a-recency-baseline-and-its-failure) `a-recency-baseline-and-its-failure`
-- [Evaluating coreference: MUC, B³, CEAF and CoNLL F1](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#evaluating-coreference-muc-b-ceaf-and-conll-f1) `evaluating-coreference-muc-b-ceaf-and-conll-f1`
-- [Semantic parsing and AMR](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#semantic-parsing-and-amr) `semantic-parsing-and-amr`
-- [How pretrained models changed these tasks](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#how-pretrained-models-changed-these-tasks) `how-pretrained-models-changed-these-tasks`
-- [Modern view](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#modern-view) `modern-view`
-  - [Distinguish valid structure from structural generalization](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#distinguish-valid-structure-from-structural-generalization) `distinguish-valid-structure-from-structural-generalization`
-  - [Longer context changes the reference decision, not only memory size](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#longer-context-changes-the-reference-decision-not-only-memory-size) `longer-context-changes-the-reference-decision-not-only-memory-size`
-- [Key takeaways](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#exercises) `exercises`
+- [What you'll learn](/en/learn/nlp/syntactic-semantic-tasks/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/nlp/syntactic-semantic-tasks/#the-big-picture) `the-big-picture`
+- [Constituents and context-free grammars](/en/learn/nlp/syntactic-semantic-tasks/#constituents-and-context-free-grammars) `constituents-and-context-free-grammars`
+- [Chart parsing by spans: the CKY algorithm](/en/learn/nlp/syntactic-semantic-tasks/#chart-parsing-by-spans-the-cky-algorithm) `chart-parsing-by-spans-the-cky-algorithm`
+  - [Top-down hypotheses and bottom-up evidence](/en/learn/nlp/syntactic-semantic-tasks/#top-down-hypotheses-and-bottom-up-evidence) `top-down-hypotheses-and-bottom-up-evidence`
+  - [The span recurrence](/en/learn/nlp/syntactic-semantic-tasks/#the-span-recurrence) `the-span-recurrence`
+  - [A parser that preserves two analyses](/en/learn/nlp/syntactic-semantic-tasks/#a-parser-that-preserves-two-analyses) `a-parser-that-preserves-two-analyses`
+- [Probabilities over structures](/en/learn/nlp/syntactic-semantic-tasks/#probabilities-over-structures) `probabilities-over-structures`
+- [Neural constituency parsing: score spans, decode with a chart](/en/learn/nlp/syntactic-semantic-tasks/#neural-constituency-parsing-score-spans-decode-with-a-chart) `neural-constituency-parsing-score-spans-decode-with-a-chart`
+- [Dependency structure and grammatical roles](/en/learn/nlp/syntactic-semantic-tasks/#dependency-structure-and-grammatical-roles) `dependency-structure-and-grammatical-roles`
+  - [Attachment ambiguity reveals a model's inductive bias](/en/learn/nlp/syntactic-semantic-tasks/#attachment-ambiguity-reveals-a-models-inductive-bias) `attachment-ambiguity-reveals-a-models-inductive-bias`
+- [Transition-based dependency parsing](/en/learn/nlp/syntactic-semantic-tasks/#transition-based-dependency-parsing) `transition-based-dependency-parsing`
+- [Graph-based dependency parsing](/en/learn/nlp/syntactic-semantic-tasks/#graph-based-dependency-parsing) `graph-based-dependency-parsing`
+- [Evaluating parsers: PARSEVAL, UAS and LAS](/en/learn/nlp/syntactic-semantic-tasks/#evaluating-parsers-parseval-uas-and-las) `evaluating-parsers-parseval-uas-and-las`
+- [Semantic role labeling: who did what to whom](/en/learn/nlp/syntactic-semantic-tasks/#semantic-role-labeling-who-did-what-to-whom) `semantic-role-labeling-who-did-what-to-whom`
+  - [PropBank roles and the SRL task](/en/learn/nlp/syntactic-semantic-tasks/#propbank-roles-and-the-srl-task) `propbank-roles-and-the-srl-task`
+  - [SRL as predicate-conditioned tagging](/en/learn/nlp/syntactic-semantic-tasks/#srl-as-predicate-conditioned-tagging) `srl-as-predicate-conditioned-tagging`
+- [Scope in semantic representations](/en/learn/nlp/syntactic-semantic-tasks/#scope-in-semantic-representations) `scope-in-semantic-representations`
+  - [Composition is a calculation over roles and scope](/en/learn/nlp/syntactic-semantic-tasks/#composition-is-a-calculation-over-roles-and-scope) `composition-is-a-calculation-over-roles-and-scope`
+- [Relations, events and provenance](/en/learn/nlp/syntactic-semantic-tasks/#relations-events-and-provenance) `relations-events-and-provenance`
+- [Discourse, mentions and coreference](/en/learn/nlp/syntactic-semantic-tasks/#discourse-mentions-and-coreference) `discourse-mentions-and-coreference`
+  - [An antecedent-ranking model](/en/learn/nlp/syntactic-semantic-tasks/#an-antecedent-ranking-model) `an-antecedent-ranking-model`
+  - [A recency baseline and its failure](/en/learn/nlp/syntactic-semantic-tasks/#a-recency-baseline-and-its-failure) `a-recency-baseline-and-its-failure`
+- [Evaluating coreference: MUC, B³, CEAF and CoNLL F1](/en/learn/nlp/syntactic-semantic-tasks/#evaluating-coreference-muc-b-ceaf-and-conll-f1) `evaluating-coreference-muc-b-ceaf-and-conll-f1`
+- [Semantic parsing and AMR](/en/learn/nlp/syntactic-semantic-tasks/#semantic-parsing-and-amr) `semantic-parsing-and-amr`
+- [How pretrained models changed these tasks](/en/learn/nlp/syntactic-semantic-tasks/#how-pretrained-models-changed-these-tasks) `how-pretrained-models-changed-these-tasks`
+- [Modern view](/en/learn/nlp/syntactic-semantic-tasks/#modern-view) `modern-view`
+  - [Distinguish valid structure from structural generalization](/en/learn/nlp/syntactic-semantic-tasks/#distinguish-valid-structure-from-structural-generalization) `distinguish-valid-structure-from-structural-generalization`
+  - [Longer context changes the reference decision, not only memory size](/en/learn/nlp/syntactic-semantic-tasks/#longer-context-changes-the-reference-decision-not-only-memory-size) `longer-context-changes-the-reference-decision-not-only-memory-size`
+- [Key takeaways](/en/learn/nlp/syntactic-semantic-tasks/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/nlp/syntactic-semantic-tasks/#exercises) `exercises`
 

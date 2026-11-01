@@ -1,3 +1,4 @@
+import { chapterPath } from './chapter-paths.mjs';
 // Splits a tutorial into its main text and up to two optional sections, and each item of those sections into a page of its own
 // (a "sub-chapter"):
 //   "## Supplementary notes" / "## 補充資料"  → index /<lang>/learn/<track>/<slug>/notes/,  one page per ### at …/notes/<h3-id>/
@@ -79,6 +80,7 @@ function firstSentence(nodes) {
 export default function rehypeSupplementZones() {
   return (tree, file) => {
     if (!String(file.path ?? file.history?.[0] ?? '').endsWith('.mdx')) return;
+    visit(tree, (n) => { if (isEl(n, 'a') && typeof n.properties?.href === 'string') n.properties.href = chapterPath(n.properties.href); });
     const top = tree.children;
     if (!top.some((n) => ['notes', 'papers'].includes(zoneOf(n, 'main')))) return;
 

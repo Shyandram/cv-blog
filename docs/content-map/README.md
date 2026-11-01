@@ -16,9 +16,17 @@ renaming a tutorial or heading (CI runs it with `--check`). Rules for editing li
   URL) — e.g. `node -e "const d=require('./docs/content-index.json');console.log(d.tutorials.filter(t=>t.references.some(r=>/ArcFace/.test(r.text))).map(t=>t.slug))"`.
 - **By question (RAG):** `npm run rag -- "how is PQ computed"` ranks section chunks (BM25, English and Chinese) and prints the
   file, line range and anchor of each; `--json` for tools. Format and options: [../rag.md](../rag.md).
-- **Anchors:** links between pages must use the anchors shown here. Items in a Supplementary-notes section are served on
-  `…/<slug>/notes/#…`, Paper guides on `…/<slug>/papers/#…`. Headings containing math have KaTeX-derived slugs (e.g. `rank-kkk`);
-  copy them from this map rather than guessing.
+- **Course tree:** [src/content/curriculum.ts](../../src/content/curriculum.ts) is the single source of truth for the order, the
+  nesting (main chapter → sub-chapter → …) and the numbers of the tutorials. Numbers come from the position in the tree
+  (`DLCV 04`, its children `DLCV 04A`, `DLCV 04B`, the next level `DLCV 04A.1`); the displayed title is that number plus the
+  frontmatter title without its old prefix. To add a chapter, add `{ slug: '<track>/<file>' }` where it belongs (or run
+  `node scripts/curriculum.mjs`, which adds new files by the letter rule); to move one, move its entry. The build and
+  `node scripts/curriculum.mjs --check` fail when a tutorial is missing from the tree. In this map, sub-chapters are nested under
+  their main chapter; `content-index.json` gives each tutorial's `number`, `depth`, `parent` and `children`.
+- **Anchors and pages:** links between pages must use the URLs shown here. Each item (`###`) of a Supplementary-notes section
+  is a page of its own at `…/<slug>/notes/<item-id>/` (the section's index is `…/<slug>/notes/`), each Paper guide at
+  `…/<slug>/papers/<item-id>/`; an id inside an item is `…/notes/<item-id>/#<id>`. Headings containing math have KaTeX-derived
+  slugs (e.g. `rank-kkk`); copy them from this map rather than guessing.
 
 ## Tracks
 
@@ -45,10 +53,11 @@ Total: 95 tutorials (95 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
 | scripts/figures/<slug_with_underscores>.py | figure generators |
 | src/lib/playground/coverage.ts | which interactive experiment belongs to which chapter (`chapterPlan`, `readingOnlyChapters`) |
 | src/lib/playground/labs/, catalog.ts, chapters-*.ts | interactive experiments (image labs and SVG demos) |
-| src/lib/rehypeSupplementZones.mjs, src/components/zones/ | splits each tutorial into main / notes / papers pages |
+| src/content/curriculum.ts, src/lib/curriculum.ts, scripts/curriculum.mjs | the course tree (order, nesting, numbers), its logic, and the script that adds new files to it |
+| src/lib/rehypeSupplementZones.mjs, src/components/zones/ | splits each tutorial into its main page and one page per note and paper guide (plus an index page for each section) |
 | src/lib/rehypeCitations.mjs | turns [n] citations into links to the reference list |
 | src/components/ | MDX components (Callout, Figure, ImageCompare, KernelPlayground, Lab, …) and page widgets |
-| src/pages/[lang]/ | routes: home, learn (+ [...slug] with notes/papers modes), blog, playground, search, download, about |
+| src/pages/[lang]/ | routes: home, learn (+ [...slug]: main page, notes/papers index pages and item pages), blog, playground, search, download, about |
 | src/i18n/ui.ts, src/lib/site.ts, src/lib/taxonomy.ts | UI strings, site helpers, track list |
 | scripts/check-mdx.mjs, check-playground.mjs, tests/ | validators (see AGENTS.md section 6) |
 | scripts/book/ | PDF book export (four volumes per language) |

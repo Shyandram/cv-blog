@@ -1,3 +1,4 @@
+import { chapterPath } from './chapter-paths.mjs';
 import { getCollection, render, type CollectionEntry } from 'astro:content';
 import { LANGS, DEFAULT_LANG, type Lang } from '../i18n/ui';
 import { curriculum } from '../content/curriculum';
@@ -12,7 +13,7 @@ export const BRANCH = 'main';
 export function url(path: string): string {
   const base = import.meta.env.BASE_URL.replace(/\/$/, '');
   const p = path.startsWith('/') ? path : `/${path}`;
-  return `${base}${p}`;
+  return `${base}${chapterPath(p)}`;
 }
 
 export function splitId(id: string): { lang: Lang; slug: string } {

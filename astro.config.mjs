@@ -1,4 +1,5 @@
 // @ts-check
+import legacyChapterRedirects from './src/content/legacy-chapter-redirects.json' with { type: 'json' };
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
@@ -9,7 +10,8 @@ import rehypeKatex from 'rehype-katex';
 import rehypeCitations from './src/lib/rehypeCitations.mjs';
 import rehypeSupplementZones from './src/lib/rehypeSupplementZones.mjs';
 import { fileURLToPath } from 'node:url';
-import * as pagefind from 'pagefind';
+import { preserveRedirectFragments } from './scripts/preserve-redirect-fragments.mjs';
+import { indexSearch } from './scripts/index-search.mjs';
 
 // Build the Pagefind search index as part of `astro build`, so search works no matter
 // which build command the host runs (`astro build`, `npm run build`, …).
@@ -19,15 +21,8 @@ const pagefindIndex = () => ({
   hooks: {
     'astro:build:done': async ({ dir, logger }) => {
       const out = fileURLToPath(dir);
-      // KaTeX renders each formula three times (HTML glyphs, MathML, TeX annotation); index only the MathML text so
-      // search excerpts do not show raw TeX or tripled glyphs. UI-only text is left out too.
-      const { index, errors } = await pagefind.createIndex({
-        excludeSelectors: ['.katex-html', '.katex-mathml annotation', '.rt-copy', '.fig-badge'],
-      });
-      if (!index) throw new Error(`Pagefind failed to start: ${errors.join('; ')}`);
-      const { page_count } = await index.addDirectory({ path: out });
-      await index.writeFiles({ outputPath: `${out}pagefind` });
-      await pagefind.close();
+      await preserveRedirectFragments(out);
+      const page_count = await indexSearch(out);
       logger.info(`Pagefind indexed ${page_count} pages`);
     },
   },
@@ -62,6 +57,7 @@ export default defineConfig({
     },
   },
   redirects: {
+    ...legacyChapterRedirects,
     // Former NLP tutorials, reorganized into the 12-topic NLP syllabus.
     '/en/learn/nlp/nlp-00-language-structure-meaning/': '/en/learn/nlp/nlp-02-linguistic-essentials/',
     '/zh-tw/learn/nlp/nlp-00-language-structure-meaning/': '/zh-tw/learn/nlp/nlp-02-linguistic-essentials/',

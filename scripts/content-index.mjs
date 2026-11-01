@@ -1,3 +1,4 @@
+import { chapterPath } from '../src/lib/chapter-paths.mjs';
 // Builds a repository-side map of the course for people and research agents who work on this repo: which tutorial covers
 // what, where its file, figures, script, notes, paper guides and references are, and the exact anchors the site generates.
 //
@@ -147,7 +148,7 @@ for (const track of TRACKS) {
     // Main text: …/<slug>/#id. Notes and paper guides: the section index …/notes/, an item's page …/notes/<item>/, or an id
     // inside an item …/notes/<item>/#id.
     const url = (lang, h) => {
-      const base = `/${lang}/learn/${slug}/`;
+      const base = chapterPath(`/${lang}/learn/${slug}/`);
       if (h.zone !== 'notes' && h.zone !== 'papers') return `${base}#${h.id}`;
       if (!h.item) return `${base}${h.zone}/`;
       return `${base}${h.zone}/${h.item}/${h.id === h.item ? '' : `#${h.id}`}`;
@@ -157,7 +158,7 @@ for (const track of TRACKS) {
       level: fm.level ?? '', title: displayTitle(fm.title ?? '', place.number, 'en'), titleZh: zhTitle,
       description: fm.description ?? '', prereqs: fm.prereqs ?? [], tags: fm.tags ?? [], published: fm.published ?? '', updated: fm.updated ?? '',
       files: { en: rel(en), zh: existsSync(zh) ? rel(zh) : null, figureScript: existsSync(join(root, script)) ? script : null, figures },
-      pages: { main: `/en/learn/${slug}/`, notes: hs.some((h) => h.zone === 'notes') ? `/en/learn/${slug}/notes/` : null, papers: hs.some((h) => h.zone === 'papers') ? `/en/learn/${slug}/papers/` : null },
+      pages: { main: chapterPath(`/en/learn/${slug}/`), notes: hs.some((h) => h.zone === 'notes') ? chapterPath(`/en/learn/${slug}/notes/`) : null, papers: hs.some((h) => h.zone === 'papers') ? chapterPath(`/en/learn/${slug}/papers/`) : null },
       experiments: plan[slug] ?? [],
       sections: hs.filter((h) => h.depth >= 2 && h.depth <= 3 && h.zone !== 'refs').map((h, i) => ({ depth: h.depth, text: h.text, zone: h.zone, url: url('en', h), urlZh: hsZh[hs.indexOf(h)] ? url('zh-tw', hsZh[hs.indexOf(h)]) : null, textZh: hsZh[hs.indexOf(h)]?.text ?? null })),
       references: references(body),
