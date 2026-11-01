@@ -1,0 +1,921 @@
+---
+title: "DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks"
+description: "A catalogue of the blocks deep vision networks are built from, the rules for composing them into classifiers and into image-restoration networks, side-by-side comparisons of matched models, and how to explore a design space without fooling yourself."
+track: deep-learning
+order: 17
+level: advanced
+prereqs: [deep-learning/dl-01-deep-learning-for-image-processing, ml/ml-04-vision-transformers]
+tags: [architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import macroFig from '../../../../assets/deep-learning/dl-01b-building-blocks/macro-architectures.png';
+import catalogueFig from '../../../../assets/deep-learning/dl-01b-building-blocks/block-catalogue.png';
+import normFig from '../../../../assets/deep-learning/dl-01b-building-blocks/normalization-range.png';
+import checkerFig from '../../../../assets/deep-learning/dl-01b-building-blocks/checkerboard.png';
+import rfFig from '../../../../assets/deep-learning/dl-01b-building-blocks/receptive-field-growth.png';
+
+## What you'll learn
+
+- The vocabulary of a network's anatomy (stem, stages, blocks, downsampling layers, neck, head) and a catalogue of the blocks vision networks are built from, each in one plain line with a precise version where it matters.
+- How the same blocks are composed differently for **classification** (shrink the resolution, widen the features, pool, classify) and for **image restoration** (keep the resolution or come back to it, learn a residual, keep the intensity range).
+- Why some blocks that help classifiers hurt restorers: batch normalization, transposed convolutions and early downsampling, each shown with a small NumPy experiment.
+- How to read three matched pairs (ResNet versus EDSR and NAFNet, Swin versus SwinIR, ViT versus Restormer) as lists of changes with a reason for each.
+- How to explore a design space honestly: reading ablations, changing one thing at a time, and comparing populations of models as RegNet does.
+- The composition mistakes that most often cost accuracy, memory or a week of debugging.
+
+## The big picture
+
+A vision network looks complicated in a paper figure, but it is built from a small number of block types, repeated and connected. Two networks that use the same blocks can behave very differently because they are **composed** differently: where the resolution changes, where the skips go, where normalization sits, how the output is formed. This chapter is about those composition decisions.
+
+<Callout type="tip" title="Explain like I'm five">
+Think of a toolbox: saws, brushes, glue. A furniture maker uses them to turn a big log into one small chair leg: cut away most of the wood, keep only what matters. A picture restorer uses the same tools very differently: the painting must come back the same size, every brushstroke in place, just cleaner. A classifier is the furniture maker: it throws away pixels until only the answer ("cat") is left. A restoration network is the restorer: it must give back every pixel. Same tools, opposite plans.
+</Callout>
+
+**Why it matters.** Practical work is rarely inventing a block. It is choosing a backbone, adapting it to a new task, or deciding which of a paper's ten changes actually helped. A classifier backbone used unchanged for denoising throws away detail, and a block that helped in one paper may not help in your design space.
+
+**Where the basics are.** The blocks themselves are taught elsewhere on this site, and this chapter links there instead of repeating them: convolution, receptive field and residual blocks in [ML 03](/en/learn/ml/ml-03-convolutional-networks/#receptive-field) and [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#resnet-2015-and-why-residual-connections-work); the Transformer block, Swin and efficient attention in [ML 04](/en/learn/ml/ml-04-vision-transformers/#the-transformer-block); the classification backbones in [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#resnet-learning-residuals); encoder–decoders and ASPP in [DLCV 03B](/en/learn/deep-learning/dl-03b-image-segmentation/#encoderdecoders-and-skip-connections); restoration backbones and upsampling in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#general-backbones) and [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution). All code here uses NumPy and SciPy only, runs on a CPU in seconds, and uses synthetic data or `skimage.data`.
+
+## Anatomy of a network
+
+**Plain version.** Almost every vision network has three parts: a **stem** that turns pixels into features, a **body** of repeated blocks, and a **head** that turns features into the answer. What differs between tasks is mostly what happens to the image size along the way.
+
+**Precise version.** Write a feature map as a tensor of shape $C \times H \times W$, where $C$ is the number of channels (the **width**) and $H \times W$ the spatial size. The common parts are:
+
+- **Stem**: the first one or two layers. ResNet uses a $7 \times 7$ convolution with stride 2 and a $3 \times 3$ max-pool with stride 2, so the body starts at $1/4$ of the input resolution [1]. ConvNeXt replaces this with a "patchify" $4 \times 4$ convolution with stride 4 [2]; ViT cuts the image into $16 \times 16$ patches [3]. Restoration networks use a single $3 \times 3$ convolution at full resolution, which SwinIR calls **shallow feature extraction** [4].
+- **Stage**: a run of blocks that share one resolution and one width. A **block** is the repeated unit (a residual block, a Transformer block).
+- **Downsampling layer** (transition): halves $H$ and $W$, usually while doubling $C$. It can be a strided convolution inside the first block of a stage (ResNet), a separate $2 \times 2$ convolution with stride 2 (ConvNeXt, NAFNet), patch merging (Swin), or pixel unshuffle (Restormer).
+- **Neck**: an optional module that mixes features from several stages, such as the Feature Pyramid Network (FPN) used by detectors [5].
+- **Head**: global average pooling and a linear layer for classification; a final convolution, and for super-resolution an upsampler, for restoration.
+
+The **output stride** of a stage is the ratio between the input size and the stage's feature-map size. ResNet's four stages have output strides 4, 8, 16 and 32 [1]; so do Swin's [6]. Networks that keep one resolution and width throughout, like ViT, are **isotropic**; those with stages at decreasing resolution are **hierarchical**.
+
+ResNet also states the most copied rule of macro design: when the feature map is halved, the number of filters is doubled "so as to preserve the time complexity per layer" [1]. A $3 \times 3$ convolution with $C$ input and output channels on an $H \times W$ map costs $9 H W C^2$ multiply-accumulates (MACs); after halving the map and doubling the width it costs $9 \cdot \tfrac{H}{2} \cdot \tfrac{W}{2} \cdot (2C)^2 = 9 H W C^2$, the same. Figure 1 shows the three macro-architectures this chapter compares.
+
+<Figure src={macroFig} alt="Three block diagrams. (a) Classification: an image box, a stem that divides the size by 4, four stages whose boxes get shorter (H/4 to H/32) while channels grow from C to 8C, a global average pool, a linear layer and class scores. (b) Plain restoration: input, a shallow convolution, residual groups 1 to K of equal height at full resolution, a convolution, an addition fed by a long skip from the shallow features, an optional upsampler for super-resolution, and a final addition fed by a dashed global residual from the input. (c) U-shaped restoration: three encoder levels going down to a bottleneck at H/8 and three decoder levels coming back up, solid skip arrows from each encoder level to the decoder level of the same size, a final convolution, and a dashed global residual from the input to the output." caption="Figure 1 — Three macro-architectures. (a) A classifier is a funnel: resolution falls, width grows, and global pooling removes the spatial grid. (b) A plain restorer keeps full resolution and adds long and global skips. (c) A U-shaped restorer goes down for context and comes back for detail." />
+
+## The block catalogue
+
+**Plain version.** A block has two jobs: mix information across **space** (neighboring pixels or tokens) and mix information across **channels** (features at one position). Every block in the catalogue does both, in a different proportion and at a different cost. Around them sit three helpers: skips, normalization and nonlinearities.
+
+The MetaFormer paper makes this split explicit: a Transformer block is a **token mixer** (attention) followed by a **channel mixer** (the MLP), each in a residual branch with normalization, and replacing attention by a simple spatial pooling operator still gave competitive accuracy on ImageNet [7], which suggests that the general structure carries much of the performance [8]. Figure 2 shows the blocks of this chapter in that common format.
+
+<Figure src={catalogueFig} alt="Eight vertical block diagrams with colored boxes and orange skip arrows. (a) Basic residual: 3x3 conv, BN, ReLU, 3x3 conv, BN, addition, ReLU. (b) Bottleneck: 1x1 conv reducing to C/4, BN ReLU, 3x3 conv, BN ReLU, 1x1 conv back to C, BN, addition, ReLU. (c) Inverted residual: 1x1 conv expanding to tC, BN ReLU6, 3x3 depthwise, BN ReLU6, 1x1 conv to C, BN without activation, addition. (d) ConvNeXt: 7x7 depthwise, LayerNorm, 1x1 conv to 4C, GELU, 1x1 conv to C, layer scale, addition. (e) SE and CBAM gates: conv layers, a channel gate from pooling and an MLP with sigmoid, a spatial gate from a 7x7 conv with sigmoid, addition. (f) Pre-norm Transformer: LayerNorm, self-attention, addition, LayerNorm, MLP, addition. (g) NAFNet: LayerNorm, 1x1 conv to 2C, 3x3 depthwise, SimpleGate, simplified channel attention, 1x1 conv, times beta, addition, then LayerNorm, 1x1 conv to 2C, SimpleGate, 1x1 conv, times gamma, addition. (h) Restormer: LayerNorm, Q K V from 1x1 and 3x3 depthwise convs, C by C channel attention, 1x1 conv, addition, then LayerNorm, two paths of 1x1 and 3x3 depthwise convs, GELU of path 1 times path 2, 1x1 conv, addition." caption="Figure 2 — The block catalogue, drawn in one format. Colors mark the kind of operation; orange arrows are identity skips. (a)–(d) are classification blocks, (e) are attention add-ons, (f) is the Transformer block, (g)–(h) are restoration blocks." />
+
+The table gives each block one plain line and says where its basics are taught.
+
+| Block | One plain line | Used in | Basics |
+|---|---|---|---|
+| Residual (basic) | Learn a correction $F(x)$ and add it to the input | ResNet-18/34, EDSR | [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#resnet-2015-and-why-residual-connections-work) |
+| Bottleneck | Squeeze channels with $1 \times 1$, filter, expand back | ResNet-50 and deeper | [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#resnet-learning-residuals) |
+| Depthwise separable | Filter each channel alone, then mix channels with $1 \times 1$ | MobileNet [9] | [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#mobilenet-factorize-the-convolution) |
+| Inverted residual | Expand, filter depthwise, project back linearly; skip between thin ends | MobileNetV2 [10] | [ML 03](/en/learn/ml/ml-03-convolutional-networks/#efficient-cnns-separate-spatial-filtering-from-channel-mixing) |
+| ConvNeXt block | Large depthwise kernel, then a Transformer-style MLP | ConvNeXt | [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#convnext-a-cnn-modernized-step-by-step) |
+| SE / CBAM | Reweight channels (and positions) by a gate computed from pooled statistics | SENet, RCAN, NAFNet | [DLCV 02 note](/en/learn/deep-learning/dl-02-image-classification/notes/#squeeze-and-excitation-attention-inside-a-cnn) |
+| Self-attention | Every token looks at every other token | ViT | [ML 04](/en/learn/ml/ml-04-vision-transformers/#self-attention-queries-keys-and-values) |
+| Window attention | Attention inside local windows that shift between layers | Swin, SwinIR | [ML 04](/en/learn/ml/ml-04-vision-transformers/#swin-and-hierarchical-transformers) |
+| Channel (transposed) attention | Attention between channels, so cost grows linearly with pixels | Restormer | this chapter |
+| Gated block | Multiply two feature halves instead of applying an activation | NAFNet, Restormer's GDFN | this chapter |
+
+### Residual connections and residual scaling
+
+**Plain version.** A residual block adds its input back to its output, so the block only has to learn a correction, and the identity path carries signal and gradient through any depth. The open questions are where to put normalization and activations relative to the addition, and how large the correction should be at the start.
+
+**Precise version.** The general form is
+
+$$
+y = x + \alpha \, F(x),
+$$
+
+where $x$ is the block input, $F$ the residual branch (convolutions, attention, normalization), $y$ the output and $\alpha$ a scale on the branch. Three placements of the nonlinearity are common:
+
+- **Post-activation** (original ResNet): $y = \mathrm{ReLU}(x + F(x))$, with BN inside $F$ [1].
+- **Pre-activation**: BN and ReLU move inside the branch, before each convolution, so the shortcut is a pure identity; He et al. found this easier to train at very large depth [11]. The pre-norm Transformer block, $y = x + \mathrm{MHA}(\mathrm{LN}(x))$, is the same idea ([ML 04](/en/learn/ml/ml-04-vision-transformers/#the-transformer-block)).
+- **No activation after the addition**: EDSR, MobileNetV2, ConvNeXt, NAFNet and Restormer all end the block with the addition.
+
+Several designs control $\alpha$ explicitly. EDSR found training numerically unstable once the number of feature maps grew large, and fixed it with a constant residual scaling of 0.1 in its final model of 32 blocks with 256 channels [12]. ConvNeXt uses Layer Scale [13], a learnable per-channel $\alpha$, initialized to $10^{-6}$ [2]. NAFNet's code multiplies each branch by learnable per-channel parameters initialized to zero, so every block starts as the identity [14]; zero-initializing the last BN scale of a ResNet branch does the same ([DLCV 01A](/en/learn/deep-learning/dl-01a-training-practice/#initialization-and-normalization-in-practice)). The shared reason: a deep stack of identity blocks is easy to optimize, and each block can then grow its correction.
+
+Skips also come at two scales. **Short skips** wrap one block; **long skips** wrap a group of blocks or the whole body. RCAN's "residual in residual" structure uses both: residual groups with long skip connections, each containing blocks with short skip connections [15].
+
+### Bottlenecks, inverted residuals and depthwise separable convolutions
+
+**Plain version.** Spatial filtering and channel mixing need not happen in one expensive layer. Bottlenecks run the expensive $3 \times 3$ on fewer channels; depthwise convolutions filter each channel alone and leave mixing to cheap $1 \times 1$ layers. These blocks change cost by large factors, so it pays to count.
+
+**Precise version.** A dense $k \times k$ convolution from $a$ to $b$ channels has $k^2 a b$ weights and, at stride 1, costs $k^2 a b$ MACs per output pixel. A depthwise $k \times k$ convolution on $a$ channels has $k^2 a$ of each. The ResNet bottleneck reduces $C$ to $C/4$, filters, and expands back [1]. The MobileNetV2 **inverted residual** does the opposite: it expands $C$ to $tC$ with a $1 \times 1$ convolution (expansion factor $t = 6$ in the paper's main experiments), filters with a $3 \times 3$ depthwise convolution, and projects back with a **linear** $1 \times 1$ convolution, without an activation, because the authors argue that a ReLU in the narrow layer destroys information [10]. The paper gives its cost as $h \cdot w \cdot d' \cdot t\,(d' + k^2 + d'')$ multiply-adds for an $h \times w$ input with $d'$ input and $d''$ output channels [10]. The snippet counts weights and MACs per output pixel for the blocks of Figure 2 at $C = 64$, on a $128 \times 128$ map, and checks the inverted residual against that formula.
+
+```python
+# Weights (no biases or norm parameters) and MACs per output pixel of common blocks,
+# all with C input and C output channels at stride 1. A dense k x k conv from a to b
+# channels has k*k*a*b weights and costs k*k*a*b MACs per pixel; a depthwise one k*k*a.
+def blocks(C, n_tokens):
+    g = int(2.66 * C)                                  # Restormer GDFN hidden width
+    return {                                           # name: (weights, MACs per pixel)
+        'basic residual (2 x 3x3)':     (18 * C * C, 18 * C * C),
+        'bottleneck (1x1, 3x3, 1x1)':   (2 * C * C // 4 + 9 * (C // 4) ** 2,) * 2,
+        'depthwise separable 3x3':      (9 * C + C * C,) * 2,
+        'inverted residual, t = 6':     (12 * C * C + 54 * C,) * 2,
+        'ConvNeXt (7x7 dw, 4x MLP)':    (49 * C + 8 * C * C,) * 2,
+        'NAFNet block':                 (7 * C * C + 18 * C, 6 * C * C + 18 * C),  # SCA acts on a pooled vector
+        'SE add-on, r = 16':            (2 * C * C // 16, C),                       # one multiply per pixel
+        'ViT block, global attention':  (12 * C * C, 12 * C * C + 2 * n_tokens * C),
+        'Swin block, 8 x 8 windows':    (12 * C * C, 12 * C * C + 2 * 64 * C),
+        'Restormer block (MDTA+GDFN)':  (4 * C * C + 27 * C + 3 * g * C + 18 * g,
+                                         4 * C * C + 27 * C + 2 * C * C // 4 + 3 * g * C + 18 * g),  # 4 heads
+    }
+
+C, side = 64, 128
+for name, (p, m) in blocks(C, side * side).items():
+    print(f"{name:30s} {p:7d} weights  {m:8d} MACs/pixel")
+
+# Check the inverted residual against MobileNetV2's formula h*w*d'*t*(d' + k^2 + d'') per pixel.
+t, k = 6, 3
+assert blocks(C, 1)['inverted residual, t = 6'][1] == C * t * (C + k * k + C)
+```
+
+```text
+basic residual (2 x 3x3)         73728 weights     73728 MACs/pixel
+bottleneck (1x1, 3x3, 1x1)        4352 weights      4352 MACs/pixel
+depthwise separable 3x3           4672 weights      4672 MACs/pixel
+inverted residual, t = 6         52608 weights     52608 MACs/pixel
+ConvNeXt (7x7 dw, 4x MLP)        35904 weights     35904 MACs/pixel
+NAFNet block                     29824 weights     25728 MACs/pixel
+SE add-on, r = 16                  512 weights        64 MACs/pixel
+ViT block, global attention      49152 weights   2146304 MACs/pixel
+Swin block, 8 x 8 windows        49152 weights     57344 MACs/pixel
+Restormer block (MDTA+GDFN)      53812 weights     55860 MACs/pixel
+```
+
+Four lessons come out of these numbers.
+
+1. **At equal width, the blocks differ by more than 10 times in cost.** The bottleneck and the separable block are about 16 to 17 times cheaper than the basic block. Real networks therefore never compare blocks at equal width: MobileNetV2 uses an inverted residual on thin tensors, ResNet-50 uses bottlenecks on wide ones. Compare blocks at equal cost, not at equal $C$.
+2. **Global attention over pixels is out of reach for restoration.** With every pixel of a $128 \times 128$ map as a token, the ViT block costs about 37 times more per pixel than a Swin block with $8 \times 8$ windows, and the gap grows with image size. This is why restoration Transformers use windows (SwinIR) or attention across channels (Restormer); see [ML 04](/en/learn/ml/ml-04-vision-transformers/#cost-and-efficient-attention) for the general cost argument.
+3. **Attention add-ons are cheap in MACs.** An SE gate adds $C^2/8$ weights and one multiply per channel and pixel; its cost is memory traffic, not arithmetic.
+4. **MACs are not latency.** Depthwise layers do few operations per byte moved, so they can run slower than their MAC count suggests; [ML 03](/en/learn/ml/ml-03-convolutional-networks/#efficient-cnns-separate-spatial-filtering-from-channel-mixing) and the [DLCV 02 efficiency section](/en/learn/deep-learning/dl-02-image-classification/#efficiency) discuss this. Measure on the target hardware.
+
+Whether a cheaper block is also a better one depends on the design space. RegNet's population study found that its best models used neither a bottleneck nor an inverted bottleneck, and that depthwise convolution did even worse than the inverted bottleneck in its setting [16], while ConvNeXt found the inverted bottleneck slightly better within its own sequence of changes [2]. Both can be true: the comparison depends on the other choices held fixed.
+
+### Attention inside a CNN: SE and CBAM
+
+**Plain version.** A gate looks at a summary of the whole feature map and decides which channels (or positions) to turn up or down for this particular image. It is a cheap way to give a convolutional network some content-dependent, image-wide behavior.
+
+**Precise version.** Squeeze-and-excitation (SE) computes a channel gate $s = \sigma(W_2\,\delta(W_1\,\bar u))$ from the vector $\bar u$ of channel means, where $W_1$ and $W_2$ are the weights of a two-layer MLP that shrinks the dimension by a ratio $r$ and restores it, $\delta$ is a ReLU and $\sigma$ the sigmoid, and multiplies each channel $u_c$ of the feature map by $s_c$; the formula and code are in the [DLCV 02 note](/en/learn/deep-learning/dl-02-image-classification/notes/#squeeze-and-excitation-attention-inside-a-cnn) [17]. CBAM extends it in two ways [18]: its channel gate pools each channel by both average and maximum and passes both vectors through one shared MLP, and a second, **spatial** gate pools across channels and applies a $7 \times 7$ convolution, so the block can also turn whole regions up or down. CBAM's ablations found the sequential channel-then-spatial order better than running the two gates in parallel [18].
+
+*Optional: [CBAM's channel and spatial gates](#cbams-channel-and-spatial-gates) (in the Supplementary notes). The two formulas with every symbol defined, and how they relate to SE and to NAFNet's simplified channel attention.*
+
+**Where it goes.** Both SE and CBAM sit on the residual branch, before the addition: SE applies the gate to the non-identity branch "before summation with the identity branch" [17], and CBAM applies its module to the convolution outputs of each ResNet block [18]. RCAN brought channel attention into super-resolution [15]; NAFNet later simplified it to $X \cdot W\,\mathrm{pool}(X)$, a single linear map of the pooled vector with no ReLU or sigmoid, and lost nothing in its ablation [19]. The Modern view's attention survey places SE in the "channel attention" family and CBAM in "channel and spatial" [20].
+
+### Token mixers: self-, window- and channel attention
+
+**Plain version.** Attention mixes information between tokens with weights computed from the content, instead of fixed weights as in a convolution. The design question is **which tokens talk to which**: all of them (global), those in the same local window, or, in Restormer's twist, the channels instead of the pixels.
+
+**Precise version.** Global multi-head self-attention over $N$ tokens of width $C$ costs about $2N^2C$ MACs for the scores and the weighted sum, on top of $4NC^2$ for the projections; window attention restricts it to $M \times M$ windows, giving $2M^2NC$ ([ML 04](/en/learn/ml/ml-04-vision-transformers/#swin-and-hierarchical-transformers)) [6]. Restormer's **multi-Dconv head transposed attention** (MDTA) instead computes attention between channels [21]:
+
+$$
+\hat X = W_p\,\mathrm{Attention}(\hat Q, \hat K, \hat V) + X, \qquad
+\mathrm{Attention}(\hat Q, \hat K, \hat V) = \hat V \cdot \mathrm{Softmax}\big(\hat K \cdot \hat Q / \alpha\big),
+$$
+
+where $X$ is the input feature map and $\hat X$ the output, $Q = W_d^Q W_p^Q Y$ (and likewise $K$, $V$) is computed from the layer-normalized input $Y$ by a $1 \times 1$ convolution $W_p^Q$ followed by a $3 \times 3$ depthwise convolution $W_d^Q$, the hats denote reshaped matrices $\hat Q \in \mathbb{R}^{HW \times C}$, $\hat K \in \mathbb{R}^{C \times HW}$, $\hat V \in \mathbb{R}^{HW \times C}$, $\alpha$ is a learnable temperature, and $W_p$ without a superscript is the output $1 \times 1$ convolution. The attention map $\hat K \hat Q$ has size $C \times C$ instead of $HW \times HW$, so the cost grows linearly with the number of pixels, and every output pixel still depends on the whole image through the channel statistics. The depthwise convolutions put local context back in. As in ordinary multi-head attention, the channels are split into heads with separate maps.
+
+Restormer's feed-forward part (GDFN) is covered with the gates below. The trade-off between the mixers returns in the restoration sections: window attention mixes space strongly but locally, channel attention reaches globally at low cost, and a comparative study argued that Restormer's spatial mapping is weaker than SwinIR's for super-resolution [22].
+
+### Normalization: BN, LN, GN, and when to leave it out
+
+**Plain version.** A normalization layer rescales features to a standard size and then lets the network learn its preferred scale. The layers differ in **which numbers share statistics**. In classification the choice mostly affects training stability; in restoration the wrong choice can change the brightness and contrast of the output.
+
+**Precise version.** All the common layers compute $y = \gamma (x - \mu)/\sqrt{\sigma^2 + \epsilon} + \beta$ over some set of values ([ML 02](/en/learn/ml/ml-02-neural-networks/#normalization-layers) gives the template). For a mini-batch of shape $N \times C \times H \times W$:
+
+| Layer | Statistics computed over | Depends on the batch? |
+|---|---|---|
+| BatchNorm (BN) [23] | $N, H, W$ for each channel | yes; running averages at test time |
+| LayerNorm (LN) [24] | the features of one sample (for images, implementations differ: all of $C, H, W$, or $C$ at each position) | no |
+| InstanceNorm (IN) [25] | $H, W$ for each sample and channel | no |
+| GroupNorm (GN) [26] | $H, W$ and a group of channels, for each sample | no; $G = 1$ gives LN, $G = C$ gives IN |
+
+BN is the default in classification CNNs and works well with large batches. Its known failure is small batches: GN's authors report a ResNet-50 on ImageNet with 10.6% lower error than its BN counterpart at a batch size of 2 [26]. What BN computes, and why training and inference differ, is in the [DLCV 01 note](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/notes/#batch-normalization-standardize-inside-the-network).
+
+**Why restorers dropped BN.** EDSR removed BN from its residual blocks, arguing that because BN normalizes the features it removes "range flexibility" from the network; the change improved accuracy and cut training memory by about 40% compared with SRResNet, the residual SR network of the SRGAN paper [27], [12]. ESRGAN added that BN tends to introduce artifacts when training and test statistics differ, especially in deeper networks trained with a GAN loss, and removed it as well [28]. This is not a law: DnCNN combined residual learning with BN for Gaussian denoising and reported that the two help each other [29]. The snippet shows the mechanism with a fixed, untrained residual branch $r(x)$ (convolution, normalization, ReLU, $1 \times 1$ convolution) and the global residual $y = x + r(x)$. The same mid-gray image $A$ is restored inside two different batches.
+
+```python
+import numpy as np
+from scipy.ndimage import gaussian_filter, correlate
+
+rng = np.random.default_rng(0)
+
+def image(level, size=32):
+    """A smooth synthetic image with mean brightness `level` (values roughly in [0, 1])."""
+    t = gaussian_filter(rng.standard_normal((size, size)), 2)
+    return level + 0.15 * t / t.std()
+
+C = 4
+W1 = rng.normal(0.1, 0.2, (C, 3, 3))           # 3x3 conv, 1 -> C channels (fixed random weights)
+w2 = rng.normal(0.0, 0.05, C)                  # 1x1 conv, C -> 1 channel
+
+def features(batch):                           # (N, H, W) -> (N, C, H, W)
+    return np.stack([[correlate(x, W1[c], mode='nearest') for c in range(C)] for x in batch])
+
+def branch(batch, norm, running=None):
+    """Residual branch: conv -> normalize -> ReLU -> 1x1 conv."""
+    f = features(batch)
+    if norm == 'bn-train':                     # per channel, over the whole batch
+        mu, var = f.mean((0, 2, 3), keepdims=True), f.var((0, 2, 3), keepdims=True)
+    elif norm == 'bn-eval':                    # per channel, stored training statistics
+        mu, var = running
+    else:                                      # 'instance': per sample and channel
+        mu, var = f.mean((2, 3), keepdims=True), f.var((2, 3), keepdims=True)
+    h = np.maximum((f - mu) / np.sqrt(var + 1e-5), 0)
+    return np.tensordot(w2, h, axes=(0, 1))    # (N, H, W)
+
+train = np.stack([image(rng.uniform(0.3, 0.7)) for _ in range(64)])
+f = features(train)
+running = (f.mean((0, 2, 3), keepdims=True), f.var((0, 2, 3), keepdims=True))
+
+A = image(0.5)
+dark = np.stack([image(0.15) for _ in range(7)])
+bright = np.stack([image(0.85) for _ in range(7)])
+for norm in ['bn-train', 'bn-eval', 'instance']:
+    for name, others in [('dark', dark), ('bright', bright)]:
+        batch = np.concatenate([A[None], others])
+        out = A + branch(batch, norm, running)[0]          # global residual: y = x + r(x)
+        print(f"{norm:8s}  A with 7 {name:6s} images: output mean {out.mean():.3f}")
+
+# Per-sample normalization forgets each image's level and contrast:
+B = 0.5 * A + 0.3
+r_A, r_B = branch(A[None], 'instance')[0], branch(B[None], 'instance')[0]
+print("instance-norm branch, A vs 0.5*A + 0.3: max |r_A - r_B| =", np.abs(r_A - r_B).max().round(4))
+print("outputs with the global residual: means", (A + r_A).mean().round(3), (B + r_B).mean().round(3))
+```
+
+```text
+bn-train  A with 7 dark   images: output mean 0.629
+bn-train  A with 7 bright images: output mean 0.482
+bn-eval   A with 7 dark   images: output mean 0.509
+bn-eval   A with 7 bright images: output mean 0.509
+instance  A with 7 dark   images: output mean 0.521
+instance  A with 7 bright images: output mean 0.521
+instance-norm branch, A vs 0.5*A + 0.3: max |r_A - r_B| = 0.0005
+outputs with the global residual: means 0.521 0.575
+```
+
+In training mode, BN gives the same image (input mean 0.492) an output brightness of 0.629 or 0.482 depending only on its batch companions (Figure 3). In evaluation mode the batch no longer matters, but the stored statistics come from other images, so the network behaves differently at test time from how it was trained: the mismatch EDSR and ESRGAN describe. Per-sample normalization is batch-independent but blind in the other direction: the branch gives the same output for $A$ and for $0.5A + 0.3$ (up to $\epsilon$), so only the identity path carries the image's own level and contrast. That is why restorers that do normalize (NAFNet, Restormer and SwinIR use LayerNorm) keep it **inside** residual branches with a global residual [19], [21], [4]. The weights are random and untrained; training can partly compensate, but the batch dependence is structural.
+
+<Figure src={normFig} alt="Four grayscale images of the same smooth blotchy pattern. Input A, mean 0.492. BN in train mode with seven dark images, visibly brighter, mean 0.629. BN in train mode with seven bright images, mean 0.482. Instance normalization in any batch, mean 0.521." caption="Figure 3 — The same image through the same untrained residual branch. With batch normalization in training mode its output brightness depends on the other images in the batch; with per-sample normalization it does not." />
+
+NAFNet's ablation shows the other side: adding LayerNorm to its plain block let it train with a 10 times larger learning rate and raised PSNR [30] by 0.44 dB on the SIDD denoising benchmark [31] and by 3.39 dB on the GoPro deblurring benchmark [32], [19]. Normalization helps restorers too, as long as it does not take away the information the output needs.
+
+### Activations and gates
+
+**Plain version.** A nonlinearity is what lets stacked layers do more than one linear map. The classic choice applies a fixed function to every number (ReLU, GELU). A gate instead **multiplies** two learned features, so one feature decides how much of the other passes. Modern restoration blocks use gates and, in NAFNet's case, nothing else.
+
+**Precise version.** ReLU, GELU and the SwiGLU feed-forward block [33] are defined in [ML 02](/en/learn/ml/ml-02-neural-networks/#swiglu-a-gated-feed-forward-block). The gated linear unit (GLU) of Dauphin et al. computes $f(X) \odot \sigma(g(X))$ with two linear maps $f$, $g$ and a sigmoid $\sigma$ [34]. NAFNet's **SimpleGate** drops the sigmoid and the second map [19]:
+
+$$
+\mathrm{SimpleGate}(X) = X_1 \odot X_2, \qquad X = [X_1;\, X_2],
+$$
+
+where $X$ is a feature map with $2C$ channels, $X_1$ and $X_2$ are its first and second $C$ channels, and $\odot$ is element-wise multiplication. The product of two linear functions of the input is quadratic, so the block is nonlinear without any activation function; the authors note that GELU itself, $x\,\Phi(x)$ with $\Phi$ the standard normal CDF [35], is a special case of a gate. Restormer's GDFN uses $\phi(W_d^1 W_p^1\,\mathrm{LN}(X)) \odot W_d^2 W_p^2\,\mathrm{LN}(X)$ with $\phi$ the GELU, two paths of $1 \times 1$ and $3 \times 3$ depthwise convolutions, and a channel expansion $\gamma = 2.66$ [21]. In NAFNet's ablation, replacing GELU by SimpleGate gave +0.08 dB on SIDD and +0.41 dB on GoPro [19].
+
+### Upsampling: transposed convolution, pixel shuffle and resize-convolution
+
+**Plain version.** Upsampling makes a feature map larger. There are three common ways: let each input pixel "paint" a learned patch into the output (transposed convolution), compute several values per input pixel and rearrange them (pixel shuffle), or enlarge first and convolve afterwards (resize-convolution). The first two can easily paint a regular checkerboard pattern; the third cannot.
+
+**Precise version.** The three methods and the exact pixel-shuffle index rule are in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#how-a-network-gets-bigger-three-upsampling-strategies) and [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution) [36]. What matters for composition is a counting argument. With stride $s$, the output pixels fall into $s^2$ **phases** (their row and column positions modulo $s$). In a transposed convolution, the output at a given phase receives only some of the kernel's taps. Its value on a flat input equals the sum of those taps, the **phase sum**. If the phase sums differ, a flat input comes out as a periodic pattern. One cause, which Odena et al. call **uneven overlap**, occurs when the kernel size is not divisible by the stride: the phases then receive different numbers of taps [37]. Even with divisible sizes, random weights give unequal phase sums, so a freshly initialized layer still makes a pattern; Aitken et al. list these two causes and strided operations in the loss as the three sources of checkerboard artifacts [38]. A sub-pixel convolution has the same freedom, since each phase has its own filter. A resize-convolution (nearest-neighbor upsampling, then an ordinary convolution) applies the same full kernel at every output pixel, so all phases see the same sum. The snippet upsamples a flat $16 \times 16$ input by 2.
+
+```python
+import numpy as np
+from scipy.ndimage import correlate
+
+rng = np.random.default_rng(0)
+
+def transposed_conv(x, w, s):
+    """Each input pixel 'paints' a scaled copy of the k x k kernel w; copies are s pixels apart."""
+    k, (H, W) = w.shape[0], x.shape
+    out = np.zeros((s * (H - 1) + k, s * (W - 1) + k))
+    for i in range(H):
+        for j in range(W):
+            out[s * i:s * i + k, s * j:s * j + k] += x[i, j] * w
+    return out
+
+def resize_conv(x, w, s):
+    """Nearest-neighbour upsampling by s, then an ordinary 'same' convolution with w."""
+    return correlate(np.kron(x, np.ones((s, s))), w, mode='nearest')
+
+def subpixel_conv(x, ws, s):
+    """s*s ordinary convolutions whose outputs are interleaved (pixel shuffle)."""
+    out = np.zeros((s * x.shape[0], s * x.shape[1]))
+    for n, w in enumerate(ws):
+        out[n // s::s, n % s::s] = correlate(x, w, mode='nearest')
+    return out
+
+x = np.ones((16, 16))                          # flat input: a good upsampler returns a flat image
+cases = {
+    'transposed k=3, s=2, uniform w': transposed_conv(x, np.ones((3, 3)), 2)[4:-4, 4:-4],
+    'transposed k=4, s=2, uniform w': transposed_conv(x, np.ones((4, 4)), 2)[4:-4, 4:-4],
+    'transposed k=4, s=2, random w ': transposed_conv(x, rng.uniform(0.5, 1.5, (4, 4)), 2)[4:-4, 4:-4],
+    'sub-pixel, 4 random 3x3 kernels': subpixel_conv(x, rng.uniform(0.5, 1.5, (4, 3, 3)), 2)[4:-4, 4:-4],
+    'resize + conv, random 3x3 w   ': resize_conv(x, rng.uniform(0.5, 1.5, (3, 3)), 2)[4:-4, 4:-4],
+}
+for name, y in cases.items():
+    phases = [y[a::2, b::2].mean() for a in (0, 1) for b in (0, 1)]     # the four 2x2 sub-pixel phases
+    print(f"{name}: phase means {np.round(phases, 2)}  relative spread {np.ptp(y) / y.mean():.2f}")
+```
+
+```text
+transposed k=3, s=2, uniform w: phase means [4. 2. 2. 1.]  relative spread 1.30
+transposed k=4, s=2, uniform w: phase means [4. 4. 4. 4.]  relative spread 0.00
+transposed k=4, s=2, random w : phase means [4.04 3.22 5.01 3.85]  relative spread 0.44
+sub-pixel, 4 random 3x3 kernels: phase means [ 8.71 10.13  9.49  8.91]  relative spread 0.15
+resize + conv, random 3x3 w   : phase means [7.86 7.86 7.86 7.86]  relative spread 0.00
+```
+
+With $k = 3$ and $s = 2$, one phase receives 4 taps, two receive 2 and one receives 1, even with uniform weights: the 4 : 2 : 2 : 1 pattern is built into the shapes. With $k = 4$ every phase receives 4 taps, so uniform weights give a flat output, but random weights do not. Only resize-convolution is flat for any weights. Figure 4 shows the same four upsamplers on a flat input and on a photograph. Training can push the phase sums together, and Odena et al. report their best results with nearest-neighbor resize-convolution [37]; for pixel shuffle, initializing all phases from one kernel removes the pattern at the start [38], as noted in [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution).
+
+<Figure src={checkerFig} alt="A two-by-four grid. Top row: a flat input upsampled by four methods. Transposed convolution with kernel 3 and stride 2 shows a strong black and white grid (spread 1.30); transposed convolution with kernel 4 and random weights shows a milder grid (0.44); sub-pixel convolution with four random kernels shows a faint checkerboard (0.15); nearest resize plus convolution is uniformly gray (0.00). Bottom row: a 64 by 64 crop of the camera image upsampled by the same four methods; the first three show grid textures over the face and background, the last is smooth." caption="Figure 4 — Checkerboard artifacts from untrained upsamplers. Top: a flat input (relative spread printed below). Bottom: a camera crop upsampled by 2 with the same kernels, rescaled to unit average gain. Only resize-convolution is free of the pattern by construction." />
+
+*Optional: [Phase sums of a transposed convolution in 1-D](#phase-sums-of-a-transposed-convolution-in-1-d) (in the Supplementary notes). How many taps each output phase receives for any kernel size and stride, and why divisibility is necessary but not sufficient.*
+
+Downsampling has matching choices: strided convolution (ResNet), pooling, a separate $2 \times 2$ convolution with stride 2 (ConvNeXt, NAFNet [14]), patch merging (Swin) and pixel unshuffle (Restormer [21]). ConvNeXt reports that its separate $2 \times 2$ downsampling layers made training diverge until it added normalization layers wherever the spatial resolution changes [2].
+
+### Skip connections: add or concatenate
+
+**Plain version.** A skip connection brings an earlier feature map to a later layer. It can be **added** (the two maps must have the same shape, and the result keeps the width) or **concatenated** (the maps are stacked along channels, and the next layer decides how to combine them). Concatenation is more flexible and more expensive.
+
+**Precise version.** Concatenation followed by a $1 \times 1$ convolution contains addition as a special case: with encoder map $e$ and decoder map $d$, each with $C$ channels, the $1 \times 1$ convolution with weight matrix $[I \;\; I]$ (two $C \times C$ identity blocks side by side) maps $[e; d]$ to $e + d$. So concatenation can learn anything addition can, and more, at the cost of a wider layer and of storing both maps. The snippet checks the identity and counts the cost of the first convolution after each merge in a 4-level U-Net decoder with widths 32 to 256, on a $256 \times 256$ input.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# 1) Concatenation followed by a 1x1 convolution contains addition as a special case.
+C, H, W = 8, 5, 5
+enc, dec = rng.standard_normal((C, H, W)), rng.standard_normal((C, H, W))
+cat = np.concatenate([enc, dec])                       # (2C, H, W)
+W_fuse = np.hstack([np.eye(C), np.eye(C)])             # a 1x1 conv is a (C_out x C_in) matrix
+print("concat + 1x1 conv [I I] == add:", np.allclose(np.tensordot(W_fuse, cat, 1), enc + dec))
+
+# 2) What each choice costs in the decoder of a 4-level U-Net on a 256 x 256 input.
+widths, size = [32, 64, 128, 256], 256
+totals = {'add': [0, 0], 'concat': [0, 0], 'concat + 1x1': [0, 0]}
+for level, c in enumerate(widths):
+    hw = (size // 2 ** level) ** 2                     # pixels at this level
+    first = {'add': 9 * c * c,                         # first 3x3 conv after the merge
+             'concat': 9 * 2 * c * c,
+             'concat + 1x1': 2 * c * c + 9 * c * c}    # 1x1 halves channels, then 3x3
+    for k, p in first.items():
+        totals[k][0] += p
+        totals[k][1] += p * hw
+for k, (p, m) in totals.items():
+    print(f"{k:13s} merge-layer weights {p:7d}   MACs {m / 1e9:.2f} G")
+```
+
+```text
+concat + 1x1 conv [I I] == add: True
+add           merge-layer weights  783360   MACs 2.42 G
+concat        merge-layer weights 1566720   MACs 4.83 G
+concat + 1x1  merge-layer weights  957440   MACs 2.95 G
+```
+
+Concatenating doubles the merge layer's weights and MACs; a $1 \times 1$ fusion first, as Restormer does, recovers most of the saving. The choice differs across well-known designs:
+
+- **U-Net** concatenates the (cropped) encoder map with the decoder map after a $2 \times 2$ up-convolution that halves the channels [39].
+- **FPN** adds: the coarser map is upsampled by 2 with nearest-neighbor interpolation and added to a $1 \times 1$-projected backbone map, and a $3 \times 3$ convolution on each merged map reduces the aliasing of the upsampling [5] ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#feature-pyramids-fpn)).
+- **Restormer** concatenates and then halves the channels with a $1 \times 1$ convolution at all levels except the top [21].
+- **NAFNet**'s code adds the encoder map to the upsampled decoder map [14].
+- **DenseNet** concatenates the outputs of all earlier layers in a block [40] ([DLCV 02 note](/en/learn/deep-learning/dl-02-image-classification/notes/#two-more-cnn-designs-densenet-and-regnet)).
+
+### Multi-scale modules: FPN, ASPP and the U-Net
+
+**Plain version.** Objects and degradations come at many sizes. Multi-scale modules let one network look at several scales at once: by building a pyramid of feature maps (FPN), by probing one map with filters of several sizes (ASPP), or by going down and back up (U-Net).
+
+These are composition patterns more than blocks, and each is taught where it is used: FPN in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#feature-pyramids-fpn) [5]; atrous spatial pyramid pooling (ASPP), parallel atrous convolutions at several rates, in [DLCV 03B](/en/learn/deep-learning/dl-03b-image-segmentation/#multi-scale-context-aspp-and-pyramid-pooling) [41]; the U-Net in [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#encoderdecoders-for-dense-prediction) and the [IP 10 paper guide](/en/learn/image-processing/dip-10-segmentation/papers/#u-net-a-reading-guide-to-the-paper) [39]. One rule connects them: **context comes from going coarse, detail comes from a path that stayed fine**. FPN's lateral connections, U-Net's skips and the low-level skip of the segmentation decoders in DLCV 03B are all that second path.
+
+## Composing for classification
+
+**Plain version.** A classifier must answer one question about the whole image. So it shrinks the image quickly, spends its computation on small, wide feature maps where each position already sees a large region, and finally throws away the spatial grid altogether.
+
+The principles, with the reason for each:
+
+1. **Downsample early with a stem.** The first layers run on the most pixels, so the stem cuts the resolution by 4 before the body starts (ResNet's $7 \times 7$ stride-2 convolution plus max-pool [1]; ConvNeXt's $4 \times 4$ stride-4 patchify layer, which cost nothing in accuracy in its roadmap [2]).
+2. **Halve the resolution and double the width at each stage.** This keeps the cost per layer roughly constant (see the anatomy section) and grows the receptive field geometrically.
+3. **Put most blocks in the third stage.** ResNet-50 uses (3, 4, 6, 3) blocks per stage; ConvNeXt changed this to (3, 3, 9, 3), following Swin's 1:1:3:1 ratio, and gained accuracy [2]. The third stage, at output stride 16, has a large receptive field and still enough positions.
+4. **Pool globally, then classify linearly.** Global average pooling makes the output invariant to where the object is and lets the network accept any input size. The ViT paper found that a class token and global average pooling work similarly well, but need different learning rates [3].
+5. **Put expensive global mixing where tokens are few.** Global attention is affordable in late stages; hybrid designs put convolutions early and attention late ([ML 04](/en/learn/ml/ml-04-vision-transformers/#hybrid-cnntransformer-models)). Cheap gates like SE can go in every block.
+6. **Batch normalization is fine** when batches are large; use GN or LN when they are not.
+
+**How fast does the receptive field grow?** The recurrence of [ML 03](/en/learn/ml/ml-03-convolutional-networks/#receptive-field) covers strided stacks; the snippet also handles upsampling by walking back from one output unit and tracking the interval of inputs that reach it. It compares ResNet-50 with two restorers on a $256 \times 256$ input: a plain full-resolution body of the EDSR-baseline shape (16 residual blocks of two $3 \times 3$ convolutions, 64 channels, plus head and tail) and a 4-level U-Net with widths 32 to 512.
+
+```python
+def analyze(layers, H=256):
+    """Exact 1-D receptive field of one output unit, plus the multiply-accumulates (MACs)
+    of a square H x H input. A layer is ('conv', k, stride, c_in, c_out) or ('up', f),
+    where 'up' is nearest-neighbour upsampling by f (the convolution after it pays the cost)."""
+    macs, size = 0, H
+    for layer in layers:                              # forward: track the map size and cost
+        if layer[0] == 'conv':
+            _, k, s, cin, cout = layer
+            size //= s
+            macs += size * size * k * k * cin * cout
+        else:
+            size *= layer[1]
+    rf = 0
+    for p0 in range(16):                              # a few output positions (alignment matters)
+        lo = hi = p0
+        for layer in reversed(layers):                # backward: which inputs reach unit p0?
+            if layer[0] == 'conv':
+                _, k, s, _, _ = layer
+                pad = (k - 1) // 2
+                lo, hi = s * lo - pad, s * hi - pad + k - 1
+            else:
+                lo, hi = lo // layer[1], hi // layer[1]
+        rf = max(rf, hi - lo + 1)
+    return rf, macs, size
+
+# Classification: ResNet-50 (stride on the 3x3 conv of each first block, max-pool as a k=3, s=2 layer).
+resnet = [('conv', 7, 2, 3, 64), ('conv', 3, 2, 64, 0)]        # stem conv, then max-pool (no MACs)
+cin = 64
+for width, blocks, stride in [(64, 3, 1), (128, 4, 2), (256, 6, 2), (512, 3, 2)]:
+    for b in range(blocks):
+        s = stride if b == 0 else 1
+        resnet += [('conv', 1, 1, cin, width), ('conv', 3, s, width, width),
+                   ('conv', 1, 1, width, 4 * width)]
+        if b == 0:
+            resnet += [('conv', 1, 1, cin, 4 * width)]          # projection shortcut (cost only)
+        cin = 4 * width
+
+# Restoration A: plain full-resolution body, 64 channels, 32 convs of 3x3 (EDSR-baseline-like).
+plain = [('conv', 3, 1, 3, 64)] + [('conv', 3, 1, 64, 64)] * 32 + [('conv', 3, 1, 64, 3)]
+
+# Restoration B: 4-level U-Net, 2 convs per level, widths double as resolution halves.
+w = [32, 64, 128, 256, 512]
+unet = [('conv', 3, 1, 3, w[0])]
+for i in range(4):
+    unet += [('conv', 3, 1, w[i], w[i])] * 2 + [('conv', 2, 2, w[i], w[i + 1])]
+unet += [('conv', 3, 1, w[4], w[4])] * 2
+for i in reversed(range(4)):
+    unet += [('up', 2), ('conv', 1, 1, w[i + 1], w[i]),
+             ('conv', 3, 1, 2 * w[i], w[i]), ('conv', 3, 1, w[i], w[i])]   # concat skip doubles c_in
+unet += [('conv', 3, 1, w[0], 3)]
+
+for name, net in [('ResNet-50', resnet), ('plain 64ch x 34', plain), ('U-Net 4 levels', unet)]:
+    rf, macs, size = analyze(net)
+    print(f"{name:16s} RF {rf:4d} px   output {size:3d}x{size:<3d}   {macs / 1e9:6.2f} GMACs")
+```
+
+```text
+ResNet-50        RF  427 px   output   8x8       5.34 GMACs
+plain 64ch x 34  RF   69 px   output 256x256    77.54 GMACs
+U-Net 4 levels   RF  206 px   output 256x256    14.47 GMACs
+```
+
+The U-Net's skips are left out because its deepest path sets the receptive field (a brute-force check over all paths gives the same 206). Figure 5 plots the growth. ResNet-50 reaches 427 pixels for 5.3 GMACs but returns an $8 \times 8$ map; the plain restorer grows by 2 pixels per layer, 69 pixels for 77.5 GMACs; the U-Net reaches 206 pixels at full output resolution for less than a fifth of that compute. These are theoretical receptive fields; the effective one, measured by gradients, is smaller and concentrated in the center [42] ([DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#receptive-field)).
+
+<Figure src={rfFig} alt="Two line plots with a logarithmic vertical axis. Left: receptive field versus number of convolution layers. ResNet-50 rises in steps to 427 pixels at about 53 layers; the U-Net rises fastest to about 200 pixels by layer 20 and then stays flat in the decoder; the plain network grows slowly to 69 pixels at 34 layers. Right: receptive field versus cumulative GMACs on a 256 by 256 input: ResNet-50 reaches 427 pixels at 5.3 GMACs, the U-Net 206 pixels at 14.5 GMACs, the plain network 69 pixels at 77.5 GMACs." caption="Figure 5 — Receptive field (one side, theoretical) as a function of depth and of compute, for the three networks of the snippet. Downsampling buys receptive field cheaply; a full-resolution body pays for every pixel of it." />
+
+*Optional: [Receptive fields through upsampling and skips](#receptive-fields-through-upsampling-and-skips) (in the Supplementary notes). The backward interval method step by step, why alignment matters after upsampling, and why the deepest path decides.*
+
+## Composing for restoration
+
+**Plain version.** A restoration network returns an image of the same size (or larger, for super-resolution) that is almost the input. So it keeps the resolution, or comes back to it with skips; it predicts only the correction; it avoids layers that change the intensity range; and it buys context without paying full resolution for every layer.
+
+The principles:
+
+1. **Keep the resolution, or come back to it.** The comparative study behind X-Restormer sorts restoration networks into three architectures: U-shaped encoder–decoders (such as Restormer and NAFNet), plain residual-in-residual networks that keep the original size (RCAN, SwinIR) and multi-stage progressive networks, which process the image in several sub-networks one after another [22]. It describes the plain design as favorable for reconstructing high-frequency detail but expensive, and the U-shaped one as handling large inputs with a receptive field that grows quickly through downsampling [22]. Figure 1(b) and (c) show the two main shapes.
+2. **Learn the residual.** The output is the input plus a predicted correction, $\hat x = y + R(y)$ for degraded input $y$ and network $R$. VDSR predicted the residual between the high-resolution image and its interpolated input [43]; DnCNN predicts the noise [29]; SwinIR uses $I_{\text{HQ}} = H(I_{\text{LQ}}) + I_{\text{LQ}}$ for tasks without upsampling [4]; Restormer outputs a residual image $R$ and returns $\hat I = I + R$ [21]; NAFNet's code adds the input to the last convolution's output [14]. The correction is small and centered on zero, so no capacity is spent copying the image.
+3. **Add a long skip for low frequencies.** SwinIR sends its shallow features directly to the reconstruction module, $H_{\text{REC}}(F_0 + F_{\text{DF}})$, because shallow features mainly contain low frequencies and the deep features can then focus on the lost high frequencies [4]. EDSR and RCAN use long skips around the body or around groups [12], [15].
+4. **Preserve the intensity range.** No BN in the body (EDSR, ESRGAN), normalization only inside residual branches (NAFNet, Restormer, SwinIR), as shown in the normalization section [12], [28].
+5. **Match the receptive field to the degradation, and pay for it wisely.** The X-Restormer study argues that super-resolution depends mostly on local information and strong spatial mapping, that U-shaped downsampling and upsampling help denoising, and that motion deblurring and dehazing need large-range or global information [22]. The receptive-field snippet shows the price: a full-resolution body grows its field by a few pixels per layer at full cost, downsampling grows it fast and cheaply, and channel attention or state-space scans reach the whole image at linear cost [21], [44].
+6. **Design the output layer for the target.** The last layer is a plain convolution (SwinIR's reconstruction for denoising, Restormer's final convolution, NAFNet's ending layer [4], [21], [14]); a ReLU or sigmoid there would clip the correction. For super-resolution, the upsampler goes at the end so the body runs at low resolution ([DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution)).
+7. **Plan for full-size test images.** Restorers train on crops and test on whole images. A U-Net needs sizes divisible by $2^{\text{levels}}$, which NAFNet's code handles by padding [14]. Global statistics, such as channel attention's pooling, cover a crop in training but the whole image at test time; NAFNet notes that this degrades performance and adopts a remedy from earlier work [19], and Restormer trains on progressively larger patches [21].
+
+*Optional: [A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)](#a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer) (in the Paper guides). Which backbone wins on which degradation, and why.*
+
+## Side by side: what changed and why
+
+**Plain version.** The fastest way to see composition at work is to put a classification model next to the restoration model derived from it and list the differences. Each difference has a reason from the two lists above.
+
+### ResNet versus EDSR and NAFNet
+
+| Component | ResNet [1] | EDSR [12] | NAFNet [19], [14] | Why it changed |
+|---|---|---|---|---|
+| Stem | $7 \times 7$ stride 2 + max-pool | one $3 \times 3$ conv | one $3 \times 3$ conv | keep every pixel |
+| Resolution | 4 stages, output stride 32 | constant (low-resolution input size) | U-shape, 2×2 stride-2 conv down, $1 \times 1$ conv + pixel shuffle up | detail versus context |
+| Block | conv-BN-ReLU-conv-BN, add, ReLU | conv-ReLU-conv, ×0.1 (large model), add | LN, $1 \times 1$, $3 \times 3$ dw, SimpleGate, SCA, $1 \times 1$, ×β, add; then a gated MLP, ×γ, add | range preservation; cheap gating |
+| Normalization | BN | none | LayerNorm inside the branches | see the normalization section |
+| Skips | short only | short + long skip around the body | short + add-skips between levels + global residual | low frequencies bypass the body |
+| Head | global average pool + FC | upsampler (conv + pixel shuffle) + conv | $3 \times 3$ conv + input | output is an image |
+| Loss | cross-entropy | L1 | PSNR loss in the ablations | regression targets |
+
+EDSR's own table lists the step from SRResNet: 16 blocks of 64 filters for both baseline models, BN removed, L1 instead of L2, and for the full model 32 blocks of 256 filters with residual scaling 0.1, growing from 1.5M to 43M parameters [12].
+
+### Swin versus SwinIR
+
+| Component | Swin [6] | SwinIR [4] | Why it changed |
+|---|---|---|---|
+| Input | $4 \times 4$ patch partition and linear embedding | $3 \times 3$ conv (shallow features) at full resolution | one token per pixel |
+| Hierarchy | patch merging between 4 stages | none: 6 residual Swin Transformer blocks (RSTB) at one resolution | restoration needs every pixel |
+| Window | $M = 7$ | $M = 8$ (7 for JPEG artifact removal) | JPEG [45] codes 8 × 8 blocks; the authors observed a drop with 8 |
+| Block group | Swin layers | 6 Swin layers + a $3 \times 3$ conv + a residual connection per RSTB | the conv adds translation equivariance; the residual helps aggregation |
+| Head | global average pool + linear | conv (+ pixel shuffle for SR) on $F_0 + F_{\text{DF}}$ | low frequencies bypass the body |
+| Width | 96 channels and up | 180 channels, 6 heads | balance accuracy and size |
+
+SwinIR's ablation reports that the residual connection inside each RSTB improves PSNR [30] by 0.16 dB, and that a $1 \times 1$ convolution there brings little improvement, possibly because it cannot extract local neighboring information as a $3 \times 3$ convolution does [4]. The JPEG window size is a good example of a composition choice that interacts with the data: the authors suggest the drop with $M = 8$ may come from JPEG's $8 \times 8$ block partitions.
+
+### ViT versus Restormer
+
+| Component | ViT [3] | Restormer [21] | Why it changed |
+|---|---|---|---|
+| Tokens | $16 \times 16$ patches | every pixel, after a conv embedding | no information is thrown away |
+| Token mixer | global self-attention over patches, $N \times N$ map | MDTA: channel attention, $C \times C$ map, with depthwise convs | linear cost in pixels, global reach |
+| Channel mixer | MLP, 4× expansion, GELU | GDFN: gated, depthwise convs, expansion 2.66 | gating and local context |
+| Shape | isotropic, one resolution | 4-level U-shape, pixel-unshuffle down, pixel-shuffle up, concat + $1 \times 1$ skips, refinement stage | multi-scale at manageable cost |
+| Head | class token + MLP | conv to a residual image, added to the input | output is an image |
+| Training | fixed resolution | progressive patch sizes, starting at $128 \times 128$ | learn from larger regions |
+
+Restormer's configuration uses [4, 6, 6, 8] blocks, [1, 2, 4, 8] heads and [48, 96, 192, 384] channels from level 1 to level 4, plus 4 blocks in the refinement stage [21]. Both columns use LayerNorm in pre-norm residual branches: the Transformer block itself survived; what changed is the token mixer and the macro-architecture around it.
+
+## Exploring a design space
+
+**Plain version.** A design question ("does block X help?") has no answer in general; it has an answer for a given set of other choices, data and budget. So change one thing at a time, keep the budget fixed, look at more than one task or seed, and when you can, compare populations of models rather than single winners.
+
+### Reading an ablation
+
+NAFNet's paper is a model of a readable ablation. Starting from a plain block of convolution, ReLU and shortcut in a U-Net, under a fixed budget of 16 GMACs, the authors add one change at a time and report PSNR on SIDD [31] (real-camera denoising) and GoPro [32] (motion deblurring) [19]:
+
+| Step | SIDD (dB) | GoPro (dB) |
+|---|---|---|
+| PlainNet | 39.29 | 28.51 |
+| + LayerNorm (and a 10× larger learning rate) | 39.73 | 31.90 |
+| ReLU → GELU | 39.71 | 32.11 |
+| + channel attention | 39.85 | 32.35 |
+| GELU → SimpleGate | 39.93 | 32.76 |
+| CA → simplified CA | 39.96 | 32.85 |
+
+What to check when you read such a table:
+
+- **Is the budget fixed?** Here it is (16 GMACs), so a gain is not just "more compute".
+- **Are the steps cumulative?** Yes: each row includes the previous changes, so the table measures each change **given** the earlier ones, not in isolation. A different order could give different increments.
+- **Do the tasks agree?** Not always: GELU is neutral on SIDD and helps on GoPro. A change that matters for one degradation may not matter for another.
+- **Is the training recipe confounded with the block?** The LayerNorm row also changes the learning rate, because LayerNorm made the larger rate stable. The authors say so explicitly; many papers do not.
+- **How large is the noise?** A single run per row gives no error bar. Differences of a few hundredths of a dB should be read as "no loss", which is how the paper reads the last row.
+
+*Optional: [Simple Baselines for Image Restoration (NAFNet)](#simple-baselines-for-image-restoration-nafnet) (in the Paper guides). The problem the paper poses, how it builds and then simplifies its block, and what its claims do and do not mean.*
+
+ConvNeXt's roadmap reads the same way for classification: a ResNet-50 went from 76.1% to 78.8% ImageNet top-1 with a modern training recipe alone, and then to 82.0% through a sequence of architectural changes, the largest single one adding less than the recipe [2]. That is why architectures trained with different recipes cannot be compared ([DLCV 01A](/en/learn/deep-learning/dl-01a-training-practice/#baselines-ablations-and-budgets)).
+
+*Optional: [The ConvNeXt roadmap step by step](#the-convnext-roadmap-step-by-step) (in the Supplementary notes). Every step with its accuracy, and how the compute changed along the way.*
+
+### Comparing populations: design spaces
+
+RegNet replaces "which single model is best?" with "which **design space** produces good models more often?" [16]. A design space is a set of models defined by a few parameters (number of blocks per stage, widths, bottleneck ratio, group width). The tool is the **error empirical distribution function**:
+
+$$
+F(e) = \frac{1}{n} \sum_{i=1}^{n} \mathbf{1}[e_i \lt e],
+$$
+
+where $e_i$ is the error of the $i$-th of $n$ models sampled from the space and trained, $\mathbf{1}[\cdot]$ is 1 when its argument is true and 0 otherwise, and $F(e)$ is the fraction of models with error below $e$. A space whose curve lies higher is better as a whole, a far more robust comparison than two hand-tuned models. RegNet sampled $n = 500$ models at 360 to 400 million FLOPs, trained each for 10 epochs, and kept constraints that did not hurt the curve (shared bottleneck ratio and group width) or improved it (widths and depths increasing across stages) [16]. The best models had about 20 blocks across compute regimes, used no bottleneck, and benefited from SE [16].
+
+*Optional: [Designing Network Design Spaces (RegNet)](#designing-network-design-spaces-regnet) (in the Paper guides). How the study refines a design space step by step and how to read its distribution plots.*
+
+*Optional: [RegNet's quantized linear widths](#regnets-quantized-linear-widths) (in the Supplementary notes). The three equations that turn a line into stage widths and depths, with a tested snippet.*
+
+### A practical protocol
+
+1. Fix the budget (MACs, parameters, memory or measured latency) and the training recipe before comparing blocks.
+2. Change one thing at a time, and keep a log of every run, including the ones that did not help.
+3. Evaluate on more than one task, dataset or seed; report the spread.
+4. Confirm at the target model size; a block that helps a tiny model may not help a large one.
+5. For architecture searches, think in terms of the three dimensions of the NAS survey: the search space, the search strategy and how performance is estimated [46]. Cheap estimates such as short training (RegNet's 10 epochs) are fine for ranking populations but should be confirmed with full training.
+
+## Common composition mistakes
+
+**Plain version.** Most architecture bugs are not wrong blocks; they are right blocks in the wrong place. The list gives the symptom, the cause and the fix.
+
+- **BN in a restoration body.** Symptom: batch-dependent brightness or color shifts, or test-time artifacts. Fix: remove BN, or normalize per sample inside residual branches with a global residual.
+- **Small per-device batches with BN** (detection, segmentation, high resolution). Fix: GroupNorm, or freeze the pretrained BN statistics ([DLCV 01A](/en/learn/deep-learning/dl-01a-training-practice/#initialization-and-normalization-in-practice)).
+- **Transposed convolution with a kernel size not divisible by the stride.** Symptom: checkerboard texture. Fix: resize-convolution, or pixel shuffle with a matched initialization.
+- **No global residual in a restorer.** The network must learn to copy the image before it can correct it. Fix: predict the correction.
+- **A ReLU or sigmoid at the output.** Corrections cannot be negative, or highlights saturate. Fix: a linear last layer; clip only for display and evaluation.
+- **A receptive field smaller than the degradation.** Symptom: large blur or haze remains. Fix: downsampling levels, dilation, or global mixing; compute the receptive field first.
+- **Downsampling too early in a restorer**, or a classification backbone used unchanged: fine detail is lost. Fix: a full-resolution path (skips, a refinement stage).
+- **Global attention at full resolution** runs out of memory. Use windows, channel attention or downsampling.
+- **Input sizes not divisible by $2^{\text{levels}}$ in a U-Net**, or odd sizes with concatenated skips. Symptom: shape errors or misaligned skips. Fix: pad and crop, as NAFNet's code does [14].
+- **Counting parameters as speed.** Depthwise and concatenation-heavy designs can be slow despite few parameters or MACs. Measure latency and memory.
+- **Comparing designs trained with different recipes or budgets**: the recipe alone can be worth more than any single block [2].
+- **Ignoring interactions with the data**, such as SwinIR's window size and JPEG's blocks [4].
+
+## Modern view
+
+### What the surveys say
+
+**Khan et al.** [47] review CNN architectures and sort their innovations into seven categories: spatial exploitation, depth, multi-path, width, feature-map exploitation, channel boosting and attention. The taxonomy is useful here because most categories are composition choices (depth, width, multi-path connections) rather than new layer types.
+
+**Guo et al.** [20] survey attention in computer vision and classify it by what it selects: channel attention (what to attend, e.g. SE), spatial attention (where, including self-attention), temporal attention (when), branch attention (which branch), and the two hybrids channel-and-spatial (e.g. CBAM) and spatial-and-temporal. Their framing of attention as "dynamic weight adjustment" based on the input matches the gate view of this chapter.
+
+**Khan et al.** [48] review Transformers in vision, from the basics of self-attention and large-scale pretraining to applications in recognition, detection, segmentation, generation, video and low-level vision, compare the advantages and limitations of popular designs, and end with open research directions.
+
+**Elsken, Metzen and Hutter** [46] organize neural architecture search along three dimensions: the search space, the search strategy and the performance-estimation strategy. Their survey is the natural next step after the manual design-space exploration of this chapter.
+
+**Chen et al.** [22] is a comparative study rather than a survey: it benchmarks five restoration backbones, among them SwinIR, Restormer and NAFNet, on five tasks, classifies them by architecture (U-shaped, plain residual-in-residual, multi-stage) and core operator (convolution, spatial self-attention, transposed self-attention), and finds that networks strong on one task often fall short on another.
+
+### The state of the art, 2023–2026
+
+- **Convolutions and attention converge on one block shape.** ConvNeXt V2 adds a Global Response Normalization layer and masked-autoencoder pretraining to ConvNeXt [49]; the MetaFormer view treats the token mixer as one interchangeable part [8].
+- **Pretraining matters as much as the block.** Battle of the Backbones compared many pretrained backbones across tasks in more than 1,500 training runs and found that convolutional networks pretrained with supervision on large datasets still performed best on most of the tasks it considered, while self-supervised backbones were competitive in matched comparisons [50].
+- **Restoration mixes operators.** HAT combines channel attention with window self-attention and adds overlapping cross-attention between windows [51]; X-Restormer replaces half of Restormer's channel-attention blocks with spatial attention blocks to improve its spatial mapping [22]; MambaIR and MambaIRv2 replace attention with state-space scans that reach the whole image at linear cost, adding local enhancement and channel attention, and in v2 non-causal "attentive" modeling [44], [52].
+
+### Open problems
+
+1. **General restoration backbones.** No single composition is best on all degradations; the comparative study frames task generality as the open target [22].
+2. **Fair comparisons.** Architecture, recipe and pretraining are entangled, and population-level studies like RegNet's need hundreds of training runs [16], which is costly for high-resolution restoration models.
+3. **Receptive field in practice.** Theoretical fields are easy to compute; how much context a trained restorer actually uses is harder to measure, and attribution analyses suggest it can be less than the design allows [51], [42].
+4. **Cost models.** MACs, memory traffic and latency disagree, especially for depthwise convolutions, gating and attention; design rules still depend on hardware.
+5. **Train–test shift inside the architecture.** Global statistics (pooling, normalization, attention) behave differently on crops and full images, and the remedies in use change the training or test procedure rather than the architecture [19], [21].
+
+## Key takeaways
+
+- A network is a stem, stages of repeated blocks, downsampling layers and a head; most design decisions are about where the resolution changes and where the skips go, not about inventing blocks.
+- Every block mixes space and channels at some cost; count weights and MACs per pixel, compare blocks at equal cost, and measure latency separately.
+- Classifiers shrink the resolution early, double the width as they halve the map, put most blocks in the third stage and pool globally; their receptive field grows geometrically and cheaply.
+- Restorers keep or recover full resolution, learn a residual, send low frequencies through long skips, avoid BN in the body, and end with a linear layer.
+- Batch normalization makes a restored image depend on its batch; per-sample normalization removes that dependence but also hides the image's own level, so it belongs inside residual branches.
+- Transposed convolutions and untrained sub-pixel layers make checkerboards when their phase sums differ; resize-convolution cannot.
+- Concatenation plus a $1 \times 1$ convolution contains addition; it costs about twice as much at the merge.
+- Read ablations for a fixed budget, cumulative steps, agreement across tasks and confounded recipes; when possible, compare populations of models, not single winners.
+
+## Exercises
+
+1. **Halve and double.** A stage runs $3 \times 3$ convolutions with 128 channels on a $56 \times 56$ map. (a) How many MACs does one such layer cost? (b) The next stage halves the map and doubles the width; what does one layer cost now? (c) What happens to the cost if the width is tripled instead?
+
+<details>
+<summary>Hint</summary>
+
+(a) $9 \cdot 56^2 \cdot 128^2 = 462{,}422{,}016$ MACs. (b) $9 \cdot 28^2 \cdot 256^2$ is the same number. (c) With $3 \cdot 128 = 384$ channels the cost is $9 \cdot 28^2 \cdot 384^2$, that is $9/4$ of (a): width enters squared, area linearly.
+
+</details>
+
+2. **Block budget.** Using the `blocks` function, find the expansion factor $t$ at which an inverted residual with $C$ input and output channels costs the same as a basic residual block, for $C = 64$. Then find the width $C'$ at which an inverted residual with $t = 6$ costs the same as a basic block with $C = 64$. What does this say about comparing blocks "at equal width"?
+
+<details>
+<summary>Hint</summary>
+
+Set $t(2C^2 + 9C) = 18C^2$; for $C = 64$ this gives $t = 18 \cdot 64 / (2 \cdot 64 + 9) \approx 8.4$. For the second question solve $12C'^2 + 54C' = 73{,}728$, which gives $C' \approx 76$. The inverted residual is not "cheap" at equal width; it is cheap because MobileNets run it on thin tensors.
+
+</details>
+
+3. **BN with a batch of one.** In the normalization snippet, restore $A$ alone (a batch of size 1) with `'bn-train'`. Compare the output mean with the `'instance'` result and explain the relation between BN at batch size 1 and instance normalization. Then add 32 random mid-gray images to the batch and see how close training mode comes to evaluation mode.
+
+<details>
+<summary>Hint</summary>
+
+With $N = 1$, BN's statistics over $(N, H, W)$ are exactly the per-sample, per-channel statistics, so the result equals instance normalization (0.521). With many images from the training distribution, the batch statistics approach the running statistics and the output approaches the evaluation-mode value.
+
+</details>
+
+4. **Make a transposed convolution flat.** For $k = 4$, $s = 2$, write the condition on the 16 kernel weights under which a flat input gives a flat output (away from the borders). Construct such a kernel from a random $2 \times 2$ kernel, check it with the upsampling snippet, and relate it to resize-convolution.
+
+<details>
+<summary>Hint</summary>
+
+The four phase sums $\sum_{m,n} w[a + 2m, b + 2n]$ for $a, b \in \{0, 1\}$ must be equal. One construction is `w = np.kron(v, np.ones((2, 2)))` for any $2 \times 2$ kernel `v`: every phase then receives each entry of `v` exactly once, so all phase sums equal the sum of `v`. Resize-convolution has the same property for every kernel, which is why it is flat.
+
+</details>
+
+5. **Receptive field of a design.** Modify the U-Net in the receptive-field snippet to three levels instead of four, and to four levels with three convolutions per level. Which change buys more receptive field per GMAC? Then replace the 32 middle layers of the plain network by 16 layers with dilation 2 (extend `analyze` with a dilation entry). What is the new receptive field, and what problem from [DLCV 03B](/en/learn/deep-learning/dl-03b-image-segmentation/notes/#gridding-in-stacked-dilated-convolutions) does this design risk?
+
+<details>
+<summary>Hint</summary>
+
+A dilated layer with kernel $k$ and dilation $d$ spans $d(k - 1) + 1$ inputs, so replace `k - 1` by `d * (k - 1)` in the backward step. Removing a level removes the coarsest, cheapest and most receptive-field-rich part of the U-Net; adding convolutions per level adds cost at every resolution. Stacking layers with the same dilation leaves holes in the receptive field (gridding).
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each takes one point from the main text and treats it in more detail. Nothing in the main text, code or exercises depends on them.
+
+### CBAM's channel and spatial gates
+
+This note writes out the two gates of CBAM and compares them with the other channel gates of the chapter.
+
+For a feature map $F \in \mathbb{R}^{C \times H \times W}$, CBAM computes [18]
+
+$$
+M_c(F) = \sigma\big(\mathrm{MLP}(\mathrm{AvgPool}(F)) + \mathrm{MLP}(\mathrm{MaxPool}(F))\big), \qquad
+M_s(F') = \sigma\big(f^{7 \times 7}([\mathrm{AvgPool}_c(F');\, \mathrm{MaxPool}_c(F')])\big),
+$$
+
+where $M_c(F) \in \mathbb{R}^{C \times 1 \times 1}$ is the channel gate, $\mathrm{AvgPool}$ and $\mathrm{MaxPool}$ reduce each channel to one number, the MLP has one hidden layer of $C/r$ units with a ReLU (reduction ratio $r$) and is shared between the two pooled vectors, $\sigma$ is the sigmoid, $F' = M_c(F) \odot F$ is the channel-refined map, $\mathrm{AvgPool}_c$ and $\mathrm{MaxPool}_c$ pool **along the channel axis** to give two $H \times W$ maps, $[\cdot\,;\cdot]$ concatenates them, $f^{7 \times 7}$ is a $7 \times 7$ convolution with one output channel, $M_s(F') \in \mathbb{R}^{1 \times H \times W}$ is the spatial gate, and the output is $M_s(F') \odot F'$. The product $\odot$ broadcasts each gate over the axes it lacks: the channel gate over all positions, the spatial gate over all channels.
+
+**Relation to the other gates.** SE is the channel gate with average pooling only [17]. RCAN's channel attention is the SE form applied inside each residual block of a super-resolution network [15]. NAFNet's simplified channel attention keeps the pooling and a single linear map but drops the MLP's ReLU and the sigmoid, $\mathrm{SCA}(X) = X * W\,\mathrm{pool}(X)$, where $*$ is channel-wise multiplication [19]. All of them are multiplicative gates computed from global statistics, which is why NAFNet reads channel attention as a special case of a gated linear unit [19].
+
+**Pitfalls.** The pooled statistics are computed over the whole map, so they differ between a training crop and a full test image; this is one form of the train–test shift discussed in the restoration principles. The spatial gate's $7 \times 7$ kernel sees only a local window of the pooled maps, so it is a local, not a global, spatial attention.
+
+### Phase sums of a transposed convolution in 1-D
+
+This note derives how many kernel taps each output position of a transposed convolution receives, which is the arithmetic behind the checkerboard snippet.
+
+**Setup.** A 1-D transposed convolution with stride $s$ and kernel $w_0, \dots, w_{k-1}$ maps input $x_i$ to
+
+$$
+y_n = \sum_{i} x_i \, w_{n - s i}, \qquad 0 \le n - s i \lt k,
+$$
+
+where $n$ is the output position and the sum runs over the inputs $i$ whose kernel copy covers $n$. Write $n = s m + p$ with phase $p \in \{0, \dots, s - 1\}$. The kernel index $n - s i = p + s(m - i)$ takes the values $p, p + s, p + 2s, \dots$ that are less than $k$.
+
+**Taps per phase.** Phase $p$ therefore receives the taps $w_p, w_{p+s}, w_{p+2s}, \dots$, and their number is
+
+$$
+T_p = \left\lceil \frac{k - p}{s} \right\rceil,
+$$
+
+for $0 \le p \lt s$, away from the borders. For $k = 3$, $s = 2$: $T_0 = 2$, $T_1 = 1$. In 2-D the counts multiply, giving the $4 : 2 : 2 : 1$ pattern of the snippet. All $T_p$ are equal exactly when $s$ divides $k$; this is Odena et al.'s condition for even overlap [37].
+
+**Phase sums.** On a flat input $x_i = 1$, the output at phase $p$ is the phase sum $S_p = \sum_{t \ge 0,\; p + s t \lt k} w_{p + s t}$. A flat output requires $S_0 = S_1 = \dots = S_{s-1}$. Equal tap counts make this possible but do not enforce it: random weights break it, which is the "random initialization" source of artifacts described by Aitken et al. [38].
+
+**Resize-convolution.** Nearest-neighbor upsampling by $s$ followed by a convolution with kernel $v$ of length $r$ is itself a transposed convolution with stride $s$ whose kernel is $v$ convolved with a box of $s$ ones. Each of its phase sums is $\sum_t v_t$, the same for every phase, so a flat input always gives a flat output, whatever $v$ is. That is the precise sense in which resize-convolution is "biased against" checkerboards.
+
+### Receptive fields through upsampling and skips
+
+This note explains the backward interval method used by the receptive-field snippet, and when it is exact.
+
+**The question.** For one output unit at position $p$ of the last layer, which input positions can change its value? For a chain of layers, answer it backward: start with the interval $[p, p]$ at the output and map it through each layer, from the last to the first, to the interval of positions in that layer's input that feed it.
+
+**Convolution.** A layer with kernel size $k$, stride $s$ and padding $q = \lfloor (k - 1)/2 \rfloor$ computes output unit $u$ from inputs $s u - q, \dots, s u - q + k - 1$. An interval $[\ell, h]$ of outputs therefore depends on the inputs
+
+$$
+[\,s\ell - q,\;\; s h - q + k - 1\,],
+$$
+
+where $\ell$ and $h$ are the first and last output positions and the new endpoints are the first input of unit $\ell$ and the last input of unit $h$. Positions outside the image stand for padding; they do not limit the interval, so the result is the theoretical receptive field away from borders.
+
+**Nearest-neighbor upsampling by $f$.** Output unit $u$ copies input unit $\lfloor u / f \rfloor$, so $[\ell, h]$ maps to $[\lfloor \ell / f \rfloor, \lfloor h / f \rfloor]$. Because of the floor, the size of the result depends on where $\ell$ falls relative to the blocks of $f$ copies: two neighboring output units can have receptive fields that differ by up to one input unit of that layer, which can be many pixels deep in a network. That is why the snippet takes the maximum over 16 consecutive output positions, a full period of a 4-level U-Net.
+
+**Skips.** At a merge (addition or concatenation) the input interval is the union of the intervals through the two branches. In a U-Net, the branch through the deeper level passes through the same encoder output and then through more layers; with nearest-neighbor upsampling and a stride-2 downsampling whose window contains its own position, the deeper branch's interval contains the skip branch's interval. So the union equals the deepest path, and the snippet can list that path alone. The brute-force check mentioned in the main text built the U-Net in 1-D with positive weights, pushed a unit impulse from every nearby input position through it, and recorded which ones reached a given output; it found the same 206 pixels.
+
+**Edge cases.** Dilated convolutions make the dependence set a lattice with holes, not an interval, so the interval method reports the span but not the gaps (see the gridding note in [DLCV 03B](/en/learn/deep-learning/dl-03b-image-segmentation/notes/#gridding-in-stacked-dilated-convolutions)). Attention layers with global reach make the receptive field the whole input after one layer; window attention lets each token see its own $M \times M$ window, so one layer adds at most $M - 1$ tokens of reach, and the shifted windows of the next layer carry it across window borders. Araujo, Norris and Sim give closed-form expressions for receptive field size, stride and offset in general networks, including how to handle multiple paths [53].
+
+### The ConvNeXt roadmap step by step
+
+This note lists the steps of ConvNeXt's "modernization" of ResNet-50 with the ImageNet top-1 accuracy the paper reports after each one [2].
+
+| Step | Change | Top-1 (%) |
+|---|---|---|
+| 0 | ResNet-50 with its original training | 76.1 |
+| 1 | modern training recipe (300 epochs, AdamW, heavy augmentation) | 78.8 |
+| 2 | stage compute ratio (3, 3, 9, 3) | 79.4 |
+| 3 | patchify stem, $4 \times 4$ stride 4 | 79.5 |
+| 4 | depthwise (grouped) convolution, width raised to 96 | 80.5 |
+| 5 | inverted bottleneck | 80.6 |
+| 6 | depthwise convolution moved up | 79.9 |
+| 7 | kernel size $7 \times 7$ | 80.6 |
+| 8 | ReLU replaced by GELU | 80.6 |
+| 9 | fewer activations | 81.3 |
+| 10 | fewer normalization layers | 81.4 |
+| 11 | LayerNorm instead of BatchNorm | 81.5 |
+| 12 | separate $2 \times 2$ stride-2 downsampling layers, with normalization where resolution changes | 82.0 |
+
+**How to read it.** The steps are cumulative, so each number is conditional on everything above it. Step 6 lowers accuracy on purpose: it prepares step 7, and the two must be judged together. Steps 8 and 11 change accuracy little by themselves; the paper adopts them anyway, so the final design contains choices that were neutral when they were made. Several steps also change the compute: step 4 raises it, and steps 5 and 6 lower it, so the paper tracks FLOPs next to accuracy. The roadmap is a single path through a large design space, which the authors acknowledge for the stage ratio: a better distribution of computation "is likely to exist" [2].
+
+### RegNet's quantized linear widths
+
+This note writes out how RegNet turns three numbers into a network's stage widths and depths.
+
+RegNet first describes per-block widths with a line [16]:
+
+$$
+u_j = w_0 + w_a \cdot j, \qquad 0 \le j \lt d,
+$$
+
+where $d$ is the network depth in blocks, $j$ the block index, $w_0 \gt 0$ the initial width, $w_a \gt 0$ the slope, and $u_j$ the continuous width of block $j$. To get a few stages of constant width, it introduces a multiplier $w_m \gt 0$ and writes each $u_j$ as a power of it:
+
+$$
+u_j = w_0 \cdot w_m^{s_j}, \qquad w_j = w_0 \cdot w_m^{\lfloor s_j \rceil},
+$$
+
+where $s_j$ is a real exponent, $\lfloor s_j \rceil$ rounds it to the nearest integer, and $w_j$ is the quantized width. Blocks with the same rounded exponent form one stage: stage $i$ has width $w_0 \cdot w_m^{i}$ and $d_i = \sum_j \mathbf{1}[\lfloor s_j \rceil = i]$ blocks. A ratio $w_m = 2$ gives the classic doubling of width from stage to stage; RegNet found that good models had $w_m$ near 2.5 [16]. When it studies four-stage networks, the paper ignores parameter combinations that give a different number of stages [16]; the snippet shows only the three equations, with illustrative values that are not one of the paper's models.
+
+```python
+import numpy as np
+
+def regnet_stages(d, w0, wa, wm):
+    u = w0 + wa * np.arange(d)                     # continuous widths, one per block
+    s = np.log(u / w0) / np.log(wm)                # exponents with u = w0 * wm**s
+    q = np.round(s).astype(int)                    # quantized exponents
+    widths = w0 * wm ** q
+    return [(int(w0 * wm ** i), int((q == i).sum())) for i in np.unique(q)], widths
+
+stages, widths = regnet_stages(d=16, w0=48, wa=36, wm=2.5)
+print("stage (width, blocks):", stages)
+print("block widths:", widths.astype(int).tolist())
+```
+
+```text
+stage (width, blocks): [(48, 1), (120, 3), (300, 8), (750, 4)]
+block widths: [48, 120, 120, 120, 300, 300, 300, 300, 300, 300, 300, 300, 750, 750, 750, 750]
+```
+
+Two things to notice. Depth per stage comes out of the line, not from a separate choice: a steeper slope moves blocks into later, wider stages. And the first stage can end up with a single block, which is one of the parameter combinations a practical generator would filter or adjust.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Simple Baselines for Image Restoration (NAFNet)
+
+Chen, Chu, Zhang and Sun, ECCV 2022 [19].
+
+**The problem.** State-of-the-art restorers had grown complex in two ways the authors call inter-block complexity (multi-stage pipelines, multi-scale fusion) and intra-block complexity (elaborate attention and feed-forward designs). The question is whether that complexity is necessary.
+
+**The idea.** Fix a simple single-stage U-Net and build the block from scratch, adding one common component at a time under a fixed compute budget: LayerNorm, GELU, channel attention. This gives a "baseline". Then simplify: observe that GELU and channel attention can both be read as gates, replace GELU by SimpleGate (multiply two channel halves) and channel attention by simplified channel attention (a linear map of the pooled vector). The resulting network has no nonlinear activation functions at all, hence its name, Nonlinear Activation Free Network.
+
+**What it showed.** The ablation table reproduced in this chapter: every step is reported on two tasks, and the final simplifications cost nothing. In the abstract, the full models exceed the previous best results on GoPro and SIDD with a fraction of their computational cost (8.4% on GoPro, less than half on SIDD).
+
+**How to read it.** The ablation is cumulative, so each increment is conditional on the steps before it; the LayerNorm step changes the learning rate as well; the two tasks do not always agree. The claim "activations are not necessary" is about pointwise activation functions; the network is still nonlinear through its multiplicative gates.
+
+**Why it matters here.** It is the clearest example of the composition view: the macro-architecture is held fixed and deliberately plain, and almost all of the result comes from the arrangement of a few ordinary parts.
+
+### Designing Network Design Spaces (RegNet)
+
+Radosavovic, Kosaraju, Girshick, He and Dollár, CVPR 2020 [16].
+
+**The problem.** Manual design and neural architecture search both produce single models, which say little about why they work and may not transfer to other settings.
+
+**The idea.** Study design **spaces**: sample hundreds of models from a parameterized space, train each briefly, and compare spaces by their error distribution functions. Refine the space step by step by testing simple constraints (shared bottleneck ratio, shared group width, increasing widths and depths), keeping those that keep or improve the distribution while shrinking the space. The final space, RegNet, is described by a quantized linear rule for widths.
+
+**What it showed.** Simple, regular models do as well as or better than the unconstrained space. Several findings go against common practice: a depth of about 20 blocks is good across compute regimes, the best models use no bottleneck, and inverted bottlenecks and depthwise convolutions do worse in this space; SE helps (RegNetY). The paper also compares RegNet models with popular existing networks under comparable training settings.
+
+**How to read it.** The error EDF plots are the core: look at the whole curve, not just its best point. The findings are conditional on the space (ResNet-like blocks, ImageNet, the compute range and the short training schedule used for sampling); the authors check that the trends hold for longer training and other regimes, but conclusions about blocks such as depthwise convolution should not be transferred to very different spaces without testing.
+
+**Why it matters here.** It turns "explore the design space" into a method with a statistic, and it is the main reason this chapter says "compare populations, not single winners".
+
+### A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)
+
+Chen, Li, Pu, Liu, Zhou, Qiao and Dong, ECCV 2024 [22].
+
+**The problem.** Restoration backbones are usually designed and evaluated on one or two tasks, and a network that is excellent on one task can be mediocre on another.
+
+**The idea.** Benchmark five representative backbones, among them SwinIR, Restormer and NAFNet, on five tasks (super-resolution, denoising, deblurring, deraining, dehazing) under common settings, and explain the differences through the characteristics of each degradation and each network: macro-architecture (U-shaped, plain residual-in-residual, multi-stage) and core operator (convolution, spatial self-attention, transposed self-attention).
+
+**What it showed.** The authors report that SwinIR is strong on super-resolution but falls short on deblurring and dehazing, that Restormer is strong on dehazing and deraining but weaker on super-resolution, and that Restormer ranks in the top two on all five tasks. They attribute Restormer's weakness to weaker spatial mapping and add spatial attention to half of its blocks, giving X-Restormer, without adding parameters.
+
+**How to read it.** Check that every network is trained with the same data and schedule for each task; note that the U-shaped networks need the low-resolution input upsampled first for super-resolution, which changes their cost and behavior on that task; and treat the functional explanations (local versus global information needs) as hypotheses supported by the benchmark, not as measured properties.
+
+**Why it matters here.** It is the restoration counterpart of the side-by-side tables: it links each composition choice to the kind of degradation it serves.
+
+## References
+
+1. K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1512.03385)
+2. Z. Liu, H. Mao, C.-Y. Wu, C. Feichtenhofer, T. Darrell and S. Xie, "A ConvNet for the 2020s," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Liu_A_ConvNet_for_the_2020s_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2201.03545)
+3. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer et al., "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale," in *International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+4. J. Liang, J. Cao, G. Sun, K. Zhang, L. Van Gool and R. Timofte, "SwinIR: Image Restoration Using Swin Transformer," in *Proc. IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Liang_SwinIR_Image_Restoration_Using_Swin_Transformer_ICCVW_2021_paper.html) · [arXiv](https://arxiv.org/abs/2108.10257)
+5. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature Pyramid Networks for Object Detection," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Lin_Feature_Pyramid_Networks_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1612.03144)
+6. Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin and B. Guo, "Swin Transformer: Hierarchical Vision Transformer Using Shifted Windows," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Liu_Swin_Transformer_Hierarchical_Vision_Transformer_Using_Shifted_Windows_ICCV_2021_paper.html) · [arXiv](https://arxiv.org/abs/2103.14030)
+7. O. Russakovsky, J. Deng, H. Su, J. Krause, S. Satheesh, S. Ma, Z. Huang, A. Karpathy et al., "ImageNet Large Scale Visual Recognition Challenge," *International Journal of Computer Vision*, vol. 115, no. 3, pp. 211–252, 2015. [doi](https://doi.org/10.1007/s11263-015-0816-y)
+8. W. Yu, M. Luo, P. Zhou, C. Si, Y. Zhou, X. Wang, J. Feng and S. Yan, "MetaFormer Is Actually What You Need for Vision," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Yu_MetaFormer_Is_Actually_What_You_Need_for_Vision_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.11418)
+9. A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand, M. Andreetto and H. Adam, "MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications," arXiv:1704.04861, 2017. [arXiv](https://arxiv.org/abs/1704.04861)
+10. M. Sandler, A. Howard, M. Zhu, A. Zhmoginov and L.-C. Chen, "MobileNetV2: Inverted Residuals and Linear Bottlenecks," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Sandler_MobileNetV2_Inverted_Residuals_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1801.04381)
+11. K. He, X. Zhang, S. Ren and J. Sun, "Identity Mappings in Deep Residual Networks," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, Springer, 2016. [doi](https://doi.org/10.1007/978-3-319-46493-0_38) · [arXiv](https://arxiv.org/abs/1603.05027)
+12. B. Lim, S. Son, H. Kim, S. Nah and K. M. Lee, "Enhanced Deep Residual Networks for Single Image Super-Resolution," in *Proc. IEEE CVPR Workshops (CVPRW)*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Lim_Enhanced_Deep_Residual_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1707.02921)
+13. H. Touvron, M. Cord, A. Sablayrolles, G. Synnaeve and H. Jégou, "Going Deeper With Image Transformers," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Touvron_Going_Deeper_With_Image_Transformers_ICCV_2021_paper.html)
+14. L. Chen, X. Chu, X. Zhang and J. Sun, NAFNet official implementation, `basicsr/models/archs/NAFNet_arch.py`, GitHub (megvii-research/NAFNet), accessed 2026. [code](https://github.com/megvii-research/NAFNet/blob/main/basicsr/models/archs/NAFNet_arch.py)
+15. Y. Zhang, K. Li, K. Li, L. Wang, B. Zhong and Y. Fu, "Image Super-Resolution Using Very Deep Residual Channel Attention Networks," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yulun_Zhang_Image_Super-Resolution_Using_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1807.02758)
+16. I. Radosavovic, R. P. Kosaraju, R. Girshick, K. He and P. Dollár, "Designing Network Design Spaces," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Radosavovic_Designing_Network_Design_Spaces_CVPR_2020_paper.html) · [arXiv](https://arxiv.org/abs/2003.13678)
+17. J. Hu, L. Shen and G. Sun, "Squeeze-and-Excitation Networks," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Hu_Squeeze-and-Excitation_Networks_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1709.01507)
+18. S. Woo, J. Park, J.-Y. Lee and I. S. Kweon, "CBAM: Convolutional Block Attention Module," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Sanghyun_Woo_Convolutional_Block_Attention_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1807.06521)
+19. L. Chen, X. Chu, X. Zhang and J. Sun, "Simple Baselines for Image Restoration," in *Proc. ECCV*, LNCS, Springer, 2022. [doi](https://doi.org/10.1007/978-3-031-20071-7_2) · [arXiv](https://arxiv.org/abs/2204.04676)
+20. M.-H. Guo, T.-X. Xu, J.-J. Liu, Z.-N. Liu, P.-T. Jiang, T.-J. Mu, S.-H. Zhang, R. R. Martin, M.-M. Cheng and S.-M. Hu, "Attention Mechanisms in Computer Vision: A Survey," *Computational Visual Media*, vol. 8, no. 3, pp. 331–368, 2022. [doi](https://doi.org/10.1007/s41095-022-0271-y) · [arXiv](https://arxiv.org/abs/2111.07624)
+21. S. W. Zamir, A. Arora, S. Khan, M. Hayat, F. S. Khan and M.-H. Yang, "Restormer: Efficient Transformer for High-Resolution Image Restoration," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Zamir_Restormer_Efficient_Transformer_for_High-Resolution_Image_Restoration_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.09881)
+22. X. Chen, Z. Li, Y. Pu, Y. Liu, J. Zhou, Y. Qiao and C. Dong, "A Comparative Study of Image Restoration Networks for General Backbone Network Design," in *Proc. ECCV 2024*, LNCS, Springer, 2025. [doi](https://doi.org/10.1007/978-3-031-73209-6_5) · [arXiv](https://arxiv.org/abs/2310.11881)
+23. S. Ioffe and C. Szegedy, "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift," in *Proc. International Conference on Machine Learning (ICML)*, PMLR 37, 2015. [PMLR](https://proceedings.mlr.press/v37/ioffe15.html)
+24. J. L. Ba, J. R. Kiros and G. E. Hinton, "Layer Normalization," arXiv:1607.06450, 2016. [arXiv](https://arxiv.org/abs/1607.06450)
+25. D. Ulyanov, A. Vedaldi and V. Lempitsky, "Instance Normalization: The Missing Ingredient for Fast Stylization," arXiv:1607.08022, 2016. [arXiv](https://arxiv.org/abs/1607.08022)
+26. Y. Wu and K. He, "Group Normalization," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yuxin_Wu_Group_Normalization_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1803.08494)
+27. C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Ledig_Photo-Realistic_Single_Image_CVPR_2017_paper.html)
+28. X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018. [CVF](https://openaccess.thecvf.com/content_eccv_2018_workshops/w25/html/Wang_ESRGAN_Enhanced_Super-Resolution_Generative_Adversarial_Networks_ECCVW_2018_paper.html) · [arXiv](https://arxiv.org/abs/1809.00219)
+29. K. Zhang, W. Zuo, Y. Chen, D. Meng and L. Zhang, "Beyond a Gaussian Denoiser: Residual Learning of Deep CNN for Image Denoising," *IEEE Transactions on Image Processing*, vol. 26, no. 7, pp. 3142–3155, 2017. [doi](https://doi.org/10.1109/TIP.2017.2662206) · [arXiv](https://arxiv.org/abs/1608.03981)
+30. Q. Huynh-Thu and M. Ghanbari, "Scope of Validity of PSNR in Image/Video Quality Assessment," *Electronics Letters*, vol. 44, no. 13, pp. 800–801, 2008. [doi](https://doi.org/10.1049/el:20080522)
+31. A. Abdelhamed, S. Lin and M. S. Brown, "A High-Quality Denoising Dataset for Smartphone Cameras," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Abdelhamed_A_High-Quality_Denoising_CVPR_2018_paper.html)
+32. S. Nah, T. H. Kim and K. M. Lee, "Deep Multi-Scale Convolutional Neural Network for Dynamic Scene Deblurring," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Nah_Deep_Multi-Scale_Convolutional_CVPR_2017_paper.html)
+33. N. Shazeer, "GLU Variants Improve Transformer," arXiv:2002.05202, 2020. [arXiv](https://arxiv.org/abs/2002.05202)
+34. Y. N. Dauphin, A. Fan, M. Auli and D. Grangier, "Language Modeling with Gated Convolutional Networks," in *Proc. ICML*, PMLR 70, 2017. [PMLR](https://proceedings.mlr.press/v70/dauphin17a.html)
+35. D. Hendrycks and K. Gimpel, "Gaussian Error Linear Units (GELUs)," arXiv:1606.08415, 2016. [arXiv](https://arxiv.org/abs/1606.08415)
+36. W. Shi, J. Caballero, F. Huszár, J. Totz, A. P. Aitken, R. Bishop, D. Rueckert and Z. Wang, "Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Shi_Real-Time_Single_Image_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1609.05158)
+37. A. Odena, V. Dumoulin and C. Olah, "Deconvolution and Checkerboard Artifacts," *Distill*, vol. 1, no. 10, 2016. [Distill](https://distill.pub/2016/deconv-checkerboard/) · [doi](https://doi.org/10.23915/distill.00003)
+38. A. Aitken, C. Ledig, L. Theis, J. Caballero, Z. Wang and W. Shi, "Checkerboard Artifact Free Sub-Pixel Convolution: A Note on Sub-Pixel Convolution, Resize Convolution and Convolution Resize," arXiv:1707.02937, 2017. [arXiv](https://arxiv.org/abs/1707.02937)
+39. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," in *Proc. Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, LNCS, Springer, pp. 234–241, 2015. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) · [arXiv](https://arxiv.org/abs/1505.04597)
+40. G. Huang, Z. Liu, L. van der Maaten and K. Q. Weinberger, "Densely Connected Convolutional Networks," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Huang_Densely_Connected_Convolutional_CVPR_2017_paper.html)
+41. L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy and A. L. Yuille, "DeepLab: Semantic Image Segmentation with Deep Convolutional Nets, Atrous Convolution, and Fully Connected CRFs," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 40, no. 4, pp. 834–848, 2018. [doi](https://doi.org/10.1109/TPAMI.2017.2699184) · [arXiv](https://arxiv.org/abs/1606.00915)
+42. W. Luo, Y. Li, R. Urtasun and R. Zemel, "Understanding the Effective Receptive Field in Deep Convolutional Neural Networks," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2016. [NeurIPS](https://proceedings.neurips.cc/paper/2016/hash/c8067ad1937f728f51288b3eb986afaa-Abstract.html) · [arXiv](https://arxiv.org/abs/1701.04128)
+43. J. Kim, J. K. Lee and K. M. Lee, "Accurate Image Super-Resolution Using Very Deep Convolutional Networks," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Kim_Accurate_Image_Super-Resolution_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1511.04587)
+44. H. Guo, J. Li, T. Dai, Z. Ouyang, X. Ren and S.-T. Xia, "MambaIR: A Simple Baseline for Image Restoration with State-Space Model," in *Proc. ECCV 2024*, LNCS, Springer, 2025. [doi](https://doi.org/10.1007/978-3-031-72649-1_13) · [arXiv](https://arxiv.org/abs/2402.15648)
+45. ITU-T, "Recommendation T.81: Information technology – Digital compression and coding of continuous-tone still images – Requirements and guidelines" (the JPEG standard), 1992. [ITU](https://www.itu.int/rec/T-REC-T.81)
+46. T. Elsken, J. H. Metzen and F. Hutter, "Neural Architecture Search: A Survey," *Journal of Machine Learning Research*, vol. 20, 2019. [JMLR](https://jmlr.org/papers/v20/18-598.html) · [arXiv](https://arxiv.org/abs/1808.05377)
+47. A. Khan, A. Sohail, U. Zahoora and A. S. Qureshi, "A Survey of the Recent Architectures of Deep Convolutional Neural Networks," *Artificial Intelligence Review*, vol. 53, no. 8, pp. 5455–5516, 2020. [doi](https://doi.org/10.1007/s10462-020-09825-6) · [arXiv](https://arxiv.org/abs/1901.06032)
+48. S. Khan, M. Naseer, M. Hayat, S. W. Zamir, F. S. Khan and M. Shah, "Transformers in Vision: A Survey," *ACM Computing Surveys*, vol. 54, no. 10s, 2022. [doi](https://doi.org/10.1145/3505244) · [arXiv](https://arxiv.org/abs/2101.01169)
+49. S. Woo, S. Debnath, R. Hu, X. Chen, Z. Liu, I. S. Kweon and S. Xie, "ConvNeXt V2: Co-Designing and Scaling ConvNets With Masked Autoencoders," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Woo_ConvNeXt_V2_Co-Designing_and_Scaling_ConvNets_With_Masked_Autoencoders_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2301.00808)
+50. M. Goldblum, H. Souri, R. Ni, M. Shu, V. Prabhu, G. Somepalli, P. Chattopadhyay, M. Ibrahim et al., "Battle of the Backbones: A Large-Scale Comparison of Pretrained Models across Computer Vision Tasks," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2023. [arXiv](https://arxiv.org/abs/2310.19909)
+51. X. Chen, X. Wang, J. Zhou, Y. Qiao and C. Dong, "Activating More Pixels in Image Super-Resolution Transformer," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Chen_Activating_More_Pixels_in_Image_Super-Resolution_Transformer_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2205.04437)
+52. H. Guo, Y. Guo, Y. Zha, Y. Zhang, W. Li, T. Dai, S.-T. Xia and Y. Li, "MambaIRv2: Attentive State Space Restoration," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Guo_MambaIRv2_Attentive_State_Space_Restoration_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2411.15269)
+53. A. Araujo, W. Norris and J. Sim, "Computing Receptive Fields of Convolutional Neural Networks," *Distill*, vol. 4, no. 11, 2019. [Distill](https://distill.pub/2019/computing-receptive-fields/) · [doi](https://doi.org/10.23915/distill.00021)

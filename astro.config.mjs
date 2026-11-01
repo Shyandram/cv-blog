@@ -2,11 +2,12 @@
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
-import { unified } from '@astrojs/markdown-remark';
+import { unified, rehypeHeadingIds } from '@astrojs/markdown-remark';
 import remarkMath from 'remark-math';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import rehypeKatex from 'rehype-katex';
 import rehypeCitations from './src/lib/rehypeCitations.mjs';
+import rehypeSupplementZones from './src/lib/rehypeSupplementZones.mjs';
 import { fileURLToPath } from 'node:url';
 import * as pagefind from 'pagefind';
 
@@ -18,7 +19,11 @@ const pagefindIndex = () => ({
   hooks: {
     'astro:build:done': async ({ dir, logger }) => {
       const out = fileURLToPath(dir);
-      const { index, errors } = await pagefind.createIndex();
+      // KaTeX renders each formula three times (HTML glyphs, MathML, TeX annotation); index only the MathML text so
+      // search excerpts do not show raw TeX or tripled glyphs. UI-only text is left out too.
+      const { index, errors } = await pagefind.createIndex({
+        excludeSelectors: ['.katex-html', '.katex-mathml annotation', '.rt-copy', '.fig-badge'],
+      });
       if (!index) throw new Error(`Pagefind failed to start: ${errors.join('; ')}`);
       const { page_count } = await index.addDirectory({ path: out });
       await index.writeFiles({ outputPath: `${out}pagefind` });
@@ -96,7 +101,7 @@ export default defineConfig({
   },
   markdown: {
     // Astro 7 defaults to Sätteri; we use unified for remark-math + rehype-katex.
-    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations] }),
+    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations, rehypeHeadingIds, rehypeSupplementZones] }),
     shikiConfig: { themes: { light: 'github-light', dark: 'github-dark' }, wrap: false },
   },
 });

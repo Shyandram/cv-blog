@@ -1,0 +1,887 @@
+---
+title: "DLCV 06A・人體姿態與關鍵點估計"
+description: "深度網路如何找出影像中每個人的關節：骨架與可見性、熱圖與迴歸及子像素解碼、由上而下與由下而上的多人流程、以 OKS 為基礎的 AP 與 PCK，以及透過提升、三角測量與人體模型取得的 3D 姿態、資料集與失效模式。"
+track: deep-learning
+order: 65
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection]
+tags: [pose-estimation, keypoints, heatmaps, hrnet, openpose, object-keypoint-similarity, 3d-human-pose]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figSkeleton from '../../../../assets/deep-learning/dl-06a-pose-keypoints/skeleton.png';
+import figDecoding from '../../../../assets/deep-learning/dl-06a-pose-keypoints/heatmap-decoding.png';
+import figPipelines from '../../../../assets/deep-learning/dl-06a-pose-keypoints/pipelines.png';
+import figOks from '../../../../assets/deep-learning/dl-06a-pose-keypoints/oks-toy.png';
+import figGrouping from '../../../../assets/deep-learning/dl-06a-pose-keypoints/grouping-toy.png';
+
+## 你將學到
+
+- 姿態是什麼：一張由具名**關鍵點**（keypoint）組成的骨架圖，每個關鍵點有座標與可見性旗標；以及姿態估計與偵測、分割、還有傳統特徵擷取中「通用關鍵點」的差別。
+- 網路輸出關鍵點的兩種方式，直接迴歸與高斯**熱圖**（heatmap），以及為什麼解碼熱圖需要子像素修正；附一個經過測試的實驗，量測量化誤差如何隨熱圖步幅（stride）變化。
+- 多人姿態怎麼解：由上而下（top-down）流程（先用人物偵測器，再對每個裁切區域用 SimpleBaseline、HRNet 或 ViTPose）、由下而上（bottom-up）流程（先找出所有關鍵點，再用部分親和場或關聯嵌入分組），以及單階段與集合預測模型。
+- 姿態怎麼衡量：物件關鍵點相似度（object keypoint similarity, OKS）與以 OKS 為基礎、使用各關鍵點常數的 AP、PCK 與 PCKh，以及 3D 用的 MPJPE，並附程式碼。
+- 3D 姿態如何取得：把 2D 關鍵點提升（lifting）到 3D、用多台相機做三角測量，或擬合 SMPL 這類參數化人體模型；以及哪些資料集與失效模式（遮擋、擁擠、左右翻轉）塑造了這個領域。
+
+## 先看全貌
+
+偵測器會在每個人身上畫一個框（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)）。框只說明人在*哪裡*，卻沒說他*在做什麼*：站著、揮手、跌倒或踢球，框看起來都差不多。**姿態估計**（pose estimation）再往前一步。它找出身體上少數有意義的點，也就是**關鍵點**（鼻子、肩膀、手肘、手腕、臀部、膝蓋、腳踝等），再把它們連成火柴人。
+
+<Callout type="tip" title="用最簡單的話說">
+還記得連連看的圖畫嗎？姿態估計玩的是相反的遊戲。電腦看著一張人物照片，必須*把點補回去*：肩膀、手肘、手腕、臀部、膝蓋、腳踝各放一個點，而且每個點的名字都要對。然後把點連起來，你就得到一個動作跟真人一樣的火柴人。難的地方，你自己做也會覺得難：手藏在背後、兩個朋友抱在一起而分不清哪隻手臂是誰的，還有要記得哪一邊才是*他們的*左邊。
+</Callout>
+
+**為什麼重要。** 火柴人是身體動作的精簡摘要。運動分析、物理治療、跌倒偵測與健身 App 都從它量測關節角度。動畫、遊戲與擴增實境用它來驅動虛擬角色。機器人與自駕車用它預測行人接下來會往哪走。神經科學家不用貼標記，就能追蹤小鼠與果蠅的關節 [1]。同樣的想法，熱圖、關鍵點分組與關鍵點指標，也被拿去處理人臉、手、動物與物件的部位。
+
+本篇在人物偵測、非極大值抑制（non-maximum suppression, NMS）與 AP 的做法上，建立在 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/) 之上；在密集預測與上取樣上，建立在 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/) 之上；這些內容我們直接連結，不再重複。隨時間追蹤姿態會用到 [DLCV 06](/zh-tw/learn/deep-learning/dl-06-object-tracking/) 的關聯方法，3D 三角測量則用到 [DLCV 08](/zh-tw/learn/deep-learning/dl-08-3d-reconstruction/) 的相機幾何。兩篇綜述勾勒出這個領域：Zheng 等人 [2] 涵蓋以深度學習做的 2D 與 3D 姿態，Chen 等人 [3] 則依任務整理單目方法。我們會在「現代觀點」回頭談這兩篇。
+
+## 什麼是姿態
+
+**白話版。** 姿態就是身體上一串有名字的點，每個點有位置，還有一個旗標說明它是否可見；另外有一份固定的清單，說明哪些點之間用「骨頭」相連。
+
+**精確版。** **骨架**（skeleton）是一張圖 $G = (V, E)$。頂點 $V = \{1, \dots, K\}$ 是 $K$ 種關鍵點*類型*（例如「左手腕」），邊 $E \subset V \times V$ 是連接它們的**肢段**（limb）。一個人的 2D 姿態是
+
+$$
+P = \{(\mathbf{x}_k, v_k)\}_{k=1}^{K}, \qquad \mathbf{x}_k = (x_k, y_k) \in \mathbb{R}^2,
+$$
+
+其中 $\mathbf{x}_k$ 是關鍵點 $k$ 在影像中的位置（單位為像素），$v_k$ 是它的**可見性旗標**（visibility flag）。COCO 關鍵點格式用 $v_k = 0$ 表示「未標註」，$v_k = 1$ 表示「已標註但看不見」（被遮擋，位置由標註者推測），$v_k = 2$ 表示「已標註且可見」[4]。3D 姿態則把 $\mathbf{x}_k$ 換成點 $\mathbf{X}_k \in \mathbb{R}^3$，通常以毫米為單位，位於相機座標系或世界座標系。
+
+COCO 的人物骨架有 $K = 17$ 個關鍵點：鼻子、雙眼、雙耳、肩膀、手肘、手腕、臀部、膝蓋與腳踝 [4]。圖 1 在一個合成的火柴人上標出它們。有兩個慣例會讓每個初學者踩到：
+
+- **左與右是指那個人的，不是觀看者的。** 面對相機的人，他的左肩在影像的*右*側。因此把影像水平翻轉，會讓每個左側關鍵點變成右側關鍵點，資料增強時除了鏡射座標，也必須對調標籤。
+- **看不見不等於未標註。** 被遮擋的手腕（$v = 1$）仍有位置，也仍會被評估；未標註的關鍵點（$v = 0$）則直接被忽略。
+
+<Figure src={figSkeleton} alt="左：一個火柴人，有 17 個編號的關鍵點，從 0 號鼻子到 16 號右腳踝；那個人的左側畫成藍色、右側畫成橘色；右手腕是空心圓圈，標示 v=1（被遮擋），右耳標示 v=0（未標註）。右：一張暗色影像，每個已標註的關鍵點位置都有明亮的高斯光斑，這就是熱圖網路的訓練目標。" caption="圖 1 — (a) 合成人物上的 17 個關鍵點、COCO 風格骨架，人物的左側為藍色、右側為橘色，並標出兩種不可見的情況。(b) 對應的熱圖網路訓練目標：在輸出步幅 4 下，每個已標註的關鍵點有一個高斯光斑（16 張圖以逐像素最大值合併顯示）。" />
+
+### 姿態估計與相鄰任務的比較
+
+有四個相關任務很容易混淆：
+
+| 任務 | 輸出 | 在本課程的位置 |
+| --- | --- | --- |
+| 通用關鍵點偵測 | 在另一張影像中容易再次找到的角點與斑點，附描述子；沒有語意名稱 | [IP 12](/zh-tw/learn/image-processing/dip-12-feature-extraction/#以高斯差偵測關鍵點) |
+| 物件偵測 | 每個物件一個框、類別與分數 | [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/) |
+| 實例分割 | 每個物件一張像素遮罩 | [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/) |
+| 姿態估計 | 每個物件一組*具名*關鍵點，由固定骨架連接 | 本篇 |
+
+[IP 12](/zh-tw/learn/image-processing/dip-12-feature-extraction/) 的關鍵點是由*影像*決定的：哪裡剛好有角點或斑點就在哪裡。這裡的關鍵點是由*任務*決定的：即使左手肘落在一片平滑、沒有任何角點的袖子上，也必須找出來。這就是為什麼語意關鍵點要從有標註的範例學習，而不是用公式偵測。
+
+這個任務有好幾種變體。**單人 2D** 估計假設每個輸入裁切區域只有一個人。**多人 2D** 估計還得判斷有幾個人，以及每個關鍵點屬於誰。**3D** 估計要還原深度。**全身**（whole-body）估計加上腳、手與臉部的特徵點，**網格重建**（mesh recovery）則輸出完整的人體表面，而不是稀疏的骨架 [5]。
+
+## 輸出關鍵點的兩種方式
+
+**白話版。** 網路可以*直接說出數字*（「手腕在 $x = 140$、$y = 128$」），這是迴歸；也可以*畫一張圖*，在手腕所在之處發亮，這是熱圖。在深度學習的大部分時期，畫圖贏了，因為卷積網路畫圖比報數字拿手。
+
+### 直接迴歸
+
+DeepPose [6] 是早期以迴歸為基礎的深度姿態估計器。卷積網路把影像對應到 $2K$ 個數字的向量，也就是以人物框正規化後的關鍵點座標，並用平方誤差訓練，
+
+$$
+\mathcal{L}_{\text{reg}} = \sum_{k=1}^{K} \lVert \hat{\mathbf{x}}_k - \mathbf{x}_k \rVert_2^2,
+$$
+
+其中 $\hat{\mathbf{x}}_k$ 是關鍵點 $k$ 的預測位置，$\mathbf{x}_k$ 是真值位置（皆為正規化座標）。DeepPose 以一串後續的迴歸器修正它的初步猜測，這些迴歸器作用在每個關節周圍解析度更高的裁切區域上。
+
+迴歸簡單、快速，也沒有解析度上限；但全連接的輸出丟掉了卷積擅長處理的空間配置，因此多年來迴歸在準確度上落後熱圖。
+
+### 高斯熱圖
+
+Tompson 等人 [7] 改為要求網路針對每種關鍵點類型輸出一張影像，也就是一張**熱圖**，在關鍵點附近高、其他地方低。關鍵點 $k$ 的目標是以真實位置為中心的高斯光斑：
+
+$$
+H_k^{*}(\mathbf{p}) = \exp\!\left(-\frac{\lVert \mathbf{p} - \mathbf{x}_k / s \rVert_2^2}{2\sigma^2}\right),
+$$
+
+其中 $\mathbf{p}$ 是熱圖的一個格子（整數座標），$s$ 是**輸出步幅**（output stride，一個熱圖格子涵蓋幾個輸入像素，通常為 4），$\mathbf{x}_k / s$ 是以熱圖單位表示的真實關鍵點位置，$\sigma$ 是光斑的寬度（以格子為單位）。網路用預測熱圖 $\hat{H}_k$ 與目標之間逐像素的均方誤差來訓練，
+
+$$
+\mathcal{L}_{\text{hm}} = \frac{1}{K\,|\Omega|} \sum_{k=1}^{K} \sum_{\mathbf{p} \in \Omega} w_k \big(\hat{H}_k(\mathbf{p}) - H_k^{*}(\mathbf{p})\big)^2,
+$$
+
+其中 $\Omega$ 是熱圖格子的集合，$w_k$ 對未標註的關鍵點為 0，其餘為 1。堆疊沙漏網路（stacked hourglass network）沿用 Tompson 等人的作法使用這種監督，取 $\sigma = 1$ 像素 [8]。
+
+為什麼這比迴歸好這麼多？熱圖**符合卷積的運作方式**：它是密集的，而且具平移等變性（人移動，光斑就跟著移動），所以每個輸出格子回答的都是局部問題：「*這裡*有手腕嗎？」它**能表達疑慮**：兩個合理的手腕位置會變成兩個較弱的光斑，而單一迴歸座標會落在兩者之間。而且峰值高度就是每個關鍵點**免費的信心分數**。
+
+代價是解析度：在步幅 4 下，峰值只能落在間距 4 像素的格點上，而且 $K$ 張圖所需的記憶體遠多於 $2K$ 個數字。密集預測網路如何恢復解析度，見 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/#上取樣分數不是標籤)；下一節說明格點造成多少損失，以及如何把大部分損失補回來。
+
+### 解碼熱圖：argmax、量化誤差與子像素修正
+
+**白話版。** 讀熱圖就像讀刻度很粗的溫度計。只報最近的刻度（最亮的格子），最多會差半格。看*相鄰*格子有多亮，就能知道該往哪個方向、移動多遠，落在刻度之間。
+
+最簡單的解碼器取最亮的格子，再對應回影像：
+
+$$
+\hat{\mathbf{x}}_k = s \cdot \arg\max_{\mathbf{p} \in \Omega} \hat{H}_k(\mathbf{p}).
+$$
+
+如果真實位置在格子內均勻隨機分布，這個解碼器在每個軸上的誤差會均勻分布在 $[-s/2, s/2]$，預期的歐幾里得誤差約為 $0.383\,s$（單位正方形中心到其中一個隨機點的平均距離，$(\sqrt{2} + \ln(1 + \sqrt{2}))/6 \approx 0.383$，再乘以 $s$）。在步幅 4 下，那就是約 1.5 像素的誤差，而且是*在網路還沒犯任何錯之前*。對一個 100 像素高的人來說，這已足以在稍後介紹的 OKS 指標的嚴格門檻上丟分。
+
+常見的改進有三種：
+
+- **四分之一偏移。** 把估計值從峰值朝較亮的鄰格方向移動四分之一個格子。堆疊沙漏論文加入這一步來改善高精度門檻下的結果 [8]，SimpleBaseline 也把它當作標準作法 [9]。
+- **對數熱圖上的 Taylor 步驟。** 高斯的對數是二次函數（拋物線），所以可以由最亮格子上的值、斜率與曲率，精確求出它的最大值位置：$\hat{\mathbf{p}} = \mathbf{m} - \mathbf{D}''(\mathbf{m})^{-1} \mathbf{D}'(\mathbf{m})$，其中 $\mathbf{m}$ 是最亮的格子，$\mathbf{D}'$ 與 $\mathbf{D}''$ 是 $\log \hat{H}_k$ 在該處的梯度與 Hessian，以有限差分估計。這是 DARK [10] 的解碼步驟。DARK 在解碼前還會先對預測熱圖做高斯平滑，因為真實的預測並非完美的高斯；它也把訓練目標以精確（未四捨五入）的關鍵點位置為中心，這正是我們 $H_k^*$ 公式已經採用的作法。
+- **Soft-argmax（積分迴歸）。** 把熱圖當成機率分布，輸出它的*平均值*：$\hat{\mathbf{x}}_k = s \sum_{\mathbf{p}} \mathbf{p}\, \tilde{H}_k(\mathbf{p})$，其中 $\tilde{H}_k = \operatorname{softmax}(\hat{H}_k)$ 是對所有格子取的 softmax。Sun 等人 [11] 證明這能把熱圖變成可微分的迴歸輸出，所以網路可以直接針對座標做端到端訓練，沒有量化問題。
+
+DARK 的消融實驗讓這個效果的大小很具體：對 HRNet-W32 模型、小尺寸 $128 \times 96$ 輸入、在 COCO 驗證集上，純 argmax 的 AP 為 61.2，四分之一偏移為 66.9，它的 Taylor 解碼為 68.4 [10]。單靠解碼器就讓 AP 動了 7 點以上。
+
+*選讀：[以 Taylor 步驟做子像素解碼](#以-taylor-步驟做子像素解碼)（見「補充資料」頁）。推導 Newton 步驟、說明它為什麼對高斯是精確的，以及邊界、平坦與多峰熱圖等特殊情況。*
+
+這段程式碼把 500 個隨機關鍵點編碼成步幅 1、2、4、8 的熱圖，加入少量雜訊來模擬不完美的預測，再用各種方法解碼。所有數字都來自這次合成實驗。
+
+```python
+import numpy as np
+
+def encode(xy, shape, stride, sigma=2.0):
+    """Gaussian heatmap of size shape=(H, W) cells for a keypoint at image position xy."""
+    cx, cy = xy[0] / stride, xy[1] / stride            # exact (unrounded) center in cells
+    ys, xs = np.mgrid[0:shape[0], 0:shape[1]]
+    return np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * sigma ** 2))
+
+def peak(h):
+    y, x = np.unravel_index(np.argmax(h), h.shape)
+    return x, y
+
+def decode_argmax(h, stride):
+    x, y = peak(h)
+    return np.array([x, y], float) * stride
+
+def decode_quarter(h, stride):
+    """Move a quarter cell from the peak toward the higher neighbour on each axis."""
+    x, y = peak(h)
+    p = np.array([x, y], float)
+    if 0 < x < h.shape[1] - 1: p[0] += 0.25 * np.sign(h[y, x + 1] - h[y, x - 1])
+    if 0 < y < h.shape[0] - 1: p[1] += 0.25 * np.sign(h[y + 1, x] - h[y - 1, x])
+    return p * stride
+
+def decode_taylor(h, stride):
+    """One Newton step on log h at the peak: offset = -Hessian^-1 * gradient."""
+    x, y = peak(h)
+    p = np.array([x, y], float)
+    if 1 <= x < h.shape[1] - 1 and 1 <= y < h.shape[0] - 1:
+        L = np.log(np.maximum(h[y - 1:y + 2, x - 1:x + 2], 1e-10))
+        g = np.array([L[1, 2] - L[1, 0], L[2, 1] - L[0, 1]]) / 2
+        hxx = L[1, 2] - 2 * L[1, 1] + L[1, 0]
+        hyy = L[2, 1] - 2 * L[1, 1] + L[0, 1]
+        hxy = (L[2, 2] - L[2, 0] - L[0, 2] + L[0, 0]) / 4
+        Hs = np.array([[hxx, hxy], [hxy, hyy]])
+        if np.linalg.det(Hs) > 0 and hxx < 0:          # a proper maximum
+            p += -np.linalg.solve(Hs, g)
+    return p * stride
+
+def decode_soft(logits, stride):
+    """Soft-argmax: the expected position under softmax(logits)."""
+    w = np.exp(logits - logits.max()); w /= w.sum()
+    ys, xs = np.mgrid[0:w.shape[0], 0:w.shape[1]]
+    return np.array([(w * xs).sum(), (w * ys).sum()]) * stride
+
+rng = np.random.default_rng(0)
+W, H = 192, 256                                    # input crop size in pixels (width, height)
+pts = rng.uniform([16, 16], [W - 16, H - 16], (500, 2))
+
+def mean_error(decoder, s, noise=0.01, use_log=False):
+    shape, e = (H // s, W // s), 0.0
+    for xy in pts:
+        h = encode(xy, shape, s)
+        h = np.clip(h + rng.normal(0, noise, h.shape), 1e-6, None)   # an imperfect "prediction"
+        e += np.linalg.norm(decoder(np.log(h) if use_log else h, s) - xy)
+    return e / len(pts)
+
+print("stride  argmax  quarter  taylor   (mean error in input pixels)")
+for s in (1, 2, 4, 8):
+    print(f"{s:6d}  {mean_error(decode_argmax, s):6.2f}  {mean_error(decode_quarter, s):7.2f}"
+          f"  {mean_error(decode_taylor, s):6.2f}")
+print(f"soft-argmax, stride 4: clean map {mean_error(decode_soft, 4, 0.0, True):.2f},"
+      f" noisy map {mean_error(decode_soft, 4, 0.01, True):.2f}")
+```
+
+```text
+stride  argmax  quarter  taylor   (mean error in input pixels)
+     1    0.39     0.20    0.05
+     2    0.80     0.40    0.11
+     4    1.54     0.78    0.21
+     8    3.20     1.59    0.43
+soft-argmax, stride 4: clean map 0.04, noisy map 24.42
+```
+
+可以看出四個重點，圖 2 畫出前三個。
+
+1. **argmax 誤差隨步幅線性成長**，並緊貼 $0.383\,s$ 的預測（步幅 1 到 8 分別是 0.38、0.77、1.53、3.06）。
+2. **四分之一偏移讓誤差減半**，而且不花任何成本。
+3. **Taylor 步驟去除了剩下的大部分誤差**，因為高斯的對數確實是拋物線；剩下的來自加入的雜訊。
+4. **Soft-argmax 在乾淨的熱圖上是精確的，但在有雜訊的熱圖上嚴重失敗。** 當 logits 等於 $\log \hat{H}$ 時，softmax 權重正比於 $\hat{H}$，而散布在數千個格子上的微小雜訊底，總量會超過狹窄的峰值，把平均值拉向圖的中心。積分迴歸是讓網路*透過* soft-argmax 一起訓練，迫使網路在關鍵點以外幾乎不放任何質量；若把 soft-argmax 事後套用在以 MSE 訓練的熱圖上，它就是個很差的解碼器。
+
+<Figure src={figDecoding} alt="左：明亮峰值周圍 9 × 9 格的熱圖局部，星號標出真實位置，方塊是 argmax 格子中心，三角形是四分之一偏移的估計值，圓點是 Taylor 估計值，與星號重合。右：平均關鍵點誤差（輸入像素）對熱圖步幅 1、2、4、8；argmax 沿著虛線理論值從 0.39 升到 3.2，四分之一偏移約為其一半，Taylor 解碼器維持在 0.5 以下。" caption="圖 2 — 解碼熱圖。(a) 步幅 4 下的峰值附近，最亮的格子（方塊）沒有對準真實位置（星號）；四分之一偏移（三角形）移動了一部分；Taylor 步驟（圓點）剛好落在上面。(b) 上述程式碼合成實驗中，各解碼器對 500 個隨機關鍵點的平均誤差；虛線是 argmax 的預測值，即步幅的 0.383 倍。" />
+
+### 其他輸出表示法
+
+有兩種較新的表示法介於熱圖與單純迴歸之間。**座標分類**（SimCC [12]）對每個關鍵點預測兩個一維分布，分別針對 $x$ 與 $y$，每個像素分成多個 bin，不需大型 2D 圖就能降低量化誤差。**以似然為基礎的迴歸**（RLE [13]）維持直接迴歸，但在訓練中學習誤差分布的形狀，其論文報告迴歸在多人姿態上勝過熱圖方法。兩者都是本篇稍後單階段與基於 query 的模型的自然輸出形式。
+
+*選讀：[座標分類與以似然為基礎的迴歸](#座標分類與以似然為基礎的迴歸)（見「補充資料」頁）。SimCC 的 bin 與分割因子如何運作，以及為什麼迴歸損失的選擇其實是對誤差分布的假設。*
+
+## 單人熱圖網路
+
+**白話版。** 要精確放置一個手腕，網路需要精細的細節（高解析度）。要知道這個光斑*是*左手腕而不是右手腕，它需要看到整個身體（大的感受野）。下面每一種架構，都是以不同方式同時做到兩者。
+
+輸入是**人物裁切區域**（person crop）：圍著一個人的框，略微放大、補邊成固定的長寬比，再縮放成固定尺寸，例如 $256 \times 192$（高 × 寬）。輸出是步幅 4 的 $K$ 張熱圖，這個例子裡是 $64 \times 48$。
+
+- **Convolutional Pose Machines（CPM）** [14] 堆疊數個階段。每個階段看到影像特徵*以及*上一階段的熱圖（信念圖），所以後面的階段可以用其他關節的位置當脈絡，例如「手肘位於肩膀與手腕之間」。每個階段都有監督（**中間監督**，intermediate supervision），對抗深層堆疊中的梯度消失。
+- **堆疊沙漏網路**（stacked hourglass）[8] 把對稱的編碼器–解碼器（「沙漏」）模組重複多次，每次之後都有中間監督。每個沙漏先池化到非常粗的解析度以蒐集全身脈絡，再用跳接上取樣回來，這和 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/#編碼器解碼器與跳接) 為分割描述的編碼器–解碼器是同一個想法。
+- **SimpleBaseline** [9] 證明這些機制大多沒有必要。它採用 ImageNet 預訓練的 ResNet（[DLCV 02](/zh-tw/learn/deep-learning/dl-02-image-classification/)），在最後一個階段之上加三層反卷積（轉置卷積）層，對 $256 \times 192$ 的輸入產生 $64 \times 48$ 的熱圖。它的消融實驗發現，三層反卷積（熱圖 $64 \times 48$）比兩層（$32 \times 24$）高 2.5 AP，直接量到了上面討論的解析度代價。
+- **HRNet** [15] 讓高解析度分支貫穿整個網路，而不是到最後才恢復解析度。它逐步加入較低解析度的分支，讓它們**平行**執行，並反覆在所有解析度之間交換資訊（多尺度融合）。熱圖從高解析度分支讀出，而這個分支已經多次接收過粗尺度的脈絡。本篇後面有好幾個方法建立在 HRNet 之上：DARK 用 HRNet 模型回報它的解碼結果，HigherHRNet 與 DEKR 則把它擴展到由下而上的姿態。
+- **ViTPose** [16] 把卷積骨幹換成不分層級的單純視覺 Transformer（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/)），使用 $16 \times 16$ 的 patch，後面接由幾層反卷積（甚至只有一層上取樣加一層卷積）組成的輕量解碼器。論文把它從 1 億擴大到 10 億參數，顯示簡單的設計加上大型預訓練 Transformer，創造了新的準確度–吞吐量取捨。
+
+*選讀：[Simple Baselines（Xiao 等人，2018）](#simple-baselinesxiao-等人2018)（見「論文導讀」頁）。論文的消融實驗量測了什麼，以及把它的數字與其他方法比較時要檢查什麼。*
+
+以上每個模型都有兩個重要的訓練細節。**資料增強**會對裁切區域做旋轉、縮放與翻轉；水平翻轉時必須對調左右關鍵點的通道。**翻轉測試**（flip testing）讓模型分別處理裁切區域與它的鏡像，把鏡像輸出的通道換回來，再把熱圖平均；堆疊沙漏論文報告這讓驗證集平均提升約 1% [8]，後來的模型也把它當作標準作法 [9]。
+
+*選讀：[翻轉測試與左右對調的記帳](#翻轉測試與左右對調的記帳)（見「補充資料」頁）。鏡射熱圖時的索引運算，以及沒有對調通道時會出什麼問題。*
+
+## 多人：由上而下與由下而上
+
+**白話版。** 照片裡有好幾個人時，有兩種工作順序。**由上而下**：先找出每個人，再在每個人的框裡找關節。**由下而上**：先找出圖中所有的關節，再判斷哪些關節屬於同一個人。第三類方法則兩件事一次做完。
+
+<Figure src={figPipelines} alt="三列方塊圖。由上而下：影像、人物偵測器、裁切並縮放每個框、單人熱圖網路、解碼並對應回影像。由下而上：影像、所有關鍵點熱圖、PAF 或 tag 等關聯線索、分組成人、姿態。單階段或集合預測：影像、骨幹與共用的頭、每個中心或 query 一個姿態、分數過濾（通常不需要 NMS）、姿態。每列下方有一則註記，說明它主要的取捨。" caption="圖 3 — 三種多人流程。由上而下對每個偵測到的框執行單人模型；由下而上一次找出所有關鍵點再分組；單階段與集合預測模型一次輸出每個人的完整姿態。" />
+
+### 由上而下：先偵測，再估計
+
+人物偵測器（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)）提出框；每個框被裁切、縮放，再送進 SimpleBaseline、HRNet 或 ViTPose 這類單人網路；熱圖經過解碼，關鍵點再對應回影像座標。Mask R-CNN [17] 把同樣的想法建進偵測器：它的關鍵點分支在每個感興趣區域內預測 $K$ 張大小為 $m \times m$ 的遮罩，每張都以 $m^2$ 類 softmax 訓練，目標是關鍵點所在的單一「one-hot」像素（RoI 的機制見 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#二階段偵測器r-cnn-家族)）。
+
+由上而下的方法很準確，因為每個人在關鍵點網路看到之前，都被縮放到同一個舒適的尺度，這對小尺寸與中等尺寸的人幫助最大 [18]。它的弱點來自流程本身：
+
+- **成本隨人數成長**，因為關鍵點網路每個框都要跑一次。
+- **偵測器失敗的地方它也會失敗。** 漏掉的人就沒有姿態；NMS（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#非極大值抑制nms與-soft-nms)）可能刪掉兩個重疊者其中一個；而一個框裡若有兩個人，單人網路會有兩個左手腕可選。OpenPose 的作者在一個 COCO 驗證子集上量測過：同一個單人模型用真值框得到 62.7 AP，用 SSD 偵測器的框只有 52.7 AP [18]。
+
+### 由下而上：先偵測所有關鍵點，再分組
+
+由下而上的模型對整張影像只跑一次，輸出 $K$ 張包含*所有*人關鍵點的熱圖。峰值用局部最大值檢驗找出，這相當於每種關鍵點各做一次 NMS。困難的部分是**分組**（grouping）：決定哪個左手肘該跟哪個左手腕配對。
+
+**部分親和場（PAF）。** OpenPose [18] 除了熱圖之外，還對每種肢段預測一個 2D 向量場。在第 $k$ 個人的肢段 $c$ 上的像素，目標是指向該肢段方向的單位向量；其他地方為零：
+
+$$
+\mathbf{L}^{*}_{c,k}(\mathbf{p}) = \begin{cases} \mathbf{v} = \dfrac{\mathbf{x}_{j_2,k} - \mathbf{x}_{j_1,k}}{\lVert \mathbf{x}_{j_2,k} - \mathbf{x}_{j_1,k} \rVert_2} & \text{if } \mathbf{p} \text{ lies on limb } c \text{ of person } k, \\ \mathbf{0} & \text{otherwise,} \end{cases}
+$$
+
+其中 $j_1$ 與 $j_2$ 是肢段 $c$ 連接的兩種關鍵點類型（例如左手肘與左手腕），$\mathbf{x}_{j,k}$ 是第 $k$ 個人的關鍵點 $j$ 的位置，而「在肢段上」的意思是離它們之間的線段不超過 $\sigma_l$（肢段寬度，單位為像素）。幾個人的肢段重疊處，目標取平均。要為兩個偵測到的關鍵點 $\mathbf{d}_{j_1}$ 與 $\mathbf{d}_{j_2}$ 之間的候選連接打分，OpenPose 沿著連接兩者的線段對預測場 $\mathbf{L}_c$ 做積分：
+
+$$
+E = \int_{0}^{1} \mathbf{L}_c\big(\mathbf{p}(u)\big) \cdot \frac{\mathbf{d}_{j_2} - \mathbf{d}_{j_1}}{\lVert \mathbf{d}_{j_2} - \mathbf{d}_{j_1} \rVert_2} \, du, \qquad \mathbf{p}(u) = (1 - u)\,\mathbf{d}_{j_1} + u\,\mathbf{d}_{j_2},
+$$
+
+其中 $u$ 沿著線段變化，積分用幾個等間距的 $u$ 取樣值來近似。當線段上的場和線段方向一致時，$E$ 就高，而這只有在兩個關鍵點真的是同一個肢段的兩端時才會發生。同時為所有肢段找最佳指派是 NP-hard，所以 OpenPose 做了鬆弛：只保留樹狀骨架的邊，對每種肢段各解一次**二分圖匹配**（bipartite matching），例如用匈牙利演算法（見 [DLCV 06](/zh-tw/learn/deep-learning/dl-06-object-tracking/#關聯代價矩陣與匈牙利演算法)），再把共用關鍵點的肢段接成人。
+
+*選讀：[OpenPose：部分親和場（Cao 等人，2017）](#openpose部分親和場cao-等人2017)（見「論文導讀」頁）。雙分支架構、貪婪式解析，以及如何閱讀論文中由上而下與由下而上的比較。*
+
+這段程式碼為兩個並肩站著、左前臂交叉的人建立真值 PAF，在關鍵點位置加入少量雜訊，再逐個肢段分組，一次用 PAF 分數，一次只用單純的距離（總肢段長度最短）。座標是合成的。
+
+```python
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+# 13 body keypoints and the 12 limbs of a tree that connects them
+J = ["nose", "l_sho", "r_sho", "l_elb", "r_elb", "l_wri", "r_wri",
+     "l_hip", "r_hip", "l_knee", "r_knee", "l_ank", "r_ank"]
+LIMBS = [(0, 1), (0, 2), (1, 3), (3, 5), (2, 4), (4, 6),
+         (1, 7), (2, 8), (7, 9), (9, 11), (8, 10), (10, 12)]
+
+# two people side by side; their left forearms cross (synthetic coordinates)
+A = np.array([[40, 20], [52, 38], [28, 38], [70, 50], [24, 62], [100, 74], [22, 86],
+              [48, 80], [32, 80], [50, 110], [30, 110], [52, 140], [28, 140]], float)
+B = np.array([[72, 24], [84, 42], [62, 42], [98, 58], [56, 64], [74, 76], [52, 86],
+              [80, 84], [66, 84], [82, 114], [64, 114], [84, 144], [62, 144]], float)
+people = [A, B]
+H, W, width = 160, 120, 3.0
+
+def render_paf(c):
+    """Ground-truth part affinity field of limb c: unit vectors near each person's limb."""
+    ys, xs = np.mgrid[0:H, 0:W]
+    field, count = np.zeros((H, W, 2)), np.zeros((H, W))
+    for P in people:
+        a, b = P[LIMBS[c][0]], P[LIMBS[c][1]]
+        v = (b - a) / np.linalg.norm(b - a)
+        along = (xs - a[0]) * v[0] + (ys - a[1]) * v[1]
+        across = np.abs(-(xs - a[0]) * v[1] + (ys - a[1]) * v[0])
+        on = (along >= 0) & (along <= np.linalg.norm(b - a)) & (across <= width)
+        field[on] += v; count[on] += 1
+    return field / np.maximum(count, 1)[..., None]          # average where limbs overlap
+
+def limb_score(field, p, q, n=10):
+    """Line integral of the field along the segment p -> q, approximated by n samples."""
+    d = (q - p) / np.linalg.norm(q - p)
+    u = np.linspace(0, 1, n)[:, None]
+    pts = np.round(p + u * (q - p)).astype(int)
+    return np.mean(field[pts[:, 1], pts[:, 0]] @ d)
+
+rng = np.random.default_rng(0)
+cands = [np.stack([A[j], B[j]]) + rng.normal(0, 1.0, (2, 2)) for j in range(13)]  # detections
+
+ok_paf = ok_near = 0
+for c, (j1, j2) in enumerate(LIMBS):
+    field = render_paf(c)
+    S = np.array([[limb_score(field, p, q) for q in cands[j2]] for p in cands[j1]])
+    D = np.linalg.norm(cands[j1][:, None] - cands[j2][None], axis=2)
+    if (j1, j2) == (3, 5):                                    # the crossing forearms
+        print("left elbow -> left wrist, PAF scores (rows: elbows A, B; cols: wrists A, B)")
+        print(np.round(S, 2))
+        print("distances in pixels"); print(np.round(D, 1))
+    r, k = linear_sum_assignment(-S)                          # maximize total affinity
+    ok_paf += np.sum(k == r)                                  # candidate i belongs to person i
+    r, k = linear_sum_assignment(D)                           # baseline: shortest total length
+    ok_near += np.sum(k == r)
+print(f"correct limbs with PAF scores:     {ok_paf}/{2 * len(LIMBS)}")
+print(f"correct limbs with distance only:  {ok_near}/{2 * len(LIMBS)}")
+```
+
+```text
+left elbow -> left wrist, PAF scores (rows: elbows A, B; cols: wrists A, B)
+[[0.67 0.04]
+ [0.29 0.78]]
+distances in pixels
+[[41.1 27.2]
+ [18.4 30.2]]
+correct limbs with PAF scores:     24/24
+correct limbs with distance only:  22/24
+```
+
+印出的矩陣顯示只靠幾何會失敗。每個手肘都*更靠近*另一個人的手腕（27.2 與 18.4 像素），而不是自己的（41.1 與 30.2），所以依距離配對會把兩條前臂都接錯。PAF 分數只在真正的肢段上高（0.67 與 0.78），因為那裡的場指向線段的方向；在錯誤的配對上則很低。圖 4 畫出兩種結果。請注意這裡的 PAF 是*真值*；訓練好的網路預測的場會比較模糊，方法的準確度取決於它預測得多好。
+
+<Figure src={figGrouping} alt="三個面板，顯示兩個重疊的合成人物的關鍵點。左：所有偵測到的關鍵點為灰色，兩個左手肘是方塊，兩個左手腕是菱形，紫色箭頭是部分親和場，在兩條前臂交叉處形成 X 形。中：以 PAF 線積分配對的肢段，24 個全部正確，人物 A 為藍色、人物 B 為橘色，前臂交叉。右：以最短距離配對的肢段，24 個中有 22 個正確，兩條前臂畫成紅色，表示接錯的肢段。" caption="圖 4 — 在上述程式碼的合成場景上做由下而上分組。(a) 偵測到的關鍵點與左前臂的 PAF。(b) 以 PAF 線積分配對，每個肢段都還原正確。(c) 只用距離配對，會把交叉的兩條前臂對調（紅色）。" />
+
+**關聯嵌入（associative embedding）。** Newell 等人 [19] 完全不用肢段場。網路在每張關鍵點熱圖旁邊輸出一張 **tag 圖**：每個像素一個實數。訓練時讓同一個人的關鍵點 tag 彼此相等，不同人的 tag 彼此相異。令 $h_k(\mathbf{x})$ 為關鍵點類型 $k$ 在像素 $\mathbf{x}$ 處的 tag，$\mathbf{x}_{nk}$ 為第 $n$ 個人的關鍵點 $k$ 的真值位置，共 $N$ 個人，$\bar{h}_n = \frac{1}{K} \sum_k h_k(\mathbf{x}_{nk})$ 為第 $n$ 個人的平均 tag，則分組損失為
+
+$$
+\mathcal{L}_g = \frac{1}{N} \sum_{n} \sum_{k} \big(\bar{h}_n - h_k(\mathbf{x}_{nk})\big)^2 + \frac{1}{N^2} \sum_{n} \sum_{n'} \exp\!\Big(-\frac{1}{2\sigma^2} \big(\bar{h}_n - \bar{h}_{n'}\big)^2\Big),
+$$
+
+其中第一項把每個人的 tag 拉向他們的平均，第二項把不同人的平均推開，懲罰會隨兩者距離增加而衰減（$\sigma$ 決定多遠才算「夠遠」）。tag 的絕對值不重要，只有差值重要。測試時，關鍵點一個關節接一個關節地加入人物，配對 tag 接近且偵測信心高的那些。CornerNet 借用了完全相同的想法來配對框的角點（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#無錨框偵測器用點取代框)）。
+
+**尺度。** 由下而上的方法以影像本身的尺度看所有人，所以小尺寸的人只佔到很少的熱圖格子；OpenPose 在中等尺寸的人上不如由上而下的方法準確，原因就在這裡 [18]。HigherHRNet [20] 加入解析度更高的熱圖（HRNet 的輸出用轉置卷積上取樣），並對多個解析度做監督與聚合；其論文報告在 CrowdPose 測試集上勝過所有由上而下的方法，那裡的框並不可靠。DEKR [21] 回到**密集迴歸**，每個關鍵點有一個分支，其自適應卷積專注在該關鍵點的區域，並報告在 COCO 與 CrowdPose 上優於偵測加分組的方法。
+
+### 單階段與集合預測姿態
+
+第三類方法直接為每個人預測完整的姿態，不需要獨立的分組步驟。
+
+- **以中心為基礎。** CenterNet（「Objects as Points」）[22] 在熱圖上把每個人偵測為一個中心點，並迴歸從中心到各關鍵點的 $2K$ 個偏移量；接著把每個迴歸出的關鍵點吸附到另一張關鍵點熱圖上最近的峰值，所以中心扮演了分組的線索。
+- **即時密集頭。** RTMO [23] 把姿態頭放進 YOLO 風格的單階段偵測器，用一對一維熱圖（座標分類）表示每個關鍵點，目標是以單階段的速度達到由上而下的準確度。
+- **集合預測。** DETR 風格的 Transformer 偵測器（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#以-transformer-做集合預測detr-及其後繼者)）輸出固定數量的 query，並與真值一對一匹配，所以不需要 NMS 或分組。ED-Pose [24] 以兩個明確的框偵測階段把它套用到姿態上：人物解碼器偵測人，人到關鍵點解碼器則把每個關鍵點當成一個要偵測的小框。它用 L1 迴歸損失訓練、不用熱圖，並報告在 COCO 上，使用相同骨幹時優於以熱圖為基礎的由上而下方法。
+
+### 選擇哪種流程
+
+| | 由上而下 | 由下而上 | 單階段／集合預測 |
+| --- | --- | --- | --- |
+| 主要步驟 | 先偵測人，再逐一估計 | 先偵測所有關鍵點，再分組 | 直接預測每個人的姿態 |
+| 成本與人數的關係 | 線性成長 | 網路成本幾乎固定；分組成本會成長 | 幾乎固定 |
+| 小尺寸的人 | 好（每個裁切區域都會縮放） | 較難（所有人共用一個影像尺度） | 取決於特徵金字塔 |
+| 擁擠與重疊 | 框會重疊；NMS 可能刪掉人 | 分組可能把人混在一起 | query 或中心可能碰撞 |
+| 典型用途 | 人少且分得開時要求高準確度 | 同時有很多人；即時系統 | 端到端訓練；即時 |
+
+## 衡量姿態準確度
+
+**白話版。** 預測的關鍵點只要離真實位置近，就算「好」；但「近」必須取決於人的大小，也取決於是哪一種關鍵點：在很小的人的鼻子上偏 5 像素是大錯；在很大的人的臀部上偏 5 像素就不是。
+
+### PCK 與 PCKh
+
+**正確關鍵點百分比**（percentage of correct keypoints, PCK）把預測關鍵點落在真值的門檻距離之內視為正確，門檻是人物大小的某個比例。Yang 與 Ramanan 使用人物邊界框大小的某個比例 [25]。MPII 的 **PCKh** [26] 則改用**頭部線段長度**的 50%，因為人彎腰或伸展時頭的大小不會改變。形式上，
+
+$$
+\text{PCKh@}\alpha = \frac{1}{\sum_{n,k} \delta(v_{nk} \gt 0)} \sum_{n,k} \delta(v_{nk} \gt 0)\; \mathbb{1}\!\left[\lVert \hat{\mathbf{x}}_{nk} - \mathbf{x}_{nk} \rVert_2 \le \alpha\, \ell_n\right],
+$$
+
+其中 $n$ 是人的索引，$k$ 是關鍵點的索引，$\ell_n$ 是第 $n$ 個人的頭部線段長度，$\alpha$ 是比例（標準 PCKh 取 $\alpha = 0.5$），$\delta(\cdot)$ 與 $\mathbb{1}[\cdot]$ 在條件成立時為 1，否則為 0，且只計入已標註的關鍵點。PCK 假設人已經被找到；它不會懲罰漏掉或憑空多出的人，這就是為什麼多人基準使用 AP 類型的指標。
+
+### 物件關鍵點相似度與關鍵點 AP
+
+COCO 的指標仿照框偵測（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#coco-協定)）。在框 AP 中，偵測與真值框的 IoU 超過門檻時就算配對成功。在關鍵點 AP 中，預測姿態與真值人物的**物件關鍵點相似度**（object keypoint similarity, OKS）超過門檻時才算配對成功 [4]：
+
+$$
+\text{OKS} = \frac{\sum_{i} \exp\!\big(-d_i^2 / (2 s^2 \kappa_i^2)\big)\, \delta(v_i \gt 0)}{\sum_{i} \delta(v_i \gt 0)},
+$$
+
+其中 $i$ 遍歷所有關鍵點，$d_i$ 是預測與真值關鍵點 $i$ 之間的歐幾里得距離，$v_i$ 是真值的可見性旗標，$s$ 是物件尺度，定義為該人物分割面積的平方根，$\kappa_i$ 是各關鍵點的常數。每一項都是誤差的未正規化高斯，標準差為 $s \kappa_i$，所以完美的關鍵點為 1，誤差變大時趨近 0；OKS 對已標註的關鍵點取平均。預測的可見性旗標不會被使用。
+
+**常數從哪裡來。** COCO 取 5,000 張驗證影像，由兩組人各標註一次，對每種關鍵點類型量測人類標註者相對於人物尺度的分歧程度，$\sigma_i^2 = E[d_i^2 / s^2]$，再設 $\kappa_i = 2\sigma_i$ [4]。$\sigma_i$ 的值為：鼻子 0.026、眼睛 0.025、耳朵 0.035、肩膀 0.079、手肘 0.072、手腕 0.062、臀部 0.107、膝蓋 0.087、腳踝 0.089 [4], [27]。眼睛容易精確定位；臀部藏在衣服下面就不容易，所以這個指標對臀部比較寬容。取 $\kappa_i = 2\sigma_i$ 時，一、二、三個標註者標準差的誤差，相似度分別是 $e^{-1/8} \approx 0.88$、$e^{-1/2} \approx 0.61$ 與 $e^{-9/8} \approx 0.32$，而人類標註者彼此之間的 OKS 中位數約為 0.91 [4]。
+
+**從 OKS 到 AP。** 其餘部分就是 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#精確率召回率與-ap) 的 AP：依人物層級的分數排序所有預測姿態，把每個姿態配對到 OKS 最高且尚未被配對的真值人物，再在 OKS 門檻 $0.50, 0.55, \dots, 0.95$ 下計算 AP。主要指標 AP 是這十個值的平均。附屬指標有 $\text{AP}^{50}$、$\text{AP}^{75}$、中等尺寸的人 $\text{AP}^{M}$（面積介於 $32^2$ 與 $96^2$ 之間）、大尺寸的人 $\text{AP}^{L}$（面積大於 $96^2$），以及對應的 AR 值。每張影像最多計分 20 個姿態，而小尺寸的人沒有關鍵點標註 [4]。
+
+*選讀：[深入 OKS：未標註的人、擁擠區域與尺度 s](#深入-oks未標註的人擁擠區域與尺度-s)（見「補充資料」頁）。評估程式碼如何處理沒有關鍵點標註的人、為什麼每個人的權重相同，以及對一個被部分遮住的人來說 $s$ 是什麼意思。*
+
+這段程式碼用 COCO 的常數，對一個約 200 像素高的合成人物計算 OKS。
+
+```python
+import numpy as np
+
+NAMES = ["nose", "l_eye", "r_eye", "l_ear", "r_ear", "l_shoulder", "r_shoulder",
+         "l_elbow", "r_elbow", "l_wrist", "r_wrist", "l_hip", "r_hip",
+         "l_knee", "r_knee", "l_ankle", "r_ankle"]
+SIGMAS = np.array([.26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62,
+                   1.07, 1.07, .87, .87, .89, .89]) / 10.0       # COCO per-keypoint constants
+
+def oks(pred, gt, vis, area):
+    """pred, gt: (17, 2) pixel coordinates; vis: (17,) COCO flags; area: segment area (s^2)."""
+    d2 = ((pred - gt) ** 2).sum(1)
+    kappa = 2 * SIGMAS
+    ks = np.exp(-d2 / (2 * area * kappa ** 2))                 # per-keypoint similarity
+    labeled = vis > 0
+    return ks[labeled].mean(), ks
+
+# a standing person about 200 px tall, facing the camera (synthetic coordinates)
+gt = np.array([[100, 30], [106, 25], [94, 25], [112, 28], [88, 28], [125, 60], [75, 60],
+               [135, 95], [65, 95], [140, 128], [60, 128], [115, 130], [85, 130],
+               [117, 175], [83, 175], [118, 220], [82, 220]], float)
+vis = np.full(17, 2); vis[3] = 0                                # left ear not labeled
+area = 0.6 * (70 * 200)                                         # segment area: ~60% of its box
+
+rng = np.random.default_rng(1)
+jitter = gt + rng.normal(0, 3, gt.shape)                        # every keypoint off by ~3 px per axis
+flipped = jitter.copy(); flipped[[9, 10]] = flipped[[10, 9]]    # left/right wrists swapped
+print(f"perfect          OKS = {oks(gt, gt, vis, area)[0]:.3f}")
+print(f"3 px jitter      OKS = {oks(jitter, gt, vis, area)[0]:.3f}")
+print(f"+ wrists swapped OKS = {oks(flipped, gt, vis, area)[0]:.3f}")
+
+# the same 5-pixel error costs very different amounts on different keypoints
+for k in (0, 5, 11):
+    p = gt.copy(); p[k, 0] += 5
+    print(f"5 px error on {NAMES[k]:10s}: similarity {oks(p, gt, vis, area)[1][k]:.3f}")
+```
+
+```text
+perfect          OKS = 1.000
+3 px jitter      OKS = 0.933
++ wrists swapped OKS = 0.810
+5 px error on nose      : similarity 0.577
+5 px error on l_shoulder: similarity 0.942
+5 px error on l_hip     : similarity 0.968
+```
+
+這個合成範例有三個重點。到處有小抖動，代價很小（0.933）。單一的手腕**左右對調**會讓兩個手腕的相似度都變成幾乎為零，OKS 降到 0.810：這個姿態在門檻到 0.80 為止仍算正確，但在 0.85 以上就失敗，所以十個 AP 門檻中大約損失三分之一。而同樣 5 像素的誤差，在鼻子上要花掉 0.42 的相似度，在臀部上只花 0.03。圖 5 顯示每個關鍵點的容忍半徑與相似度曲線。
+
+<Figure src={figOks} alt="左：綠色的真值火柴人，每個關鍵點周圍有淺綠色的圓，臉部的圓小、臀部的圓大；紫色是預測，手腕對調，兩個手腕都標示相似度 0.00；標題為 OKS 0.810。右：鼻子、左手腕、左肩與左臀的關鍵點相似度對像素距離；鼻子的曲線掉得最快，在約 5 像素時降到 0.5，而臀部曲線到約 20 像素才低於 0.5。" caption="圖 5 — 上述程式碼中合成人物的 OKS。(a) 半徑為 sκᵢ 的圓，關鍵點在圓上的相似度是 0.61；預測有約 3 像素的抖動，並且手腕對調。(b) 四種關鍵點類型的相似度隨誤差變化的函數，對應此人物的尺度 s ≈ 92 像素。" />
+
+### 3D 姿態的指標
+
+3D 姿態的標準指標是**平均每關節位置誤差**（mean per-joint position error, MPJPE），即預測與真值 3D 關節之間歐幾里得距離的平均，
+
+$$
+\text{MPJPE} = \frac{1}{K} \sum_{k=1}^{K} \big\lVert \hat{\mathbf{X}}_k - \mathbf{X}_k \big\rVert_2,
+$$
+
+以毫米為單位，並對所有測試影格取平均，其中 $\hat{\mathbf{X}}_k$ 與 $\mathbf{X}_k$ 是關節 $k$ 的預測與真實 3D 位置。Human3.6M 上常見兩種協定：把預測與真值的根（中央臀部）關節對齊後計算誤差，稱為協定 #1；再額外把預測骨架剛性對齊到真值後計算誤差，稱為協定 #2 [28]；第二種指標也稱為 PA-MPJPE 或重建誤差 [2]。第二種會掩蓋全域旋轉與尺度的誤差，所以兩個數字絕對不能互相比較。
+
+### 數字沒告訴你的事
+
+和框 AP 一樣，關鍵點 AP 混合了好幾種誤差。Ronchi 與 Perona [29] 把關鍵點定位誤差分成四種：**抖動**（jitter，靠近正確的關鍵點，但超出人類誤差範圍）、**反轉**（inversion，落在這個人自己的左右對應點或另一個關鍵點上）、**對調**（swap，落在*另一個人*的關鍵點上）與**漏失**（miss，附近沒有任何關鍵點）。他們發現誤差最取決於可見關鍵點的數量，以及附近其他人造成的雜亂。連 COCO 經過兩次標註的資料也有 1–2% 的離群值，多半是左右混淆或標到錯的人 [4]。診斷模型時要依誤差類型，而不是只看 AP。
+
+## 資料集與基準
+
+**白話版。** 少數幾個資料集定義了什麼叫「好」：COCO 代表日常照片中的多人，MPII 代表廣泛的活動，CrowdPose 代表嚴重重疊，Human3.6M 代表 3D，另外還有較新的資料集涵蓋全身、影片與動物。
+
+| 資料集 | 內容（取自論文或官方頁面） | 指標 | 為什麼重要 |
+| --- | --- | --- | --- |
+| COCO keypoints [30], [4] | 日常照片中人物的 17 個身體關鍵點；小尺寸的人未標註 | OKS AP | 主要的多人基準 |
+| MPII Human Pose [26] | 40,522 個有標註的人，影像來自 YouTube 影片，以超過 800 種活動為查詢詞蒐集 | PCKh | 活動多樣；有單人與多人賽道 |
+| CrowdPose [31] | 20,000 張影像、約 80,000 人、14 個關鍵點，挑選成擁擠程度均勻分布 | OKS AP | 擁擠場景 |
+| COCO-WholeBody [32] | 每人 133 個特徵點：臉部 68、手部 42、身體與腳部 23 | OKS AP | 臉、手與腳一起處理 |
+| PoseTrack [33] | 含人物軌跡與關節姿態的影片 | AP、MOTA | 影片中的姿態估計與追蹤 |
+| Human3.6M [34] | 11 位演員、17 種情境的 360 萬個 3D 姿態，由 4 台校正過的相機搭配動作捕捉記錄 | MPJPE | 最廣泛使用的 3D 基準 |
+| AP-10K [35] | 23 個科、54 種哺乳動物的 10,015 張影像，以 COCO 風格標註 | AP | 動物姿態與跨物種泛化 |
+
+CrowdPose 值得細看，因為它對擁擠程度有精確的定義。對第 $i$ 個人，令 $N_a^i$ 為落在其框內的自己的關節數，$N_b^i$ 為落在同一個框內的*其他*人的關節數；有 $n$ 個人的影像的**擁擠指數**（Crowd Index）為 $\frac{1}{n} \sum_{i} N_b^i / N_a^i$ [31]。常見資料集以不擁擠的影像為主；CrowdPose 的挑選方式讓這個指數在 0 與 1 之間近乎均勻分布，其作者發現強模型在擁擠影像上的準確度比不擁擠的影像低約 20 AP [31]。
+
+閱讀結果時有兩點要小心。Human3.6M 是只有少數演員的室內資料集 [2], [34]，所以在那裡 MPJPE 低，不代表在室外影片上也有好結果。而在 COCO 上，結果取決於由上而下方法所用的人物偵測器（見 [Simple Baselines 導讀](#simple-baselinesxiao-等人2018)）、輸入解析度與額外的訓練資料，所以只有在相同設定下才能比較數字。
+
+## 人體之外
+
+**白話版。** 熱圖網路裡沒有任何東西是專屬於人的。換掉關鍵點的清單和訓練資料，同一套機制就能找出臉的角落、手的關節，或狗的爪子。
+
+- **全身。** COCO-WholeBody [32] 在身體關鍵點之外加入腳、手與密集的臉部特徵點，這在同一個人身上造成極大的尺度範圍；它的基準模型 ZoomNet 圍繞身體的階層結構設計來處理這一點。OpenPose 的期刊版本 [36] 加入了腳部關鍵點。
+- **動物。** AP-10K [35] 對 54 種哺乳動物的姿態做基準測試，並檢驗對未見過的動物科別的泛化能力。在神經科學中，DeepLabCut [1] 以預訓練網路做遷移學習，在其實驗中用約 200 個標註影格，就能追蹤小鼠與果蠅使用者自訂的身體部位，取代反光標記。
+- **物件。** 同樣的表述適用於任何具有一致特徵點的類別，例如汽車的車輪與車燈，前提是關鍵點的定義一致，並且像處理人體那樣處理該類別的左右對稱。
+
+## 從 2D 到 3D 姿態
+
+**白話版。** 照片把世界壓平了：從單張影像看，指向相機的手和放在臀部的手可能看起來幾乎一樣。要把深度找回來有三種方法：憑經驗*猜*（提升）、用兩台以上的相機*量*（三角測量），或*擬合*一個只允許合理體型的人體模型。
+
+### 提升 2D 關鍵點
+
+Martinez 等人 [28] 證明，單目 3D 姿態估計中令人意外大的一部分，只要 2D 關鍵點已知就解決了。他們的模型取偵測到的 2D 姿態的 $2K$ 個座標，用簡單的全連接網路（含批次正規化、dropout 與殘差連接的線性層）對應到 $3K$ 個座標。在 Human3.6M 上訓練後，給定真值 2D 關鍵點時，它大幅超越先前最佳的方法，這暗示剩餘的困難大部分在 2D 偵測，而不是提升。提升也是*有歧義的*：好幾個 3D 姿態會投影成同一個 2D 姿態，而只有單一輸出的網路只能傳回其中一個。
+
+VideoPose3D [37] 用擴張時間卷積提升整段 2D 姿態*序列*，所以相鄰影格之間的運動有助於解決深度與抖動問題。它還提出**反投影**（back-projection），這是一種半監督損失：對沒有標註的影片估計 3D 姿態，並要求它們投影回偵測到的 2D 關鍵點。
+
+### 多視角三角測量
+
+有兩台以上校正過的相機時，深度就不再是猜測。每台相機的 2D 關鍵點在空間中定義一條射線，3D 關節就是這些射線（幾乎）相交的那一點。這個幾何就是 [DLCV 08](/zh-tw/learn/deep-learning/dl-08-3d-reconstruction/#三角測量) 的三角測量，逐個關節套用：相機矩陣就是該篇的針孔模型，線性（DLT）解則推導於它的[補充資料](/zh-tw/learn/deep-learning/dl-08-3d-reconstruction/notes/#線性三角測量dlt)。可學習的三角測量 [38] 讓這一步成為網路的一部分：它依影像預測的信心為每個視角加權，所以關節被遮擋的視角貢獻較少；它的第二種變體則把所有視角的 2D 特徵聚合成 3D 體積，再用 3D 卷積精修。
+
+這段程式碼把一個合成的 13 關節骨架（站在兩台朝內對準的相機前方 4 公尺處）投影到兩張影像中，在 2D 關鍵點上加入 2 像素的雜訊，用 DLT 對每個關節做三角測量，並在三種相機間距（**基線**，baseline）下回報 MPJPE。數字來自這次合成實驗，沒有做根對齊。
+
+```python
+import numpy as np
+
+def camera(K, angle_deg, center):
+    """3x4 projection P = K [R | t] for a camera at `center` rotated about the y axis."""
+    a = np.deg2rad(angle_deg)
+    R = np.array([[np.cos(a), 0, -np.sin(a)], [0, 1, 0], [np.sin(a), 0, np.cos(a)]])
+    return K @ np.hstack([R, -R @ center[:, None]])
+
+def project(P, X):
+    x = (P @ np.hstack([X, np.ones((len(X), 1))]).T).T
+    return x[:, :2] / x[:, 2:]
+
+def triangulate(Ps, xs):
+    """Linear (DLT) triangulation of one point seen in several views."""
+    A = []
+    for P, (u, v) in zip(Ps, xs):
+        A += [u * P[2] - P[0], v * P[2] - P[1]]
+    X = np.linalg.svd(np.array(A))[2][-1]
+    return X[:3] / X[3]
+
+# a 13-joint 3D skeleton in millimetres, standing 4 m in front of the cameras (synthetic)
+skel = np.array([[0, -1650, 0], [170, -1400, 0], [-170, -1400, 0], [250, -1120, 50], [-250, -1120, 50],
+                 [280, -860, 120], [-280, -860, 120], [100, -900, 0], [-100, -900, 0],
+                 [110, -480, 30], [-110, -480, 30], [110, -60, 0], [-110, -60, 0]], float)
+skel += [0, 900, 4000]
+K = np.array([[1000, 0, 640], [0, 1000, 360], [0, 0, 1]], float)
+
+rng = np.random.default_rng(0)
+for baseline in (200, 1000, 3000):                          # distance between the cameras (mm)
+    half = baseline / 2
+    Ps = [camera(K, np.degrees(np.arctan2(half, 4000)), np.array([-half, 0, 0.])),
+          camera(K, -np.degrees(np.arctan2(half, 4000)), np.array([half, 0, 0.]))]
+    errs = []
+    for trial in range(200):                                  # 2D detections with 2 px noise
+        obs = [project(P, skel) + rng.normal(0, 2.0, (13, 2)) for P in Ps]
+        est = np.array([triangulate(Ps, [o[j] for o in obs]) for j in range(13)])
+        errs.append(np.linalg.norm(est - skel, axis=1).mean())   # MPJPE of this trial
+    print(f"baseline {baseline:4d} mm: MPJPE = {np.mean(errs):6.1f} mm")
+```
+
+```text
+baseline  200 mm: MPJPE =  183.7 mm
+baseline 1000 mm: MPJPE =   37.9 mm
+baseline 3000 mm: MPJPE =   17.4 mm
+```
+
+相機相距 20 公分時，2 像素的影像誤差在 3D 中變成約 18 公分，幾乎全部在深度方向（同一次實驗的逐軸檢查顯示深度方向 182 毫米，橫向分別為 9 與 18 毫米）：射線幾乎平行，所以微小的位移會讓交點沿著射線移動很遠。較寬的基線讓射線以較大的角度相交，把誤差降低為十分之一。
+
+### 參數化人體模型與網格重建
+
+骨架完全沒有說明體型，也沒有任何機制阻止提升網路預測出每個影格長度都在變的前臂。**參數化人體模型**（parametric body model）用一小組參數描述人體，解決了這兩個問題。最常用的是 SMPL [39]。它從一個有 $N = 6890$ 個頂點的模板網格，以及有 $K = 23$ 個關節的骨架出發，產生擺好姿態的人體：
+
+$$
+M(\boldsymbol{\beta}, \boldsymbol{\theta}) = W\big(T_P(\boldsymbol{\beta}, \boldsymbol{\theta}),\, J(\boldsymbol{\beta}),\, \boldsymbol{\theta},\, \mathcal{W}\big), \qquad T_P(\boldsymbol{\beta}, \boldsymbol{\theta}) = \bar{\mathbf{T}} + B_S(\boldsymbol{\beta}) + B_P(\boldsymbol{\theta}),
+$$
+
+其中 $\boldsymbol{\beta}$ 是**體型**參數（身體形狀變異主要模式的係數），$\boldsymbol{\theta}$ 是**姿態**參數（每個關節相對其父關節的軸角旋轉，加上全域朝向：$3 \times 23 + 3 = 72$ 個數字），$\bar{\mathbf{T}}$ 是模板網格，$B_S$ 與 $B_P$ 是頂點偏移量，分別建模個人差異與隨姿態變化的形變（例如肌肉隆起），$J(\boldsymbol{\beta})$ 是由上了體型的網格迴歸出的關節位置，$\mathcal{W}$ 是混合權重，$W$ 是標準的混合蒙皮（blend-skinning）函數，讓每個頂點繞著關節旋轉。關鍵點是從網格上讀出的，所以擬合好的 SMPL 人體永遠有一致的骨長。
+
+**人體網格重建**（human mesh recovery, HMR）[40] 直接從影像迴歸 SMPL 參數與相機。它的主要損失是模型關節對 2D 關鍵點標籤的**重投影誤差**，這使得可以在野外影像上訓練；另有一個用真實 3D 人體訓練的對抗式先驗，會排除不合理的參數。HMR 2.0 是 4DHumans [41] 的一部分，它讓網路完全以 Transformer 為基礎，並在影片中追蹤重建出的人物度過遮擋。
+
+*選讀：[SMPL 細說](#smpl-細說)（見「補充資料」頁）。模型每一項的作用、關節與關鍵點如何從網格取得，以及為什麼姿態混合形狀在休息姿態下會消失。*
+
+## 失效模式與實務建議
+
+**白話版。** 姿態模型失敗的地方，也是人會猶豫的地方：被藏起來的關節、纏在一起的人、鏡像混淆、被畫面切掉的身體、訓練中很少見的姿勢，以及模糊。
+
+- **遮擋。** 被遮擋的關節（$v = 1$）有標註但看不到，所以網路必須從脈絡推斷；自遮擋讓雙腿特別容易發生左右混淆 [29]。
+- **擁擠。** 重疊的人會讓偵測器失靈、讓分組混淆，並造成**對調**誤差 [29]；擁擠指數升高時準確度就下降 [31]。
+- **左右翻轉。** 正面與背面看起來很像，所以模型可能把一條肢段或整個人鏡像（**反轉**）；翻轉增強時忘了對調通道，也會造成系統性的同類錯誤。
+- **截斷。** 畫面外的關節沒有標註或只能猜測，局部人物的裁切區域也很難對中。
+- **罕見姿勢。** 體操、舞蹈或躺著的人在訓練資料中很少見；HMR 2.0 的作者特別指出這是先前方法吃力的情況 [41]。
+- **動態模糊、低解析度與領域偏移。** 快速的肢體會被拖影，小尺寸的人每條肢段只有很少像素，而以成人照片訓練的模型對嬰兒或藝術作品的遷移效果不佳 [2]。
+
+本篇帶出的實務建議是：使用無偏的編碼器與子像素解碼器；檢查翻轉時有對調左右通道；回報由上而下結果所用的偵測器與輸入尺寸；分開評估擁擠與不擁擠的影像；依類型拆解誤差；影片中則在時間上平滑或追蹤關鍵點。以偵測為基礎的追蹤（tracking-by-detection）與 [DLCV 06](/zh-tw/learn/deep-learning/dl-06-object-tracking/#先偵測再追蹤流程) 的關聯方法可以直接沿用：例如 SimpleBaseline 用光流把姿態傳播到下一個影格，並用以 OKS 為基礎的相似度來配對 [9]，PoseTrack 則提供了基準 [33]。追蹤個別表面點而不是具名關節，則是 [DLCV 06](/zh-tw/learn/deep-learning/dl-06-object-tracking/#點追蹤相關的新趨勢) 的點追蹤問題。
+
+## 現代觀點
+
+### 綜述怎麼說
+
+**Zheng 等人** [2] 回顧 2014 年以來超過 250 篇以深度學習做 2D 與 3D 姿態的論文，組織方式與本篇相同：迴歸對熱圖、由上而下對由下而上，3D 則分為提升、網格重建與多視角方法。他們的未來方向包括領域適應、人與場景的約束，以及時間平滑度的指標。
+
+**Chen 等人** [3] 把單目方法整理成四種任務（2D 或 3D、單人或多人），列出被證明有效的設計技巧（多階段結構、中間監督、多尺度融合、身體結構約束），並指出遮擋與擁擠是主要尚未解決的挑戰。
+
+**Tian 等人** [5] 綜述以人體模型做的單目 3D 網格重建，對比以最佳化為基礎的擬合與迴歸網路，並指出缺乏野外 3D 標籤是核心困難。
+
+*選讀：[「現代觀點」綜述導讀](#現代觀點綜述導讀)（見「論文導讀」頁）。每篇綜述涵蓋什麼、如何組織，以及如何把它當作地圖使用。*
+
+### 2023–2026 年的最先進技術
+
+- **放大規模的由上而下 Transformer 姿態。** ViTPose [16] 證明單純的視覺 Transformer 搭配簡單的解碼器可以良好地擴大規模（論文中從 1 億到 10 億參數），其最大的模型在發表時刷新了 COCO 關鍵點基準的最佳紀錄。
+- **以人為中心的基礎模型。** Sapiens [42] 以自監督方式，在超過 3 億張人類影像上預訓練 3 億到 20 億參數的視覺 Transformer，再微調到 2D 姿態、身體部位分割、深度與表面法向量；其作者報告，在相同的運算預算下，這種針對人的預訓練改善了全部四項任務。
+- **即時系統。** RTMPose [43]（由上而下、座標分類，針對 CPU、GPU 與行動裝置部署而設計）與 RTMO [23]（單階段）瞄準的是應用的延遲預算，而不是排行榜的巔峰。
+- **端到端多人模型。** ED-Pose [24] 這類基於 query 的模型去除了 NMS、分組與熱圖；ED-Pose 報告在相同骨幹下，COCO 準確度高於以熱圖為基礎的由上而下方法。
+- **影片中的 3D 人體。** HMR 2.0 [41] 這類 Transformer 網格重建，能從單目影片重建並追蹤完整的 3D 人體，讓這個領域從稀疏的骨架邁向完整的人體表面。
+
+### 尚待解決的問題
+
+1. **擁擠與嚴重遮擋**仍是最大的準確度落差 [31], [3]。
+2. **野外 3D。** 實驗室以外很難取得準確的 3D 標籤 [5]，而最廣泛使用的 3D 基準 Human3.6M 是室內資料集 [2]，所以單目 3D 方法的訓練與測試環境，離實際使用的環境很遠。
+3. **時間一致性。** MPJPE 這類逐影格的指標無法衡量抖動，也無法衡量隨時間的物理合理性 [2]。
+4. **跨領域與跨物種的泛化**：嬰兒、藝術作品、不尋常的視角，以及未見過的動物科別 [2], [35]。
+5. **評估。** OKS 的常數是依 COCO 人物上標註者的分歧程度量測的 [4]，不會自動適用於其他關鍵點集合；而 AP 會掩蓋反轉與對調這類誤差類型 [29]。
+
+## 重點整理
+
+- 姿態是一張由具名關鍵點組成的骨架圖，每個關鍵點有位置與可見性旗標；左與右是那個人自己的，$v = 1$（被遮擋）不同於 $v = 0$（未標註）。
+- 熱圖（高斯光斑、MSE 損失）之所以佔優勢，是因為它適合卷積又能表達不確定性；迴歸、座標分類與 soft-argmax 則用部分這些優點換取速度與端到端訓練。
+- 熱圖解碼受限於步幅：argmax 平均損失約 $0.383 s$ 像素；四分之一偏移把它減半，對數熱圖上的 Taylor 步驟則去除剩下的大部分。
+- 由上而下的流程（偵測器加上 SimpleBaseline、HRNet 或 ViTPose）在準確度上領先，但成本隨人數成長，也會繼承偵測器的失敗；由下而上的流程一次偵測所有關鍵點，再用部分親和場或關聯嵌入分組；單階段與基於 query 的模型直接預測完整姿態。
+- COCO 的 OKS 是依尺度與關鍵點正規化的高斯相似度，$\kappa_i = 2\sigma_i$ 來自標註者的分歧程度；關鍵點 AP 對 OKS 0.50–0.95 取平均。PCKh 以頭部長度的一半為門檻；MPJPE 以毫米衡量 3D 誤差。
+- 3D 姿態來自提升 2D 關鍵點（有歧義）、跨校正視角做三角測量（基線寬時準確），或擬合 SMPL 這類人體模型，其 72 個姿態參數與少量體型參數能讓人體保持合理。
+- 遮擋、擁擠、左右反轉、截斷、不尋常的姿勢與模糊造成大部分誤差；診斷時要依誤差類型，而不是只看 AP。
+
+## 練習
+
+1. **手算量化。** 一個手腕在裁切區域中位於 $x = 101.3$ 像素，熱圖步幅為 4。峰值在哪一欄熱圖？argmax 解碼傳回什麼，誤差是多少？四分之一偏移傳回什麼？在無雜訊的高斯上做精確的 Taylor 步驟會傳回什麼？
+
+<details>
+<summary>提示</summary>
+
+以熱圖單位計，手腕在 $101.3 / 4 = 25.325$，所以峰值在第 25 欄，argmax 傳回 $25 \times 4 = 100$ 像素，誤差 1.3 像素。右鄰格（第 26 欄）比左鄰格更接近 25.325，所以四分之一偏移移到 25.25，對應 101.0 像素（誤差 0.3）。在無雜訊的高斯上，對數熱圖是精確的拋物線，所以 Taylor 步驟傳回 25.325，也就是 101.3 像素。
+
+</details>
+
+2. **手算 OKS。** 某人的分割面積是 $10{,}000$ 像素²，所以 $s = 100$。預測的膝蓋離真值 10 像素。用 COCO 的常數計算它的關鍵點相似度。再對偏了 10 像素的鼻子重算一次。你寧願犯哪一種誤差？為什麼 COCO 對兩者的處理差這麼多？
+
+<details>
+<summary>提示</summary>
+
+膝蓋：$\kappa = 2 \times 0.087 = 0.174$，$s\kappa = 17.4$，相似度 $= \exp(-100 / (2 \times 17.4^2)) = \exp(-0.165) \approx 0.85$。鼻子：$\kappa = 0.052$，$s\kappa = 5.2$，相似度 $= \exp(-100 / 54.08) \approx 0.16$。標註者放置鼻子的一致性大約是膝蓋的三倍，而 COCO 依這種分歧程度來調整容忍度。
+
+</details>
+
+3. **由上而下何時變得太慢？** 人物偵測器每張影像花 20 ms，單人網路每個裁切區域花 5 ms。由下而上的網路每張影像花 40 ms，另外每個人需要 1 ms 的分組時間。每張影像多少人時，由下而上比較快？除了速度之外，請說出在擁擠的火車站中偏好其中一種流程的兩個理由。
+
+<details>
+<summary>提示</summary>
+
+由上而下的成本是 $20 + 5N$ ms，由下而上是 $40 + N$ ms，所以當 $4N \gt 20$，也就是超過 5 個人時，由下而上比較快。在擁擠的車站裡，由上而下受害於重疊的框與 NMS 刪掉人，但因為每個裁切區域都會縮放，所以處理遠處的小尺寸的人比較好；由下而上的網路成本固定，但必須對嚴重重疊的肢段分組，而且小尺寸的人只佔到很少的熱圖格子。
+
+</details>
+
+4. **破壞部分親和場。** 在分組程式碼中，移動人物 B，讓他的左前臂與人物 A 的左前臂位在同一條線上並互相重疊（一個人站在另一個人後面）。兩個正確配對與兩個錯誤配對的 PAF 分數會怎麼樣？為什麼？還能用什麼額外線索解決這個情況？
+
+<details>
+<summary>提示</summary>
+
+兩個肢段重疊處，目標場是兩個相同單位向量的平均，所以它沿著共用的那條線。這條線上任何手肘到手腕的候選線段，不論對錯，都與場對齊，得到相近的分數，所以配對變得有歧義。可以幫上忙的線索有：肢段相對於各自身體其他部分的長度、像關聯嵌入那樣的 tag、每個人的其他肢段（採全域而非逐肢段的解析），或影片中的時間連續性。
+
+</details>
+
+5. **相機看不見的對調。** 修改三角測量的程式碼，讓兩台相機都瞄準骨架的中心，並在第二台相機中對調左右膝蓋的 2D 位置（2D 偵測器的反轉誤差）。對左膝蓋做三角測量，計算它在兩個視角中的平均重投影誤差，分別比較有對調與沒有對調的情況。接著把第二台相機移到第一台*上方* 1 公尺處（而不是旁邊）再做一次。解釋兩者的差異。
+
+<details>
+<summary>提示</summary>
+
+在我們對這個實驗的執行中，相機並排時，不管有沒有對調，重投影誤差都約 1 像素，但對調後的膝蓋落點離真值超過半公尺。兩個膝蓋高度幾乎相同，水平基線下對極線幾乎是水平的，所以對調膝蓋是把觀測點移到它的對極線*上*：兩條射線仍然相交，只是深度錯了。第二台相機在第一台上方時，對極線變成幾乎垂直，對調會把觀測點移離它的線，重投影誤差跳到幾十像素，因此能標示出這個錯誤。所以多視角姿態的相機配置不應該把所有相機放在同一條水平線上。
+
+</details>
+
+6. **忘了對調通道。** 你做了翻轉測試，但在平均之前忘了對調鏡像熱圖的左右通道。對一個面向相機、雙臂張開的人，平均後的左手腕熱圖看起來如何？argmax 解碼傳回什麼？
+
+<details>
+<summary>提示</summary>
+
+想想網路在鏡像影像裡看到什麼：一個面向相機的人，所以它把影像右側的手腕標成「左手腕」。那個手腕其實是那個人的*右*手腕，被鏡射了。把圖翻回來卻不對調通道，就會在左手腕通道中，把光斑放在真正的*右*手腕上。平均後有兩個高度只有一半的光斑，每個手腕上各一個，argmax 挑到稍微高一點的那個，所以大約有一半的時間，左手腕會被回報在右手腕的位置：這是反轉誤差。
+
+</details>
+
+## 補充資料
+
+這些補充資料是選讀：每一則從正文取出一個重點，做更詳細的說明。正文、程式碼與練習都不依賴它們。
+
+### 以 Taylor 步驟做子像素解碼
+
+這則補充資料推導 DARK [10] 使用、並在解碼程式碼中實作的子像素修正，也列出它會失效的情況。
+
+**設定。** 令 $\hat{H}$ 為一張預測熱圖，$\mathbf{m}$ 為值最大的格子。假設在峰值附近，熱圖是一個縮放過的高斯，中心 $\boldsymbol{\mu}$ 未知，共變異數為 $\Sigma$：
+
+$$
+\hat{H}(\mathbf{p}) \approx c \exp\!\Big(-\tfrac{1}{2} (\mathbf{p} - \boldsymbol{\mu})^{\top} \Sigma^{-1} (\mathbf{p} - \boldsymbol{\mu})\Big),
+$$
+
+其中 $c \gt 0$ 是峰值高度，$\mathbf{p}$ 是以熱圖單位表示的位置。取對數，$D(\mathbf{p}) = \log \hat{H}(\mathbf{p}) = \log c - \tfrac{1}{2} (\mathbf{p} - \boldsymbol{\mu})^{\top} \Sigma^{-1} (\mathbf{p} - \boldsymbol{\mu})$。這是 $\mathbf{p}$ 的精確二次函數，梯度為 $\mathbf{D}'(\mathbf{p}) = -\Sigma^{-1}(\mathbf{p} - \boldsymbol{\mu})$，Hessian 為常數 $\mathbf{D}'' = -\Sigma^{-1}$。
+
+**步驟。** 在最亮的格子上計算兩者並解出中心：$\mathbf{D}'(\mathbf{m}) = -\Sigma^{-1}(\mathbf{m} - \boldsymbol{\mu}) = \mathbf{D}''(\mathbf{m} - \boldsymbol{\mu})$，所以
+
+$$
+\boldsymbol{\mu} = \mathbf{m} - \mathbf{D}''(\mathbf{m})^{-1}\, \mathbf{D}'(\mathbf{m}).
+$$
+
+這是朝 $D$ 的最大值走的一步 Newton 步驟。因為高斯的 $D$ 恰好是二次函數，一步就是精確的，不需要迭代。DARK 把同樣的結果寫成 $D$ 在 $\mathbf{m}$ 附近的二階 Taylor 展開 [10]。SIFT 也用同類的步驟，在高斯差函數上修正關鍵點（見 [IP 12 的關鍵點定位補充](/zh-tw/learn/image-processing/dip-12-feature-extraction/notes/#關鍵點定位)）。
+
+**有限差分。** 在格點上，令 $D_{x,y}$ 為第 $x$ 欄、第 $y$ 列的對數熱圖值，且 $(x, y) = \mathbf{m}$：
+
+$$
+\begin{aligned}
+D_x &= \tfrac{1}{2}(D_{x+1,y} - D_{x-1,y}), & D_{xx} &= D_{x+1,y} - 2D_{x,y} + D_{x-1,y}, \\
+D_y &= \tfrac{1}{2}(D_{x,y+1} - D_{x,y-1}), & D_{yy} &= D_{x,y+1} - 2D_{x,y} + D_{x,y-1}, \\
+D_{xy} &= \tfrac{1}{4}(D_{x+1,y+1} - D_{x-1,y+1} - D_{x+1,y-1} + D_{x-1,y-1}),
+\end{aligned}
+$$
+
+其中 $D_x, D_y$ 組成 $\mathbf{D}'$，$D_{xx}, D_{xy}, D_{yy}$ 組成 $2 \times 2$ 矩陣 $\mathbf{D}''$。對二次函數而言，這些中央差分是精確的，這就是為什麼程式碼中的 Taylor 解碼器在無雜訊的高斯上能還原真實位置。
+
+**為什麼對數很重要。** 直接對 $\hat{H}$（而不是它的對數）擬合拋物線，也能得到子像素估計，但高斯並不是拋物線，所以除非光斑很寬，否則該估計會偏向格子中心。對數剛好把高斯變成拋物線。
+
+**特殊情況與陷阱。**
+
+- *峰值在邊界上。* 中央差分需要全部八個鄰格；在圖的邊界上，解碼器必須退回格子中心（或使用單邊規則），如程式碼所做的。
+- *平坦或鞍形的峰值。* 如果 $\mathbf{D}''$ 不是負定的（行列式不為正，或 $D_{xx} \ge 0$），這一步可能跳得很遠。程式碼會檢查這一點，並保留格子中心。
+- *多個峰值。* 訓練好的網路常產生凹凸不平的圖，在關鍵點附近有好幾個局部最大值。DARK 先用訓練時寬度的高斯核平滑預測熱圖，再重新縮放回原本的最大值 [10]，讓局部形狀更接近單一高斯。
+- *接近零的值。* 極小或負的預測值取對數時未定義或會爆炸；取對數前要先把熱圖截到一個小的正數下限。
+- *有偏的目標。* 如果訓練目標以*四捨五入後*的關鍵點位置為中心，網路會學著把峰值放在格子中心，任何解碼器都無法找回遺失的小數部分。因此 DARK 把目標高斯以精確、未四捨五入的位置為中心 [10]。
+
+### 座標分類與以似然為基礎的迴歸
+
+這則補充資料詳細說明正文中介於熱圖與單純迴歸之間的兩種輸出表示法。
+
+**SimCC：把每個座標當成分類。** 對寬 $W$、高 $H$ 像素的輸入裁切區域，SimCC [12] 把水平軸分成 $N_x = W \cdot k$ 個 bin，垂直軸分成 $N_y = H \cdot k$ 個 bin，其中 $k \ge 1$ 是**分割因子**（splitting factor，每像素的 bin 數）。位於 $(x, y)$ 的關鍵點得到類別標籤 $c_x \approx k x$ 與 $c_y \approx k y$。骨幹（HRNet 這類 CNN，或 Transformer）為每個關鍵點產生一個特徵向量（對 CNN 而言，是把該關鍵點 $H' \times W'$ 的特徵圖攤平），再由兩個單層線性層把它轉成 $N_x$ 與 $N_y$ 個 bin 上的分數。訓練使用預測分布與目標分布之間的 Kullback–Leibler 散度，論文以平滑的標籤（均勻、Laplace 或高斯標籤平滑）取代硬性的 one-hot 目標，因為鄰近正確 bin 的 bin 遠比遠處的 bin 錯得輕。解碼時取每個軸上分數最高的 bin，再除以 $k$。
+
+*量化。* 每像素 $k$ 個 bin 時，每個軸的捨入誤差最多為 $1/(2k)$ 像素，相較之下步幅 $s$ 的熱圖是 $s/2$ 像素。所以 $k = 2$ 就能提供四分之一像素的解析度，而不需要任何 2D 圖，成本只隨 $W + H$ 線性成長，而不是隨 $W \cdot H$ 成長。
+
+*特殊情況。* 兩個軸是獨立分類的，所以當有兩個候選位置時（同一個裁切區域內，兩個重疊的人的手腕），其中一個的 $x$ 可能與另一個的 $y$ 組合在一起，這是 2D 熱圖不會有的失敗。
+
+**RLE：把迴歸看成最大似然。** 假設網路為某個座標預測平均值 $\hat{\mu}$ 與尺度 $\hat{\sigma}$，而標籤為 $\mu_g$。如果假設誤差是高斯分布，最大化標籤的似然就是最小化
+
+$$
+\mathcal{L} = -\log P(\mu_g) \propto \log \hat{\sigma} + \frac{(\mu_g - \hat{\mu})^2}{2 \hat{\sigma}^2},
+$$
+
+當 $\hat{\sigma}$ 固定時，它就變成單純的 L2 損失；假設尺度固定的 Laplace 分布，則得到 L1 損失 [13]。所以每一種迴歸損失，都隱含了對誤差分布形狀的假設。RLE [13] 改為學習這個形狀：它把誤差重新縮放為 $\bar{\mu} = (\mu_g - \hat{\mu}) / \hat{\sigma}$，並用正規化流（normalizing flow）建模它的密度，這個流只學習相對於簡單基底密度的*殘差*（變化量）；論文發現這比從頭學習密度更容易最佳化。這個流只用在訓練損失中；測試時網路只像一般迴歸那樣輸出 $\hat{\mu}$，所以推論不會有額外成本。論文在 COCO 上的消融實驗顯示，這個方法比標準迴歸提升 12.4 AP，其中 7.8 AP 來自殘差表述，而不是直接估計似然 [13]。
+
+*為什麼這對成本很重要。* RLE 論文指出，標準的三層反卷積熱圖頭，其 FLOPs 是 ResNet-50 骨幹的 1.4 倍，而迴歸頭的成本約為其 1/20000 [13]。所以讓迴歸變準確，就讓便宜的頭變得可行。
+
+### 翻轉測試與左右對調的記帳
+
+這則補充資料逐步說明鏡射熱圖的索引運算，也就是翻轉增強與翻轉測試共用的步驟。
+
+**鏡射影像。** 對寬 $W_{\text{in}}$ 像素的裁切區域，水平翻轉把影像的第 $x$ 欄對應到 $W_{\text{in}} - 1 - x$（像素中心位於整數座標）。關鍵點座標也以同樣方式轉換：$x_k \mapsto W_{\text{in}} - 1 - x_k$，$y_k$ 不變。
+
+**對調標籤。** 鏡射之後，那個人的左側出現在原本右側的位置。令 $\pi$ 為把每個左側關鍵點與它的右側對應點互換的排列（左眼與右眼、左肩與右肩，依此類推），鼻子保持不變。翻轉後的訓練樣本，其通道 $k$ 必須使用關鍵點 $\pi(k)$ 的標籤；否則網路會被訓練成在一半的影像裡，把那個人的右手腕叫做「左」手腕，於是它學會在兩者之間含糊其辭。
+
+**翻轉測試。** 給定裁切區域的熱圖 $\hat{H}_k$，與它的鏡像影像的熱圖 $\hat{H}^{\text{flip}}_k$，通道 $k$ 的平均圖是
+
+$$
+\bar{H}_k(x, y) = \tfrac{1}{2}\Big(\hat{H}_k(x, y) + \hat{H}^{\text{flip}}_{\pi(k)}(W_{\text{h}} - 1 - x,\; y)\Big),
+$$
+
+其中 $W_{\text{h}}$ 是熱圖寬度，$(x, y)$ 是熱圖的一個格子。這裡發生兩個操作：鏡像圖沿欄方向翻回來，且它的通道以 $\pi$ 重新排列。
+
+**一個細微的偏移。** 欄對應 $x \mapsto W_{\text{h}} - 1 - x$ 只有在熱圖格子與影像像素於翻轉後的對齊方式相同時才精確。取步幅 $s$ 與影像寬度 $W_{\text{in}} = s W_{\text{h}}$，假設格子 $x$ 代表影像位置 $s x$（它的第一個像素）。翻轉影像會把該位置送到 $W_{\text{in}} - 1 - s x$，但翻轉後的格子 $W_{\text{h}} - 1 - x$ 代表 $s(W_{\text{h}} - 1 - x) = W_{\text{in}} - s - s x$。兩者差 $s - 1$ 個像素，所以平均兩張圖會讓每個關鍵點偏差約 $(s - 1)/2$ 像素。如果改成讓格子 $x$ 代表它所涵蓋像素的中心，即 $s x + (s - 1)/2$，翻轉後的格子代表 $W_{\text{in}} - 1 - \big(s x + (s - 1)/2\big)$，剛好就是翻轉後的位置，偏差便消失。不論程式庫採用哪種慣例，都用一張合成熱圖來測試：對完美的高斯做翻轉測試，檢查解碼出的位置沒有移動。
+
+**沒有對調會出什麼問題。** 練習 6 說明翻轉測試時忘了 $\pi$，會把左手腕的光斑與右手腕的光斑平均在一起，產生反轉誤差。在資料增強中，同樣的錯誤更隱微：它不會當機，只會降低準確度，所以是典型的無聲錯誤。
+
+### 深入 OKS：未標註的人、擁擠區域與尺度 s
+
+這則補充資料說明 COCO 關鍵點評估中，單看 OKS 公式看不到的部分，依據評估頁面 [4] 與官方程式碼 [27]。
+
+**尺度 $s$。** 它是真值人物的**分割面積**的平方根，不是框面積，也不是從關鍵點算出來的。被部分遮擋的人，可見的分割區域較小，所以同樣的像素誤差算得更重。在程式碼中，指數裡的項是 $d_i^2 / (\kappa_i^2 \cdot \text{area}) / 2$，其中 $\kappa_i = 2\sigma_i$，這就是正文的公式取 $s^2 = \text{area}$。
+
+**哪些關鍵點會計入。** 只有 $v_i \gt 0$ 的真值關鍵點會進入平均，所以對未標註身體部位預測的關鍵點既無益也無害。AP 中每個人的權重相同，不論他有 3 個還是 17 個已標註關鍵點；COCO 不會依關鍵點數量給人加權 [4]。因此，只有少數已標註關鍵點的人，其 OKS 雜訊較大。
+
+**沒有任何已標註關鍵點的人。** 擁擠區域與沒有任何已標註關鍵點的人，無法用關鍵點距離計分。對這些情況，程式碼量測每個預測關鍵點落在真值框周圍某個區域*之外*有多遠（這個區域是把框向左右各擴大一個框寬，向上下各擴大一個框高），所以落在這個區域內的預測不需付出代價。這個寬鬆的規則讓這類偵測可以配對成功，而不被算成誤報，作法和框的忽略區域類似 [4], [27]。
+
+**小尺寸的人與偵測上限。** 小尺寸的人（分割面積小於 $32^2$）沒有關鍵點標註，這就是關鍵點 AP 只有中等與大尺寸範圍的原因。每張影像最多計分 20 個預測姿態，依人物層級的分數排序 [4]。排序用的是模型為整個人輸出的分數，所以方法選擇的人物分數（偵測器信心、關鍵點信心平均，或兩者的乘積），可以在一個關鍵點都沒動的情況下改變 AP。
+
+**解讀門檻。** 由於一個標註者標準差處的關鍵點得 0.88，OKS 達 0.95 要求幾乎每個關鍵點都遠在人類分歧程度之內。COCO 報告，人類表現在 OKS 0.95 以上急遽下降，所以最嚴格的門檻有一部分是在量測標註的雜訊 [4]。
+
+### SMPL 細說
+
+這則補充資料說明正文概述的 SMPL 人體模型 [39] 各項的意義。
+
+**模板與蒙皮。** SMPL 從藝術家製作的模板網格 $\bar{\mathbf{T}} \in \mathbb{R}^{3N}$（休息姿態，有 $N = 6890$ 個頂點）、有 $K = 23$ 個關節加一個根的骨架，以及**混合權重** $\mathcal{W} \in \mathbb{R}^{N \times K}$ 出發，混合權重說明每個關節的旋轉對每個頂點的牽動有多強。線性混合蒙皮 $W(\cdot)$ 用影響某個頂點的各關節剛體變換的加權平均，來移動每個頂點。單獨使用混合蒙皮會產生眾所周知的瑕疵，例如關節大幅彎曲時，手肘與肩膀會塌陷。
+
+**體型混合形狀。** $B_S(\boldsymbol{\beta}) = \sum_{n=1}^{|\boldsymbol{\beta}|} \beta_n \mathbf{S}_n$ 加上身體形狀變異的正交主成分 $\mathbf{S}_n \in \mathbb{R}^{3N}$ 的線性組合，這些主成分是從許多人的註冊掃描學來的。少數幾個係數就已涵蓋身高、體重與比例的大部分變異。
+
+**姿態混合形狀。** $B_P(\boldsymbol{\theta})$ 加上線性依賴於各關節旋轉矩陣元素（相對於休息姿態計算）的頂點偏移。這些偏移修正混合蒙皮的瑕疵，並建模隨姿態變化的形變。因為休息姿態的旋轉被扣掉了，所以 $B_P$ 在休息姿態下恰好為零 [39]，使體型與姿態的效果保持分離。
+
+**由體型得到關節。** 體型不同的人，關節位置也不同，所以 SMPL 用學到的線性迴歸器 $\mathcal{J}$，從上了體型的網格計算休息姿態的關節位置：$J(\boldsymbol{\beta}) = \mathcal{J}\big(\bar{\mathbf{T}} + B_S(\boldsymbol{\beta})\big)$ [39]。擺好姿態之後，3D 關節（以及任何定義為由頂點迴歸出的關鍵點）都跟著網格走，所以永遠遵守那個人的骨長。
+
+**為什麼這對姿態估計有幫助。** 預測 $(\boldsymbol{\beta}, \boldsymbol{\theta})$ 的網路只能產生模型能表達的人體，而且那 72 個姿態數字是旋轉，而不是自由的 3D 位置。用估計的相機把模型的關節投影到影像中，就得到可以和 2D 標籤比較的 2D 關鍵點，這就是 HMR [40] 在沒有 3D 真值的影像上訓練所用的重投影損失。
+
+## 論文導讀
+
+這些導讀是選讀：每一則帶你讀過本篇所依據的一篇論文，包括它提出的問題、核心想法、它呈現了什麼，以及閱讀時要檢查什麼。
+
+### Simple Baselines（Xiao 等人，2018）
+
+**要解決的問題。** 到了 2018 年，頂尖的姿態估計器已變得很複雜：多階段沙漏、級聯金字塔網路、精修模組。很難分辨哪些部分真正重要。Xiao、Wu 與 Wei [9] 問：最簡單而合理的設計能走多遠？他們把它作為評估新想法的基線，同時適用於單張影像的姿態與影片中的姿態追蹤。
+
+**核心想法。** 取 ImageNet 預訓練的 ResNet，什麼都不拿掉，在最後階段之上加三層反卷積層（含批次正規化與 ReLU）；用 $1 \times 1$ 卷積預測 $K$ 張熱圖；以 MSE 對高斯目標訓練。使用標準的由上而下流程，搭配 Faster R-CNN 人物偵測器、翻轉測試與四分之一偏移解碼器。追蹤時，用光流把每個人的關鍵點傳播到下一個影格以產生額外的框，並用基於光流的 OKS 相似度做貪婪配對，連結跨影格的人。
+
+**它呈現了什麼。** 這個簡單的網路在 COCO 上與當時較複雜的模型不相上下，甚至更好；論文最佳的單一模型在 COCO test-dev 上達到 73.7 AP，其追蹤系統在發表時是 PoseTrack 基準上的最先進。
+
+**閱讀時要檢查什麼。** 消融實驗（表 2）在 COCO val2017 上一次只改變一個因素：熱圖解析度（三層反卷積得到 $64 \times 48$ 的圖，比兩層得到 $32 \times 24$ 的圖高 2.5 AP）、反卷積核大小（影響很小，核大小 4 與 2 之間差 0.3 AP）、骨幹深度（越深的 ResNet 穩定地越有幫助）與輸入尺寸。與 Hourglass 和 CPN 的比較（表 3）使用的數字是引自 CPN 論文，而不是重新實作的；作者明說了這一點，並指出差異可能來自實作細節。在比較任何由上而下的數字之前，還有兩個設定必須一致：人物偵測器（論文的偵測器在 COCO val2017 上的人物 AP 為 56.4，Hourglass 與 CPN 使用的偵測器為 55.3）與輸入尺寸（$256 \times 192$ 對 $384 \times 288$）。
+
+**限制。** 它是由上而下的方法，所以繼承了偵測器所有的失敗，成本也隨人數成長。它的熱圖仍是步幅 4，所以解碼精度取決於本篇所述的後處理。HRNet（其中一些作者相同）後來證明，讓高解析度貫穿整個網路，比到最後才恢復它更好 [15]。
+
+**為什麼和這裡有關。** 它是現代由上而下姿態估計器的範本，ViTPose 等後續系統也明確保留了它簡單的反卷積解碼器 [16]。
+
+### OpenPose：部分親和場（Cao 等人，2017）
+
+**要解決的問題。** 由上而下的方法每個人要跑一次網路，所以執行時間隨人群成長，而且無法從漏掉的偵測中恢復。較早的由下而上方法用解大型圖問題來分組關鍵點，每張影像要花幾分鐘。Cao、Simon、Wei 與 Sheikh [18] 想要既準確*又*即時的由下而上分組。
+
+**核心想法。** 一個有兩個分支的網路，在好幾個逐步精修的階段中，預測關鍵點的信心圖，以及肢段的**部分親和場**：沿著每個肢段方向的 2D 向量場。每個階段接收影像特徵，加上前一階段的兩種預測，且每個階段都有監督。測試時，候選肢段以場沿其路徑的線積分打分，貪婪式解析則對樹狀骨架的每個肢段各解一次二分圖匹配，而不是解完整的 NP-hard 問題。論文主張貪婪式解析之所以可行，是因為用大感受野算出的場，已經編碼了全域脈絡。
+
+**它呈現了什麼。** 這個方法贏得 2016 年第一屆 COCO 關鍵點挑戰賽，並明顯改善 MPII 多人基準上的最先進紀錄，其解析步驟的成本幾乎不受人數影響。
+
+**閱讀時要檢查什麼。** 在 COCO 驗證子集上的自我比較（表 4）最有啟發性：以 CPM 作為單人模型的由上而下基線，用真值框得到 62.7 AP，但用 SSD 偵測器的框只有 52.7 AP，這量化了由上而下的準確度有多依賴偵測器；單用 PAF 方法得到 58.4 AP，每個人再用 CPM 精修時為 61.0 AP。在挑戰賽的表格中，請注意中等尺寸那一欄：這個方法在中等尺寸的人上比由上而下的參賽者弱，作者將此歸因於以單一影像尺度看所有人。執行時間圖比較了人數增加時解析與網路的時間；網路成本固定，解析成本很小。
+
+**限制。** 小尺寸與中等尺寸的人上的準確度、貪婪式解析（肢段是局部配對的，所以早期的錯誤會傳播下去），以及不同人的肢段沿著同一條線重疊時場有歧義（練習 4）。期刊版本 [36] 精修了架構並加入腳部關鍵點。
+
+**為什麼和這裡有關。** PAF 是在偵測旁邊學習明確*關聯*訊號最清楚的例子，關聯嵌入用 tag 實現的是同一個想法。
+
+### 「現代觀點」綜述導讀
+
+這份導讀展開「現代觀點」中的綜述摘要：每篇回顧涵蓋什麼、如何組織，以及如何使用。
+
+**Deep Learning-Based Human Pose Estimation: A Survey**（Zheng 等人，*ACM Computing Surveys*，2024）[2] 是三篇中涵蓋最廣的。它涵蓋 2014 年以來超過 250 篇論文，包括影像與影片、2D 與 3D。它的分類法依輸入與推論流程組織：2D 單人（迴歸對熱圖）、2D 多人（由上而下對由下而上），以及 3D，又分成單視角單人（僅骨架的方法，分為直接法或提升法，對人體網格重建）、單視角多人與多視角。它也列出資料集與指標，並將已報告的結果製成表格。把它當作文獻地圖使用：找出你的問題屬於哪一支，再沿著它的參考文獻往下讀。它的未來方向（領域適應、更輕量的人體模型、人與場景的約束、時間指標）是一份很好的開放問題清單。
+
+**Monocular Human Pose Estimation: A Survey of Deep Learning-based Methods**（Chen 等人，*Computer Vision and Image Understanding*，2020）[3] 較短也較早。它把方法分成四種任務（2D 與 3D、單人與多人），並介紹這個領域使用的三種人體模型：以骨架為基礎、以輪廓為基礎，以及以體積為基礎。對新手而言，它的價值在於整理了被證明有效的設計技巧，以及基準與應用之間的落差（遮擋、擁擠、效率、資料多樣性）。
+
+**Recovering 3D Human Mesh from Monocular Images: A Survey**（Tian 等人，*IEEE TPAMI*，2023）[5] 專注於使用 SMPL 等人體模型的網格重建。它對比以最佳化為基礎的擬合（資料項加先驗，逐張影像求解）與以迴歸為基礎的網路（端到端訓練），回顧訓練目標、資料集與指標，並討論尚存的困難：靈活的動作、多樣的外觀、複雜的環境，以及缺乏野外 3D 標籤。如果你想從骨架走向完整的人體，請在讀完本篇的 3D 一節之後閱讀它。
+
+## 參考文獻
+
+1. A. Mathis, P. Mamidanna, K. M. Cury, T. Abe, V. N. Murthy, M. W. Mathis and M. Bethge, "DeepLabCut: Markerless pose estimation of user-defined body parts with deep learning," *Nature Neuroscience*, vol. 21, no. 9, 2018. [doi](https://doi.org/10.1038/s41593-018-0209-y) · [arXiv](https://arxiv.org/abs/1804.03142)
+2. C. Zheng, W. Wu, C. Chen, T. Yang, S. Zhu, J. Shen, N. Kehtarnavaz and M. Shah, "Deep learning-based human pose estimation: A survey," *ACM Computing Surveys*, vol. 56, no. 1, 2024. [doi](https://doi.org/10.1145/3603618) · [arXiv](https://arxiv.org/abs/2012.13392)
+3. Y. Chen, Y. Tian and M. He, "Monocular human pose estimation: A survey of deep learning-based methods," *Computer Vision and Image Understanding*, vol. 192, 102897, 2020. [doi](https://doi.org/10.1016/j.cviu.2019.102897) · [arXiv](https://arxiv.org/abs/2006.01423)
+4. COCO Consortium, "Keypoint evaluation," COCO dataset official documentation (accessed 2026-11-01). [cocodataset.org](https://cocodataset.org/#keypoints-eval)
+5. Y. Tian, H. Zhang, Y. Liu and L. Wang, "Recovering 3D human mesh from monocular images: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 45, no. 12, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3298850) · [arXiv](https://arxiv.org/abs/2203.01923)
+6. A. Toshev and C. Szegedy, "DeepPose: Human pose estimation via deep neural networks," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2014. [doi](https://doi.org/10.1109/CVPR.2014.214) · [arXiv](https://arxiv.org/abs/1312.4659)
+7. J. Tompson, A. Jain, Y. LeCun and C. Bregler, "Joint training of a convolutional network and a graphical model for human pose estimation," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2014. [NeurIPS](https://proceedings.neurips.cc/paper_files/paper/2014/hash/893643e2dcd4b25212defd18141d58c4-Abstract.html) · [arXiv](https://arxiv.org/abs/1406.2984)
+8. A. Newell, K. Yang and J. Deng, "Stacked hourglass networks for human pose estimation," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2016. [doi](https://doi.org/10.1007/978-3-319-46484-8_29) · [arXiv](https://arxiv.org/abs/1603.06937)
+9. B. Xiao, H. Wu and Y. Wei, "Simple baselines for human pose estimation and tracking," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2018. [doi](https://doi.org/10.1007/978-3-030-01231-1_29) · [arXiv](https://arxiv.org/abs/1804.06208)
+10. F. Zhang, X. Zhu, H. Dai, M. Ye and C. Zhu, "Distribution-aware coordinate representation for human pose estimation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2020. [doi](https://doi.org/10.1109/CVPR42600.2020.00712) · [arXiv](https://arxiv.org/abs/1910.06278)
+11. X. Sun, B. Xiao, F. Wei, S. Liang and Y. Wei, "Integral human pose regression," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2018. [doi](https://doi.org/10.1007/978-3-030-01231-1_33) · [arXiv](https://arxiv.org/abs/1711.08229)
+12. Y. Li, S. Yang, P. Liu, S. Zhang, Y. Wang, Z. Wang, W. Yang and S.-T. Xia, "SimCC: A simple coordinate classification perspective for human pose estimation," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2022. [doi](https://doi.org/10.1007/978-3-031-20068-7_6) · [arXiv](https://arxiv.org/abs/2107.03332)
+13. J. Li, S. Bian, A. Zeng, C. Wang, B. Pang, W. Liu and C. Lu, "Human pose regression with residual log-likelihood estimation," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2021. [doi](https://doi.org/10.1109/ICCV48922.2021.01084) · [arXiv](https://arxiv.org/abs/2107.11291)
+14. S.-E. Wei, V. Ramakrishna, T. Kanade and Y. Sheikh, "Convolutional pose machines," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [doi](https://doi.org/10.1109/CVPR.2016.511) · [arXiv](https://arxiv.org/abs/1602.00134)
+15. K. Sun, B. Xiao, D. Liu and J. Wang, "Deep high-resolution representation learning for human pose estimation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00584) · [arXiv](https://arxiv.org/abs/1902.09212)
+16. Y. Xu, J. Zhang, Q. Zhang and D. Tao, "ViTPose: Simple vision transformer baselines for human pose estimation," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2022. [NeurIPS](https://proceedings.neurips.cc/paper_files/paper/2022/hash/fbb10d319d44f8c3b4720873e4177c65-Abstract-Conference.html) · [arXiv](https://arxiv.org/abs/2204.12484)
+17. K. He, G. Gkioxari, P. Dollár and R. Girshick, "Mask R-CNN," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.322) · [arXiv](https://arxiv.org/abs/1703.06870)
+18. Z. Cao, T. Simon, S.-E. Wei and Y. Sheikh, "Realtime multi-person 2D pose estimation using part affinity fields," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.143) · [arXiv](https://arxiv.org/abs/1611.08050)
+19. A. Newell, Z. Huang and J. Deng, "Associative embedding: End-to-end learning for joint detection and grouping," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2017. [NeurIPS](https://proceedings.neurips.cc/paper_files/paper/2017/hash/8edd72158ccd2a879f79cb2538568fdc-Abstract.html) · [arXiv](https://arxiv.org/abs/1611.05424)
+20. B. Cheng, B. Xiao, J. Wang, H. Shi, T. S. Huang and L. Zhang, "HigherHRNet: Scale-aware representation learning for bottom-up human pose estimation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2020. [doi](https://doi.org/10.1109/CVPR42600.2020.00543) · [arXiv](https://arxiv.org/abs/1908.10357)
+21. Z. Geng, K. Sun, B. Xiao, Z. Zhang and J. Wang, "Bottom-up human pose estimation via disentangled keypoint regression," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.01444) · [arXiv](https://arxiv.org/abs/2104.02300)
+22. X. Zhou, D. Wang and P. Krähenbühl, "Objects as points," arXiv:1904.07850, 2019. [arXiv](https://arxiv.org/abs/1904.07850)
+23. P. Lu, T. Jiang, Y. Li, X. Li, K. Chen and W. Yang, "RTMO: Towards high-performance one-stage real-time multi-person pose estimation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024. [doi](https://doi.org/10.1109/CVPR52733.2024.00148) · [arXiv](https://arxiv.org/abs/2312.07526)
+24. J. Yang, A. Zeng, S. Liu, F. Li, R. Zhang and L. Zhang, "Explicit box detection unifies end-to-end multi-person pose estimation," in *Proc. International Conference on Learning Representations (ICLR)*, 2023. [OpenReview](https://openreview.net/forum?id=s4WVupnJjmX) · [arXiv](https://arxiv.org/abs/2302.01593)
+25. Y. Yang and D. Ramanan, "Articulated human detection with flexible mixtures of parts," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 35, no. 12, 2013. [doi](https://doi.org/10.1109/TPAMI.2012.261)
+26. M. Andriluka, L. Pishchulin, P. Gehler and B. Schiele, "2D human pose estimation: New benchmark and state of the art analysis," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2014. [doi](https://doi.org/10.1109/CVPR.2014.471) · [CVF](https://openaccess.thecvf.com/content_cvpr_2014/papers/Andriluka_2D_Human_Pose_2014_CVPR_paper.pdf)
+27. COCO Consortium, `cocoeval.py` (keypoint OKS computation and the per-keypoint sigmas), official COCO API source code (accessed 2026-11-01). [GitHub](https://raw.githubusercontent.com/cocodataset/cocoapi/master/PythonAPI/pycocotools/cocoeval.py)
+28. J. Martinez, R. Hossain, J. Romero and J. J. Little, "A simple yet effective baseline for 3d human pose estimation," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.288) · [arXiv](https://arxiv.org/abs/1705.03098)
+29. M. R. Ronchi and P. Perona, "Benchmarking and error diagnosis in multi-instance pose estimation," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.48) · [arXiv](https://arxiv.org/abs/1707.05388)
+30. T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dollár and C. L. Zitnick, "Microsoft COCO: Common objects in context," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2014. [doi](https://doi.org/10.1007/978-3-319-10602-1_48) · [arXiv](https://arxiv.org/abs/1405.0312)
+31. J. Li, C. Wang, H. Zhu, Y. Mao, H.-S. Fang and C. Lu, "CrowdPose: Efficient crowded scenes pose estimation and a new benchmark," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.01112) · [arXiv](https://arxiv.org/abs/1812.00324)
+32. S. Jin, L. Xu, J. Xu, C. Wang, W. Liu, C. Qian, W. Ouyang and P. Luo, "Whole-body human pose estimation in the wild," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2020. [doi](https://doi.org/10.1007/978-3-030-58545-7_12) · [arXiv](https://arxiv.org/abs/2007.11858)
+33. M. Andriluka, U. Iqbal, E. Insafutdinov, L. Pishchulin, A. Milan, J. Gall and B. Schiele, "PoseTrack: A benchmark for human pose estimation and tracking," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00542) · [arXiv](https://arxiv.org/abs/1710.10000)
+34. C. Ionescu, D. Papava, V. Olaru and C. Sminchisescu, "Human3.6M: Large scale datasets and predictive methods for 3D human sensing in natural environments," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 36, no. 7, 2014. [doi](https://doi.org/10.1109/TPAMI.2013.248) · [project page](http://vision.imar.ro/human3.6m/description.php)
+35. H. Yu, Y. Xu, J. Zhang, W. Zhao, Z. Guan and D. Tao, "AP-10K: A benchmark for animal pose estimation in the wild," in *Advances in Neural Information Processing Systems (NeurIPS) Datasets and Benchmarks Track*, 2021. [NeurIPS](https://datasets-benchmarks-proceedings.neurips.cc/paper_files/paper/2021/hash/903ce9225fca3e988c2af215d4e544d3-Abstract-round2.html) · [arXiv](https://arxiv.org/abs/2108.12617)
+36. Z. Cao, G. Hidalgo, T. Simon, S.-E. Wei and Y. Sheikh, "OpenPose: Realtime multi-person 2D pose estimation using part affinity fields," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 43, no. 1, 2021. [doi](https://doi.org/10.1109/TPAMI.2019.2929257) · [arXiv](https://arxiv.org/abs/1812.08008)
+37. D. Pavllo, C. Feichtenhofer, D. Grangier and M. Auli, "3D human pose estimation in video with temporal convolutions and semi-supervised training," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00794) · [arXiv](https://arxiv.org/abs/1811.11742)
+38. K. Iskakov, E. Burkov, V. Lempitsky and Y. Malkov, "Learnable triangulation of human pose," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2019. [doi](https://doi.org/10.1109/ICCV.2019.00781) · [arXiv](https://arxiv.org/abs/1905.05754)
+39. M. Loper, N. Mahmood, J. Romero, G. Pons-Moll and M. J. Black, "SMPL: A skinned multi-person linear model," *ACM Transactions on Graphics (Proc. SIGGRAPH Asia)*, vol. 34, no. 6, 2015. [doi](https://doi.org/10.1145/2816795.2818013)
+40. A. Kanazawa, M. J. Black, D. W. Jacobs and J. Malik, "End-to-end recovery of human shape and pose," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00744) · [arXiv](https://arxiv.org/abs/1712.06584)
+41. S. Goel, G. Pavlakos, J. Rajasegaran, A. Kanazawa and J. Malik, "Humans in 4D: Reconstructing and tracking humans with transformers," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2023. [doi](https://doi.org/10.1109/ICCV51070.2023.01358) · [arXiv](https://arxiv.org/abs/2305.20091)
+42. R. Khirodkar, T. Bagautdinov, J. Martinez, S. Zhaoen, A. James, P. Selednik, S. Anderson and S. Saito, "Sapiens: Foundation for human vision models," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, 2024. [doi](https://doi.org/10.1007/978-3-031-73235-5_12) · [arXiv](https://arxiv.org/abs/2408.12569)
+43. T. Jiang, P. Lu, L. Zhang, N. Ma, R. Han, C. Lyu, Y. Li and K. Chen, "RTMPose: Real-time multi-person pose estimation based on MMPose," arXiv:2303.07399, 2023. [arXiv](https://arxiv.org/abs/2303.07399)

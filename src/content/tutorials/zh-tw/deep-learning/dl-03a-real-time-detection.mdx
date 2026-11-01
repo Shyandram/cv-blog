@@ -1,0 +1,835 @@
+---
+title: "DLCV 03A・即時偵測：YOLO 系列與 RT-DETR"
+description: "能跟上即時影片的偵測器如何設計、訓練與量測：延遲預算、骨幹–頸部–偵測頭架構、從 YOLO v1 到 YOLO26 的 YOLO 系列、即時 DETR，以及從 NMS 轉向一對一標籤指派的趨勢。"
+track: deep-learning
+order: 35
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection]
+tags: [object-detection, real-time, yolo, rt-detr, label-assignment, nms]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figNms from '../../../../assets/deep-learning/dl-03a-real-time-detection/nms-cost.png';
+import figAnatomy from '../../../../assets/deep-learning/dl-03a-real-time-detection/anatomy.png';
+import figTimeline from '../../../../assets/deep-learning/dl-03a-real-time-detection/yolo-timeline.png';
+import figAssign from '../../../../assets/deep-learning/dl-03a-real-time-detection/assignment.png';
+import figDfl from '../../../../assets/deep-learning/dl-03a-real-time-detection/dfl.png';
+
+## 你將學到
+
+- 「即時」用數字怎麼說：延遲（latency）與吞吐量（throughput）、每秒影格數（FPS），以及一個速度數字有沒有把流程中的哪些部分（前處理、網路、NMS）算進去。
+- 現代一階段偵測器共通的結構：骨幹（backbone）、頸部（neck；FPN 與 PAN），以及在多個網格上預測框的解耦偵測頭（decoupled head），有錨框或無錨框皆可。
+- 從 YOLO v1（2015）到 YOLO26（2026）的 YOLO 脈絡：哪些版本有經同儕審查的論文、哪些只是軟體發行，以及真正改變這個領域的少數幾個想法。
+- 即時 DETR（RT-DETR 與它的後繼者）怎麼讓 Transformer 偵測器變快，以及為什麼 YOLO 與 DETR 這兩條路線如今交會在同一個想法：**一對一標籤指派**（one-to-one label assignment），它讓 NMS 可以省掉。
+- 所有現代即時偵測器共用的訓練配方（mosaic 與 mixup、權重平均、IoU 與分布損失），以及怎麼量測、匯出、挑選模型，才不會被速度數字騙到。
+
+## 先看全貌
+
+偵測器要「即時」，就是要跟上它的攝影機。這聽起來像是網路本身的性質，其實是整個系統的性質：影像要先縮放，網路要執行，重複的框要移除，而這一切都必須在下一張影格到來之前完成。本篇談的，就是圍繞這個時限設計出來的一類偵測器。
+
+<Callout type="tip" title="用最簡單的話說">
+想像大門口有一位警衛，必須把經過的每輛車都記下來。如果每兩秒來一輛車，警衛就只有兩秒可用，不管他字寫得多漂亮。一位字很漂亮但很慢的警衛沒有用，因為車子會越積越多。即時偵測器就是被訓練得很快的警衛：他們把整個場景看一遍，寫出一份簡短的清單，再把同一輛車寫了兩次的那幾行劃掉。最新的警衛訓練得非常好，從來不會把同一輛車寫兩次，所以連劃掉的步驟都可以省掉。
+</Callout>
+
+為什麼重要：在產品中執行的偵測器（攝影機、機器人、手機、汽車、工廠產線），大多是即時偵測器，而且大多出自兩條路線。**YOLO**（「You Only Look Once」）從 2015 年開始，已有來自好幾個團隊的十幾個版本。**即時 DETR** 從 2023 年開始，讓 Transformer 偵測器也達到同樣的速度。兩者現在匯流到同一個想法：訓練網路時，讓每個物件剛好得到一個預測，這樣就不需要任何步驟來移除重複的框。
+
+本篇假設你已讀過 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)。它的[核心基本元件](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件)一節定義了框的迴歸目標、IoU 及其變體（GIoU、DIoU、CIoU）、錨框與標籤指派、非極大值抑制（NMS）、特徵金字塔與焦點損失；它談[一階段偵測器](/zh-tw/learn/deep-learning/dl-03-object-detection/#一階段偵測器yolossd-與-retinanet)、[無錨框偵測器](/zh-tw/learn/deep-learning/dl-03-object-detection/#無錨框偵測器用點取代框)與 [DETR](/zh-tw/learn/deep-learning/dl-03-object-detection/#以-transformer-做集合預測detr-及其後繼者) 的幾節，則介紹了我們要在其上延伸的幾個家族。這些內容我們不重複，直接使用。
+
+## 「即時」是什麼意思
+
+**白話版。** 偵測器每處理一張影格所需的時間，比兩張影格之間的間隔短，就是即時。本節其餘的內容，都是在談怎麼誠實地量這段時間。
+
+### 延遲、吞吐量與每秒影格數
+
+**延遲**（latency）是從收到一張影格，到得出它最終框清單所花的時間。**吞吐量**（throughput）是同時處理許多影格時，每秒完成幾張。兩者是不同的數字，而即時系統在乎的是延遲。
+
+對單一影格而言，端到端延遲是各階段時間的總和：
+
+$$
+T_{\text{e2e}} = T_{\text{pre}} + T_{\text{net}} + T_{\text{post}},
+$$
+
+其中 $T_{\text{pre}}$ 是前處理（解碼、縮放與正規化影像、把它複製到加速器），$T_{\text{net}}$ 是網路的前向傳遞，$T_{\text{post}}$ 是後處理（解碼框、信心閾值、NMS、把結果複製回來）。攝影機以每秒 $f$ 張影格執行時，每張影格的預算是 $1/f$ 秒：30 FPS 約 33.3 ms，60 FPS 約 16.7 ms。系統只有在 $T_{\text{e2e}} \le 1/f$ 時才跟得上；實務上還必須留下時間給使用這些框的下游（追蹤、控制、顯示）。
+
+批次大小為 $B$ 時的吞吐量是
+
+$$
+\text{throughput} = \frac{B}{T_{\text{batch}}(B)},
+$$
+
+其中 $T_{\text{batch}}(B)$ 是處理一批 $B$ 張影格的時間。加速器在大批次上效率最好，所以吞吐量隨 $B$ 上升，但每張影格都得等整批做完，所以延遲也跟著上升。即時攝影機一次只送來一張影格，這就是為什麼即時偵測的論文通常以**批次大小 1** 報告延遲；例如 YOLOX 的報告是在單張 GPU 上以 FP16、批次 1 量測 [10]。把延遲換算成 FPS（$1000 / T$，$T$ 以毫秒計）只有在批次大小為 1 時才有意義。
+
+### 哪些有算、哪些沒算
+
+兩篇論文都寫「5 ms」，意思可能不同。速度數字取決於：
+
+- **硬體與軟體環境。** GPU 或 CPU 型號、推論引擎（例如 NVIDIA GPU 上的 TensorRT [45]，或執行 ONNX 模型的執行階段 [44]）、它的版本，以及數值精度（FP32、FP16 或 INT8）。
+- **輸入大小。** 即時偵測器的 COCO 結果大多使用 640 × 640 的輸入。卷積層的運算量大致隨像素數成長，所以邊長加倍，運算量大約變成四倍。
+- **批次大小**，如上所述。
+- **計時涵蓋哪些階段。** 許多 YOLO 論文過去只報告前向傳遞。YOLOX 的報告明說它的延遲是「不含後處理」量得的 [10]。RT-DETR 論文指出 YOLO 偵測器通常只報告模型速度、不含 NMS 時間，並建立了一個把 NMS 步驟加回去的**端到端速度基準**（end-to-end speed benchmark）[23]。
+
+本篇的規則是：**除非兩個速度數字是在相同的硬體、相同的精度、輸入大小與批次大小下，對相同的階段量得，否則絕不比較。**把不同論文的數字混在一起的表格，違反這條規則的情況比遵守的多。
+
+### NMS 的時間為什麼不是常數
+
+**白話版。** 網路的前向傳遞對每張影像所需的時間大致相同。NMS 不一樣：它的成本取決於有多少框通過信心閾值，而這取決於影像。
+
+貪婪式 NMS（定義見 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件)）取出分數最高的框，計算它與其餘每個框的 IoU，刪掉超過 IoU 閾值的框，然後重複。如果有 $n$ 個框進來、被刪掉的很少，IoU 的計算次數就會逼近
+
+$$
+\sum_{k=1}^{n-1} k = \frac{n(n-1)}{2},
+$$
+
+其中 $k$ 是每留下一個框之後還剩下的框數。如果大多數框都是少數幾個物件的重複框，它們會很早就被刪掉，工作量就小得多。所以 NMS 的時間取決於候選框的數量、決定多少框進來的信心閾值，以及場景。RT-DETR 論文直接量過：它統計了信心閾值從 0.001 到 0.25 時有多少框留下來，發現信心閾值為 0.001、IoU 閾值為 0.7 時，YOLOv8 達到最佳 AP，但它的 NMS 時間也處於較高的水準 [23]。它還發現，所測試的有錨框偵測器產生的框約為無錨框偵測器的三倍，相應地也需要更多 NMS 時間 [23]。
+
+下面的程式用 NumPy 對合成的候選框計時一個貪婪式 NMS。每個場景有 5 個或 500 個物件，候選框是它們加上抖動的副本；IoU 的計算次數是確定的，而時間則取決於你的機器。
+
+```python
+import time
+import numpy as np
+
+def nms_count(boxes, scores, thr=0.5):
+    """Greedy NMS that also counts how many box-pair IoUs it computes."""
+    order = np.argsort(-scores)
+    keep, n_iou = [], 0
+    while order.size:
+        i, rest = order[0], order[1:]
+        keep.append(i)
+        n_iou += rest.size
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0]); y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 2], boxes[rest, 2]); y2 = np.minimum(boxes[i, 3], boxes[rest, 3])
+        inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        area = lambda b: (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])
+        iou = inter / (area(boxes[i]) + area(boxes[rest]) - inter)
+        order = rest[iou <= thr]
+    return len(keep), n_iou
+
+def random_boxes(n, n_objects, rng, size=640):
+    """n candidate boxes jittered around n_objects true objects."""
+    centres = rng.uniform(40, size - 40, (n_objects, 2))
+    owner = rng.integers(0, n_objects, n)
+    c = centres[owner] + rng.normal(0, 6, (n, 2))
+    wh = rng.uniform(30, 60, (n, 2))
+    return np.hstack([c - wh / 2, c + wh / 2]), rng.random(n)
+
+rng = np.random.default_rng(0)
+for n_objects in (5, 500):                       # few objects vs a crowded scene
+    for n in (100, 1000, 8400):
+        b, s = random_boxes(n, n_objects, rng)
+        t0 = time.perf_counter()
+        kept, n_iou = nms_count(b, s)
+        ms = (time.perf_counter() - t0) * 1e3
+        print(f"objects {n_objects:3d} | boxes {n:4d} | kept {kept:4d} | IoUs {n_iou:9,d} | {ms:6.1f} ms")
+```
+
+```text
+objects   5 | boxes  100 | kept   21 | IoUs       770 |    0.8 ms
+objects   5 | boxes 1000 | kept   43 | IoUs     7,809 |    1.4 ms
+objects   5 | boxes 8400 | kept   86 | IoUs    90,699 |    6.8 ms
+objects 500 | boxes  100 | kept   94 | IoUs     4,621 |    2.2 ms
+objects 500 | boxes 1000 | kept  513 | IoUs   209,490 |   22.1 ms
+objects 500 | boxes 8400 | kept 1259 | IoUs 3,039,292 |  154.7 ms
+```
+
+（在單一 CPU 核心上執行一次的結果；你的時間會不同，IoU 的次數不會。）同樣是 8,400 個候選框，擁擠場景需要的 IoU 計算次數約為稀疏場景的 34 倍。實際的實作在 GPU 上執行，並限制框的數量，所以絕對時間小得多，但效應的形狀是一樣的：後處理時間隨候選框數量與擁擠程度成長。這正是免 NMS 偵測器所省下的工作。圖 1 把這個實驗延伸到一系列候選框數量。
+
+<Figure src={figNms} alt="兩張以進入 NMS 的框數為橫軸的雙對數圖，場景分別有 5、50 與 500 個物件。左：NMS 時間（毫秒）隨框數上升，且場景越擁擠越高。右：IoU 計算次數以同樣方式上升，在最擁擠的場景中逼近虛線表示的最壞情況曲線 n(n-1)/2。" caption="圖 1 — 在合成候選框上，貪婪式 NMS 的成本（以 NumPy 做的小實驗）。(a) 單一 CPU 核心上的實際耗時，取決於機器。(b) IoU 的計算次數，是確定的；虛線是最壞情況 n(n−1)/2。" />
+
+## 現代一階段偵測器的結構
+
+**白話版。** 幾乎所有即時偵測器都有三個部分。**骨幹**（backbone）把影像轉成幾種解析度的特徵圖。**頸部**（neck）讓這幾種解析度之間交換資訊。**偵測頭**（head）看每張特徵圖的每個格子，預測「這裡有沒有物件、是哪一類、邊緣在哪裡？」
+
+### 骨幹、頸部與偵測頭
+
+**骨幹**是一個卷積網路（或者越來越常見的，帶有一些注意力層的網路），分階段降低影像的取樣率。最後三個階段通常稱為 $C_3, C_4, C_5$，**步幅**（stride）分別是 8、16 和 32：$C_5$ 的一個格子概括了 $32 \times 32$ 像素的區塊。深層的階段看得到更多上下文，但解析度粗；淺層的階段很細緻，但語意較弱。
+
+**頸部**修補這個落差。特徵金字塔網路（Feature Pyramid Network, FPN）[30] 加了一條由上而下的路徑，讓粗略但語意豐富的特徵上取樣後加到較細的層級。路徑聚合網路（Path Aggregation Network, PAN）[31] 再加一條由下而上的路徑，讓精確的高解析度資訊回流到較粗的層級。輸出 $P_3, P_4, P_5$ 保持 8、16、32 的步幅。YOLOv4 把 PAN 列為其路徑聚合的選項之一 [8]，後來大多數的 YOLO 版本也以某種形式使用 FPN 加 PAN 的頸部。
+
+**偵測頭**在每個金字塔層級上執行幾個小卷積。早期的 YOLO 偵測頭是*耦合*的：同一組卷積同時產生類別分數與框。YOLOX 顯示，**解耦偵測頭**（分類與迴歸各有獨立的分支）收斂更快、準確度更高 [10]；後來幾乎每個版本都使用它。圖 2 總結這個設計。
+
+<Figure src={figAnatomy} alt="方塊圖。一張 640 乘 640 的輸入進入骨幹，骨幹的階段 C3、C4、C5 步幅分別為 8、16、32。頸部把它們變成 P3、P4、P5，橘色由上而下的箭頭是 FPN，粉紅色由下而上的箭頭是 PAN。每個層級進入一個有類別分支與框分支的解耦偵測頭，產生 80 乘 80、40 乘 40 與 20 乘 20 的網格，合計 8,400 個候選。一則註記說明：一對多的偵測頭需要閾值加 NMS，而一對一的偵測頭用 top-k、不需要 NMS。" caption="圖 2 — 現代一階段偵測器共用的骨幹–頸部–偵測頭設計，輸入為 640 × 640。每個網格的每個格子做一個預測（無錨框的情況），每張影像共有 8,400 個候選。" />
+
+對 $640 \times 640$ 的輸入與 8、16、32 的步幅，三個網格共有 $80^2 + 40^2 + 20^2 = 8{,}400$ 個格子。無錨框的偵測頭每個格子做一個預測；每個格子有 $A$ 個錨框的有錨框偵測頭則做 $8{,}400\,A$ 個預測。每個預測是一個 $4 + K$ 個數字的向量（框與 $K$ 個類別分數），某些設計還多一個物件性（objectness）分數。這個輸出張量，就是後處理必須轉成一份簡短框清單的東西。
+
+### 有錨框與無錨框的預測
+
+**白話版。** 有錨框的偵測頭說的是「從這個模板框出發，再調整它」。無錨框的偵測頭說的是「從這個格子的中心算起，物件的左邊緣離這麼遠，上邊緣離那麼遠」，依此類推。
+
+**有錨框（YOLOv2 到 YOLOv5、YOLOv7）。** YOLOv2 以訓練框的 k-means 分群找出的形狀，取代手工挑選的錨框（它選 $k = 5$）[6]。對於左上角為 $(c_x, c_y)$（以網格單位計）的格子，與寬 $p_w$、高 $p_h$ 的錨框，網路輸出 $(t_x, t_y, t_w, t_h, t_o)$，框的解碼方式為
+
+$$
+b_x = \sigma(t_x) + c_x, \qquad b_y = \sigma(t_y) + c_y, \qquad b_w = p_w\, e^{t_w}, \qquad b_h = p_h\, e^{t_h},
+$$
+
+其中 $\sigma$ 是 logistic sigmoid，$(b_x, b_y)$ 是框的中心，$(b_w, b_h)$ 是它的大小，全部以網格單位計（乘以步幅即為像素），$\sigma(t_o)$ 是預測的物件性，訓練目標趨向 $\Pr(\text{object}) \cdot \text{IoU}$ [6]。sigmoid 把中心限制在它自己的格子內，這是 YOLOv2 論文為了讓早期訓練穩定而引入的 [6]。YOLOv3 沿用這個方案，在 3 個尺度上每個格子預測 3 個框，並把類別上的 softmax 換成獨立的 logistic 分類器 [7]。
+
+**無錨框（YOLOX、YOLOv6、YOLOv8 及之後）。** YOLOX 把每個位置的預測數從 3 個減為 1 個，並且不用錨框，直接預測框的偏移量 [10]。今天常見的形式，是在步幅為 $s$ 的層級上，於格子中心 $(x, y)$ 預測到框四個邊的四個非負距離，單位為步幅：
+
+$$
+x_1 = x - s\,\hat{l}, \qquad y_1 = y - s\,\hat{t}, \qquad x_2 = x + s\,\hat{r}, \qquad y_2 = y + s\,\hat{b},
+$$
+
+其中 $(\hat{l}, \hat{t}, \hat{r}, \hat{b})$ 是預測的左、上、右、下距離，$(x_1, y_1, x_2, y_2)$ 是解碼出的框角點。這與 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#無錨框偵測器用點取代框) 中無錨框偵測器的參數化相同。Ultralytics 的文件把 YOLOv8 描述為使用「anchor-free split」偵測頭 [13]。拿掉錨框，就沒有錨框的超參數，偵測頭更簡單，產生的候選框也更少，這也表示 NMS 的工作更少 [23]。
+
+### 解碼輸出張量
+
+下面的程式建立 8,400 個格子中心，在隨機的背景雜訊中放進一個高信心的預測，並以無錨框的公式解碼它。
+
+```python
+import numpy as np
+
+def make_grid(img_size=640, strides=(8, 16, 32)):
+    """Centre (x, y) in pixels and stride of every prediction, level by level."""
+    centres, st = [], []
+    for s in strides:
+        n = img_size // s
+        ys, xs = np.mgrid[0:n, 0:n]
+        centres.append(np.stack([(xs.ravel() + 0.5) * s, (ys.ravel() + 0.5) * s], axis=1))
+        st.append(np.full(n * n, s))
+    return np.concatenate(centres).astype(float), np.concatenate(st).astype(float)
+
+def decode(raw, centres, strides, conf=0.25):
+    """raw: (N, 4 + K) = distances (l, t, r, b) in stride units, then K class logits."""
+    ltrb = raw[:, :4] * strides[:, None]                     # back to pixels
+    boxes = np.concatenate([centres - ltrb[:, :2], centres + ltrb[:, 2:]], axis=1)
+    scores = 1 / (1 + np.exp(-raw[:, 4:]))                   # one sigmoid per class
+    cls, best = scores.argmax(axis=1), scores.max(axis=1)
+    keep = best > conf                                       # confidence threshold
+    return boxes[keep], cls[keep], best[keep]
+
+centres, strides = make_grid()
+print("predictions per 640x640 image:", len(centres))
+
+rng = np.random.default_rng(0)
+K = 3                                                        # three classes
+raw = np.concatenate([rng.uniform(0, 4, (len(centres), 4)),  # random distances
+                      rng.normal(-6, 1, (len(centres), K))], axis=1)  # background logits
+# plant one confident object (class 1) at the stride-16 cell centred on (296, 200)
+i = np.flatnonzero((strides == 16) & (centres[:, 0] == 296) & (centres[:, 1] == 200))[0]
+raw[i, :4] = [5.0, 3.0, 4.0, 2.5]
+raw[i, 4 + 1] = 4.0
+boxes, cls, score = decode(raw, centres, strides)
+print("kept:", len(boxes), "| box:", boxes[0], "| class:", cls[0], "| score:", round(float(score[0]), 3))
+```
+
+```text
+predictions per 640x640 image: 8400
+kept: 1 | box: [216. 152. 360. 240.] | class: 1 | score: 0.982
+```
+
+放進去的距離 $(5, 3, 4, 2.5)$ 在步幅 16 下變成 $(80, 48, 64, 40)$ 像素，得到從 $(216, 152)$ 到 $(360, 240)$ 的框。在訓練好的偵測器中，許多相鄰的格子會對同一個物件有反應；那些重複的預測會怎麼處理，是下面標籤指派一節的主題。
+
+## YOLO 家族脈絡
+
+**白話版。** 「YOLO」不是一個模型，而是許多團隊在十年間共用的名稱。讀這段歷史比較有用的方式，是忽略版本號碼，順著幾個想法走：先是網格，然後是錨框，接著是多尺度偵測頭，再來是更好的訓練配方，接著是搭配學習式指派的無錨框偵測頭，最近則是注意力與免 NMS 的偵測頭。
+
+### 時間線
+
+圖 3 依各版本首次公開的年份，把它們放在時間線上，依發布者分組，並標示每個版本有沒有經同儕審查的論文。有三件事容易被忽略。第一，**版本號碼並不構成單一的脈絡**：YOLOv3 之後，原作者就停手了，後來的號碼被不同的團隊拿去用，有時相隔只有幾週。第二，幾個最廣泛使用的版本（YOLOv5、YOLOv8、YOLO11）是**沒有論文的軟體**發行；它們的官方文件也這樣說 [9]、[13]、[16]。第三，這個名稱沒有人管：2026 年 8 月有一篇題為「YOLOv14」的預印本貼到 arXiv，約兩週後被作者撤回 [52]，所以光是一個新的號碼，並不能說明任何品質。
+
+<Figure src={figTimeline} alt="2015 年到 2026 年的時間線，共五條泳道。Redmon 與 Farhadi：YOLO v1 2015、YOLOv2 2016、YOLOv3 2018。Bochkovskiy、Wang 與 Liao：YOLOv4 2020、YOLOv7 2022、YOLOv9 2024。Ultralytics 發行：YOLOv5 2020、YOLOv8 2023、YOLO11 2024、YOLO26 2026，以及已宣布的 YOLO27。其他研究團隊：YOLOX 2021、YOLOv6 2022、YOLOv10 2024、YOLOv12 與 YOLOv13 2025。即時 DETR：RT-DETR 2023、RT-DETRv2、D-FINE 與 DEIM 2024、RF-DETR 與 DEIMv2 2025。不同的標記區分經同儕審查的論文、只有 arXiv 的報告、軟體發行與已宣布的模型。" caption="圖 3 — 依首次公開發布年份排列的 YOLO 家族與即時 DETR。實心圓表示有經同儕審查的論文（常在預印本之後約一年發表），空心方塊表示只有 arXiv 預印本或技術報告，實心菱形表示發行當時沒有論文的軟體發行，空心菱形表示已宣布但尚未發行。" />
+
+下表列出每個版本的主要出處，以及值得記住的想法。「論文」表示該版本是以論文推出的；「同儕審查」欄說明該論文有沒有經過同儕審查。
+
+| 版本 | 首次公開 | 主要出處 | 同儕審查？ | 值得記住的想法 |
+| --- | --- | --- | --- | --- |
+| YOLO v1 [5] | 2015 | 論文（CVPR 2016） | 是 | 一個網路一次就從 $S \times S$ 網格預測所有框 |
+| YOLOv2 [6] | 2016 | 論文（CVPR 2017） | 是 | 以 k-means「維度分群」得到錨框；以 sigmoid 限制中心 |
+| YOLOv3 [7] | 2018 | 技術報告（arXiv） | 否 | 在 3 個尺度上預測；獨立的 logistic 類別分數 |
+| YOLOv4 [8] | 2020 | arXiv | 否 | 系統化的「bag of freebies」（訓練技巧）與「bag of specials」（低成本模組）；mosaic 資料擴增 |
+| YOLOv5 [9] | 2020 | 軟體（Ultralytics） | 無論文 | 廣泛使用的 PyTorch 實作與訓練流程 |
+| YOLOX [10] | 2021 | arXiv | 否 | 無錨框、解耦偵測頭、SimOTA 動態標籤指派 |
+| YOLOv6 [11] | 2022 | 技術報告（arXiv） | 否 | 可重參數化的骨幹與頸部；任務對齊指派；為量化而設計 |
+| YOLOv7 [12] | 2022 | 論文（CVPR 2023） | 是 | E-ELAN 聚合；有規劃的重參數化；lead-guided 指派 |
+| YOLOv8 [13] | 2023 | 軟體（Ultralytics） | 無論文 | 在多任務套件中的無錨框分離式偵測頭 |
+| YOLOv9 [14] | 2024 | 論文（ECCV 2024） | 是 | 可程式化梯度資訊（PGI）；GELAN |
+| YOLOv10 [15] | 2024 | 論文（NeurIPS 2024） | 是 | 以一致的雙重指派做免 NMS 訓練 |
+| YOLO11 [16] | 2024 | 軟體（Ultralytics） | 無論文 | 改良的骨幹與頸部；相同的套件與任務 |
+| YOLOv12 [17] | 2025 | 論文（NeurIPS 2025） | 是 | 以注意力為核心的設計（區域注意力），並維持即時速度 |
+| YOLOv13 [18] | 2025 | arXiv | 否 | 以超圖為基礎的相關性模組（HyperACE） |
+| YOLO26 [19] | 2026 | 軟體（2026 年 1 月）；arXiv 論文（2026 年 6 月） | 否 | 預設免 NMS；移除 DFL；針對小物件的新最佳化器與指派 |
+| YOLO27 [20] | — | 僅宣布 | — | 截至 2026 年 10 月尚未發行；沒有權重或程式碼 |
+
+*選讀：[YOLO 家族逐版介紹](#yolo-家族逐版介紹)（見「補充資料」頁）。每個版本兩三段：改了什麼、論文或文件怎麼說，以及它的限制。*
+
+### 值得記住的五個想法
+
+你不必記住十六個版本。大部分的進步來自五個想法。
+
+1. **對網格一次傳遞。** YOLO v1 把偵測變成從影像到固定大小張量的單次迴歸：$7 \times 7$ 的網格，每個格子 2 個框和 20 個類別分數，對 PASCAL VOC 來說是 $7 \times 7 \times 30$ 的張量 [5]。之後的每個版本都保留這個「看一次、密集預測」的結構。
+2. **多個尺度，由頸部連接。** 從 YOLOv3 起，預測來自多個步幅 [7]；從 YOLOv4 起，各層級以 FPN/PAN 式的頸部融合 [8]。小物件在步幅 8 的網格上找，大物件在步幅 32 的網格上找。
+3. **訓練配方佔了模型的一半。** YOLOv4 的主要貢獻，是系統化地測試許多訓練期的技巧（「bag of freebies」，在推論時不花任何成本）與低成本模組（「bag of specials」）[8]。後來各版本之間的差異，在資料擴增、指派與損失函數上，和在架構上一樣大。
+4. **學習式標籤指派。** 決定哪些預測要被訓練成哪個物件的正樣本，是一個設計選擇，不是細節。YOLOX 的 SimOTA 為每個物件挑出動態數量的最低成本預測 [10]；YOLOv6 與 YOLOv8 時代的模型使用任務對齊指派，依類別分數與 IoU 的混合為預測排序 [11]、[34]。
+5. **移除 NMS。** YOLOv10 在通常的一對多偵測頭旁，再訓練第二個一對一偵測頭，推論時只使用一對一的偵測頭，所以不需要 NMS [15]。YOLO26 把這變成預設的部署路徑 [19]。這與 DETR 提出的想法（見下文）相同，現在放進了 YOLO 裡面。
+
+另外有兩條線索對部署很重要：**重參數化**（re-parameterization；訓練多分支的區塊，再把它折疊成單一卷積做推論，RepVGG [32]，用於 YOLOv6 [11] 與 YOLOv7 [12]），以及**即時成本下的注意力**（YOLOv12 的區域注意力 [17]、YOLOv13 的超圖模組 [18]）。
+
+*選讀：[把重參數化區塊折疊成一個卷積](#把重參數化區塊折疊成一個卷積)（見「補充資料」頁）。批次正規化的折疊公式，以及用 NumPy 驗證三個分支如何變成輸出相同的單一卷積。*
+
+## 即時 DETR
+
+**白話版。** DETR 顯示 Transformer 可以直接輸出最終的框集合，沒有錨框也沒有 NMS，但它訓練慢、執行也慢。即時 DETR 保留「直接輸出集合」的想法，並重新設計昂貴的部分。
+
+### 原版 DETR 為什麼慢
+
+DETR [21]（在 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#以-transformer-做集合預測detr-及其後繼者) 介紹過）有兩個各自獨立的速度問題。
+
+- **訓練慢。** 在一對一匈牙利匹配 [40] 下，每個物件只監督物件查詢中的一個，所以每張影像提供的正向訓練訊號很少，而查詢又從不帶任何影像資訊的學習嵌入開始。因此 DETR 需要非常長的訓練排程。
+- **編碼器昂貴。** 對所有特徵圖位置做自注意力，時間隨位置數量呈平方成長。DETR 為了負擔得起，只用一張粗略的特徵圖，這對小物件不利。Deformable DETR [22] 讓每個查詢只關注少數取樣點，使多尺度特徵變得負擔得起，但 RT-DETR 的分析發現，多尺度編碼器隨即成為運算瓶頸，因為把所有層級串接起來會讓 token 序列變得很長 [23]。
+
+### RT-DETR
+
+RT-DETR（Zhao 等人，CVPR 2024；arXiv 標題為「DETRs beat YOLOs on real-time object detection」）[23] 是第一個為即時使用而設計的 DETR。它把骨幹的最後三個階段 $\{S_3, S_4, S_5\}$ 送進編碼器，並改了三件事：
+
+1. **高效率混合編碼器。** 注意力只作用在最粗的層級*內部*（論文稱這個模組為 AIFI，基於注意力的尺度內特徵互動），那裡 token 少、語意豐富。各層級再以卷積跨尺度融合（CCFF，基於 CNN 的跨尺度特徵融合），就像 YOLO 的頸部。論文主張，對所有層級一起做注意力是多餘的，因為高層特徵本來就是由低層特徵算出來的 [23]。
+2. **不確定性最小的查詢選擇。** 不使用無視影像的學習式查詢，而是選出固定數量的編碼器特徵作為初始物件查詢。論文把一個特徵的不確定性定義為它預測的定位品質與分類分數之間的差異，$U(\hat{X}) = \lVert P(\hat{X}) - C(\hat{X}) \rVert$，其中 $\hat{X}$ 是編碼器特徵，$P$ 與 $C$ 是它的定位與分類預測，並把它加進分類損失，使被選中的查詢既有高信心、定位又準 [23]。
+3. **可調整的解碼器深度。** 因為解碼器逐層微調框，而且每一層都有預測頭，所以推論時可以拿掉幾層，以**不必重新訓練**的方式用準確度換速度；論文觀察到，拿掉最後幾層解碼器，準確度損失很小 [23]。
+
+和 DETR 一樣，RT-DETR 以一對一匹配訓練，**不需要 NMS**。論文報告它的 ResNet-50 與 ResNet-101 版本在 NVIDIA T4 GPU 上，於 COCO 達到 53.1% 與 54.3% AP，速度分別為 108 與 74 FPS [23]；這些 FPS 數值來自它自己的端到端基準（TensorRT、FP16），該基準也會替它拿來比較的 YOLO 模型計入 NMS 的時間。
+
+*選讀：[閱讀 RT-DETR 論文](#閱讀-rt-detr-論文)（見「論文導讀」頁）。它的 NMS 分析、端到端速度基準，以及閱讀比較表時要檢查什麼。*
+
+### RT-DETR 之後
+
+即時 DETR 在 2024 到 2026 年間進展很快。下面的後繼者，是我們查證過主要出處的那些；每一個在推論時都保留一對一匹配。
+
+| 模型 | 出處 | 主要想法 |
+| --- | --- | --- |
+| RT-DETRv2 [24] | arXiv，2024 | 給 RT-DETR 的「bag of freebies」：各尺度使用不同數量的取樣點；一個更容易部署的選用離散取樣運算子；動態資料擴增與隨尺度調整的超參數 |
+| D-FINE [25] | ICLR 2025 | 把框當作逐層微調的機率分布（細粒度分布微調），再加上從最後一層解碼器到較早各層的自我蒸餾 |
+| DEIM [26] | CVPR 2025 | 更快收斂：透過「稠密一對一」匹配（以 mosaic 與 mixup 讓每張影像有更多物件）讓每張影像有更多正樣本，並使用感知可匹配性的損失 |
+| RF-DETR [27] | ICLR 2026 | 預訓練的視覺 Transformer 骨幹（DINOv2 [47]），以及權重共享的神經網路架構搜尋，不必重新訓練就能找到許多準確度–延遲的取捨 |
+| DEIMv2 [28] | arXiv，2025 | 在 DEIM 的基礎上，較大的模型使用經調整以適應多尺度偵測的 DINOv3 [48] 特徵，最小的模型則使用剪枝後的卷積骨幹 |
+
+*選讀：[RT-DETR 之後的即時 DETR 細說](#rt-detr-之後的即時-detr-細說)（見「補充資料」頁）。每個後繼者改了什麼、分布微調如何解碼一個框，以及稠密一對一匹配對正樣本數量有什麼影響。*
+
+## 標籤指派與免 NMS 的趨勢
+
+**白話版。** 訓練時，每個物件都必須「交給」某些預測，讓它們學會對它有反應。如果一個物件交給許多預測（一對多），訓練豐富又快，但測試時有好幾個預測會對同一個物件有反應，必須由 NMS 清理。如果每個物件剛好交給一個預測（一對一），重複的預測在訓練中就被消除，不需要 NMS，但每個物件提供的訓練訊號比較少。現代偵測器兩者並用：用一對多訓練，用一對一預測。
+
+### 一對多與一對一
+
+令 $\mathcal{P}$ 為預測的集合（無錨框 YOLO 是每個格子一個，DETR 是每個查詢一個），$\mathcal{G}$ 為真值物件。兩種風格都從預測 $i$ 與物件 $j$ 之間的**匹配分數**（matching score）開始。TOOD [34] 提出的任務對齊分數，以 YOLOv10 論文 [15] 寫的形式是
+
+$$
+m_{ij} = s_{ij} \cdot p_{ij}^{\,\alpha} \cdot \text{IoU}(\hat{b}_i, b_j)^{\beta},
+$$
+
+其中 $p_{ij}$ 是預測 $i$ 對物件 $j$ 所屬類別的預測分數，$\hat{b}_i$ 與 $b_j$ 是預測框與真值框，$s_{ij} \in \{0, 1\}$ 是**空間先驗**（spatial prior），只有當預測的錨點落在物件內時才為 1，$\alpha, \beta \ge 0$ 用來平衡分類與定位。YOLOv10 論文引用 $\alpha = 0.5$ 與 $\beta = 6$ 作為 YOLOv8 的預設值 [15]。因為 $m$ 用到網路目前的預測，所以指派在訓練過程中會改變；這就是「動態」或「感知預測」指派的意思。
+
+- **一對多（o2m）。** 對每個物件 $j$，依 $m_{ij}$ 排名的前 $k$ 個預測成為正樣本。TOOD 取前 13 個 [34]；YOLOX 的 SimOTA 用成本取代分數，並為每個物件分別選擇 $k$ [10]，沿用 OTA 把指派看成最佳傳輸（optimal transport）的觀點 [33]。
+- **一對一（o2o）。** 每個物件剛好得到一個預測，每個預測至多對應一個物件。要最佳地解它是一個二分匹配問題，用匈牙利演算法 [40] 求解，如同 DETR [21]：
+
+$$
+\hat{\pi} = \arg\max_{\pi} \sum_{j \in \mathcal{G}} m_{\pi(j)\, j},
+$$
+
+其中 $\pi$ 遍歷從物件到預測的所有單射（injective）映射（沒有預測被用兩次）。DETR 類的偵測器把同一個問題寫成最小成本匹配，成本為 $-m$，或是類別、L1 與 GIoU 各項的組合。
+
+為什麼一對一會移除 NMS？在一對多的訓練中，一個物件的第二好與第三好的預測也*被教導要對它有反應*，所以測試時它們真的會有反應，於是需要 NMS。在一對一的訓練中，除了匹配到的那一個之外，其他每個預測都是負樣本，所以網路*被教導不要產生重複的預測*。那為什麼不只用一對一？因為它提供的正樣本少得多，會拖慢收斂、削弱特徵，這正是讓 DETR 變慢的同一個問題。
+
+### 雙重指派、混合匹配與稠密一對一
+
+兩條路線的解法，都是「用一對多取得訓練訊號，用一對一產生輸出」的變化：
+
+- **YOLOv10：一致的雙重指派**（consistent dual assignments）[15]。第二個與原本結構相同的偵測頭以一對一指派訓練，原本的偵測頭則保持一對多指派；兩者共用骨幹與頸部，所以骨幹與頸部能接收到豐富的一對多訊號。推論時只用一對一的偵測頭。論文以「top one selection」挑出一對一的匹配，並報告它的表現與匈牙利匹配一樣好、訓練時間更短；兩個偵測頭設定相同的 $\alpha$ 與 $\beta$（「一致匹配度量」），使一對一偵測頭的最佳預測，在一對多偵測頭中的排名也很高。在它對小型模型的消融實驗中，於 T4 GPU 上以 TensorRT FP16、批次 1 做端到端量測（需要 NMS 的部分有計入 NMS），單獨使用一對多偵測頭得到 44.9 AP、7.07 ms，單獨使用一對一偵測頭得到 43.4 AP、2.44 ms，經雙重訓練的一對一偵測頭得到 44.3 AP、2.44 ms [15]。延遲的差異就是 NMS。
+- **H-DETR：混合匹配**（hybrid matching）[29]。給 DETR 額外一組僅在訓練時以一對多匹配訓練的查詢，以增加正樣本；推論只使用一對一的查詢。
+- **DEIM：稠密一對一**（dense one-to-one）[26]。保持一對一匹配，但增加每張訓練影像中的物件數（用 mosaic 與 mixup），讓一對一匹配產生更多正樣本。
+- **YOLO26：漸進式損失**（progressive loss）[19]。總損失是一對多損失與一對一損失的加權和，$\mathcal{L} = \alpha(t)\,\mathcal{L}_{\text{o2m}} + (1 - \alpha(t))\,\mathcal{L}_{\text{o2o}}$，其中 $\alpha(t)$ 隨訓練週期 $t$ 線性遞減，使監督逐漸轉向推論時使用的那個偵測頭。
+
+*選讀：[閱讀 YOLOv10 論文](#閱讀-yolov10-論文)（見「論文導讀」頁）。一致匹配度量背後的監督落差論證，以及怎麼閱讀它的消融表。*
+
+### 小例子比較
+
+下面的程式在一張 $100 \times 100$ 的影像上放一個 $8 \times 8$ 的錨點網格與三個物件，給每個點一個帶雜訊的預測框與一個分數，計算 $m_{ij}$，並比較 top-4 的一對多指派與匈牙利的一對一指派。
+
+```python
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+def iou_matrix(a, b):
+    x1 = np.maximum(a[:, None, 0], b[None, :, 0]); y1 = np.maximum(a[:, None, 1], b[None, :, 1])
+    x2 = np.minimum(a[:, None, 2], b[None, :, 2]); y2 = np.minimum(a[:, None, 3], b[None, :, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    area = lambda b: (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    return inter / (area(a)[:, None] + area(b)[None, :] - inter)
+
+rng = np.random.default_rng(3)
+gt = np.array([[20, 20, 60, 70], [55, 30, 95, 80], [10, 80, 40, 100]], float)
+# 8 x 8 grid of anchor points (stride 12.5 on a 100 x 100 image), each with a predicted box
+ys, xs = np.mgrid[0:8, 0:8]
+pts = np.stack([(xs.ravel() + 0.5) * 12.5, (ys.ravel() + 0.5) * 12.5], axis=1)
+inside = ((pts[:, None, 0] > gt[None, :, 0]) & (pts[:, None, 0] < gt[None, :, 2]) &
+          (pts[:, None, 1] > gt[None, :, 1]) & (pts[:, None, 1] < gt[None, :, 3]))      # spatial prior s
+near = inside.argmax(axis=1)                       # the object each point "looks at"
+pred = gt[near] + rng.normal(0, 5, (len(pts), 4))  # noisy box predictions
+p = np.where(inside.any(axis=1), rng.uniform(0.3, 0.9, len(pts)), rng.uniform(0, 0.2, len(pts)))
+
+alpha, beta = 0.5, 6.0                             # the defaults quoted in the YOLOv10 paper
+m = inside * p[:, None] ** alpha * iou_matrix(pred, gt) ** beta   # (points, objects)
+
+# one-to-many: the top-k points by m for every object become positives
+k = 4
+o2m = {}
+for j in range(len(gt)):
+    best = np.argsort(-m[:, j])[:k]
+    o2m[j] = best[m[best, j] > 0].tolist()
+# one-to-one: Hungarian matching on cost -m (each object gets exactly one point)
+rows, cols = linear_sum_assignment(-m)
+o2o = {int(c): [int(r)] for r, c in zip(rows, cols)}
+print("one-to-many positives:", o2m)
+print("one-to-one positives: ", dict(sorted(o2o.items())))
+print("positives per image: o2m", sum(map(len, o2m.values())), "| o2o", len(o2o))
+top1 = m.argmax(axis=0)                            # YOLOv10's cheaper top-1 choice
+print("top-1 equals Hungarian here:", all(top1[j] == o2o[j][0] for j in o2o))
+```
+
+```text
+one-to-many positives: {0: [26, 34, 42, 43], 1: [37, 46, 38, 30], 2: [58, 50, 49, 57]}
+one-to-one positives:  {0: [26], 1: [37], 2: [58]}
+positives per image: o2m 12 | o2o 3
+top-1 equals Hungarian here: True
+```
+
+一對多的正樣本多了四倍，圖 4 顯示它的代價：每個物件有四個重疊的框，全都被教導要有反應。一對一每個物件只保留最好的那個點，它同時也是一對多下排名最高的點，這正是 YOLOv10 的一致匹配度量所要鼓勵的性質。這裡，逐物件的簡單 top-1 選擇和匈牙利匹配結果一致，是因為沒有兩個物件在爭同一個點；當它們爭同一個點時，top-1 可能把一個點同時指派給兩個物件，匈牙利匹配則不會。
+
+<Figure src={figAssign} alt="同一個小場景的兩個面板，場景中有三個真值框（藍、橘、綠），背景是灰色的點格。左：每個物件有四個彩色的正樣本點，每個點都有一個虛線的預測框，所以每個物件被四個重疊的框涵蓋。右：每個物件只有一個正樣本點與一個虛線框。" caption="圖 4 — 小場景上的標籤指派。(a) 一對多：依任務對齊分數，每個物件的前 4 個點是正樣本，所以每個物件有四個重疊的預測被訓練成要有反應。(b) 一對一（匈牙利）：每個物件剛好一個正樣本；其他每個點都被訓練成背景。" />
+
+## 訓練配方要點
+
+**白話版。** 即時偵測器很小，所以比大型模型更依賴訓練的方式。配方有三個部分：讓每張影像更困難、更多樣的資料擴增；評估時使用的平滑權重副本；以及與評估指標一致的損失函數。
+
+### 資料擴增：mosaic 與 mixup
+
+**Mosaic** 在 YOLOv4 中提出，把 4 張訓練影像合成一張，讓每張訓練影像在 4 種不同的上下文中呈現物件，且尺度縮小 [8]。**Mixup** 把兩個訓練樣本做凸組合，
+
+$$
+\tilde{x} = \lambda\, x_a + (1 - \lambda)\, x_b, \qquad \lambda \sim \text{Beta}(a, a),
+$$
+
+其中 $x_a, x_b$ 是兩張影像，$\lambda \in [0, 1]$ 是混合權重，$a \gt 0$ 是超參數 [38]；它原本是為分類設計的，後來被改用在偵測上，如 YOLOX 的報告所述 [10]。YOLOX 在最後 15 個週期關掉這兩種擴增，讓訓練以看起來像測試影像的影像收尾，並發現有了這麼強的擴增之後，ImageNet 預訓練就不再有益 [10]。DEIM 刻意使用 mosaic 與 mixup，讓每張影像有更多物件，使一對一匹配有更多正樣本 [26]。
+
+### 權重平均（EMA）
+
+YOLOX 的基線在訓練中加入了「EMA weights updating」[10]。用於評估的模型，是訓練權重的指數移動平均（exponential moving average），
+
+$$
+\bar{\theta}_t = d\, \bar{\theta}_{t-1} + (1 - d)\, \theta_t,
+$$
+
+其中 $\theta_t$ 是第 $t$ 個訓練步驟之後的權重，$\bar{\theta}_t$ 是平均後的權重，$d$ 是接近 1 的衰減係數。平均能平滑最後幾個最佳化步驟的雜訊，而且不增加推論成本：只有 $\bar{\theta}$ 會被匯出。
+
+### 損失函數的組成
+
+現代即時偵測器的損失有一個分類項、一個或多個框的項，而對於免 NMS 的模型，每一項還有一個一對一的對應項。
+
+- **具品質感知目標的分類。** 不是把正樣本的類別分數訓練到趨近 1，而是有幾種損失把它訓練到趨近正樣本的 IoU，讓分數同時也能為定位品質排序。GFL [35] 的 quality focal loss 與 VarifocalNet [36] 的 varifocal loss 是兩種標準形式。varifocal loss 是
+
+$$
+\text{VFL}(p, q) = \begin{cases} -q\big(q \log p + (1 - q)\log(1 - p)\big) & q \gt 0, \\ -\alpha\, p^{\gamma} \log(1 - p) & q = 0, \end{cases}
+$$
+
+其中 $p$ 是預測分數，$q$ 是目標（正樣本時是預測框與其真值之間的 IoU，負樣本時是 0），$\alpha, \gamma$ 像焦點損失 [39] 那樣降低簡單負樣本的權重。YOLOv6 選用 VFL 作為分類損失 [11]。
+
+- **IoU 類的框損失。** CIoU（定義見 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件)，隨 DIoU [37] 提出）是 YOLOv4 的 bag of freebies 的一部分 [8]；YOLOv6 在 SIoU 與 GIoU 損失之間做了選擇 [11]。
+- **分布焦點損失（distribution focal loss, DFL）** [35]。偵測頭不是對框的每一邊預測一個數字，而是預測一個在 $n + 1$ 個值 $y_0 \lt y_1 \lt \dots \lt y_n$（彼此相距 $\Delta$；GFL 以步幅為單位取 $\Delta = 1$）上的離散機率分布，並以期望值解碼該邊，
+
+$$
+\hat{y} = \sum_{i=0}^{n} S_i\, y_i, \qquad \text{DFL}(S_i, S_{i+1}) = -\big((y_{i+1} - y)\log S_i + (y - y_i)\log S_{i+1}\big),
+$$
+
+其中 $S_i$ 是值 $y_i$ 的 softmax 機率，$y$ 是真實距離，$y_i \le y \le y_{i+1}$ 是與它相鄰的兩個值。DFL 把機率推向包夾目標的那兩個值；它的最小值發生在 $S_i = (y_{i+1} - y)/(y_{i+1} - y_i)$ 與 $S_{i+1} = (y - y_i)/(y_{i+1} - y_i)$，此時期望值恰好等於 $y$ [35]。一個寬廣的分布表示邊緣不確定，例如被遮住的邊緣。GFL 論文發現結果對 $n$ 不敏感（它測試了 12 到 18），並建議用像 1 這樣小的 $\Delta$ [35]；YOLO26 論文則描述 DFL 自 YOLOv8 起就被 Ultralytics 的模型採用，每邊 16 個 bin [19]。
+
+```python
+import numpy as np
+
+K, stride = 16, 8                        # 16 bins per box side, a stride-8 level
+bins = np.arange(K)                      # support y_0 = 0, ..., y_15 = 15 (in stride units)
+
+def softmax(z):
+    e = np.exp(z - z.max())
+    return e / e.sum()
+
+def dfl(logits, y):
+    """Distribution focal loss for one box side with continuous target y (stride units)."""
+    S = softmax(logits)
+    i = int(np.floor(y))                 # neighbours y_i <= y <= y_i + 1
+    return -((i + 1 - y) * np.log(S[i]) + (y - i) * np.log(S[i + 1]))
+
+y = 5.3                                  # true distance: 5.3 cells = 42.4 pixels
+flat = np.zeros(K)                       # untrained head: uniform distribution
+sharp = np.full(K, -10.0); sharp[5], sharp[6] = np.log(0.7), np.log(0.3)   # the ideal shape
+for name, z in [("uniform", flat), ("ideal", sharp)]:
+    S = softmax(z)
+    print(f"{name:7s} expected distance {S @ bins:5.2f} cells = {S @ bins * stride:6.1f} px | DFL {dfl(z, y):.3f}")
+print("largest distance this head can output:", (K - 1) * stride, "px")
+```
+
+```text
+uniform expected distance  7.50 cells =   60.0 px | DFL 2.773
+ideal   expected distance  5.30 cells =   42.4 px | DFL 0.611
+largest distance this head can output: 120 px
+```
+
+兩個重點。理想的分布剛好解碼成 5.3 個格子，但它的損失並不是零（0.611 是 0.7 / 0.3 這個分割的熵），所以 DFL 的值不是「以像素計的誤差」。而且支撐集是有限的：16 個 bin 時，一邊最長只能是 $15$ 個步幅。YOLO26 論文把這個範圍限制與額外的偵測頭參數，作為移除 DFL 的理由 [19]。圖 5 顯示三種情況。
+
+<Figure src={figDfl} alt="三張橫跨 16 個 bin 的長條圖。左：平坦的分布，期望值為 7.50，離真實距離 5.3 很遠。中：bin 5 的機率為 0.7、bin 6 的機率為 0.3，期望值恰好是 5.30。右：以 bin 6 附近為中心的寬廣鐘形分布，期望值為 6.01。" caption="圖 5 — 以分布表示的框邊如何解碼。虛線是期望值（預測的距離）；黃線是真實距離 5.3。DFL 把偵測頭訓練到中間那個面板的樣子；像右邊那樣寬廣的分布，則表達對這條邊的不確定。" />
+
+## 評估與部署
+
+**白話版。** 準確度對每個偵測器的量法都相同；速度則不然。比較即時偵測器時，大多數錯誤都來自在不同條件下量得的速度數字。
+
+### 準確度：COCO mAP
+
+即時偵測器是在 COCO [41] 上，以 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#偵測器的評估) 中說明的 COCO 協定 [42] 比較的：對 0.50 到 0.95 的 10 個 IoU 閾值與 80 個類別取平均的 AP，寫成 AP 或 mAP@[.5:.95]，每張影像最多 100 個偵測結果。對這個家族還有三項特別要小心的事：
+
+- **切分。** 大多數論文報告 val2017；有些也報告 test-dev。不要混在一起。
+- **額外資料。** 有些結果使用 Objects365 [43] 預訓練（RT-DETR 兩種都報告 [23]）；這樣的數字應該放在另一欄。
+- **信心閾值。** AP 是從排序後的清單算出來的，所以評估使用很低的信心閾值（RT-DETR 的分析引用 0.001 作為 YOLOv8 取得最佳 AP 的設定 [23]）。部署中的系統用的則高得多。所以，以 NMS 為基礎的偵測器在評估閾值下的速度，並不是它在部署時的速度，反之亦然。
+
+### 速度：量測檢查清單
+
+量測或閱讀一個延遲數字時，要檢查：
+
+1. 有說明**硬體、引擎與精度**（例如 T4 GPU、TensorRT、FP16），而且被比較的每個模型都相同。
+2. 延遲用**批次大小 1**；大批次的吞吐量數字無法套用到即時攝影機上。
+3. **端到端**：前處理、網路，以及包含 NMS 的後處理，或清楚說明排除了什麼。YOLOv10 與 RT-DETR 以 TensorRT 的 efficient-NMS 外掛程式為 NMS 計時，並對 COCO val 影像取平均，因為 NMS 時間取決於影像 [15]、[23]。
+4. **暖機與平均**：任何引擎最初的幾次迭代都很慢（配置記憶體、選擇核心），所以要丟掉它們，再對許多影像取平均。
+5. 計時時使用的**輸入大小與信心閾值**。
+
+### 匯出、低精度與重參數化
+
+訓練框架不是部署引擎。訓練好的偵測器通常會**匯出**成 ONNX [44] 這類交換格式，再由推論引擎針對目標裝置編譯，例如 NVIDIA GPU 的 TensorRT [45]。這一路上有三件事會改變：
+
+- **精度。** 在現代 GPU 上，FP16 讓記憶體流量減半，準確度變化很小。INT8 量化把權重與激活值存成 8 位元整數，每個張量或通道有一個縮放因子，推論時使用整數運算 [46]。它需要校準資料，而框和分數的輸出是最敏感的部分，所以量化之後除了 AP50，也要檢查嚴格 IoU 閾值下的 AP。YOLOv6 報告重參數化的模型比較難量化，並調整了訓練來解決這個問題 [11]。
+- **計算圖簡化。** 重參數化區塊被折疊成單一卷積，批次正規化也被折疊到前一個卷積中（見補充資料）。
+- **不支援的運算子。** 每個運算子都必須存在於目標引擎中。RT-DETRv2 為此加入了離散取樣運算子 [24]，YOLO26 也把匯出更簡單列為移除 DFL 的理由之一 [19]。免 NMS 的模型匯出起來更簡單，因為輸出本身就是最終的清單。
+
+## 失效模式與如何選模型
+
+**白話版。** 即時偵測器會在任何偵測器都會失敗的地方失敗（小的、擁擠的、不尋常的物件），另外還有幾個自己特有的地方：低解析度、量化，以及在你的裝置上不成立的速度數字。
+
+**要測試的失效模式。**
+
+- **小物件。** 在 640 × 640 的輸入下，一個 $16 \times 16$ 像素的物件，只涵蓋最細（步幅 8）網格上的 $2 \times 2$ 個格子。YOLO26 明確處理了這個問題的一個版本：使用以中心為基礎的指派時，一個很小的框可能一個格子中心也沒包含，因而得不到任何正樣本，所以它針對小目標的指派，只在候選選擇時放大很小的框 [19]。
+- **擁擠場景。** 以 NMS 為基礎的模型，在嚴格的 IoU 閾值下會刪掉真正相鄰的物件，在寬鬆的閾值下則會留下重複的框（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件) 討論了 Soft-NMS）；一對一的模型避開了閾值，但必須已學會把相鄰的物件分開。
+- **領域偏移。** 以 COCO 訓練的權重只認得日常照片；空拍、醫療、工業與夜間影像需要微調。RF-DETR 就是為了在新的目標資料集上微調而設計的 [27]。
+- **高解析度下的大物件**，對以分布為基礎的偵測頭而言，因為上面討論過的有限範圍 [19]。
+- **部署漂移。** INT8 匯出、新的輸入大小或新的信心閾值之後，要重新量測準確度；論文裡的數字並不涵蓋這些情況。
+
+**如何選擇。**
+
+1. 在*目標裝置*上，以端到端、批次大小 1，定出**延遲預算**。
+2. 取兩三個候選家族（例如一個最新的 YOLO 與一個即時 DETR），並為每一個，選出**在你的裝置上**符合預算的最大尺寸。
+3. 在**你自己的資料**上評估它們（微調之後），除了 AP，也看對應用重要的錯誤類型（漏掉小物件、誤報）。
+4. 當後處理佔了預算的很大一部分、場景擁擠，或部署引擎處理 NMS 的能力不佳時，優先選擇免 NMS 的模型。
+5. 檢查程式碼的**授權與維護狀況**。例如，依據其引用條目，Ultralytics 的發行以 AGPL-3.0 授權散布 [13]、[16]，這對商業產品很重要。
+
+如果類別清單是開放式的（「找出任何一輛堆高機」），封閉集合的偵測器就是錯誤的工具；請見 [DLCV 03 的開放詞彙偵測器](/zh-tw/learn/deep-learning/dl-03-object-detection/#開放詞彙與定位偵測器)。
+
+## 現代觀點
+
+### 綜述怎麼說
+
+**A Comprehensive Review of YOLO Architectures in Computer Vision: From YOLOv1 to YOLOv8 and YOLO-NAS**（Terven、Córdova-Esparza 與 Romero-González，*Machine Learning and Knowledge Extraction*，2023）[1] 依序走過 16 個版本，先從指標與後處理講起，再談每個版本的架構與訓練技巧。它的討論以四個軸整理這段歷史：錨框（YOLO v1 沒有，YOLOv2 加入，從 YOLOX 起又移除）、框架（先是 Darknet，後來是 PyTorch）、骨幹（Darknet，然後是跨階段部分連接、重參數化與架構搜尋），以及始終存在的速度–準確度取捨。它預期 COCO 會被更困難的基準取代，YOLO 模型也會擴展到追蹤與多模態任務。
+
+**YOLO Evolution: A Comprehensive Benchmark and Architectural Review of YOLOv12, YOLO11, and Their Previous Versions**（Jegham、Koh、Abdelatti 與 Hendawi，arXiv，2024，2025 年修訂）[2] 是一份實驗性的比較，而不是歷史回顧：它在為了涵蓋不同物件大小、長寬比與小型單一類別物件而挑選的資料集上，評估從 YOLOv3 到 YOLOv12 的版本，並報告精確率、召回率、mAP、處理時間、GFLOPs 與模型大小。它的結論是沒有哪個版本到處都贏：在它的實驗中，YOLO11 給出最好的整體平衡，YOLOv10 速度快但對重疊物件較弱，YOLOv12 增加的複雜度沒有得到回報。請把這些視為一個團隊在其資料集上的結果，而不是通用的排名。
+
+**Ultralytics YOLO Evolution: An Overview of YOLO27, YOLO26, YOLO11, YOLOv8, and YOLOv5**（Sapkota 與 Karkee，arXiv，2025，2026 年修訂）[3] 只回顧 Ultralytics 的發行，涵蓋架構、基準測試、部署（匯出與量化）與應用，並列出尚待解決的挑戰：密集場景、結合 CNN 與 Transformer、開放詞彙感知、領域泛化，以及硬體感知的最佳化。這是第三方的回顧，不是 Ultralytics 的出版物。
+
+**Object Detection with Transformers: A Review**（Shehzadi 等人，*Sensors*，2025）[4] 涵蓋 DETR 這一側：把對 DETR 的改進依骨幹、查詢設計與注意力機制分組，這是上述即時 DETR 的背景脈絡。
+
+### 2023–2026 年的最先進技術
+
+- **免 NMS 正成為預設。** YOLOv10 [15] 在 2024 年把它引入 YOLO；YOLO26 [19] 把它作為預設的部署路徑；每個即時 DETR [23]–[28] 就結構而言都是免 NMS 的。已宣布的 YOLO27 為它較大的模型描述了不用 NMS 的查詢式解碼 [20]。
+- **注意力變得負擔得起。** YOLOv12 [17] 與 YOLOv13 [18] 把類注意力的模組放進 YOLO；RT-DETR [23] 與它的後繼者則把注意力限制在成本低的地方。
+- **以預訓練的視覺 Transformer 作為骨幹。** RF-DETR [27] 與 DEIMv2 [28] 從自監督骨幹（DINOv2 [47]、DINOv3 [48]）出發，主要有助於遷移到新的資料集。
+- **訓練效率。** DEIM [26] 與 YOLO26 [19]（使用新的最佳化器與漸進式損失）的目標是更短的訓練，而不只是更高的 AP。
+
+### 尚待解決的問題
+
+1. **公平的速度比較。** 目前沒有跨裝置、共同且持續維護的端到端基準；大多數表格仍然混用不同的條件。
+2. **小物件與擁擠的物件**，仍是即時輸入大小下準確度的主要缺口。
+3. **對量化友善的偵測頭。** 分數與框的輸出在 INT8 下會損失準確度，而注意力層讓低精度部署更複雜。
+4. **同儕審查與可重現性。** 幾個廣泛部署的版本沒有經同儕審查的論文，版本號碼又任人取用；各種說法需要獨立查核。
+5. **超越封閉集合。** 讓開放詞彙偵測在不損失準確度的前提下，達到與封閉集合 YOLO 相同的延遲。
+
+## 重點整理
+
+- 「即時」是對整條流程、在指定裝置上以批次大小 1 訂出的延遲預算；沒有註明硬體、精度、輸入大小與計時階段的速度數字，無法拿來比較。
+- NMS 的成本取決於候選框的數量與場景，這就是為什麼端到端基準要把它算進去，也是免 NMS 偵測器有吸引力的原因。
+- 現代一階段偵測器共用骨幹、FPN/PAN 頸部，以及步幅 8/16/32 網格上的解耦偵測頭；無錨框的偵測頭在每個格子預測四個距離。
+- YOLO 這個名稱涵蓋許多團隊；YOLO v1、v2、v7、v9、v10 與 v12 有經同儕審查的論文，而 YOLOv5、YOLOv8 與 YOLO11 是軟體發行，YOLO26 的論文則是在發行之後才出現在 arXiv。
+- 真正重要的想法是：單次傳遞的網格預測、多尺度頸部、系統化的訓練配方、學習式標籤指派、重參數化，以及現在的免 NMS 一對一偵測頭。
+- 一對多指派提供豐富的訓練訊號，但會有重複的預測；一對一指派移除重複的預測，但正樣本很少；雙重偵測頭、混合匹配與稠密一對一把兩者結合起來。
+- RT-DETR 用混合編碼器、不確定性最小的查詢選擇與可調整的解碼器深度，讓 DETR 達到即時；它的後繼者改進了框的表示、收斂與骨幹。
+
+## 練習
+
+1. **預算的算術。** 攝影機以 25 FPS 執行。前處理需要 3 ms，網路需要 18 ms，NMS 在 1 ms（空曠的街道）到 9 ms（人群）之間。系統在兩種情況下都跟得上嗎？留給追蹤的時間還有多少？哪一項改變對人群最有幫助？
+
+<details>
+<summary>提示</summary>
+
+預算是 40 ms。總時間在空曠街道是 22 ms，在人群中是 30 ms，各剩 18 ms 與 10 ms。只有 NMS 這一項取決於場景，所以免 NMS 的偵測頭（或較高的信心閾值，代價是召回率）對人群最有幫助。
+
+</details>
+
+2. **數一數候選框。** 對 $1280 \times 1280$ 的輸入、步幅 8、16、32 與 64，無錨框偵測頭做多少個預測？對 $640 \times 640$ 的輸入，每個格子有 3 個錨框、步幅 8、16 與 32 的有錨框偵測頭，又做多少個？用 NMS 的程式比較這兩種候選框數量在擁擠場景中的成本。
+
+<details>
+<summary>提示</summary>
+
+$160^2 + 80^2 + 40^2 + 20^2 = 34{,}000$。有錨框偵測頭做 $3 \times 8{,}400 = 25{,}200$ 個。以程式中的擁擠場景來看，兩者都遠超過 8,400 個候選，而且 IoU 的計算次數成長得比線性還快，所以在 NMS 之前先套用信心閾值更加重要。
+
+</details>
+
+3. **top-1 不是匹配的時候。** 修改小例子的指派，讓兩個物件強烈重疊，且同一個網格點對兩者都有最高的分數。比較逐物件的 top-1 與匈牙利匹配。top-1 哪裡出了問題？你預期在真實影像中這種情況多常發生？
+
+<details>
+<summary>提示</summary>
+
+top-1 把同一個點指派給兩個物件，使那個點得到兩個互相衝突的目標，其中一個物件實際上沒有正樣本。匈牙利匹配則把第二好的點給第二個物件。當物件中心的距離小於約一個步幅時就會發生，這在擁擠場景的小物件中很常見，其他情況很少見。
+
+</details>
+
+4. **DFL 的範圍。** 在 16 個 bin 與 $\Delta = 1$ 下，如果格子中心就在框的中心，步幅 32 的格子能描述的最大框是多大？在 $1280 \times 1280$ 的影像中，一個 $1200$ 像素寬的物件會怎樣？說出兩種擴大範圍的方法。
+
+<details>
+<summary>提示</summary>
+
+每一邊最多可延伸 $15 \times 32 = 480$ 像素，所以最寬的框是 960 像素。一個 1200 像素寬的物件會被截斷（預測的框太小）。你可以用更多的 bin、更大的 $\Delta$（更粗的 bin）、更粗的額外層級（步幅 64），或像 YOLO26 那樣直接迴歸距離的偵測頭。
+
+</details>
+
+5. **兩張速度表。** 論文 A 報告在 A100 GPU、FP16、批次 32、只有前向傳遞的條件下是 4.1 ms。論文 B 報告在 T4 GPU、FP16、批次 1、含 NMS 的端到端條件下是 6.3 ms。列出你不能因此斷定 A 比較快的所有理由，並設計能讓你比較兩者的實驗。
+
+<details>
+<summary>提示</summary>
+
+不同的 GPU、不同的批次大小（A 在批次 32 下的每張影像時間隱藏了延遲）、不同的計時階段（A 排除了前處理與後處理）。把兩個匯出的模型在同一個裝置上，用同一個引擎與精度，在批次 1、相同的輸入大小下執行，暖機之後對相同的影像做端到端計時，並使用你要部署的信心閾值。
+
+</details>
+
+6. **設計訓練排程。** 你要訓練一個同時有一對多與一對一偵測頭的免 NMS 偵測器。為一對多損失的權重 $\alpha(t)$，以及 300 個週期內的 mosaic 擴增，各寫出一份排程，並根據前面各節說明每個選擇的理由。
+
+<details>
+<summary>提示</summary>
+
+例如：$\alpha$ 像 YOLO26 的漸進式損失那樣，從較大的值線性遞減到較小的值，讓骨幹一開始從許多正樣本學習，到最後推論用的偵測頭得到最大的權重；mosaic 與 mixup 像 YOLOX 那樣維持開啟，直到最後 15 個週期，讓最後的週期符合測試分布。讓一對一偵測頭的匹配分數與一對多的保持一致，如同 YOLOv10。
+
+</details>
+
+即時偵測器的偵測結果是追蹤的輸入，追蹤見 [DLCV 06・物件追蹤](/zh-tw/learn/deep-learning/dl-06-object-tracking/)。
+
+## 補充資料
+
+這些補充資料是選讀的背景知識：逐版本的細節，以及一個正文只概述的推導。正文與練習都不依賴它們。
+
+### YOLO 家族逐版介紹
+
+**白話版。** 下面的每個版本只改了一兩件事。補充資料依據該版本自己的論文或文件說明改了什麼，以及要注意什麼。
+
+**YOLO v1** [5]。影像被分成 $S \times S$ 的網格（$S = 7$）；每個格子預測 $B = 2$ 個帶信心的框，以及一組 $C$ 個類別機率，也就是 $S \times S \times (5B + C)$ 的張量。包含物件中心的格子負責該物件。因為每個格子只預測兩個框和一個類別，相鄰的小物件會爭同一個格子，這是後來版本要處理的主要弱點。
+
+**YOLOv2 / YOLO9000** [6]。加入批次正規化 [49]、以訓練框的 k-means 分群（使用 $1 - \text{IoU}$ 距離，5 個群）得到形狀的錨框、以 sigmoid 限制的中心偏移（正文中的公式）、把較細緻特徵帶到輸出的 passthrough 層，以及多尺度訓練（訓練時輸入大小會變，讓一個模型能在多種解析度下運作）。
+
+**YOLOv3** [7]。一個更深的殘差骨幹，報告稱之為 Darknet-53；在 3 個尺度上預測，每個尺度 3 個錨框；以及使用二元交叉熵的獨立 logistic 分類器，取代 softmax，使一個框可以帶有重疊的標籤。它是以簡短的技術報告寫成的。
+
+**YOLOv4** [8]。一項系統化的研究：CSPDarknet53 骨幹（跨階段部分連接 [50]）、PAN 頸部 [31]，以及一長串測試過的技巧。「bag of freebies」（僅限訓練的改動）包括 mosaic 擴增與 CIoU 損失 [37]；「bag of specials」（低成本的推論期模組）包括感受野與注意力模組。論文也強調在單張常見的 GPU 上訓練。
+
+**YOLOv5** [9]。Ultralytics 於 2020 年 6 月以 PyTorch 程式碼庫的形式發行，有從 nano 到 extra large 的五種模型尺寸。文件指出沒有發表論文，是「由於模型快速演進的性質」。最初的 YOLOv5 是有錨框的（RT-DETR 論文把它當作有錨框的例子 [23]）；目前的 Ultralytics 套件載入的是一個稱為 YOLOv5u 的無錨框變體。
+
+**YOLOX** [10]。回到無錨框預測（每個位置一個預測，而不是三個），加入解耦偵測頭、強力擴增（mosaic 與 mixup，最後 15 個週期關閉）與 SimOTA。SimOTA 對每一組物件–預測配對計算成本 $c_{ij} = L^{\text{cls}}_{ij} + \lambda L^{\text{reg}}_{ij}$，其中 $L^{\text{cls}}$ 與 $L^{\text{reg}}$ 是分類與迴歸損失，$\lambda$ 是權重，並讓中心區域內成本最低的 $k$ 個預測成為正樣本，$k$ 依物件而定；它簡化了把指派當作最佳傳輸來求解的 OTA [33]。YOLOX 也嘗試過免 NMS 的一對一變體，發現它準確度稍低、速度也較慢，所以保留為選用，比 YOLOv10 早了兩年。
+
+**YOLOv6** [11]。一份工業設計報告：由 RepVGG 式區塊 [32] 組成的可重參數化骨幹（EfficientRep）與頸部（Rep-PAN）、高效率的解耦偵測頭、任務對齊指派 [34]、用於分類的 VFL [36]、自我蒸餾，以及針對重參數化模型的量化方案。
+
+**YOLOv7** [12]。「可訓練的 bag of freebies」：E-ELAN（延伸的高效率層聚合區塊）、適用於串接式模型的縮放規則、*有規劃的*重參數化卷積（論文顯示某些分支組合在重參數化後會有害，並規劃了該用在哪裡），以及由粗到細的 lead-guided 標籤指派：最終（lead）偵測頭的預測與真值產生軟標籤，同時提供給 lead 偵測頭與輔助的訓練偵測頭，輔助偵測頭的標籤較粗（有更多正樣本格子），以偏重召回率。
+
+**YOLOv8** [13]。Ultralytics 於 2023 年 1 月 10 日在 `ultralytics` Python 套件中發行。文件列出無錨框的分離式偵測頭與改良的骨幹和頸部，並指出沒有發表論文。YOLO26 論文把 DFL 描述為自 YOLOv8 起 Ultralytics 偵測頭的一部分 [19]。
+
+**YOLOv9** [14]。針對*資訊瓶頸*：資料通過許多層時，損失函數所需的資訊可能流失，梯度也變得不可靠。可程式化梯度資訊（PGI）在訓練時加入一條輔助的可逆分支，為損失提供完整的輸入資訊，推論時移除，所以測試時不花任何成本。GELAN（generalized ELAN）是配套的骨幹設計。
+
+**YOLOv10** [15]。用於免 NMS 訓練的一致雙重指派（正文與論文導讀），加上以效率為導向的設計（較輕的分類偵測頭、解耦的空間與通道降取樣、依秩次引導的區塊配置），以及以準確度為導向的設計（大核卷積與部分自注意力模組）。
+
+**YOLO11** [16]。Ultralytics 於 2024 年 9 月 27 日發行。文件描述它改良了骨幹與頸部設計並精煉了訓練，涵蓋偵測、分割、分類、姿態與旋轉框；沒有論文。
+
+**YOLOv12** [17]。主張注意力因為其平方成本與記憶體存取，一直太慢而無法用於即時偵測器，並以*區域注意力*（area attention）讓它變快：把特徵圖分成 $l$ 個相等的區域（預設 $l = 4$），在每個區域內做注意力，這在保有大感受野的同時降低了成本。R-ELAN（殘差聚合區塊）讓較大模型的訓練更穩定。已在 NeurIPS 2025 通過同儕審查。
+
+**YOLOv13** [18]。用超圖建模位置之間的高階相關性：HyperACE 把多尺度特徵的像素視為頂點並學習超邊，FullPAD 把增強後的特徵分配給骨幹、頸部與偵測頭；深度可分離區塊讓模型保持輕量。撰寫本文時只有 arXiv。
+
+**YOLO26** [19]。Ultralytics 於 2026 年 1 月發行，arXiv 論文在 2026 年 6 月。雙偵測頭設計讓推論預設免 NMS（仍保留選用的 NMS 路徑）。DFL 被移除：論文給了兩個理由，一是偵測頭的大小（它報告移除 DFL 使 YOLO11n 從 2.6M 降到 2.3M 個參數），二是每邊 $(K - 1)$ 個步幅（$K = 16$ 個 bin）的有限範圍。訓練加入了 MuSGD（SGD 與 Muon 最佳化器 [51] 的混合）、漸進式損失（正文），以及 STAL，它把小於最細步幅的框放大到參考大小，*僅用於候選選擇*，使很小的物件一定能得到正樣本。
+
+**YOLO27** [20]。在 Ultralytics 文件上宣布，文件指出這些模型處於最後開發階段，尚未提供，也沒有發布日期。宣布的設計，是最小的模型使用在較少尺度上預測的 CNN 偵測頭，較大的模型則使用不用 NMS 的查詢式解碼。在有權重與論文之前，把它視為一則宣布。
+
+### RT-DETR 之後的即時 DETR 細說
+
+**白話版。** 後繼者處理三個仍然存在的弱點：框被預測成四個普通的數字、正樣本太少造成收斂慢，以及遷移到新資料時表現不佳的骨幹。
+
+**RT-DETRv2** [24] 保留 RT-DETR 的架構，並加入訓練與部署上的改進：各特徵尺度使用不同數量的可變形注意力取樣點，讓解碼器有選擇地擷取多尺度特徵；一個選用的離散取樣運算子，取代 `grid_sample` 運算子，移除了一個部署上的障礙；以及依模型尺度調整的動態資料擴增和超參數。
+
+**D-FINE** [25] 把 DETR 中的框迴歸重新定義為**細粒度分布微調**（fine-grained distribution refinement, FDR）：每一層解碼器對四個邊的偏移預測機率分布，並以殘差方式微調前一層的分布，所以框是一步步、帶著不確定性被修正，而不是當作固定的座標去迴歸。**全域最佳定位自我蒸餾**（global optimal localization self-distillation, GO-LSD）再把最後一層微調後的分布蒸餾到較早的各層。這把 DETR 這條路線與正文中 DFL 的分布想法連了起來。
+
+**DEIM** [26] 在不增加額外解碼器的情況下，處理一對一匹配下正樣本不足的問題。**稠密一對一**匹配保持一對一的規則，但增加每張影像的目標數，這用 mosaic 與 mixup 就很容易做到。**感知可匹配性的損失**（matchability-aware loss, MAL）再依每個匹配的品質調整分類懲罰，讓 IoU 低卻高信心的匹配得到更好的處理。論文把 DEIM 套用到 RT-DETRv2 與 D-FINE，並報告在訓練週期減半的情況下，準確度略高於它們。
+
+**RF-DETR** [27] 從一個帶有 DINOv2 預訓練視覺 Transformer 骨幹 [47] 的 DETR 出發，並使用**權重共享的神經網路架構搜尋**：一個網路在目標資料集上微調，訓練中改變輸入解析度、patch 大小等參數，之後就能在不重新訓練的情況下評估數千種有不同準確度–延遲取捨的子配置。它的重點是遷移到任意的目標資料集，而不只是 COCO。
+
+**DEIMv2** [28] 用 DINOv3 特徵 [48] 擴充 DEIM：較大的模型使用 DINOv3 預訓練或蒸餾而來的骨幹，以及一個空間調適器（Spatial Tuning Adapter），把單一尺度的 Transformer 輸出轉成偵測器需要的多尺度特徵；最小的模型則使用深度與寬度都經過剪枝的卷積骨幹。
+
+### 把重參數化區塊折疊成一個卷積
+
+**白話版。** 有三個平行分支（一個 $3 \times 3$ 卷積、一個 $1 \times 1$ 卷積和一條捷徑）的區塊，訓練效果好但執行很慢。因為每個分支在激活函數之前都是線性的，訓練之後可以把三者加成單一個 $3 \times 3$ 卷積，網路算出的函數完全相同，但更快。
+
+在推論時，批次正規化 [49] 是每個通道各自的仿射映射。對於核為 $W$、不含偏置的卷積，後接以學習到的縮放 $\gamma$、平移 $\beta$，以及累積的平均 $\mu$ 與變異數 $\sigma^2$ 做的批次正規化，
+
+$$
+\text{BN}(W * x) = \gamma\,\frac{W * x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta = W' * x + b', \qquad W' = \frac{\gamma}{\sqrt{\sigma^2 + \epsilon}}\,W, \quad b' = \beta - \frac{\gamma\,\mu}{\sqrt{\sigma^2 + \epsilon}},
+$$
+
+其中 $*$ 是卷積，$\epsilon$ 是一個很小的常數，所有運算都是逐輸出通道進行。$1 \times 1$ 的核就是只有中心不為零的 $3 \times 3$ 核，而恆等映射是跨通道等於單位矩陣的 $1 \times 1$ 核。一旦每個分支都寫成帶偏置的 $3 \times 3$ 核，各分支的和就是一個用核之和與偏置之和組成的卷積。這就是 RepVGG [32] 的結構重參數化。
+
+```python
+import numpy as np
+
+def conv(x, w, b):
+    """'Same' convolution (cross-correlation). x: (C, H, W), w: (O, C, k, k), b: (O,)."""
+    k = w.shape[-1]; p = k // 2
+    xp = np.pad(x, ((0, 0), (p, p), (p, p)))
+    H, W = x.shape[1:]
+    out = sum(np.einsum("oc,chw->ohw", w[:, :, i, j], xp[:, i:i + H, j:j + W])
+              for i in range(k) for j in range(k))
+    return out + b[:, None, None]
+
+def fold_bn(w, gamma, beta, mu, var, eps=1e-5):
+    """A bias-free conv followed by inference-mode batch norm -> one conv with a bias."""
+    scale = gamma / np.sqrt(var + eps)
+    return w * scale[:, None, None, None], beta - mu * scale
+
+rng = np.random.default_rng(0)
+C = 4                                                   # channels in = channels out
+x = rng.normal(size=(C, 10, 10))
+bn = lambda: (rng.uniform(0.5, 1.5, C), rng.normal(size=C), rng.normal(size=C), rng.uniform(0.5, 2, C))
+w3, w1 = rng.normal(size=(C, C, 3, 3)), rng.normal(size=(C, C, 1, 1))
+bn3, bn1, bn_id = bn(), bn(), bn()
+
+def bn_apply(z, g, b, mu, var, eps=1e-5):
+    return g[:, None, None] * (z - mu[:, None, None]) / np.sqrt(var[:, None, None] + eps) + b[:, None, None]
+
+# training-time block: 3x3 branch + 1x1 branch + identity branch, each with its own batch norm
+y_train = (bn_apply(conv(x, w3, np.zeros(C)), *bn3) + bn_apply(conv(x, w1, np.zeros(C)), *bn1)
+           + bn_apply(x, *bn_id))
+
+# deployment: express every branch as a 3x3 kernel, fold its batch norm, then add the kernels
+w1_as3 = np.pad(w1, ((0, 0), (0, 0), (1, 1), (1, 1)))  # 1x1 kernel in the centre of a 3x3 one
+w_id = np.zeros((C, C, 3, 3)); w_id[np.arange(C), np.arange(C), 1, 1] = 1.0
+folded = [fold_bn(w, *p) for w, p in [(w3, bn3), (w1_as3, bn1), (w_id, bn_id)]]
+w_dep, b_dep = sum(f[0] for f in folded), sum(f[1] for f in folded)
+y_dep = conv(x, w_dep, b_dep)
+print("same output:", np.allclose(y_train, y_dep))
+print("branches at training: 3 | convolutions at inference: 1")
+```
+
+```text
+same output: True
+branches at training: 3 | convolutions at inference: 1
+```
+
+這種折疊只有在批次正規化處於推論模式（累積統計量固定），而且是在非線性之前時才是精確的。YOLOv7 論文之所以要「有規劃的」重參數化，是因為某些組合，例如在已經有殘差連接的區塊裡再放一條恆等分支，會損害準確度 [12]；YOLOv6 也報告折疊後的模型可能比較難量化 [11]。
+
+## 論文導讀
+
+這些導讀是選讀內容：每篇帶你讀一篇本篇依據的論文——它要解決的問題、核心想法、它呈現了什麼，以及閱讀時該檢查什麼。
+
+### 閱讀 YOLOv10 論文
+
+**論文。** A. Wang、H. Chen、L. Liu、K. Chen、Z. Lin、J. Han 與 G. Ding，「YOLOv10: Real-time end-to-end object detection」，NeurIPS 2024 [15]。
+
+**要解決的問題。** YOLO 以一對多指派訓練，因此需要 NMS，這增加延遲，還多出一個要調的閾值。DETR 式的一對一指派移除了 NMS，但監督很弱。另外，作者主張 YOLO 的架構從未被當作一個整體，為效率與準確度而設計過。
+
+**核心想法。** 兩個結構相同的偵測頭共用骨幹與頸部。一個以一對多訓練，另一個以一對一訓練；推論時只用一對一的偵測頭。關鍵的分析是**監督落差**（supervision gap）：如果兩個偵測頭使用不同的匹配參數，一對一偵測頭選出的預測，不一定在一對多偵測頭的最佳預測之列，於是兩個偵測頭會把共用的特徵往不同方向拉。附錄推導出，當一對一偵測頭的 $\alpha$ 與 $\beta$ 和一對多偵測頭的成正比（$\alpha_{\text{o2o}} = r\,\alpha_{\text{o2m}}$、$\beta_{\text{o2o}} = r\,\beta_{\text{o2m}}$）時，落差最小，論文取 $r = 1$。論文的圖 2(b) 以統計一對一匹配落在一對多的 top-1、top-5 與 top-10 中的頻率，來支持這一點。
+
+**它呈現了什麼。** 表 3 在小型模型上單獨檢視指派的影響：只用一對多，44.9 AP、7.07 ms；只用一對一，43.4 AP、2.44 ms；兩個偵測頭都有，44.3 AP、2.44 ms。表 4 顯示一致的設定和試過的其他設定一樣好，或更好。表 2 則一步步加入效率與準確度的設計改動。
+
+**閱讀時要檢查什麼。**
+
+- **延遲包含了什麼。** 端到端延遲是在 T4 GPU 上以 TensorRT FP16、批次 1 量測，對 COCO val 影像取平均，需要 NMS 的模型使用 TensorRT 的 efficient-NMS 外掛程式，且不含 I/O（附錄）。論文也報告僅含前向傳遞的延遲，用於和以一般方式訓練的 YOLO 比較；不要把兩欄混在一起。
+- **免 NMS 的代價。** 在表 3 中，一對一偵測頭比使用 NMS 的一對多偵測頭低 0.6 AP。得到的是延遲與簡潔，而不是準確度。
+- **單次執行。** 消融實驗報告的是單一數字；相差幾個十分位 AP 的差異，可能落在多次執行之間的變動範圍內。
+- **基線。** 與其他偵測器的比較使用它們的官方權重與論文自己的基準，這是比較速度的正確方式，但各模型的訓練配方不同。
+
+**為什麼與本篇有關。** 它最清楚地說明，YOLO 與 DETR 這兩條路線的差異，更多在於指派而不是架構，而且它確立了「兩者一起訓練、推論用一對一」的模式，YOLO26 也採用了這個模式。
+
+### 閱讀 RT-DETR 論文
+
+**論文。** Y. Zhao、W. Lv、S. Xu、J. Wei、G. Wang、Q. Dang、Y. Liu 與 J. Chen，「DETRs beat YOLOs on real-time object detection」，CVPR 2024 [23]。
+
+**要解決的問題。** DETR 不需要 NMS，但太慢，無法即時；YOLO 很快，但它們報告的速度通常把 NMS 排除在外。論文同時問兩個問題：「NMS 到底花多少成本？」和「DETR 能不能很快？」
+
+**核心想法。** 第一，先量測。第 3 節分析 NMS：通過信心閾值的框數、不同閾值下的 NMS 執行時間（在 T4 GPU 上以 FP16 使用 TensorRT 的 efficient-NMS 核心），以及由此得到的 AP。接著它在 COCO val2017 上定義一個端到端基準，以各 YOLO 偵測器報告準確度時所用的閾值，把 NMS 附加到它們身上。第二，動手建構。正文中描述的混合編碼器（AIFI + CCFF）、不確定性最小的查詢選擇與可調整的解碼器深度。
+
+**它呈現了什麼。** 在它的基準下，無錨框 YOLO 在相同準確度下端到端比有錨框的快，因為它們產生的框比較少。使用 ResNet-50 與 ResNet-101 骨幹的 RT-DETR，在 T4 GPU 上報告 53.1% 與 54.3% AP，速度為 108 與 74 FPS，消融實驗則比較了各種編碼器變體與查詢選擇方案。
+
+**閱讀時要檢查什麼。**
+
+- **報告的是哪一種 NMS 時間。** NMS 的分析只對多核心外掛程式中主要的 NMS 核心計時；端到端基準則排除 I/O 與記憶體複製。兩者在文中都有說明。
+- **哪些數字用了額外資料。** 使用 Objects365 預訓練的結果是另外報告的；要把它們和只用 COCO 的結果分開。
+- **版本差異。** 第一版 arXiv 把查詢選擇稱為「IoU-aware」；最終版稱為「uncertainty-minimal」，並以正文中的不確定性 $U$ 來定義它。請引用最終版。
+- **「beats」的意思。** 比較是在匹配的準確度、同一種 GPU 與引擎下進行的。在 CPU 或邊緣加速器上，排名可能改變，因為注意力和可變形取樣相對於卷積可能比較慢。
+
+**為什麼與本篇有關。** 它讓端到端速度（含 NMS）成為報告即時偵測器的預期方式，而它的後繼者（RT-DETRv2、D-FINE、DEIM、RF-DETR、DEIMv2）全都建立在它的設計之上。
+
+## 參考文獻
+
+1. J. Terven, D.-M. Córdova-Esparza and J.-A. Romero-González, "A comprehensive review of YOLO architectures in computer vision: From YOLOv1 to YOLOv8 and YOLO-NAS," *Machine Learning and Knowledge Extraction*, vol. 5, no. 4, pp. 1680–1716, 2023. [doi](https://doi.org/10.3390/make5040083) · [arXiv](https://arxiv.org/abs/2304.00501)
+2. N. Jegham, C. Y. Koh, M. Abdelatti and A. Hendawi, "YOLO evolution: A comprehensive benchmark and architectural review of YOLOv12, YOLO11, and their previous versions," arXiv:2411.00201, 2024 (revised 2025). [arXiv](https://arxiv.org/abs/2411.00201)
+3. R. Sapkota and M. Karkee, "Ultralytics YOLO evolution: An overview of YOLO27, YOLO26, YOLO11, YOLOv8, and YOLOv5 object detectors for computer vision and pattern recognition," arXiv:2510.09653, 2025 (revised 2026). [arXiv](https://arxiv.org/abs/2510.09653)
+4. T. Shehzadi, K. A. Hashmi, M. Liwicki, D. Stricker and M. Z. Afzal, "Object detection with transformers: A review," *Sensors*, vol. 25, no. 19, 2025. [doi](https://doi.org/10.3390/s25196025)
+5. J. Redmon, S. Divvala, R. Girshick and A. Farhadi, "You only look once: Unified, real-time object detection," in *Proc. IEEE CVPR*, pp. 779–788, 2016. [doi](https://doi.org/10.1109/CVPR.2016.91) · [arXiv](https://arxiv.org/abs/1506.02640)
+6. J. Redmon and A. Farhadi, "YOLO9000: Better, faster, stronger," in *Proc. IEEE CVPR*, pp. 6517–6525, 2017. [doi](https://doi.org/10.1109/CVPR.2017.690) · [arXiv](https://arxiv.org/abs/1612.08242)
+7. J. Redmon and A. Farhadi, "YOLOv3: An incremental improvement," tech. report, arXiv:1804.02767, 2018. [arXiv](https://arxiv.org/abs/1804.02767)
+8. A. Bochkovskiy, C.-Y. Wang and H.-Y. M. Liao, "YOLOv4: Optimal speed and accuracy of object detection," arXiv:2004.10934, 2020. [arXiv](https://arxiv.org/abs/2004.10934)
+9. G. Jocher, "Ultralytics YOLOv5," software, version 7.0, 2020 (no paper). [code](https://github.com/ultralytics/yolov5) · [docs](https://docs.ultralytics.com/models/yolov5/)
+10. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun, "YOLOX: Exceeding YOLO series in 2021," arXiv:2107.08430, 2021. [arXiv](https://arxiv.org/abs/2107.08430)
+11. C. Li, L. Li, H. Jiang, K. Weng, Y. Geng et al., "YOLOv6: A single-stage object detection framework for industrial applications," tech. report, arXiv:2209.02976, 2022. [arXiv](https://arxiv.org/abs/2209.02976)
+12. C.-Y. Wang, A. Bochkovskiy and H.-Y. M. Liao, "YOLOv7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors," in *Proc. IEEE/CVF CVPR*, pp. 7464–7475, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.00721)
+13. G. Jocher, A. Chaurasia and J. Qiu, "Ultralytics YOLOv8," software, version 8.0.0, 2023 (no paper). [docs](https://docs.ultralytics.com/models/yolov8/) · [code](https://github.com/ultralytics/ultralytics)
+14. C.-Y. Wang, I-H. Yeh and H.-Y. M. Liao, "YOLOv9: Learning what you want to learn using programmable gradient information," in *Proc. ECCV*, 2024. [doi](https://doi.org/10.1007/978-3-031-72751-1_1)
+15. A. Wang, H. Chen, L. Liu, K. Chen, Z. Lin, J. Han and G. Ding, "YOLOv10: Real-time end-to-end object detection," in *Proc. NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2405.14458)
+16. G. Jocher and J. Qiu, "Ultralytics YOLO11," software, version 11.0.0, 2024 (no paper). [docs](https://docs.ultralytics.com/models/yolo11/) · [code](https://github.com/ultralytics/ultralytics)
+17. Y. Tian, Q. Ye and D. Doermann, "YOLOv12: Attention-centric real-time object detectors," in *Advances in Neural Information Processing Systems 38 (NeurIPS)*, 2025. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2025/hash/7103444259031cc58051f8c9a4868533-Abstract-Conference.html) · [arXiv](https://arxiv.org/abs/2502.12524)
+18. M. Lei, S. Li, Y. Wu, H. Hu, Y. Zhou et al., "YOLOv13: Real-time object detection with hypergraph-enhanced adaptive visual perception," arXiv:2506.17733, 2025. [arXiv](https://arxiv.org/abs/2506.17733)
+19. G. Jocher, J. Qiu, M. Liu, S. Lyu, F. C. Akyon and M. E. Kalfaoglu, "Ultralytics YOLO26: Unified real-time end-to-end vision models," arXiv:2606.03748, 2026 (software released January 2026). [arXiv](https://arxiv.org/abs/2606.03748) · [docs](https://docs.ultralytics.com/models/yolo26/)
+20. Ultralytics, "YOLO27 (coming soon)," official documentation page, accessed 31 October 2026. [docs](https://docs.ultralytics.com/models/yolo27/)
+21. N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov and S. Zagoruyko, "End-to-end object detection with transformers," in *Proc. ECCV*, 2020. [doi](https://doi.org/10.1007/978-3-030-58452-8_13)
+22. X. Zhu, W. Su, L. Lu, B. Li, X. Wang and J. Dai, "Deformable DETR: Deformable transformers for end-to-end object detection," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.04159)
+23. Y. Zhao, W. Lv, S. Xu, J. Wei, G. Wang, Q. Dang, Y. Liu and J. Chen, "DETRs beat YOLOs on real-time object detection," in *Proc. IEEE/CVF CVPR*, pp. 16965–16974, 2024. [doi](https://doi.org/10.1109/CVPR52733.2024.01605) · [arXiv](https://arxiv.org/abs/2304.08069)
+24. W. Lv, Y. Zhao, Q. Chang, K. Huang, G. Wang and Y. Liu, "RT-DETRv2: Improved baseline with bag-of-freebies for real-time detection transformer," arXiv:2407.17140, 2024. [arXiv](https://arxiv.org/abs/2407.17140)
+25. Y. Peng, H. Li, P. Wu, Y. Zhang, X. Sun and F. Wu, "D-FINE: Redefine regression task in DETRs as fine-grained distribution refinement," in *Proc. ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.13842) · [code](https://github.com/Peterande/D-FINE)
+26. S. Huang, Z. Lu, X. Cun, Y. Yu, X. Zhou and X. Shen, "DEIM: DETR with improved matching for fast convergence," in *Proc. IEEE/CVF CVPR*, pp. 15162–15171, 2025. [doi](https://doi.org/10.1109/CVPR52734.2025.01412) · [arXiv](https://arxiv.org/abs/2412.04234)
+27. I. Robinson, P. Robicheaux, M. Popov, D. Ramanan and N. Peri, "RF-DETR: Neural architecture search for real-time detection transformers," in *Proc. ICLR*, 2026. [arXiv](https://arxiv.org/abs/2511.09554)
+28. S. Huang, Y. Hou, L. Liu, X. Yu and X. Shen, "Real-time object detection meets DINOv3," arXiv:2509.20787, 2025. [arXiv](https://arxiv.org/abs/2509.20787)
+29. D. Jia, Y. Yuan, H. He, X. Wu, H. Yu, W. Lin, L. Sun, C. Zhang and H. Hu, "DETRs with hybrid matching," in *Proc. IEEE/CVF CVPR*, pp. 19702–19712, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.01887) · [arXiv](https://arxiv.org/abs/2207.13080)
+30. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature pyramid networks for object detection," in *Proc. IEEE CVPR*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.106)
+31. S. Liu, L. Qi, H. Qin, J. Shi and J. Jia, "Path aggregation network for instance segmentation," in *Proc. IEEE/CVF CVPR*, pp. 8759–8768, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00913)
+32. X. Ding, X. Zhang, N. Ma, J. Han, G. Ding and J. Sun, "RepVGG: Making VGG-style ConvNets great again," in *Proc. IEEE/CVF CVPR*, pp. 13728–13737, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.01352)
+33. Z. Ge, S. Liu, Z. Li, O. Yoshie and J. Sun, "OTA: Optimal transport assignment for object detection," in *Proc. IEEE/CVF CVPR*, pp. 303–312, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.00037)
+34. C. Feng, Y. Zhong, Y. Gao, M. R. Scott and W. Huang, "TOOD: Task-aligned one-stage object detection," in *Proc. IEEE/CVF ICCV*, pp. 3490–3499, 2021. [doi](https://doi.org/10.1109/ICCV48922.2021.00349)
+35. X. Li, W. Wang, L. Wu, S. Chen, X. Hu, J. Li, J. Tang and J. Yang, "Generalized focal loss: Learning qualified and distributed bounding boxes for dense object detection," in *Advances in Neural Information Processing Systems 33 (NeurIPS)*, 2020. [proceedings](https://papers.nips.cc/paper/2020/hash/f0bda020d2470f2e74990a07a607ebd9-Abstract.html)
+36. H. Zhang, Y. Wang, F. Dayoub and N. Sünderhauf, "VarifocalNet: An IoU-aware dense object detector," in *Proc. IEEE/CVF CVPR*, pp. 8510–8519, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.00841)
+37. Z. Zheng, P. Wang, W. Liu, J. Li, R. Ye and D. Ren, "Distance-IoU loss: Faster and better learning for bounding box regression," in *Proc. AAAI*, pp. 12993–13000, 2020. [doi](https://doi.org/10.1609/aaai.v34i07.6999)
+38. H. Zhang, M. Cisse, Y. N. Dauphin and D. Lopez-Paz, "mixup: Beyond empirical risk minimization," in *Proc. ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.09412)
+39. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE ICCV*, pp. 2999–3007, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+40. H. W. Kuhn, "The Hungarian method for the assignment problem," *Naval Research Logistics Quarterly*, vol. 2, pp. 83–97, 1955. [doi](https://doi.org/10.1002/nav.3800020109)
+41. T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dollár and C. L. Zitnick, "Microsoft COCO: Common objects in context," in *Proc. ECCV*, pp. 740–755, 2014. [doi](https://doi.org/10.1007/978-3-319-10602-1_48)
+42. COCO Consortium, "COCO detection evaluation," official evaluation description. [link](https://cocodataset.org/#detection-eval)
+43. S. Shao, Z. Li, T. Zhang, C. Peng, G. Yu, X. Zhang, J. Li and J. Sun, "Objects365: A large-scale, high-quality dataset for object detection," in *Proc. IEEE/CVF ICCV*, pp. 8429–8438, 2019. [doi](https://doi.org/10.1109/ICCV.2019.00852)
+44. ONNX, "Open Neural Network Exchange," official project page. [link](https://onnx.ai/)
+45. NVIDIA, "TensorRT documentation," official documentation. [link](https://docs.nvidia.com/deeplearning/tensorrt/latest/index.html)
+46. B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam and D. Kalenichenko, "Quantization and training of neural networks for efficient integer-arithmetic-only inference," in *Proc. IEEE/CVF CVPR*, pp. 2704–2713, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00286)
+47. M. Oquab, T. Darcet, T. Moutakanni, H. Vo, M. Szafraniec et al., "DINOv2: Learning robust visual features without supervision," arXiv:2304.07193, 2023. [arXiv](https://arxiv.org/abs/2304.07193)
+48. O. Siméoni, H. V. Vo, M. Seitzer, F. Baldassarre, M. Oquab et al., "DINOv3," arXiv:2508.10104, 2025. [arXiv](https://arxiv.org/abs/2508.10104)
+49. S. Ioffe and C. Szegedy, "Batch normalization: Accelerating deep network training by reducing internal covariate shift," in *Proc. ICML*, PMLR vol. 37, pp. 448–456, 2015. [link](https://proceedings.mlr.press/v37/ioffe15.html)
+50. C.-Y. Wang, H.-Y. M. Liao, I-H. Yeh, Y.-H. Wu, P.-Y. Chen and J.-W. Hsieh, "CSPNet: A new backbone that can enhance learning capability of CNN," arXiv:1911.11929, 2019. [arXiv](https://arxiv.org/abs/1911.11929)
+51. K. Jordan, Y. Jin, V. Boza, J. You, F. Cesista, L. Newhouse and J. Bernstein, "Muon: An optimizer for hidden layers in neural networks," blog post, 2024. [link](https://kellerjordan.github.io/posts/muon/)
+52. J. Lu, J. Jia, J. Yawl and C. Zhang, "YOLOv14: Adaptive real-time object detection for diverse imaging conditions," arXiv:2608.04720, 2026 (withdrawn by the authors, 20 August 2026). [arXiv](https://arxiv.org/abs/2608.04720)

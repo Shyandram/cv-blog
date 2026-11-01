@@ -1,0 +1,1062 @@
+---
+title: "DLCV 05B · Image Fusion: Infrared–Visible, Multi-Focus and Multi-Exposure"
+description: "How to combine several images of one scene into a single better image: what infrared–visible, multi-focus and multi-exposure fusion ask for, the classical rules (decision maps, Laplacian pyramids, wavelets, exposure fusion), deep fusion without ground truth, and why fusion metrics disagree and can be gamed."
+track: deep-learning
+order: 57
+level: advanced
+prereqs: [deep-learning/dl-04-image-restoration, image-processing/dip-07-wavelets-transforms]
+tags: [image-fusion, infrared-visible-fusion, multi-focus-fusion, multi-exposure-fusion, laplacian-pyramid, exposure-fusion, unsupervised-learning, evaluation]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import tasksFig from '../../../../assets/deep-learning/dl-05b-image-fusion/fusion-tasks.png';
+import pyramidFig from '../../../../assets/deep-learning/dl-05b-image-fusion/pyramid-fusion.png';
+import multifocusFig from '../../../../assets/deep-learning/dl-05b-image-fusion/multifocus-decision-map.png';
+import exposureFig from '../../../../assets/deep-learning/dl-05b-image-fusion/exposure-fusion-weights.png';
+import metricsFig from '../../../../assets/deep-learning/dl-05b-image-fusion/irvis-metrics.png';
+import failuresFig from '../../../../assets/deep-learning/dl-05b-image-fusion/failure-modes.png';
+
+## What you'll learn
+
+- What image fusion is, and what the three most common tasks ask for: **infrared–visible** fusion (a warm target from the thermal camera, texture from the visible one), **multi-focus** fusion (one all-in-focus image from partly sharp shots) and **multi-exposure** fusion (one well-exposed picture from a bracket of exposures, without recovering HDR radiance).
+- Why plain averaging fades contrast, and the classical rules that avoid it: **focus measures and decision maps**, **Laplacian-pyramid** and **wavelet** fusion, Mertens-style **exposure fusion**, and briefly guided-filtering and sparse-representation fusion. You will run each one in NumPy and OpenCV.
+- How deep fusion networks are trained when **no ground-truth fused image exists**: intensity, gradient and SSIM-based losses, and why the loss is in effect the definition of the answer.
+- The main families of deep fusion models (learned decision maps, autoencoders, end-to-end unsupervised networks, GANs, task-driven, diffusion and text-guided models), what registration-robust fusion adds, and which datasets are used for each task.
+- How fusion is evaluated without a reference (entropy, standard deviation, spatial frequency, mutual information, $Q^{AB/F}$, SSIM- and VIF-based scores), why these metrics disagree, and how easily they are gamed.
+
+## The big picture
+
+Many cameras see the same scene in different ways. A thermal camera sees a person in the dark but not the texture of the wall behind them. A lens focused on the foreground blurs the background. A short exposure keeps the sky but loses the shadows. **Image fusion** takes two or more such images and builds one image that keeps the useful part of each.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine three friends each took a photo of the same playground. One photo is sharp only on the swings, one is sharp only on the slide, and one was taken with special glasses that show which children are warm. You want one picture to put on the wall. You could cut out the best piece of each photo and glue the pieces together, but you have to be careful: if you cut badly, people will see the seams, and if the photos were not taken from the same spot, the pieces will not line up. Image fusion is that cutting and gluing, done carefully, pixel by pixel.
+</Callout>
+
+Why it matters:
+
+- **Night driving, surveillance and search-and-rescue** use visible and thermal cameras together. A driver or an operator looks at one screen, so the two views must be combined into one image that shows both the warm pedestrian and the road markings.
+- **Photography fuses images too.** A bracket of exposures can become one picture of a bright window and a dark room; focus stacking gives macro and microscope photos that are sharp from front to back.
+- **Fusion is unusual among image tasks: there is no correct answer to copy.** Nobody owns an image that is simultaneously thermal and visible. That single fact shapes the whole field: how methods are designed, how networks are trained and why evaluation is so hard.
+
+This chapter builds on two earlier ones. [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#image-fusion-brief) placed image fusion in the restoration taxonomy in one paragraph; here it gets the full treatment. [IP 07](/en/learn/image-processing/dip-07-wavelets-transforms/) built the wavelet transform that wavelet fusion uses; this chapter adds the Laplacian pyramid, which IP 07 does not cover. For no-reference image quality assessment in general, see [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#no-reference-metrics); here we focus on the metrics specific to fusion.
+
+## What image fusion is
+
+**Plain version.** Fusion takes several images of the *same* scene, taken by different sensors or with different camera settings, and returns *one* image. Each input is good at something different, and the output should be good at all of it.
+
+**Precise version.** Given $K$ registered source images $I_1, \dots, I_K$ of size $H \times W$, a fusion method is a map
+
+$$
+F = \Phi(I_1, \dots, I_K), \qquad F \in \mathbb{R}^{H \times W \times C},
+$$
+
+where $F$ is the fused image, $C$ its number of channels (1 for gray, 3 for color) and $\Phi$ the fusion rule, which may be hand-designed or learned. "Registered" means that the same pixel position $(i, j)$ shows the same point of the scene in every source. Most rules can be written as a **weighted combination** of the sources, either of the pixels themselves or of some transform of them:
+
+$$
+F(i, j) = \sum_{k=1}^{K} w_k(i, j)\, I_k(i, j), \qquad \sum_{k=1}^K w_k(i, j) = 1, \quad w_k(i, j) \ge 0,
+$$
+
+where $w_k(i, j)$ is the weight of source $k$ at pixel $(i, j)$. Almost everything in this chapter is a way of choosing those weights: from a focus measure, from exposure quality, per frequency band, or by a network.
+
+This chapter is about **pixel-level** fusion [1], which outputs an image. The alternative is to feed both sources to a network and combine them only at the level of its decisions, which can serve one task well but gives up the fused image that a person can look at and that other tasks can reuse [2]. Deep fusion networks sit in between: they combine features inside the network but still output pixels.
+
+### Three tasks
+
+The three tasks of this chapter differ in what each source contributes, in how hard alignment is, and in whether any ground truth can exist (Figure 1).
+
+| | Infrared–visible | Multi-focus | Multi-exposure |
+|---|---|---|---|
+| Sources | Thermal (long-wave infrared) image + visible image, two different sensors | Two or more shots of one camera, focused at different depths | Two or more shots of one camera, with different exposure times |
+| What each source contributes | IR: warm targets, visible through darkness and smoke; visible: texture, color, fine detail | The region that is sharp in each shot | Shadows from long exposures, highlights from short ones |
+| Typical rule | Keep the salient (warm) targets of IR and the texture of visible | **Select**, per region, the sharpest source | **Blend** with weights that favor well-exposed, detailed pixels |
+| Alignment | Hard: two lenses, two resolutions, different appearance | Easy if camera and scene are still | Easy for static scenes; moving objects cause ghosts |
+| Ground truth? | No | Only for synthetic data (blur a sharp image) | No (a tone-mapped HDR image is one possible reference, not *the* answer) |
+
+<Figure src={tasksFig} alt="A three-by-three grid of synthetic examples. Row one: a visible image of the cameraman with a dark shadow on the right, a smooth thermal image in which an oval warm target glows white, and a fused image that shows both the texture and the white target. Row two: a shot sharp only inside a disk around the cameraman, a shot sharp only outside it, and a fused image that is sharp everywhere. Row three: a dark short exposure and a bright long exposure of the astronaut image, and a fused image that is well exposed on both sides." caption="Figure 1 — The three fusion tasks on synthetic data built from scikit-image test images: infrared–visible (pyramid fusion), multi-focus (decision map) and multi-exposure (exposure fusion of the two shots). All three are produced by code in this chapter." />
+
+**Infrared–visible fusion.** A thermal camera measures emitted heat, so a warm target such as a person stands out from its background day and night and in bad weather, while a visible camera measures reflected light and shows texture and detail in a way that matches human vision, but little in the dark [3], [2]. The goal is an image in which warm targets stand out and the background keeps its visible detail. Because the two images look so different, "keep the best of each" is ambiguous: the fused image cannot be both as bright as the thermal target and as dark as the visible shadow at the same pixel.
+
+**Multi-focus fusion.** A lens has a limited depth of field: objects at one distance are sharp, nearer and farther ones are blurred. Taking several shots with different focus settings and fusing them gives an **all-in-focus** image (also called focus stacking or extended depth of field). Here, unlike the other tasks, a natural answer exists: at each pixel, the source that is in focus is simply correct. That is why multi-focus methods often *select* rather than blend.
+
+**Multi-exposure fusion (MEF).** A camera sensor records a limited range of brightness in one exposure. A bracket of exposures covers a wider range. The classical route is **high-dynamic-range (HDR) imaging**: recover the camera response and the scene radiance from the bracket [4], then compress it to a displayable image with a tone-mapping operator. Multi-exposure fusion skips the radiance step and directly blends the 8-bit exposures into a well-exposed 8-bit image [5]. It needs no camera calibration and is fast; the price is that its output is a pleasant picture, not a physical measurement.
+
+### Registration: the step everything assumes
+
+**Plain version.** Fusion compares the sources pixel by pixel, so the same pixel must show the same point in every source. If one image is shifted by a few pixels, every edge appears twice.
+
+Registration (alignment) estimates the geometric transform between the sources and warps them onto a common grid; for moving scenes it becomes dense motion estimation, which [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/#motion-optical-flow-and-warping) explains. For multi-focus and multi-exposure shots from one camera on a tripod, registration is almost free. For infrared–visible pairs it is a real problem, and a prerequisite of fusion [3]: the two sensors differ in viewpoint, pixel distribution and resolution, so accurately registered pairs are hard to obtain, yet most existing methods need pixel-level registered pairs and existing benchmarks consist of pixel-aligned pairs [2]. We return to methods that relax this assumption at the end of the deep-learning section.
+
+## The simplest rule: averaging, and why it fades contrast
+
+**Plain version.** Averaging the sources keeps a bit of everything, but anything that appears in only one source comes out at half strength. Fusion's whole difficulty is to avoid that.
+
+**Precise version.** Take two sources $I_A$ and $I_B$ that share a background $b$, and suppose a feature of amplitude $a$ (an edge, a texture, a warm target) appears only in $I_A$: $I_A = b + a\,s$, $I_B = b$, where $s$ is the feature's shape. The average is
+
+$$
+F_{\text{avg}} = \tfrac12 (I_A + I_B) = b + \tfrac{a}{2}\, s,
+$$
+
+so the feature's contrast is halved. With $K$ sources and the feature in one of them, it drops to $a/K$. In multi-focus fusion it is worse: the blurred source adds a blurred copy of the edge, so the average shows a sharp edge with a soft halo. In infrared–visible fusion, a target that is bright in IR and dark in the visible image ends up gray (Figure 6, last column). In multi-exposure fusion, averaging an under- and an over-exposed shot gives a flat, low-contrast image.
+
+The fix is to make the weights $w_k(i, j)$ depend on *where* each source is informative: high weight for the sharp source, the warm target, the well-exposed pixel. The rest of the classical section is about how to measure "informative" and how to change the weights without creating seams.
+
+## Multi-focus fusion: focus measures and decision maps
+
+**Plain version.** Sharp regions have strong fine detail; blurred ones do not. Measure the detail around every pixel in every shot, pick the shot with the most, and copy its pixel.
+
+**Precise version.** A **focus measure** $M_k(i, j) \ge 0$ scores how much high-frequency detail source $k$ has around pixel $(i, j)$. A simple choice, of the kind used in classical multi-focus fusion [5], is the local energy of the Laplacian,
+
+$$
+M_k = G_\sigma * (\nabla^2 I_k)^2,
+$$
+
+where $\nabla^2 I_k = \partial^2 I_k / \partial x^2 + \partial^2 I_k / \partial y^2$ is the Laplacian of the source (a second-derivative filter, see [IP 03](/en/learn/image-processing/dip-03-intensity-spatial-filtering/)), the square makes it an energy, and $G_\sigma *$ denotes smoothing with a Gaussian of standard deviation $\sigma$, which averages the energy over a neighborhood. Blur removes high frequencies, so the in-focus source has the larger $M_k$. The **decision map** records the winner,
+
+$$
+D(i, j) = \arg\max_k M_k(i, j), \qquad F(i, j) = I_{D(i, j)}(i, j),
+$$
+
+where $D(i, j) \in \{1, \dots, K\}$ is the index of the source chosen at pixel $(i, j)$.
+
+A raw decision map is noisy: in flat regions (sky, a plain wall) no source has detail, and the winner is decided by noise. Two post-processing steps are standard. **Cleaning** removes small islands, for example with a majority vote (median filter) or morphological operations, on the assumption that in-focus regions are large and connected. **Softening** blurs the binary map slightly near its boundaries so that the switch from one source to another does not leave a visible seam.
+
+The snippet builds a synthetic pair from the camera test image: inside a disk shot A is sharp, outside it shot B is sharp, and defocus is modeled as a Gaussian blur. Because we made the blur ourselves, we have the all-in-focus truth and can measure PSNR, which is impossible with real multi-focus pairs.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, img_as_float
+from skimage.metrics import peak_signal_noise_ratio as psnr
+
+rng = np.random.default_rng(0)
+x = img_as_float(data.camera())                       # 512 x 512: the all-in-focus "truth"
+yy, xx = np.mgrid[:512, :512]
+near = (yy - 200) ** 2 + (xx - 250) ** 2 < 150 ** 2   # the part that is in focus in shot A
+blurred = ndi.gaussian_filter(x, 3.0)                 # defocus modeled as a Gaussian blur
+A = np.where(near, x, blurred) + 0.01 * rng.standard_normal(x.shape)  # sharp inside the disk
+B = np.where(near, blurred, x) + 0.01 * rng.standard_normal(x.shape)  # sharp outside it
+
+def focus_measure(img, s=2.0):
+    """Local energy of the Laplacian: large where the image has sharp detail."""
+    return ndi.gaussian_filter(ndi.laplace(img) ** 2, s)
+
+raw = focus_measure(A) > focus_measure(B)                # decision map: True = take A
+clean = ndi.median_filter(raw.astype(float), 31) > 0.5   # majority vote removes small islands
+w = ndi.gaussian_filter(clean.astype(float), 2.0)        # soften the seam a little
+
+results = {"average": (A + B) / 2,
+           "raw decision map": np.where(raw, A, B),
+           "cleaned, soft map": w * A + (1 - w) * B}
+for name, F in results.items():
+    print(f"{name:18s} PSNR = {psnr(x, np.clip(F, 0, 1), data_range=1):.2f} dB")
+textured = ndi.gaussian_filter(np.abs(ndi.laplace(x)), 2) > 0.01   # where the choice matters
+for name, m in [("raw", raw), ("cleaned", clean)]:
+    print(f"{name:7s} map agrees with the true focus map on {np.mean(m == near):.1%} of all pixels, "
+          f"{np.mean((m == near)[textured]):.1%} of textured pixels")
+```
+
+```text
+average            PSNR = 29.97 dB
+raw decision map   PSNR = 39.22 dB
+cleaned, soft map  PSNR = 39.81 dB
+raw     map agrees with the true focus map on 80.9% of all pixels, 91.3% of textured pixels
+cleaned map agrees with the true focus map on 91.2% of all pixels, 98.4% of textured pixels
+```
+
+The decision map wins by about 10 dB over averaging, because it copies sharp pixels instead of mixing them with blurred ones (Figure 2). Cleaning makes the map much more faithful (98.4% instead of 91.3% agreement on textured pixels), but the PSNR gain is small, 0.6 dB, because most of the raw map's mistakes are in flat regions where shots A and B look the same anyway. These numbers are from our toy, not from any paper.
+
+<Figure src={multifocusFig} alt="Eight panels. Top row: source A sharp inside a disk, source B sharp outside it, a red-blue map of the log focus ratio that is red inside the disk and blue outside with pale speckle in the flat sky, and the raw binary decision map with many white specks outside the disk. Bottom row: the cleaned map, a clean white disk with a few small blobs in the sky; the fused image, sharp everywhere; the error of averaging, bright along every edge; and the error of decision-map fusion, almost black." caption="Figure 2 — Multi-focus fusion with a focus measure. The focus ratio is decided by noise in the flat sky, which the median filter mostly cleans up; there both sources are equally good, so the leftover blobs do no harm. The error maps (same color scale) show why selection beats averaging: averaging leaves an error at every edge." />
+
+**What the toy hides.** Real defocus is not a Gaussian blur pasted onto a mask. Near a depth edge, the blurred foreground spreads over the background in the far-focused shot, so *neither* shot is sharp there. This **defocus spread effect** is why methods that do well on simulated data or on the popular Lytro pairs often fail on real photographs with strong defocus spread [6], [7]; Figure 6 shows it on a layered version of our toy.
+
+*Optional: [The defocus spread effect](#the-defocus-spread-effect) (in the Supplementary notes). Why selection fails near depth edges, what a layered defocus model predicts, and what methods do about it.*
+
+## Multi-scale fusion: Laplacian pyramids and wavelets
+
+**Plain version.** Split each source into layers, from fine detail to coarse brightness, and fuse layer by layer: keep the strongest fine detail from whichever source has it, and blend the coarse layers gently. Seams disappear because coarse layers change slowly.
+
+### The Laplacian pyramid
+
+**Precise version.** The **Laplacian pyramid** of Burt and Adelson [8] represents an image as a stack of band-pass images plus a small low-pass residual. Let $G_0 = I$ and
+
+$$
+G_{\ell+1} = \operatorname{REDUCE}(G_\ell), \qquad L_\ell = G_\ell - \operatorname{EXPAND}(G_{\ell+1}), \quad \ell = 0, \dots, N-1,
+$$
+
+where $\operatorname{REDUCE}$ blurs with a small low-pass kernel and keeps every second row and column (OpenCV's `pyrDown`), $\operatorname{EXPAND}$ upsamples by a factor of 2 and interpolates with the same kernel (`pyrUp`), $G_\ell$ is the **Gaussian pyramid** level $\ell$ (a blurred, smaller copy of the image) and $L_\ell$ the **Laplacian pyramid** level $\ell$, the detail that $G_\ell$ has and the coarser level does not. The top of the pyramid is the residual $L_N = G_N$. Level $\ell$ has $2^{-\ell}$ times the width and height of the image. The image is recovered exactly by the **collapse**
+
+$$
+G_N = L_N, \qquad G_\ell = L_\ell + \operatorname{EXPAND}(G_{\ell+1}), \quad \ell = N-1, \dots, 0,
+$$
+
+and $I = G_0$. Exactness holds for any $\operatorname{EXPAND}$, because each $L_\ell$ stores exactly what $\operatorname{EXPAND}$ fails to predict. The name comes from the authors' observation that the encoding is equivalent to sampling the image with Laplacian operators of many scales [8].
+
+*Optional: [Building and collapsing a Laplacian pyramid](#building-and-collapsing-a-laplacian-pyramid) (in the Supplementary notes). The kernel, the size bookkeeping for odd image sizes, why reconstruction is exact, and how many levels to use.*
+
+### Fusing two pyramids
+
+Pyramid fusion decomposes each source, combines the pyramids level by level, and collapses the result. Classic pyramid fusion selects the most salient Laplacian coefficients of the sources [9], [5]; a simple version of the rule has two parts:
+
+$$
+L^F_\ell(i, j) = \begin{cases} L^A_\ell(i, j) & \text{if } |L^A_\ell(i, j)| \ge |L^B_\ell(i, j)|, \\ L^B_\ell(i, j) & \text{otherwise,} \end{cases} \qquad L^F_N = \tfrac12 \big(L^A_N + L^B_N\big),
+$$
+
+where $L^A_\ell$, $L^B_\ell$ and $L^F_\ell$ are level $\ell$ of the pyramids of source A, source B and the fused image. The **max-abs** rule keeps, at every position and scale, the coefficient with the larger magnitude, which is the stronger local feature; the coarse residual is averaged because it carries overall brightness, where no source should simply win. Selecting per coefficient at every scale means the switch between sources is spread over the support of the pyramid's filters, which is wider at coarser levels; this is the multiresolution blending idea that Burt and Adelson introduced for joining image mosaics without visible seams [10]. Burt and Kolczynski later refined pyramid fusion to make it more robust to small shifts and noise and to handle features of similar salience but opposite contrast [9].
+
+The snippet continues from the multi-focus example (it uses `A`, `B`, `x` and `psnr`).
+
+```python
+import cv2
+import pywt
+
+def laplacian_pyramid(img, levels=5):
+    G = [img.astype(np.float32)]
+    for _ in range(levels):
+        G.append(cv2.pyrDown(G[-1]))                      # blur, then keep every 2nd pixel
+    L = [G[i] - cv2.pyrUp(G[i + 1], dstsize=G[i].shape[::-1]) for i in range(levels)]
+    return L + [G[-1]]                                    # band-pass details + coarse base
+
+def collapse(L):
+    img = L[-1]
+    for detail in reversed(L[:-1]):
+        img = cv2.pyrUp(img, dstsize=detail.shape[::-1]) + detail
+    return img
+
+def pick_stronger(p, q):
+    return np.where(np.abs(p) >= np.abs(q), p, q)         # "max-abs" selection rule
+
+def pyramid_fuse(a, b, levels=5):
+    La, Lb = laplacian_pyramid(a, levels), laplacian_pyramid(b, levels)
+    fused = [pick_stronger(p, q) for p, q in zip(La[:-1], Lb[:-1])]
+    fused.append((La[-1] + Lb[-1]) / 2)                   # base: average the coarse level
+    return collapse(fused).astype(float)
+
+def wavelet_fuse(a, b, wavelet="db2", levels=4):
+    ca, cb = pywt.wavedec2(a, wavelet, level=levels), pywt.wavedec2(b, wavelet, level=levels)
+    fused = [(ca[0] + cb[0]) / 2]                         # approximation band: average
+    for da, db in zip(ca[1:], cb[1:]):                    # (H, V, D) detail bands per level
+        fused.append(tuple(pick_stronger(p, q) for p, q in zip(da, db)))
+    return pywt.waverec2(fused, wavelet)
+
+print(f"pyramid reconstruction error: {np.abs(collapse(laplacian_pyramid(A)) - A).max():.1e}")
+for name, F in [("Laplacian pyramid", pyramid_fuse(A, B)), ("wavelet (db2)", wavelet_fuse(A, B))]:
+    print(f"{name:18s} PSNR = {psnr(x, np.clip(F, 0, 1), data_range=1):.2f} dB")
+```
+
+```text
+pyramid reconstruction error: 5.9e-08
+Laplacian pyramid  PSNR = 37.60 dB
+wavelet (db2)      PSNR = 36.43 dB
+```
+
+The reconstruction error of about $10^{-7}$ is single-precision rounding: the pyramid itself is lossless. Pyramid fusion beats averaging by more than 7 dB but stays about 2 dB below the decision map. The reason is visible in Figure 3: the per-coefficient choice is noisy, especially at fine levels, where the blurred source's noise sometimes wins in flat areas. Comparing smoothed coefficient energies instead of single coefficients, the "area-based" selection of Li et al. [11], closes most of the gap (Exercise 3). The general lesson: when the true answer is a selection (multi-focus), spatially coherent decisions beat per-coefficient ones.
+
+<Figure src={pyramidFig} alt="A grid with four rows and five columns. Columns are pyramid levels 0 (finest) to 3 and the coarse base. Rows one and two show the red-blue detail coefficients of source A and source B; A has strong fine detail inside the central disk, B outside it. Row three shows which source was chosen at each coefficient in black and white: a noisy but recognizable white disk at levels 0 and 1, increasingly blocky at coarser levels, and a note that the base is averaged. Row four shows the fused detail levels and base." caption="Figure 3 — Laplacian-pyramid fusion of the multi-focus pair. Each source is split into band-pass levels (red and blue are positive and negative coefficients); the max-abs rule picks the stronger coefficient per position (row 3, white = source A), the base is averaged, and collapsing the fused pyramid gives the result." />
+
+### Wavelet fusion
+
+Wavelet fusion follows the same plan with the discrete wavelet transform of [IP 07](/en/learn/image-processing/dip-07-wavelets-transforms/#wavelet-transforms-in-two-dimensions) instead of the pyramid: decompose both sources, keep the stronger detail coefficient in each horizontal, vertical and diagonal band, average the approximation band, and invert. Li, Manjunath and Mitra [11] proposed it with an **area-based** maximum-selection rule (compare activity over a small window, not single coefficients) and a **consistency verification** step that makes a coefficient follow the choice of its neighbors, and argued that the wavelet transform's compactness, orthogonality and directional selectivity make it better suited than the Laplacian pyramid. In our toy, the simple per-coefficient rule gives 36.43 dB, about 1 dB below the pyramid. One known weakness is that the decimated wavelet transform is not shift-invariant: shifting the image by one pixel changes its coefficients, so a per-coefficient decision can change too. Greater shift invariance was also one of the aims of Burt and Kolczynski's refinement of pyramid fusion [9].
+
+## Exposure fusion: well-exposed images without HDR
+
+**Plain version.** For each pixel of each exposure, ask three questions: is there detail here, is the color vivid, and is the pixel neither black nor white? Turn the answers into a weight, and blend the exposures with those weights, using a pyramid so that the blend leaves no seams.
+
+**Precise version.** Mertens, Kautz and Van Reeth [5] compute, for exposure $k$ at pixel $(i, j)$, three **quality measures**:
+
+- **contrast** $C_{ij,k}$: the absolute response of a Laplacian filter applied to the grayscale exposure (high at edges and texture);
+- **saturation** $S_{ij,k}$: the standard deviation of the R, G and B values at the pixel (vivid colors have a large spread, washed-out ones a small spread);
+- **well-exposedness** $E_{ij,k} = \prod_{c \in \{R,G,B\}} \exp\!\big(-\tfrac{(I^c_{ij,k} - 0.5)^2}{2\sigma^2}\big)$: a Gaussian bump around mid-gray, applied to each color channel $I^c_{ij,k} \in [0, 1]$ and multiplied, with $\sigma = 0.2$ in their implementation.
+
+They are combined by a product with exponents and normalized over the $N$ exposures:
+
+$$
+W_{ij,k} = (C_{ij,k})^{\omega_C}\,(S_{ij,k})^{\omega_S}\,(E_{ij,k})^{\omega_E}, \qquad \hat W_{ij,k} = \frac{W_{ij,k}}{\sum_{k'=1}^{N} W_{ij,k'}},
+$$
+
+where $\omega_C, \omega_S, \omega_E \ge 0$ set the influence of each measure (an exponent of 0 switches a measure off) and $\hat W_{ij,k}$ is the normalized weight, which sums to 1 over the exposures at each pixel. The product acts like an "and": a pixel gets a high weight only if it is detailed *and* colorful *and* well exposed [5].
+
+**Why a pyramid.** Blending pixels directly, $R_{ij} = \sum_k \hat W_{ij,k} I_{ij,k}$, produces visible seams wherever the weights change quickly, because the exposures have very different absolute brightness [5]. Smoothing the weights with a Gaussian removes the seams but creates halos around edges. Exposure fusion instead blends **per pyramid level**: each Laplacian level of each exposure is weighted by the matching level of a Gaussian pyramid of its weight map,
+
+$$
+L\{R\}_\ell = \sum_{k=1}^{N} G\{\hat W_k\}_\ell \; L\{I_k\}_\ell,
+$$
+
+where $L\{\cdot\}_\ell$ is level $\ell$ of a Laplacian pyramid and $G\{\cdot\}_\ell$ level $\ell$ of a Gaussian pyramid; the result $R$ is obtained by collapsing $L\{R\}$ [5]. Fine detail is blended with sharp weights and coarse brightness with very smooth weights, which is exactly what removes both seams and halos.
+
+The snippet builds a synthetic scene with an 8-stop light falloff (dark on the left, bright on the right), photographs it with three exposure times through a simple camera model (gamma, clipping, 8-bit quantization), and fuses the bracket. It checks the result against OpenCV's implementation, `cv2.createMergeMertens`.
+
+```python
+import numpy as np
+import cv2
+from skimage import data, img_as_float
+
+# A synthetic high-dynamic-range scene: linear radiance times a light falloff of 8 stops.
+rgb = img_as_float(data.astronaut()) ** 2.2                       # undo display gamma -> linear
+light = 2.0 ** np.linspace(-6, 2, rgb.shape[1])[None, :, None]    # dark left, bright right
+radiance = rgb * light
+
+def camera(E, t):
+    """Expose for time t, apply a 1/2.2 display gamma, clip and quantize to 8 bits."""
+    return np.round(np.clip((t * E) ** (1 / 2.2), 0, 1) * 255) / 255
+
+stack = [camera(radiance, t) for t in (1 / 8, 1.0, 8.0)]          # under, middle, over
+
+def mertens_weights(imgs, sigma=0.2, eps=1e-12):
+    W = []
+    for I in imgs:
+        gray = I.mean(axis=2).astype(np.float32)
+        C = np.abs(cv2.Laplacian(gray, cv2.CV_32F))                # contrast
+        S = I.std(axis=2)                                         # saturation
+        E = np.prod(np.exp(-(I - 0.5) ** 2 / (2 * sigma ** 2)), axis=2)  # well-exposedness
+        W.append(C * S * E + eps)
+    W = np.array(W)
+    return W / W.sum(axis=0)                                      # weights sum to 1 per pixel
+
+def gauss_pyr(img, n):
+    G = [img.astype(np.float32)]
+    for _ in range(n):
+        G.append(cv2.pyrDown(G[-1]))
+    return G
+
+def lap_pyr(img, n):
+    G = gauss_pyr(img, n)
+    return [G[i] - cv2.pyrUp(G[i + 1], dstsize=G[i].shape[1::-1]) for i in range(n)] + [G[-1]]
+
+def exposure_fusion(imgs):
+    n = int(np.log2(min(imgs[0].shape[:2])))                      # full depth: 9 levels for 512 px
+    fused = None
+    for I, Wk in zip(imgs, mertens_weights(imgs)):
+        level = [g[..., None] * l for g, l in zip(gauss_pyr(Wk, n), lap_pyr(I, n))]
+        fused = level if fused is None else [f + l for f, l in zip(fused, level)]
+    out = fused[-1]
+    for detail in reversed(fused[:-1]):
+        out = cv2.pyrUp(out, dstsize=detail.shape[1::-1]) + detail
+    return np.clip(out, 0, 1)
+
+R = exposure_fusion(stack)
+naive = np.clip(np.sum(mertens_weights(stack)[..., None] * np.array(stack), axis=0), 0, 1)
+ref = cv2.createMergeMertens(1.0, 1.0, 1.0).process(
+    [(255 * I[..., ::-1]).round().astype(np.uint8) for I in stack])[..., ::-1]   # OpenCV uses BGR
+for name, I in [("under", stack[0]), ("middle", stack[1]), ("over", stack[2]),
+                ("per-pixel blend", naive), ("pyramid blend", R)]:
+    ok = np.mean(np.all((I > 0.05) & (I < 0.95), axis=2))        # no channel near black or clipped
+    print(f"{name:15s} well-exposed pixels: {100 * ok:4.1f}%")
+print(f"mean |ours - OpenCV MergeMertens| = {np.abs(R - np.clip(ref, 0, 1)).mean():.4f}")
+```
+
+```text
+under           well-exposed pixels: 45.8%
+middle          well-exposed pixels: 58.7%
+over            well-exposed pixels: 41.2%
+per-pixel blend well-exposed pixels: 72.3%
+pyramid blend   well-exposed pixels: 73.8%
+mean |ours - OpenCV MergeMertens| = 0.0027
+```
+
+Our implementation agrees with OpenCV's to within 0.003 on a $[0, 1]$ scale; the small difference presumably comes from implementation details such as pyramid depth, border handling and input rounding. The crude "well-exposed pixels" count rises from at most 59% for any single exposure to 74% after fusion. Note what the count misses: the per-pixel blend scores almost as well (72%) yet looks badly broken, with seams and speckle where the weights jump (Figure 4, bottom left). A single number does not see artifacts, a theme the evaluation section returns to.
+
+<Figure src={exposureFig} alt="A three-by-three grid. Top row: the astronaut image exposed short, middle and long, dark to bright, with a strong brightness falloff from left to right. Middle row: the three normalized weight maps in a yellow-to-purple color map; the short exposure gets weight on the bright right side, the long exposure on the dark left side, and flat black regions get equal weight. Bottom row: the per-pixel weighted blend with obvious seams and speckle on the face and background, the pyramid blend, which looks clean and well exposed, and the OpenCV MergeMertens result, which looks nearly identical to the pyramid blend." caption="Figure 4 — Exposure fusion of a synthetic bracket. The weights pick the well-exposed, detailed parts of each exposure (in flat black areas all weights are tiny and the normalization gives each exposure one third). Blending pixels directly with these weights fails; blending pyramid levels works and matches OpenCV's implementation." />
+
+**Exposure fusion is not HDR.** The output keeps no radiance values, so it cannot be relit or re-exposed, and with strongly varying brightness the multiresolution blend can create a spurious low-frequency brightness change; Mertens et al. note that a taller pyramid partly solves it [5]. Exposure fusion also assumes perfectly aligned exposures, possibly after registration [5]; with camera or object motion, the result shows ghosts (Figure 6). Finally, Mertens et al. compare their blending with earlier pyramid fusion that *selects* the most salient coefficients and find the selection results too dark and with color shifts on exposure stacks [5]: for exposures, blending beats selecting, the opposite of multi-focus fusion.
+
+*Optional: [Exposure fusion (Mertens, Kautz and Van Reeth)](#exposure-fusion-mertens-kautz-and-van-reeth) (in the Paper guides). What the paper set out to do, what its comparison figures show, and the limitations it states.*
+
+## Two more classical tools: guided filtering and sparse codes
+
+**Plain version.** Two later ideas improved the classical rules: make the weight maps follow object edges using an edge-aware filter, and describe image patches with a learned dictionary so that "how much detail" is measured on a richer representation.
+
+**Guided-filtering fusion (GFF).** Li, Kang and Hu [12] split each source into a **base layer** (large-scale intensity variations) and a **detail layer** (small-scale detail), and fuse each layer with a weighted average whose weight maps are refined by the guided filter [13] so that they respect spatial consistency, that is, neighboring pixels with similar intensities get similar weights. The guided filter is explained in [IP 03](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-guided-filter-smoothing-that-follows-a-guide-image), and its learned and fast variants in [DLCV 05A](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-2-bilateral-grids-and-guided-upsampling). The authors report state-of-the-art results at the time for multispectral, multi-focus, multimodal and multi-exposure images with one method [12]. The design shows the general recipe of the classical era: a two- or multi-scale decomposition, an activity measure, and a smoothing step that turns the activity into clean weights.
+
+**Sparse-representation (SR) fusion.** Yang and Li [14] represent the sources with sparse coefficients over an overcomplete dictionary, combine the coefficients with a choose-max rule, and reconstruct the fused image from the combined coefficients and the dictionary; by changing the approximation criterion of the sparse coding, the same scheme also restores noisy sources while fusing them. Later work learned the dictionary from the source patches themselves [15]. SR methods were among the strongest classical multi-focus methods, but they are slow: in one benchmark they took more than seven minutes to fuse an image pair [7].
+
+*Optional: [Sparse-representation fusion](#sparse-representation-fusion) (in the Supplementary notes). The sparse coding model, the patch-by-patch fusion steps, the activity measure and where the cost comes from.*
+
+## Evaluating fusion without ground truth
+
+**Plain version.** Without a correct fused image to compare with, fusion is scored by rules of thumb: does the result have a lot of detail, a lot of contrast, a lot of information from the sources? Each rule captures one aspect, so they disagree, and a method can be tuned to look good on the chosen ones.
+
+This section comes before deep learning on purpose: deep fusion networks are trained with losses built from the same ingredients as these metrics, so understanding the metrics explains the losses.
+
+### Why fusion has no single right answer
+
+For multi-focus fusion on synthetic data, the all-in-focus image is known and PSNR or SSIM [16] against it is meaningful, as in our first snippet. For infrared–visible and multi-exposure fusion, no such image exists, and benchmark studies agree that no single metric is better than all others [17], [18], [7]. Benchmarks therefore report many metrics: VIFB implements 13 [17], and the multi-exposure benchmark MEFB and the multi-focus benchmark MFIFB 20 each [18], [7]. VIFB groups them into four families: information-theory-based, image-feature-based, structural-similarity-based and human-perception-based [17]. Its results show the consequence: one method wins the information-theory metrics, another the feature-based ones and a third the structural ones, and no method wins all [17].
+
+*Optional: [VIFB: a visible and infrared image fusion benchmark](#vifb-a-visible-and-infrared-image-fusion-benchmark) (in the Paper guides). How the benchmark was built, how to read its tables, and why its best-scoring methods looked worst.*
+
+### Metrics that look only at the fused image
+
+Let $F$ be the fused image, of size $M \times N$, with values in $[0, 1]$.
+
+**Entropy (EN)** measures how spread out the histogram is:
+
+$$
+\mathrm{EN} = -\sum_{l=0}^{L-1} p_l \log_2 p_l,
+$$
+
+where $L$ is the number of gray levels (histogram bins) and $p_l$ the fraction of pixels in bin $l$. EN is in bits; a larger value means the gray levels are used more evenly. It is easily affected by noise, so benchmark studies use it only as an auxiliary metric [18].
+
+**Standard deviation (SD)** measures global contrast, $\mathrm{SD} = \sqrt{\tfrac{1}{MN}\sum_{i,j} (F(i, j) - \mu)^2}$, where $\mu$ is the mean of $F$ (some implementations omit the $\tfrac{1}{MN}$, which changes the scale but not the ranking).
+
+**Spatial frequency (SF)** measures the overall activity of neighboring differences [19], [18]:
+
+$$
+\mathrm{SF} = \sqrt{\mathrm{RF}^2 + \mathrm{CF}^2}, \qquad \mathrm{RF}^2 = \frac{1}{MN}\sum_{i,j} \big(F(i, j) - F(i, j-1)\big)^2, \quad \mathrm{CF}^2 = \frac{1}{MN}\sum_{i,j} \big(F(i, j) - F(i-1, j)\big)^2,
+$$
+
+where RF (row frequency) uses horizontal differences and CF (column frequency) vertical ones; normalizations differ between implementations. Large SF means many strong edges and much texture.
+
+These three never look at the sources. They reward "more": more gray levels, more contrast, more edges. Noise supplies all three for free.
+
+### Metrics that compare with the sources
+
+**Mutual information (MI)** measures how much the fused image tells about each source [20]:
+
+$$
+\mathrm{MI} = \mathrm{MI}_{A,F} + \mathrm{MI}_{B,F}, \qquad \mathrm{MI}_{X,F} = \sum_{x, f} p_{X,F}(x, f) \log_2 \frac{p_{X,F}(x, f)}{p_X(x)\, p_F(f)},
+$$
+
+where $p_{X,F}$ is the joint histogram of source $X \in \{A, B\}$ and $F$ (normalized to sum to 1), and $p_X$, $p_F$ its marginals. MI is large when the gray level of $F$ predicts the gray level of each source well (see [IT 01](/en/learn/information-theory/it-01-entropy-mutual-information/#mutual-information-measures-dependence) for the definition). Hossny, Nahavandi and Creighton showed analytically that this classic MI sum is not a valid fusion performance measure on its own [21], and benchmark toolkits implement a normalized version attributed to them, which divides each term by the sum of the two entropies [18].
+
+*Optional: [Mutual information as a fusion metric](#mutual-information-as-a-fusion-metric) (in the Supplementary notes). Why copying one source scores well, how the bin count changes the value, and what normalization fixes.*
+
+**Gradient-based fusion performance $Q^{AB/F}$** (Xydeas and Petrović [22]) measures how much **edge information** of the sources survives in $F$. At every pixel it compares the edge strength $g$ and orientation $\alpha$ (from image gradients) of each source $X$ with those of $F$, turns the comparison into a preservation value $Q^{XF}(i, j) = Q^{XF}_g(i, j)\, Q^{XF}_\alpha(i, j)$, the product of an edge-strength and an orientation preservation value, and averages with weights $w^X(i, j)$ that express the importance of each source [18]:
+
+$$
+Q^{AB/F} = \frac{\sum_{i,j} \big( Q^{AF}(i, j)\, w^A(i, j) + Q^{BF}(i, j)\, w^B(i, j) \big)}{\sum_{i,j} \big( w^A(i, j) + w^B(i, j) \big)}.
+$$
+
+A value near 1 means the edges of both sources are kept with their strength and direction. The snippet below implements a simplified version, which we call $Q_G$: the strength preservation is the ratio of the smaller to the larger gradient magnitude, the orientation preservation falls linearly with the angle between the edges, and the weights are the source gradient magnitudes. Use a reference implementation when you report $Q^{AB/F}$.
+
+**Structure-based and perception-based metrics.** Piella and Heijmans [23] proposed three variants of a fusion quality metric based on an image quality index of Wang and Bovik; they need no ground-truth image because they compare $F$ with the sources, and the authors found them consistent with subjective evaluations. VIFF [24] adapts the visual information fidelity criterion to fusion and computes it over several resolutions. For multi-exposure fusion, **MEF-SSIM** [25] was designed from a subjective study: its authors found that general fusion metrics predicted the perceived quality of multi-exposure fusion poorly, and built an SSIM-style index around a patch structure consistency measure that correlates much better with human judgments. Liu et al. [26] compared twelve fusion metrics over six multiresolution fusion algorithms for night-vision applications.
+
+### A toy that fools the metrics
+
+The snippet builds an infrared–visible pair from the camera image: the visible image has a deep shadow on the right in which a person is invisible; the thermal image is smooth, with little texture, and the person glows. It scores four candidates: no fusion at all (the visible image), the average, pyramid fusion (max-abs details, and the brighter of the two coarse bases so that the warm target keeps its level), and the average with added noise. As an independent check of what a user cares about, it also measures the **person contrast**: the mean of $F$ on the person minus the mean on a ring around them.
+
+```python
+import numpy as np
+import cv2
+from scipy import ndimage as ndi
+from skimage import data, img_as_float
+
+rng = np.random.default_rng(1)
+scene = img_as_float(data.camera())
+yy, xx = np.mgrid[:512, :512]
+person = ((yy - 330) / 60) ** 2 + ((xx - 420) / 22) ** 2 < 1        # a warm "person", 120 px tall
+shadow = ndi.gaussian_filter((xx > 340).astype(float), 8)          # a dark area on the right
+vis = scene * (1 - 0.85 * shadow)                                  # visible: person hidden in shadow
+ir = 0.25 + 0.3 * ndi.gaussian_filter(scene, 6)                    # thermal: smooth, little texture
+ir = np.clip(ir + 0.6 * ndi.gaussian_filter(person.astype(float), 2)  # the warm body glows
+             + 0.01 * rng.standard_normal(ir.shape), 0, 1)
+
+def lap_pyr(img, n=5):
+    G = [img.astype(np.float32)]
+    for _ in range(n):
+        G.append(cv2.pyrDown(G[-1]))
+    return [G[i] - cv2.pyrUp(G[i + 1], dstsize=G[i].shape[::-1]) for i in range(n)] + [G[-1]]
+
+def collapse(L):
+    img = L[-1]
+    for d in reversed(L[:-1]):
+        img = cv2.pyrUp(img, dstsize=d.shape[::-1]) + d
+    return img
+
+def pyramid_fuse(a, b):                    # max-abs details, and the brighter coarse base
+    La, Lb = lap_pyr(a), lap_pyr(b)
+    out = [np.where(np.abs(p) >= np.abs(q), p, q) for p, q in zip(La[:-1], Lb[:-1])]
+    out.append(np.maximum(La[-1], Lb[-1]))
+    return np.clip(collapse(out), 0, 1).astype(float)
+
+def entropy(F, bins=256):
+    p = np.histogram(F, bins, (0, 1))[0] / F.size
+    p = p[p > 0]
+    return -np.sum(p * np.log2(p))
+
+def spatial_frequency(F):
+    rf = np.mean(np.diff(F, axis=1) ** 2)            # row frequency: horizontal differences
+    cf = np.mean(np.diff(F, axis=0) ** 2)            # column frequency: vertical differences
+    return np.sqrt(rf + cf)
+
+def mutual_info(X, F, bins=64):
+    pxy = np.histogram2d(X.ravel(), F.ravel(), bins, [[0, 1], [0, 1]])[0] / X.size
+    px, pf = pxy.sum(1, keepdims=True), pxy.sum(0, keepdims=True)
+    nz = pxy > 0
+    return np.sum(pxy[nz] * np.log2(pxy[nz] / (px @ pf)[nz]))
+
+def q_gradient(A, B, F):
+    """A simplified Q^{AB/F}: how well F keeps the edge strength and direction of A and B."""
+    def grad(I):
+        gx, gy = ndi.sobel(I, 1), ndi.sobel(I, 0)
+        return np.hypot(gx, gy), np.arctan2(gy, gx)
+    gF, aF = grad(F)
+    num = den = 0.0
+    for X in (A, B):
+        gX, aX = grad(X)
+        strength = np.minimum(gX, gF) / (np.maximum(gX, gF) + 1e-12)
+        d = np.abs(aX - aF) % np.pi                  # edge direction is defined modulo pi
+        direction = 1 - np.minimum(d, np.pi - d) / (np.pi / 2)
+        num += np.sum(strength * direction * gX)     # weight each pixel by the source edge strength
+        den += np.sum(gX)
+    return num / den
+
+ring = ndi.binary_dilation(person, iterations=15) & ~person
+candidates = {"visible only": vis,
+              "average": (vis + ir) / 2,
+              "pyramid fusion": pyramid_fuse(vis, ir),
+              "average + noise": np.clip((vis + ir) / 2 + 0.08 * rng.standard_normal(vis.shape), 0, 1)}
+print(f"{'':16s}  EN    SF     SD     MI    Q_G   person contrast")
+for name, F in candidates.items():
+    mi = mutual_info(vis, F) + mutual_info(ir, F)
+    tc = F[person].mean() - F[ring].mean()           # task check: does the person stand out?
+    print(f"{name:16s} {entropy(F):4.2f}  {spatial_frequency(F):.3f}  {F.std():.3f}  {mi:4.2f}  "
+          f"{q_gradient(vis, ir, F):.3f}  {tc:6.3f}")
+```
+
+```text
+                  EN    SF     SD     MI    Q_G   person contrast
+visible only     6.68  0.065  0.293  5.72  0.784  -0.000
+average          6.69  0.034  0.172  4.33  0.455   0.257
+pyramid fusion   7.48  0.067  0.221  3.75  0.779   0.513
+average + noise  7.49  0.163  0.189  1.41  0.296   0.259
+```
+
+Read the table column by column (all numbers are from this toy):
+
+- **Noise wins EN and SF.** Adding noise to the average gives the highest entropy and almost five times the average's spatial frequency, while making the image worse.
+- **Not fusing at all wins SD, MI and $Q_G$.** The visible image alone has the most contrast, the highest mutual information (copying a source makes $\mathrm{MI}_{A,F}$ equal to that source's entropy) and even the highest edge score, because the strong visible edges carry most of the weight $w^X$. Yet the person is invisible: its contrast is zero (printed as -0.000).
+- **Pyramid fusion wins only the task check.** It doubles the person's contrast relative to the average while keeping the visible texture ($Q_G$ almost as high as the visible image), but it is not the best on any of the five standard metrics.
+
+<Figure src={metricsFig} alt="Top: seven small images: the visible image with a dark shadow on the right, the smooth infrared image with a bright oval target, the visible image again labeled visible only, the gray average with a faded target, the pyramid fusion with texture and a bright target, a very noisy average, and the loss minimizer, which looks like the pyramid fusion. Bottom: a table of EN, SF, SD, MI, Q_G and person contrast for five candidates, with each column's winner shaded: visible only wins SD, MI and Q_G; average plus noise wins EN and SF; pyramid fusion wins person contrast." caption="Figure 5 — Five candidate fusions of the synthetic infrared–visible pair and their scores (our toy; the loss minimizer is computed in the deep-learning section). Every metric is 'higher is better', yet the winners are a noisy image and an image that ignores the infrared source. Only the task check identifies the useful results." />
+
+### What to report
+
+The toy is extreme on purpose, but each effect appears in practice: noise and over-sharpening raise EN, SF and SD; results that look like one source score well on MI; and metrics with source-dependent weights favor the source with stronger edges. Benchmark authors draw the same conclusion from real methods: researchers tend to pick the metrics that support their method [17], [7], and quantitative and qualitative comparisons may disagree [7]. Practical advice:
+
+1. Report several metrics from **different families**, including at least one that compares with the sources ($Q^{AB/F}$, an SSIM-based score or VIFF), never only EN, SD or SF.
+2. Use **reference-based** metrics where a reference can exist: synthetic multi-focus pairs, or multi-exposure datasets with selected references (with the caveat that the reference is one acceptable answer).
+3. Add a **downstream task** when fusion feeds one, such as detection or segmentation accuracy on the fused images, as recent infrared–visible benchmarks do [27], [28].
+4. Show **crops** of hard regions (depth edges, highlights, warm targets in shadow), and run a user study when the claim is about visual quality.
+
+## Deep image fusion
+
+**Plain version.** Deep networks learn the weights, the features and the combination rule from data. The catch is that there are no examples of the correct output, so the network is trained to satisfy rules of the same kind as the metrics above.
+
+### The missing ground truth
+
+A restoration network ([DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/)) learns from pairs (degraded input, clean target). A fusion network has inputs but no target. The field uses four ways around this:
+
+1. **Synthesize a task that has ground truth.** For multi-focus fusion, blur parts of sharp images: the sharp image is the target and the blur mask the true decision map. Most deep multi-focus methods are trained this way [7]; IFCNN trains a general fusion network on a synthetic multi-focus dataset built from an RGB-D dataset, so that ground-truth fused images exist [29].
+2. **Train something else, then fuse features by a rule.** Train an autoencoder to reconstruct ordinary images, then at test time encode both sources, merge the features with a hand-made rule and decode [30].
+3. **Unsupervised losses.** Define a loss that measures how well $F$ keeps the intensity, gradients or structure of each source, and train the network to minimize it on unlabeled source pairs [31], [32].
+4. **Let another task supervise.** Feed $F$ to a detector or segmenter and add its loss, so that the fusion is judged by its usefulness [33], [27].
+
+### Unsupervised losses
+
+A recent survey groups the losses of unsupervised infrared–visible fusion into pixel-level terms (L1 or MSE), terms built from evaluation metrics (above all SSIM) and terms that target data characteristics such as image gradients [2]. A typical combination is
+
+$$
+\mathcal{L}(F) = \lambda_{\text{int}}\, \lVert F - T \rVert_1 + \lambda_{\text{grad}}\, \big\lVert\, |\nabla F| - |\nabla T_g| \,\big\rVert_1 + \lambda_{\text{ssim}} \sum_{X} \omega_X \big(1 - \mathrm{SSIM}(F, I_X)\big),
+$$
+
+where $T$ is an intensity target built from the sources (for example a weighted average, or the pixel-wise maximum, which keeps the brighter thermal target), $|\nabla T_g|$ a gradient-magnitude target (for example the larger of the two sources' gradient magnitudes at each pixel), $\mathrm{SSIM}(F, I_X)$ the structural similarity [16] between $F$ and source $X$, $\omega_X$ per-source weights, and the $\lambda$s weight the terms. Methods differ mainly in these choices: DeepFuse [31] trains with MEF-SSIM [25] alone, SwinFusion [34] with SSIM, texture and intensity terms, and U2Fusion [32] weights a similarity loss by an estimate of how much information each source holds.
+
+*Optional: [Training signals of representative fusion networks](#training-signals-of-representative-fusion-networks) (in the Supplementary notes). What DenseFuse, DeepFuse, U2Fusion, SwinFusion, FusionGAN, CDDFuse, DDFM and EMMA actually optimize, and what each choice implies for the result.*
+
+### The loss defines the answer
+
+**Plain version.** If nobody gives the network a target, the loss *is* the target. The best a network can do is to output, for each pair, the image that minimizes the loss. For a simple quadratic loss we can compute that image directly, without any network, and look at it.
+
+The snippet continues from the toy of the evaluation section (it uses `vis`, `ir`, `person`, `ring` and the metric functions). It minimizes a squared-error version of the loss above, an intensity term toward the pixel-wise maximum of the sources plus a gradient term toward the stronger source gradient,
+
+$$
+F^\star = \arg\min_F \; \lVert F - \max(I_A, I_B) \rVert_2^2 + \lambda \,\lVert \nabla F - \mathbf{g} \rVert_2^2,
+$$
+
+where $\nabla F$ stacks the horizontal and vertical forward differences of $F$, $\mathbf{g}$ takes, at each position and in each direction, the difference of whichever source has the larger one in magnitude, and $\lambda > 0$ trades intensity against gradients. Setting the gradient of the objective to zero gives a sparse linear system, $(\mathbf{I} + \lambda \mathbf{D}^\top \mathbf{D}) F = \max(I_A, I_B) + \lambda \mathbf{D}^\top \mathbf{g}$, where $\mathbf{D}$ is the difference operator; conjugate gradients solves it in seconds.
+
+```python
+import scipy.sparse as sp
+from scipy.sparse.linalg import cg
+
+def diff_ops(H, W):
+    d = lambda n: sp.diags([-np.ones(n - 1), np.ones(n - 1)], [0, 1], shape=(n - 1, n))
+    return sp.kron(sp.eye(H), d(W)).tocsr(), sp.kron(d(H), sp.eye(W)).tocsr()  # Dx, Dy
+
+def fuse_by_loss(a, b, lam=10.0):
+    """Minimize ||F - max(a, b)||^2 + lam * ||grad F - g||^2, where g is the stronger source gradient."""
+    H, W = a.shape
+    Dx, Dy = diff_ops(H, W)
+    gx = [Dx @ s.ravel() for s in (a, b)]
+    gy = [Dy @ s.ravel() for s in (a, b)]
+    pick_x = np.abs(gx[0]) >= np.abs(gx[1])
+    pick_y = np.abs(gy[0]) >= np.abs(gy[1])
+    tx, ty = np.where(pick_x, gx[0], gx[1]), np.where(pick_y, gy[0], gy[1])
+    target = np.maximum(a, b).ravel()                 # intensity term: the brighter source
+    M = sp.eye(H * W) + lam * (Dx.T @ Dx + Dy.T @ Dy)  # normal equations of the quadratic loss
+    rhs = target + lam * (Dx.T @ tx + Dy.T @ ty)
+    f, info = cg(M, rhs, x0=target, rtol=1e-6, maxiter=2000)
+    return np.clip(f.reshape(H, W), 0, 1)
+
+for lam in (1.0, 10.0):
+    F = fuse_by_loss(vis, ir, lam)
+    mi = mutual_info(vis, F) + mutual_info(ir, F)
+    print(f"loss minimizer, lam={lam:4.1f}: EN {entropy(F):.2f}  SF {spatial_frequency(F):.3f}  "
+          f"SD {F.std():.3f}  MI {mi:.2f}  Q_G {q_gradient(vis, ir, F):.3f}  "
+          f"person contrast {F[person].mean() - F[ring].mean():.3f}")
+```
+
+```text
+loss minimizer, lam= 1.0: EN 6.91  SF 0.060  SD 0.195  MI 4.68  Q_G 0.659  person contrast 0.513
+loss minimizer, lam=10.0: EN 6.99  SF 0.065  SD 0.200  MI 4.24  Q_G 0.718  person contrast 0.513
+```
+
+The loss minimizer has the person as bright as pyramid fusion does (contrast 0.513) and keeps the visible texture (Figure 5, right). Raising $\lambda$ from 1 to 10 raises $Q_G$ and SF and lowers MI: the weight between loss terms moves the result along the metrics, and choosing it is choosing what the "correct" fusion is. This is the honest summary of unsupervised deep fusion. The network adds speed, the ability to generalize from many training pairs and features richer than raw gradients, but the definition of a good result is still written by hand, in the loss.
+
+### Families of deep fusion networks
+
+The surveys organize the field by architecture and by training strategy [35], [2]. The table lists representative members of each family; [the infrared–visible survey guide](#the-infraredvisible-fusion-survey-of-liu-et-al-tpami-2025) in the Paper guides covers the taxonomy in more depth.
+
+| Family | Idea | Representative methods |
+|---|---|---|
+| Learned decision maps or weights | A network predicts which source is in focus, or a per-pixel weight; the output is still a selection or blend of source pixels | CNN focus map for multi-focus [36]; MEF-Net predicts weights at low resolution and upsamples them with a guided filter [37] |
+| Autoencoder + fusion rule | Train an encoder–decoder to reconstruct images; fuse encoded features with a hand-made rule | DenseFuse [30] |
+| End-to-end, unsupervised | A network maps the sources to $F$, trained with an intensity/gradient/SSIM-type loss | DeepFuse [31], U2Fusion [32], SwinFusion [34], CDDFuse [38] |
+| Supervised on synthetic data | Train on synthesized pairs with a known fused image | IFCNN [29] |
+| Adversarial (GAN) | A discriminator pushes $F$ to look like one source's texture while a content loss keeps the other's intensity | FusionGAN [39], TarDAL [27] |
+| Task-driven | A detection or segmentation loss on $F$ guides the fusion network | SeAFusion [33], TarDAL [27], SegMiF [28], TDFusion [40] |
+| Generative priors and language | A pretrained diffusion model or a text encoder guides the fusion | DDFM [41], Text-IF [42] |
+
+Two families rely on generative models explained elsewhere: GANs in [ML 06](/en/learn/ml/ml-06-generative-models/#gans-learning-with-an-adversary) and diffusion models in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/). Across all families, the architecture matters less for the character of the result than the training signal, which is what the table's middle column really distinguishes.
+
+### Fusion for downstream tasks
+
+**Plain version.** If the fused image feeds a detector, the best fusion is the one that makes the detector work, not the one with the best entropy.
+
+**SeAFusion** [33] cascades a real-time fusion network with a segmentation network and adds a semantic loss, training the two in a loop [2]. **TarDAL** [27] writes fusion and detection as one bilevel optimization problem, unrolls it into a fusion network with one generator and two discriminators (one for the infrared targets, one for visible texture) followed by a detector, and introduces the M3FD benchmark captured with a synchronized infrared–visible system. **SegMiF** [28] exchanges intermediate features between a fusion and a segmentation sub-network through hierarchical attention, and collects a full-time benchmark with 15 annotated pixel-level classes. **TDFusion** [40] goes one step further and *learns the fusion loss itself*: a loss-generation module is trained by meta-learning so that the fusion network it supervises minimizes the downstream task loss. Task-driven training answers the "what is correct?" question with a measurable goal, but it optimizes for one task and one network, and task performance does not fully reflect visual quality [2].
+
+### Fusing images that are not aligned
+
+**Plain version.** Real infrared and visible cameras are rarely perfectly aligned. Registration-robust methods estimate the misalignment and correct it inside the fusion network.
+
+Pixel-wise fusion of misaligned pairs produces ghosts and double edges around objects [43], [44]. Two strategies appear in recent work [2]. The **style-transfer route** first translates one modality into the other, so that cross-modal registration becomes a single-modality one: UMF-CMGR [43] generates a pseudo-infrared image from the visible image, registers the real infrared image to it with a multi-level registration network, and then fuses. The **shared-feature route** maps both modalities into a common feature space and predicts deformation fields there. SuperFusion [44] combines registration (bidirectional deformation fields), fusion and a semantic constraint from a pretrained segmentation model in one framework. Multi-exposure fusion has the analogous problem with camera shake and moving objects (ghosting).
+
+## Datasets and benchmarks
+
+**Plain version.** Infrared–visible fusion has several public collections of aligned pairs, some with object labels; multi-focus and multi-exposure fusion have smaller test sets and benchmark toolkits. None has a ground-truth fused image for real infrared–visible data.
+
+| Dataset | Task | Content (as described by its authors) |
+|---|---|---|
+| TNO [45] | IR–visible | Intensified visual, near-infrared and long-wave infrared night-time images of military and surveillance scenes |
+| RoadScene [32] | IR–visible | 221 aligned pairs of road scenes selected from FLIR videos, released with U2Fusion |
+| MSRS [46] | IR–visible | 1,444 aligned pairs of road scenes, built from the MFNet dataset [47] by removing 125 misaligned pairs and enhancing the infrared images |
+| LLVIP [48] | IR–visible | 15,488 strictly aligned pairs, mostly taken in very dark scenes, with pedestrian labels |
+| M3FD [27] | IR–visible | 4,200 registered pairs with detection labels, plus 300 pairs from independent scenes for fusion; images mostly 1024 × 768 |
+| FMB [28] | IR–visible | A full-time benchmark with 15 annotated pixel-level classes for fusion and segmentation |
+| VIFB [17] | IR–visible | A test set of 21 pairs, a code library of 20 fusion algorithms and 13 metrics |
+| Lytro [15] | Multi-focus | 20 pairs of multi-focus images, long the most widely used test set [7] |
+| MFFW [6] | Multi-focus | 19 real pairs collected from the Internet with a strong defocus spread effect |
+| MFIFB [7] | Multi-focus | A benchmark of 105 test pairs, 30 algorithms and 20 metrics |
+| SICE [49] | Multi-exposure | 589 multi-exposure sequences (4,413 images), each with a reference chosen by subjective comparison of 13 fusion and HDR algorithms |
+| MEFB [18] | Multi-exposure | A benchmark of 100 test image pairs, 16 algorithms and 20 metrics |
+
+Read the table with three cautions. **Preprocessing is part of the data:** RoadScene's infrared images had their background thermal noise processed, and MSRS's infrared images were contrast-enhanced with a dark-channel-prior-based method, so "the infrared source" is already processed. **Scenes are narrow:** most infrared–visible data are urban roads and campuses, and the 2025 survey lists more diverse scenes and registration ground truth among the missing benchmarks [2]. **Old test sets are saturated:** on the 20 Lytro pairs, popular methods perform very similarly because the defocus spread effect is weak there [6], [7]. SICE is also used in [DLCV 05](/en/learn/deep-learning/dl-05-low-light-enhancement/#benchmark-datasets) for exposure correction.
+
+## Failure modes
+
+**Plain version.** Fusion fails where its assumptions fail: sources not aligned, sources that are not simply "sharp or blurred", weights that change too fast or too slowly, and rules that average what should be selected.
+
+<Figure src={failuresFig} alt="Two rows of four crops. Top row, failures: an exposure-fused face with doubled outlines of the hair and collar because the long exposure was shifted by 6 pixels; the cameraman's head over a pale sky with a dark haze and blocky edge around the head; an exposure-fused face with a bright halo around the hair from blurred weights; and a faded gray thermal target from averaging. Bottom row, references: the aligned fusion, the all-in-focus truth, the pyramid blend and the pyramid fusion with a bright target." caption="Figure 6 — Four failure modes on synthetic data (top) and a reference for each (bottom): misregistration ghosts, the defocus spread effect at a depth edge (a layered defocus model in which the blurred foreground spills over the background), halos from smoothed weights, and a washed-out thermal target." />
+
+- **Misregistration ghosts.** A shift of a few pixels between sources turns edges into double edges (Figure 6, first column). In multi-exposure fusion, moving objects cause the same effect. Check alignment before blaming the fusion rule.
+- **Decision-map boundary artifacts.** Near depth edges, the real blur of the foreground spills over the background, so neither source is sharp and any binary decision leaves a soft ring or a blocky edge (second column). Hard switches also show small seams where the map is wrong.
+- **Halos.** Weights that are smoothed too much, or a base layer fused at too fine a scale, create bright or dark bands along strong edges (third column) [5]. Multi-scale blending avoids them, but a pyramid that is too shallow brings back seams and low-frequency errors (Exercise 4).
+- **Washed-out thermal targets.** Averaging, or a loss that weights the visible source heavily, halves the contrast of warm targets (fourth column); the opposite error makes the background look like an infrared image, flat and textureless.
+- **Color shifts.** A common way to handle color is to fuse only the luminance (for example the Y channel of YCbCr) and to combine or copy the chroma separately, as DeepFuse does for exposures [31]. Where the fused luminance differs a lot from the source whose chroma is used, for example a bright thermal target on a dark visible background, the colors no longer fit and look washed out or tinted. For exposure stacks, selecting pyramid coefficients instead of blending them produced color shifts in the comparison of Mertens et al. [5].
+- **Noise amplification.** Max-abs selection and gradient losses prefer strong high frequencies, and noise is the strongest high frequency in a dark visible image, so a fused night image can look sharper but noisier than either source. This is also why EN and SF reward such results.
+- **Metric gaming.** A method tuned to EN, SF or SD can produce exactly the artifacts above while reporting better numbers (the toy of Figure 5).
+
+## Modern view
+
+**Surveys.** Six surveys together cover the field:
+
+- **Ma, Ma and Li (Information Fusion 2019) [3]** review classical and early deep infrared–visible fusion, introduce registration as a prerequisite, summarize applications and evaluation metrics, and compare eighteen methods with nine metrics. Takeaway: a reference point for classical methods and their evaluation habits before deep learning took over.
+- **Liu et al. (Information Fusion 2018) [1]** wrote an early review (2018) of deep learning for pixel-level fusion across tasks. They list the difficulties of conventional fusion (hand-designed activity measures and fusion rules) and argue that learned features can replace them, grouping the early methods (CNNs, convolutional sparse representation, stacked autoencoders) into generic frameworks.
+- **Zhang and Demiris (TPAMI 2023) [35]** review deep visible–infrared fusion by architecture (CNN-, autoencoder-, GAN- and transformer-based), with datasets and evaluation methods. Takeaway: deep methods have become the dominant approach for the task.
+- **Liu et al. (TPAMI 2025) [2]** organize more than 180 learning-based infrared–visible methods along three dimensions, data compatibility (registration), fusion (architectures and losses) and task adaptation (detection, segmentation), and compare them on registration, fusion and downstream tasks.
+- **Zhang (TPAMI 2022) [50]** surveys deep multi-focus fusion (methods, datasets, metrics) and compares deep and conventional methods experimentally.
+- **Xu et al. (Remote Sensing 2022) [51]** review multi-exposure fusion for static and dynamic scenes and compare 18 methods with nine metrics.
+
+*Optional: [The infrared–visible fusion survey of Liu et al.](#the-infraredvisible-fusion-survey-of-liu-et-al-tpami-2025) (in the Paper guides). How its taxonomy is built, how to read its comparison tables, and what it lists as open problems.*
+
+**State of the art (2023–2026).** Four trends stand out. First, **fusion is increasingly judged by downstream tasks**: methods are trained with detection or segmentation losses, benchmarks such as M3FD and FMB carry labels, and the fusion loss itself can be learned from the task loss [27], [28], [40]. Second, **generative priors and language** have entered: diffusion-based fusion without task-specific training [41], self-supervised training from imaging priors [52], and text-guided fusion that also handles degraded sources [42]. Third, **registration is moving inside the model**, with joint registration–fusion networks for unaligned infrared–visible pairs [43], [44]. Fourth, **video fusion** is starting: a CVPR 2026 work introduces M3SVD, 220 synchronized and registered infrared–visible videos with 153,797 frames, and a model whose bi-temporal attention mitigates the temporal inconsistency of frame-by-frame image fusion [53]. For multi-focus fusion, a 2020 benchmark study found that deep methods trained on simulated data did not generalize well to challenging real pairs, while conventional methods remained competitive [7]. Treat claims of large improvements with care, and check which metrics they rest on.
+
+**Open problems.**
+
+- **Evaluation.** There is still no metric, or set of metrics, that agrees with human judgment and with task performance; the 2025 survey names better evaluation metrics as an essential direction [2].
+- **Real misalignment and degradations.** Most methods assume registered, clean sources. Benchmarks with registration ground truth, and fusion that is robust to noise, blur, low light and adverse weather in either source, are open [2], [42].
+- **Real defocus.** Training data that reproduces the defocus spread effect, and methods that handle depth edges, are needed for multi-focus fusion to generalize [6], [7].
+- **Efficiency.** Many recent networks are large; fusion on drones, cars and handheld devices needs lightweight, hardware-friendly designs [2] (see [DLCV 05A](/en/learn/deep-learning/dl-05a-lightweight-enhancement/) for the general techniques).
+- **Video.** Research has fused images rather than videos, largely because large synchronized multi-sensor video datasets were missing [53]; temporal consistency at low cost is open.
+
+## Key takeaways
+
+- Image fusion turns several registered images of one scene into one image; for real infrared–visible and multi-exposure data **there is no ground truth**, which shapes methods, training and evaluation.
+- Averaging halves anything that only one source contains. Good rules weight sources by where they are informative: focus measures and **decision maps** for multi-focus, Mertens-style **quality weights** for exposures, salient targets for infrared.
+- **Multi-scale blending** (Laplacian pyramids, wavelets) avoids seams: fine detail is chosen sharply, coarse brightness blended smoothly. Exposure fusion blends Laplacian levels with a Gaussian pyramid of the weights.
+- Deep fusion replaces hand-made measures with learned ones, but with no target the **loss defines the answer**: intensity, gradient and SSIM terms, adversarial terms, or a downstream task loss.
+- Fusion metrics (EN, SD, SF, MI, $Q^{AB/F}$, SSIM- and VIF-based) each capture one aspect and **disagree**; source-free ones are inflated by noise, MI rewards copying a source. Report several families, references where possible, task results and crops.
+- Most methods assume **pixel-aligned sources**; misregistration causes ghosts, and registration-robust fusion is an active topic.
+- The main failure modes are ghosts, decision-map artifacts at depth edges (the defocus spread effect), halos, color shifts, amplified noise and washed-out thermal targets.
+
+## Exercises
+
+1. **Contrast under averaging.** A warm target has intensity $b + a$ in the infrared image and $b$ in the visible one, on a background of intensity $b$ in both. (a) Show that the average has target contrast $a/2$ and that any per-pixel weighted average with weights $w_{\text{IR}}, w_{\text{VIS}}$ gives $w_{\text{IR}}\, a$. (b) In our toy, the person contrast of the average is 0.257 and that of pyramid fusion 0.513. Which weight on the infrared source does pyramid fusion behave like on the target, and why does it achieve this without darkening the visible texture elsewhere?
+
+<details>
+<summary>Hint</summary>
+
+(a) $F = w_{\text{IR}}(b + a) + w_{\text{VIS}}\, b = b + w_{\text{IR}}\, a$, using $w_{\text{IR}} + w_{\text{VIS}} = 1$. (b) 0.513 is about twice 0.257, so on the target pyramid fusion behaves like $w_{\text{IR}} \approx 1$. It can do so because the weights are not global: the coarse base takes the brighter source (the infrared target), while the fine levels take whichever detail is stronger, which is the visible texture away from the target. A global weight would have to trade the two against each other.
+
+</details>
+
+2. **Focus window and cleaning.** In the multi-focus snippet, vary the focus-measure smoothing $\sigma \in \{1, 2, 4\}$ and the median window $k \in \{1, 15, 31, 61\}$ ($k = 1$ means no cleaning), always followed by the soft blend with a Gaussian of standard deviation 2. Report PSNR. Which setting wins, and why might the answer differ on real photographs?
+
+<details>
+<summary>Hint</summary>
+
+In our run all settings lie between 39.43 and 40.05 dB; the best is $\sigma = 2$ with no median cleaning (40.05 dB), and the largest window, $k = 61$, is the worst for every $\sigma$ (about 39.4–39.5 dB). Without cleaning, the soft blend mixes A and B in the speckled flat regions, which averages their independent noise and slightly raises PSNR there; a large median window misplaces the map near the boundary of the disk. On real photographs, uncleaned speckle shows up as visible blotches where the sources differ (noise, small misalignment, the defocus spread effect), so cleaning usually matters more for appearance than for PSNR on a toy.
+
+</details>
+
+3. **Area-based selection.** Replace `pick_stronger` in the pyramid snippet by a rule that compares *local energies*: smooth $(L^A_\ell)^2$ and $(L^B_\ell)^2$ with a Gaussian of standard deviation $s$ and choose the coefficient whose energy is larger. Try $s \in \{1, 1.5, 3\}$ and compare with the per-coefficient rule.
+
+<details>
+<summary>Hint</summary>
+
+Use `ndi.gaussian_filter(p**2, s)`. In our run PSNR rose from 37.60 dB (per coefficient) to 39.14, 39.42 and 39.62 dB for $s = 1, 1.5, 3$, close to the decision map. Smoothing the activity makes neighboring coefficients take the same decision, which is what the area-based rule and consistency verification of Li et al. aim for: in multi-focus fusion, focus is a property of regions, not of single coefficients.
+
+</details>
+
+4. **Pyramid depth and quality measures in exposure fusion.** (a) Rerun exposure fusion with pyramids of $n = 0, 1, 3, 5, 7, 9$ levels ($n = 0$ is the per-pixel blend) and report the well-exposed fraction; look at the images. (b) Use one quality measure at a time (contrast, saturation or well-exposedness only) at full depth. What do you observe?
+
+<details>
+<summary>Hint</summary>
+
+(a) In our run the fraction was 72.3% for $n = 0$, then 72.2%, 70.9%, 69.6% and 68.5% for $n = 1, 3, 5, 7$, and 73.8% for $n = 9$; the mean absolute difference from the 9-level result was still 0.068 at $n = 7$. Shallow pyramids keep seams and low-frequency brightness errors, because the coarsest levels, where the weights are blended most smoothly, are missing; the result changes a lot even between 7 and 9 levels on a 512-pixel image. (b) Well-exposedness alone gave the highest fraction (77.5%), contrast alone 69.1% and saturation alone 71.5%. Mertens et al. also found that well-exposedness by itself gives fairly good images; contrast and saturation matter for detail and color, which this count does not measure.
+
+</details>
+
+5. **How noise inflates spatial frequency.** Let $F' = F + n$ where $n$ is independent zero-mean noise with variance $\sigma^2$ at every pixel. (a) Show that the expected $\mathrm{SF}^2$ grows by about $4\sigma^2$. (b) Check it on the toy: add noise with $\sigma = 0.02, 0.04, 0.08$ to the average and compare the measured SF with $\sqrt{\mathrm{SF}^2 + 4\sigma^2}$.
+
+<details>
+<summary>Hint</summary>
+
+(a) A horizontal difference of $F'$ is the difference of $F$ plus $n(i, j) - n(i, j-1)$, whose variance is $2\sigma^2$ and which is uncorrelated with $F$; so $\mathbb{E}[\mathrm{RF}'^2] \approx \mathrm{RF}^2 + 2\sigma^2$, the same for CF, and $\mathbb{E}[\mathrm{SF}'^2] \approx \mathrm{SF}^2 + 4\sigma^2$. (b) In our run (with a different random seed from the snippet), the measured and predicted SF were 0.0528 and 0.0528 for $\sigma = 0.02$, 0.0871 and 0.0871 for 0.04, and 0.1631 and 0.1637 for 0.08; the small gap at 0.08 comes from clipping to $[0, 1]$. EN rose from 6.69 to 6.99, 7.20 and 7.49 bits.
+
+</details>
+
+6. **Mutual information rewards copying.** (a) Show that if $F = I_A$, then $\mathrm{MI}_{A,F} + \mathrm{MI}_{B,F} = H(I_A) + \mathrm{MI}(I_A, I_B)$, where $H$ is the entropy of the binned image. (b) Verify it on the toy with 64 bins. (c) Compute the MI score of the average and of the visible image with 16, 64 and 256 bins. Does the ranking depend on the bin count? Does the value?
+
+<details>
+<summary>Hint</summary>
+
+(a) $\mathrm{MI}(X, X) = H(X)$, because knowing $X$ removes all uncertainty about $X$. (b) In our run $H(\text{vis}) = 4.728$ bits and $\mathrm{MI}(\text{ir}, \text{vis}) = 0.995$ bits, which add up to 5.723, the MI score of "visible only" in the snippet. (c) The average scored 2.64, 4.33 and 5.00 bits and the visible image 3.42, 5.72 and 7.82 bits: the ranking stayed, but the values more than doubled from 16 to 256 bins for the visible image, so MI values from papers that use different bin counts or implementations cannot be compared.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional. Each takes one point from the main text and goes into finer detail; nothing in the main text, code or exercises depends on them.
+
+### The defocus spread effect
+
+This note explains why selecting the sharpest source cannot produce a correct all-in-focus image near depth edges, and what that means for methods and data.
+
+**The phenomenon.** A real lens blurs an out-of-focus *object*, not an out-of-focus *region of the image*. When the near object is out of focus, its blurred image extends beyond its own outline and covers part of the far background. This is the **defocus spread effect**; Xu et al. describe it as a phenomenon of real-world multi-focus images that is not obvious in simulated data or in the Lytro pairs [6].
+
+**A layered model.** Write the scene as a near layer with a mask $m(i, j) \in [0, 1]$ (1 on the object) and an image $x$, and a far layer with the same image $x$ elsewhere (a simplification: in reality the far layer continues behind the object). With a defocus kernel $h$ (here a Gaussian), the two shots are
+
+$$
+I_{\text{near}} = m\,x + (1 - m)\,(h * x), \qquad I_{\text{far}} = h * (m\,x) + \big(1 - h * m\big)\, x,
+$$
+
+where $*$ is convolution, $I_{\text{near}}$ is focused on the near layer and $I_{\text{far}}$ on the far one. In $I_{\text{far}}$, the term $h * (m x)$ is the blurred object, and $1 - h * m$ is the fraction of the background still visible through its blur. Just outside the outline, $0 \lt h * m \lt 1$: the far-focused shot shows the background *mixed with* a blurred copy of the object, while the near-focused shot shows the blurred background. Neither equals the truth $x$, so no decision map, however clever, can pick a correct pixel there. The width of the affected band is about the radius of the blur kernel.
+
+**A numerical check.** The snippet continues from the multi-focus snippet (it uses `x`, `ndi`, `np`, `focus_measure` and `psnr`). It builds the layered model with the cameraman's silhouette as the near layer and compares the decision map with an **oracle selection** that, at each pixel, picks whichever source is closer to the truth, the best result any per-pixel selection could achieve.
+
+```python
+# Layered defocus: the cameraman's dark silhouette is the near layer, everything else the far layer.
+dark = ndi.binary_opening(x < 0.2, iterations=2)
+labels, n = ndi.label(dark)
+fg = ndi.binary_fill_holes(labels == 1 + np.argmax(ndi.sum(dark, labels, range(1, n + 1)))).astype(float)
+blur = lambda img: ndi.gaussian_filter(img, 5.0)
+A2 = fg * x + (1 - fg) * blur(x)              # focused near: the far layer is blurred
+B2 = blur(fg * x) + (1 - blur(fg)) * x        # focused far: the blurred near layer spills outward
+edge = ndi.binary_dilation(fg > 0.5, iterations=10) & ~ndi.binary_erosion(fg > 0.5, iterations=10)
+
+clean = ndi.median_filter((focus_measure(A2) > focus_measure(B2)).astype(float), 31) > 0.5
+w = ndi.gaussian_filter(clean.astype(float), 2.0)
+decision = w * A2 + (1 - w) * B2
+oracle = np.where(np.abs(A2 - x) <= np.abs(B2 - x), A2, B2)   # the best possible per-pixel selection
+for name, F in [("decision map", decision), ("oracle selection", oracle)]:
+    print(f"{name:16s} PSNR {psnr(x, F, data_range=1):.2f} dB overall, "
+          f"{psnr(x[edge], F[edge], data_range=1):.2f} dB within 10 px of the depth edge "
+          f"({edge.mean():.0%} of pixels)")
+```
+
+```text
+decision map     PSNR 31.08 dB overall, 21.47 dB within 10 px of the depth edge (11% of pixels)
+oracle selection PSNR 32.65 dB overall, 23.04 dB within 10 px of the depth edge (11% of pixels)
+```
+
+Decision-map fusion falls from about 40 dB on the simple toy of the main text to about 31 dB on this layered model, and to about 21 dB within 10 pixels of the depth edge. The oracle does only slightly better (about 33 and 23 dB): no per-pixel selection can do much better, because near the edge neither source contains the right value. The error is a property of the data, not of the decision rule.
+
+**Consequences.**
+
+- **Training data.** Deep multi-focus methods trained on simulated pairs (blur pasted inside a mask) never see the effect; a benchmark study suggests this is why they generalize poorly to real pairs with strong defocus spread [7].
+- **Evaluation.** Test sets without the effect, such as the 20 Lytro pairs, cannot separate methods on this point; MFFW was collected for that purpose and most methods fail to produce satisfactory results on it [6].
+- **What a method can do.** Since selection cannot recover the hidden background, a method must either accept a soft band (and hide it with a smooth transition), generate the missing content (a generative prior), or use more information, such as more focus settings or depth.
+
+### Building and collapsing a Laplacian pyramid
+
+This note writes out the Laplacian pyramid used throughout the chapter: the filter, the size bookkeeping, why the collapse is exact, and the pitfalls of a real implementation.
+
+**The two operators.** $\operatorname{REDUCE}$ convolves the image with a small low-pass kernel $k$ and keeps every second row and column; $\operatorname{EXPAND}$ inserts zeros between samples, convolves with $4k$ (the factor 4 restores the average brightness lost by the zeros) and returns an image twice as large. OpenCV's `pyrDown` and `pyrUp` use the separable kernel $k = \tfrac{1}{256}\,\mathbf{v}\mathbf{v}^\top$ with $\mathbf{v} = (1, 4, 6, 4, 1)^\top$, a binomial approximation of a Gaussian; you can check this on an impulse:
+
+```python
+import numpy as np
+import cv2
+
+small = np.zeros((5, 5), np.float32)
+small[2, 2] = 64.0
+print(cv2.pyrUp(small)[2:7, 2:7])              # zeros inserted, then 4 x the kernel: 64 * 4 * v v^T / 256
+impulse = np.zeros((9, 9), np.float32)
+impulse[4, 4] = 256.0
+print(cv2.pyrDown(impulse)[1:4, 1:4])          # blur, then keep every 2nd pixel: taps at offsets 0 and +-2
+print(cv2.pyrDown(np.zeros((7, 5), np.float32)).shape)   # odd sizes round up: (7, 5) -> (4, 3)
+```
+
+```text
+[[ 1.  4.  6.  4.  1.]
+ [ 4. 16. 24. 16.  4.]
+ [ 6. 24. 36. 24.  6.]
+ [ 4. 16. 24. 16.  4.]
+ [ 1.  4.  6.  4.  1.]]
+[[ 1.  6.  1.]
+ [ 6. 36.  6.]
+ [ 1.  6.  1.]]
+(4, 3)
+```
+
+**Sizes.** An $H \times W$ level reduces to $\lceil H/2 \rceil \times \lceil W/2 \rceil$. For odd sizes, $\operatorname{EXPAND}$ of the smaller level is one pixel too large unless you tell it the target size, which is why the chapter's code passes `dstsize` to `pyrUp` (the last line of the output shows the $\lceil \cdot / 2 \rceil$ rule). Forgetting it is a common bug in pyramid code: the subtraction $G_\ell - \operatorname{EXPAND}(G_{\ell+1})$ fails or silently broadcasts.
+
+**Why the collapse is exact.** By definition $L_\ell = G_\ell - \operatorname{EXPAND}(G_{\ell+1})$, so $G_\ell = L_\ell + \operatorname{EXPAND}(G_{\ell+1})$. Starting from $G_N = L_N$ and applying this identity for $\ell = N-1, \dots, 0$ rebuilds every $G_\ell$ and finally $G_0 = I$. Nothing about the kernel is used: the pyramid stores the prediction error of $\operatorname{EXPAND}$, so any $\operatorname{EXPAND}$ works. What *does* depend on the kernel is what the levels mean: with a good low-pass kernel, $L_\ell$ is a band-pass image that responds to features of one size, which is what makes the max-abs rule meaningful.
+
+**Fused pyramids are not pyramids of any image.** After fusion, the stack $\{L^F_\ell\}$ is generally not the Laplacian pyramid of its own collapse: collapsing and re-decomposing gives different levels. This is harmless (we only collapse once), but it is one reason fused results can contain small halos: coefficients chosen independently at neighboring levels need not be consistent with one another.
+
+**Storage.** Level $\ell$ has about $HW/4^\ell$ values, so the whole pyramid has about $HW(1 + \tfrac14 + \tfrac1{16} + \dots) \approx \tfrac43 HW$ values: the Laplacian pyramid is slightly overcomplete, whereas the orthogonal wavelet transform of [IP 07](/en/learn/image-processing/dip-07-wavelets-transforms/) is critically sampled (exactly $HW$ values) but splits each scale into three orientation bands.
+
+**How many levels.** Each level halves the size, so at most about $\log_2 \min(H, W)$ levels fit. For fusion rules that average the coarse base, more levels mean the averaging happens at a coarser scale, which reduces low-frequency artifacts; Mertens et al. note that a taller pyramid partly fixes their spurious low-frequency brightness changes, but that the height is limited by the size of the filter relative to the image [5]. Exercise 4 measures this effect on the toy.
+
+**Pitfalls.**
+
+- **Data type.** Laplacian levels are signed. Building them from `uint8` arrays clips or wraps negative values; convert to `float32` first, as the chapter's code does.
+- **Color.** Decompose each channel separately but use *one* decision (or one weight map) for all channels, otherwise the channels can come from different sources and produce color fringes.
+- **Borders.** Convolution near the image border needs an extension rule (OpenCV's default reflects the image about its border pixels). Different rules give slightly different coefficients near the border, a common source of small differences between implementations.
+
+### Sparse-representation fusion
+
+This note describes the sparse-representation fusion scheme summarized in the main text: the coding model, the fusion steps and where its cost comes from.
+
+**The model.** A **dictionary** $\mathbf{D} \in \mathbb{R}^{n \times m}$ has $m$ columns ("atoms"), each a vectorized image patch of $n$ pixels; it is **overcomplete** when $m > n$. A patch $\mathbf{p} \in \mathbb{R}^n$ has a **sparse representation** $\boldsymbol\alpha \in \mathbb{R}^m$ if $\mathbf{p} \approx \mathbf{D}\boldsymbol\alpha$ with few non-zero entries in $\boldsymbol\alpha$. A standard way to find one is to solve
+
+$$
+\min_{\boldsymbol\alpha} \lVert \boldsymbol\alpha \rVert_0 \quad \text{subject to} \quad \lVert \mathbf{p} - \mathbf{D}\boldsymbol\alpha \rVert_2^2 \le \varepsilon,
+$$
+
+where $\lVert \boldsymbol\alpha \rVert_0$ counts the non-zero entries and $\varepsilon \ge 0$ is the allowed approximation error; greedy pursuit algorithms, which add one atom at a time, solve it approximately. The dictionary can be fixed (for example DCT atoms) or learned from training patches or from the source images themselves [15].
+
+**Fusion steps.** For two registered sources:
+
+1. Cut both sources into overlapping patches at the same positions, typically with a sliding window, and vectorize each patch.
+2. Code each patch of each source over the same dictionary, giving $\boldsymbol\alpha_A$ and $\boldsymbol\alpha_B$ for every position.
+3. Measure the **activity** of each code, for example its $\ell_1$ norm $\lVert \boldsymbol\alpha \rVert_1$, and keep the code with the larger activity: the **choose-max** rule [14]. Sharp, textured patches need more or larger coefficients than blurred ones, so in multi-focus fusion this selects the in-focus patch.
+4. Reconstruct each fused patch as $\mathbf{D}\boldsymbol\alpha_F$, put the patches back, and average the overlapping pixels.
+
+**Fusion and restoration together.** The tolerance $\varepsilon$ decides what the codes represent. If the sources are noisy and $\varepsilon$ is set near the noise energy of a patch, the codes describe the image structure but not the noise, so the reconstruction is denoised while it is fused; Yang and Li obtain fusion and restoration in one scheme by changing this approximation criterion [14].
+
+**Where the cost comes from.** With a stride of one pixel there is a patch per pixel and per source, and each needs an iterative sparse coding over $m$ atoms. This is why SR methods were the slowest family in the multi-focus benchmark of Zhang, at more than seven minutes per image pair [7]. Larger strides are faster but make the patch decisions coarser.
+
+**Pitfalls.** The choose-max rule decides per patch, so neighboring patches can come from different sources; the averaging of overlaps softens the transitions but can also blur the boundary between an in-focus and an out-of-focus region. The patch mean (its brightness) is part of the activity unless it is removed before coding, in which case it must be fused separately, for example by averaging, as the base of a pyramid is.
+
+### Mutual information as a fusion metric
+
+This note explains how the MI score of the main text is computed, why it favors copying a source, how strongly it depends on the histogram, and what normalization changes.
+
+**Computation.** For a source $X$ and the fused image $F$, both in $[0, 1]$, divide the range into $b$ bins, count the pairs $(X(i, j), F(i, j))$ in a $b \times b$ joint histogram, divide by the number of pixels to get $p_{X,F}$, and sum $p \log_2 (p / p_X p_F)$ over the non-empty cells. The fusion score adds the terms for the two sources. This is a **plug-in estimate**: it treats the histogram frequencies as the true probabilities, so its value depends on the bin count and is biased upward when there are many bins and few pixels ([IT 01](/en/learn/information-theory/it-01-entropy-mutual-information/#estimation-requires-more-than-an-identity) discusses estimation).
+
+**Why copying scores well.** MI is bounded by the entropies, $\mathrm{MI}(X, F) \le \min\big(H(X), H(F)\big)$, where $H$ is the entropy of the binned image, and the bound is reached when $F$ determines $X$, for example when $F = X$. If $F = I_A$, the score is $\mathrm{MI}(I_A, I_A) + \mathrm{MI}(I_B, I_A) = H(I_A) + \mathrm{MI}(I_A, I_B)$. A genuine fusion must change $F$ relative to $I_A$ wherever it brings in information from $I_B$, which lowers the first term; unless the second term rises by as much, the score falls. Copying the source with the larger entropy is therefore a strong baseline that a fusion method may not beat. Hossny, Nahavandi and Creighton gave an analytical argument that the classic MI sum is unsuitable as a fusion performance measure [21], and benchmark toolkits implement a normalized MI attributed to them [18]:
+
+$$
+\mathrm{NMI} = 2\left[\frac{\mathrm{MI}(I_A, F)}{H(I_A) + H(F)} + \frac{\mathrm{MI}(I_B, F)}{H(I_B) + H(F)}\right],
+$$
+
+where each term is a mutual information divided by the sum of the two entropies involved, so each lies between 0 and 1/2 (because $\mathrm{MI}(X, F) \le \min(H(X), H(F))$, which is at most their average) and NMI between 0 and 2.
+
+**What normalization does and does not fix.** The snippet continues from the infrared–visible snippet and adds NMI to its candidates.
+
+```python
+def H(X, bins=64):
+    p = np.histogram(X, bins, (0, 1))[0] / X.size
+    p = p[p > 0]
+    return -np.sum(p * np.log2(p))
+
+def nmi(A, B, F, bins=64):
+    """Normalized MI: each term divided by the sum of the two entropies."""
+    return 2 * (mutual_info(A, F, bins) / (H(A, bins) + H(F, bins))
+                + mutual_info(B, F, bins) / (H(B, bins) + H(F, bins)))
+
+for name, F in candidates.items():
+    print(f"{name:16s} MI {mutual_info(vis, F) + mutual_info(ir, F):.2f}  NMI {nmi(vis, ir, F):.3f}")
+```
+
+```text
+visible only     MI 5.72  NMI 1.230
+average          MI 4.33  NMI 0.948
+pyramid fusion   MI 3.75  NMI 0.760
+average + noise  MI 1.41  NMI 0.284
+```
+
+NMI puts the values on a bounded scale, but in our toy it ranks the candidates exactly as MI does: copying the visible image still wins, with $F = I_A$ giving $\mathrm{MI}(I_A, F) / (H(I_A) + H(F)) = 1/2$, the largest value a term can take. Neither MI nor NMI asks whether the information that was kept is the *useful* information (here, the warm person).
+
+**Practical rules.** Report the bin count and the implementation; do not compare MI values across papers that may use different ones; and never use MI alone. If you use MI as a training loss, add a term that the copy-a-source solution violates.
+
+### Training signals of representative fusion networks
+
+This note compares what representative deep fusion networks are trained to do: with no ground-truth fused image, the training signal, more than the architecture, decides what the output looks like.
+
+**Reconstruction, then a fixed rule (DenseFuse).** The encoder–decoder of DenseFuse [30] is trained only to reconstruct visible images, with a loss $\mathcal{L} = \lambda \mathcal{L}_{\text{ssim}} + \mathcal{L}_p$, where $\mathcal{L}_p$ is a pixel loss between output and input, $\mathcal{L}_{\text{ssim}} = 1 - \mathrm{SSIM}(O, I)$ the structural loss between output $O$ and input $I$, and $\lambda$ their balance. At test time both sources are encoded and their feature maps are merged either by addition or by an $\ell_1$-norm-based strategy that weights each source's features by their activity, and the decoder turns the merged features into the fused image. *Implication:* the network never sees a fusion example; the fusion rule is as hand-made as in classical methods, only applied to learned features instead of pyramid coefficients.
+
+**A perceptual quality index as the loss (DeepFuse).** DeepFuse [31] converts the exposures to YCbCr, fuses the luminance channels with a CNN whose loss is MEF-SSIM [25] computed between the fused luminance and the input stack, and fuses the chroma channels with a weighted rule outside the network. MEF-SSIM compares the structure of each fused patch with a desired structure built from the input patches, so the network needs no reference image. *Implication:* the network learns MEF-SSIM's notion of quality, including whatever MEF-SSIM does not see; a good MEF-SSIM score after training is partly a statement about the loss, not an independent confirmation.
+
+**Adaptive weights from the sources (U2Fusion).** U2Fusion [32] extracts features of each source, measures how much information they contain, and turns the measurement into **adaptive preservation degrees** that weight a similarity loss between the fused image and each source. Because the degrees are computed per image pair, the same loss works for multi-modal, multi-exposure and multi-focus inputs, and one network is trained on the tasks in sequence while avoiding the loss of what it learned earlier. *Implication:* the definition of the answer moves from a fixed weight to a measurement; the result is as good as the information measure is at saying which source matters where.
+
+**Hand-balanced terms (SwinFusion).** SwinFusion [34] uses an SSIM loss, a texture loss and an intensity loss, and models long-range dependencies with self-attention within each source and cross-attention between them. *Implication:* the three weights trade structure, texture and brightness against each other, exactly as $\lambda$ did for the loss minimizer of the main text.
+
+**An adversary (FusionGAN).** In FusionGAN [39] the generator is pushed by its content loss toward the infrared intensities plus the visible gradients, and a discriminator that compares the fused image with visible images pushes it to contain more visible detail. The authors describe their results as looking like sharpened infrared images with clearly highlighted targets [39]. *Implication:* the discriminator supplies a learned notion of "visible-looking detail", but adversarial training can also add detail that is in neither source; TarDAL later used two discriminators, one per modality [27].
+
+**A decomposition constraint (CDDFuse).** CDDFuse [38] extracts low-frequency, global features with transformer blocks and high-frequency, local features with invertible blocks, and adds a correlation-driven loss that makes the low-frequency features of the two modalities correlated and their high-frequency features uncorrelated. *Implication:* the loss encodes a model of the data, shared base and modality-specific detail, which is the learned counterpart of the base/detail split of classical fusion.
+
+**No fusion training at all (DDFM).** DDFM [41] formulates fusion as conditional generation under a denoising diffusion sampler: an unconditional diffusion model pretrained on natural images supplies the prior, and at each sampling step a maximum-likelihood subproblem, modeled with latent variables and solved by expectation–maximization, pulls the sample toward consistency with both sources. *Implication:* the "loss" becomes a statistical model of how the fused image relates to the sources, plus a generative prior that keeps the result natural-looking; no fine-tuning of the diffusion model is needed, but sampling is iterative and therefore much slower than one forward pass of a network.
+
+**A self-supervised imaging prior (EMMA).** EMMA [52] trains a fusion module together with a pseudo-sensing module that imitates how the sensors would image the fused scene, and requires the whole loop to behave consistently under transformations to which natural imaging is equivariant. *Implication:* instead of hand-weighting terms, the training signal asks that the fused image could have produced the sources, an idea close to cycle consistency.
+
+**Summary.**
+
+| Method | What is optimized | What decides the fused image |
+|---|---|---|
+| DenseFuse | Image reconstruction | A hand-made feature-merging rule |
+| DeepFuse | MEF-SSIM on the luminance | MEF-SSIM's model of quality |
+| U2Fusion | Similarity to sources, adaptively weighted | An information measure on features |
+| SwinFusion | SSIM + texture + intensity | The three loss weights |
+| FusionGAN | Content loss + adversarial loss | Infrared intensity, visible gradients and a discriminator |
+| CDDFuse | Includes a correlation-driven decomposition loss | A shared-base / specific-detail model |
+| DDFM | Nothing (no fusion training) | A pretrained diffusion prior + a likelihood model |
+| EMMA | Self-supervised equivariant consistency | Consistency between fused image and sources |
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Exposure fusion (Mertens, Kautz and Van Reeth)
+
+**Problem.** Turning a bracketed exposure sequence into a good displayable photograph normally takes two steps: assemble an HDR radiance map, which needs the camera response curve, and tone-map it back to a low dynamic range. The authors ask whether the HDR step can be skipped [5].
+
+**Idea.** Treat the exposures as a stack and collapse it with per-pixel weights from three simple quality measures (contrast, saturation, well-exposedness), combined by a product with exponents and normalized over the stack. Blend in a multiresolution fashion: Laplacian pyramids of the images, Gaussian pyramids of the weights. The method assumes aligned exposures, possibly after registration.
+
+**What it showed.** Results whose quality the authors find comparable to existing tone-mapping operators, without camera calibration and at a computational cost of seconds in an unoptimized implementation; the same weights also allow a flash exposure to be included in the stack. Their comparison figures show why each design step matters: per-pixel blending gives seams, Gaussian-smoothed weights give halos, an edge-aware cross-bilateral smoothing removes only some of them, and multiresolution blending removes both. Compared with earlier pyramid fusion that selects the most salient coefficients, whose results on an exposure stack are too dark and show color shifts, their blending stays more faithful to the input sequence.
+
+**What to check when you read it.** The comparison with tone mapping is explicitly informal, because tone mappers have implementation-specific parameters and settings; the paper's comparisons are visual, so judge it by its figures. Look at the limitations: a spurious low-frequency brightness change can appear when exposures differ strongly, only partly fixed by a taller pyramid, and flash shadows and reflections are not removed. Compare the figure that switches off two of the three measures with the text: well-exposedness alone gives fairly good but sometimes unnatural images because it always favors intensities near 0.5.
+
+**Why it matters here.** It is the reference classical method for multi-exposure fusion, the source of the weighted-blending formulation that many learned methods (for example weight-predicting networks such as MEF-Net) keep, and the clearest demonstration of why fusion should blend in a multiresolution way. OpenCV ships an implementation, which the chapter uses as a check.
+
+### VIFB: a visible and infrared image fusion benchmark
+
+**Problem.** Infrared–visible fusion papers used different test images, different metrics and their own implementations of competing methods, so their comparisons could not be checked or combined [17].
+
+**Idea.** Collect a test set of 21 visible–infrared pairs from the Internet and from tracking datasets, put 20 fusion algorithms (conventional and deep) into one code library, implement 13 metrics in four families (information theory, image features, structural similarity, human perception) and publish all results.
+
+**What it showed.** No method beat the others on all or most metrics. The three overall leaders each won a different family: one the information-theory metrics, one the feature-based metrics, one the structural metrics. The two methods with the best quantitative scores looked poor in the qualitative comparison: one introduced artifacts, and the other lost visible detail or failed to show a target that is invisible in the overexposed visible image. In 2020, the deep methods in the library were on average slightly worse than the best conventional ones, unlike in detection or tracking. Runtimes differed by orders of magnitude, which matters when fusion feeds a real-time tracker.
+
+**What to check when you read it.** Read the metric table with the family of each metric in mind: a method "best on three metrics" may be best on three metrics of one family. Check which version you read: the arXiv version notes corrections to a table and a paragraph relative to the workshop version. With 21 pairs, small differences in average metric values are not meaningful; look at per-image results and at the images. The benchmark has no ground truth and no downstream task, so it measures agreement with the metrics, not usefulness.
+
+**Why it matters here.** It is the cleanest demonstration, on real methods, of the chapter's main warning about evaluation: metrics from different families disagree, and the numerically best fusion can be the visually worst. Later benchmarks for multi-focus (MFIFB) and multi-exposure fusion (MEFB) follow the same design [7], [18].
+
+### The infrared–visible fusion survey of Liu et al. (TPAMI 2025)
+
+**Problem.** Learning-based infrared–visible fusion grew quickly after 2018, and earlier surveys did not organize the newer work on registration and on fusion for downstream tasks [2].
+
+**Idea.** A multi-dimensional taxonomy: methods for **visual enhancement** (autoencoder-, CNN-, GAN-, transformer-based and others, with their losses), methods for **data compatibility** (registration-free fusion of misaligned pairs, by style transfer or by a shared feature space) and methods for **task adaptation** (fusion for detection and for segmentation). A lookup table summarizes the core idea of each method, and the survey covers more than 180 approaches. It then compares methods quantitatively and qualitatively on registration, fusion and downstream tasks.
+
+**What it showed.** Its comparisons use nine fusion metrics, five that compare with the sources (MI, VIF, CC, SCD and $Q^{AB/F}$) and four that look only at the fused image (EN, SF, SD and average gradient), plus detection and segmentation results and efficiency. Its future-trends section lists misaligned and attacked data, benchmarks with registration ground truth and more diverse scenes, better evaluation metrics, lightweight design and combination with more tasks.
+
+**What to check when you read it.** The survey calls the source-comparing metrics "reference-based"; the reference is a source image, not a ground-truth fusion. Several of the compared methods come from the authors' own group (for example TarDAL, SegMiF and UMF-CMGR share authors with the survey), which is common in surveys but a reason to read the comparison tables with the same care as a method paper's. Check, for each table, which dataset, which metric family and which downstream network is used, since a fusion method's rank changes with all three.
+
+**Why it matters here.** It is the most recent broad map of the field this chapter could verify, and its three dimensions (data, fusion, task) are the same three questions the chapter asks: are the sources aligned, what should the fused image keep, and what is it for.
+
+## References
+
+1. Y. Liu, X. Chen, Z. Wang, Z. J. Wang, R. K. Ward and X. Wang, "Deep learning for pixel-level image fusion: Recent advances and future prospects," *Information Fusion*, vol. 42, pp. 158–173, 2018. [doi](https://doi.org/10.1016/j.inffus.2017.10.007)
+2. J. Liu, G. Wu, Z. Liu, D. Wang, Z. Jiang, L. Ma, W. Zhong, X. Fan and R. Liu, "Infrared and visible image fusion: From data compatibility to task adaption," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 47, no. 4, pp. 2349–2369, 2025. [doi](https://doi.org/10.1109/TPAMI.2024.3521416) [arXiv](https://arxiv.org/abs/2501.10761)
+3. J. Ma, Y. Ma and C. Li, "Infrared and visible image fusion methods and applications: A survey," *Information Fusion*, vol. 45, pp. 153–178, 2019. [doi](https://doi.org/10.1016/j.inffus.2018.02.004)
+4. P. E. Debevec and J. Malik, "Recovering high dynamic range radiance maps from photographs," in *Proc. SIGGRAPH*, 1997, pp. 369–378. [doi](https://doi.org/10.1145/258734.258884)
+5. T. Mertens, J. Kautz and F. Van Reeth, "Exposure fusion: A simple and practical alternative to high dynamic range photography," *Computer Graphics Forum*, vol. 28, no. 1, pp. 161–171, 2009. [doi](https://doi.org/10.1111/j.1467-8659.2008.01171.x)
+6. S. Xu, X. Wei, C. Zhang, J. Liu and J. Zhang, "MFFW: A new dataset for multi-focus image fusion," arXiv:2002.04780, 2020. [arXiv](https://arxiv.org/abs/2002.04780)
+7. X. Zhang, "Multi-focus image fusion: A benchmark," arXiv:2005.01116, 2020. [arXiv](https://arxiv.org/abs/2005.01116)
+8. P. J. Burt and E. H. Adelson, "The Laplacian pyramid as a compact image code," *IEEE Transactions on Communications*, vol. 31, no. 4, pp. 532–540, 1983. [doi](https://doi.org/10.1109/TCOM.1983.1095851)
+9. P. J. Burt and R. J. Kolczynski, "Enhanced image capture through fusion," in *Proc. 4th International Conference on Computer Vision (ICCV)*, 1993, pp. 173–182. [doi](https://doi.org/10.1109/ICCV.1993.378222)
+10. P. J. Burt and E. H. Adelson, "A multiresolution spline with application to image mosaics," *ACM Transactions on Graphics*, vol. 2, no. 4, pp. 217–236, 1983. [doi](https://doi.org/10.1145/245.247)
+11. H. Li, B. S. Manjunath and S. K. Mitra, "Multisensor image fusion using the wavelet transform," *Graphical Models and Image Processing*, vol. 57, no. 3, pp. 235–245, 1995. [doi](https://doi.org/10.1006/gmip.1995.1022)
+12. S. Li, X. Kang and J. Hu, "Image fusion with guided filtering," *IEEE Transactions on Image Processing*, vol. 22, no. 7, pp. 2864–2875, 2013. [doi](https://doi.org/10.1109/TIP.2013.2244222)
+13. K. He, J. Sun and X. Tang, "Guided image filtering," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 35, no. 6, pp. 1397–1409, 2013. [doi](https://doi.org/10.1109/TPAMI.2012.213)
+14. B. Yang and S. Li, "Multifocus image fusion and restoration with sparse representation," *IEEE Transactions on Instrumentation and Measurement*, vol. 59, no. 4, pp. 884–892, 2010. [doi](https://doi.org/10.1109/TIM.2009.2026612)
+15. M. Nejati, S. Samavi and S. Shirani, "Multi-focus image fusion using dictionary-based sparse representation," *Information Fusion*, vol. 25, pp. 72–84, 2015. [doi](https://doi.org/10.1016/j.inffus.2014.10.004)
+16. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image quality assessment: From error visibility to structural similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+17. X. Zhang, P. Ye and G. Xiao, "VIFB: A visible and infrared image fusion benchmark," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPRW_2020/html/w6/Zhang_VIFB_A_Visible_and_Infrared_Image_Fusion_Benchmark_CVPRW_2020_paper.html) [arXiv](https://arxiv.org/abs/2002.03322)
+18. X. Zhang, "Benchmarking and comparing multi-exposure image fusion algorithms," *Information Fusion*, vol. 74, pp. 111–131, 2021. [doi](https://doi.org/10.1016/j.inffus.2021.02.005) [arXiv](https://arxiv.org/abs/2007.15156)
+19. A. M. Eskicioglu and P. S. Fisher, "Image quality measures and their performance," *IEEE Transactions on Communications*, vol. 43, no. 12, pp. 2959–2965, 1995. [doi](https://doi.org/10.1109/26.477498)
+20. G. Qu, D. Zhang and P. Yan, "Information measure for performance of image fusion," *Electronics Letters*, vol. 38, no. 7, pp. 313–315, 2002. [doi](https://doi.org/10.1049/el:20020212)
+21. M. Hossny, S. Nahavandi and D. Creighton, "Comments on 'Information measure for performance of image fusion'," *Electronics Letters*, vol. 44, no. 18, pp. 1066–1067, 2008. [doi](https://doi.org/10.1049/el:20081754)
+22. C. S. Xydeas and V. Petrović, "Objective image fusion performance measure," *Electronics Letters*, vol. 36, no. 4, pp. 308–309, 2000. [doi](https://doi.org/10.1049/el:20000267)
+23. G. Piella and H. Heijmans, "A new quality metric for image fusion," in *Proc. IEEE International Conference on Image Processing (ICIP)*, 2003, vol. 3, pp. III-173–176. [doi](https://doi.org/10.1109/ICIP.2003.1247209)
+24. Y. Han, Y. Cai, Y. Cao and X. Xu, "A new image fusion performance metric based on visual information fidelity," *Information Fusion*, vol. 14, no. 2, pp. 127–135, 2013. [doi](https://doi.org/10.1016/j.inffus.2011.08.002)
+25. K. Ma, K. Zeng and Z. Wang, "Perceptual quality assessment for multi-exposure image fusion," *IEEE Transactions on Image Processing*, vol. 24, no. 11, pp. 3345–3356, 2015. [doi](https://doi.org/10.1109/TIP.2015.2442920)
+26. Z. Liu, E. Blasch, Z. Xue, J. Zhao, R. Laganiere and W. Wu, "Objective assessment of multiresolution image fusion algorithms for context enhancement in night vision: A comparative study," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 34, no. 1, pp. 94–109, 2012. [doi](https://doi.org/10.1109/TPAMI.2011.109)
+27. J. Liu, X. Fan, Z. Huang, G. Wu, R. Liu, W. Zhong and Z. Luo, "Target-aware dual adversarial learning and a multi-scenario multi-modality benchmark to fuse infrared and visible for object detection," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2022, pp. 5802–5811. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Liu_Target-Aware_Dual_Adversarial_Learning_and_a_Multi-Scenario_Multi-Modality_Benchmark_To_CVPR_2022_paper.html) [arXiv](https://arxiv.org/abs/2203.16220) [M3FD](https://github.com/JinyuanLiu-CV/TarDAL)
+28. J. Liu, Z. Liu, G. Wu, L. Ma, R. Liu, W. Zhong, Z. Luo and X. Fan, "Multi-interactive feature learning and a full-time multi-modality benchmark for image fusion and segmentation," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2023, pp. 8115–8124. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Liu_Multi-interactive_Feature_Learning_and_a_Full-time_Multi-modality_Benchmark_for_Image_ICCV_2023_paper.html) [arXiv](https://arxiv.org/abs/2308.02097)
+29. Y. Zhang, Y. Liu, P. Sun, H. Yan, X. Zhao and L. Zhang, "IFCNN: A general image fusion framework based on convolutional neural network," *Information Fusion*, vol. 54, pp. 99–118, 2020. [doi](https://doi.org/10.1016/j.inffus.2019.07.011)
+30. H. Li and X.-J. Wu, "DenseFuse: A fusion approach to infrared and visible images," *IEEE Transactions on Image Processing*, vol. 28, no. 5, pp. 2614–2623, 2019. [doi](https://doi.org/10.1109/TIP.2018.2887342) [arXiv](https://arxiv.org/abs/1804.08361)
+31. K. R. Prabhakar, V. S. Srikar and R. V. Babu, "DeepFuse: A deep unsupervised approach for exposure fusion with extreme exposure image pairs," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017, pp. 4724–4732. [doi](https://doi.org/10.1109/ICCV.2017.505) [CVF](https://openaccess.thecvf.com/content_iccv_2017/html/Prabhakar_DeepFuse_A_Deep_ICCV_2017_paper.html)
+32. H. Xu, J. Ma, J. Jiang, X. Guo and H. Ling, "U2Fusion: A unified unsupervised image fusion network," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 1, pp. 502–518, 2022. [doi](https://doi.org/10.1109/TPAMI.2020.3012548) [RoadScene](https://github.com/hanna-xu/RoadScene)
+33. L. Tang, J. Yuan and J. Ma, "Image fusion in the loop of high-level vision tasks: A semantic-aware real-time infrared and visible image fusion network," *Information Fusion*, vol. 82, pp. 28–42, 2022. [doi](https://doi.org/10.1016/j.inffus.2021.12.004)
+34. J. Ma, L. Tang, F. Fan, J. Huang, X. Mei and Y. Ma, "SwinFusion: Cross-domain long-range learning for general image fusion via Swin Transformer," *IEEE/CAA Journal of Automatica Sinica*, vol. 9, no. 7, pp. 1200–1217, 2022. [doi](https://doi.org/10.1109/JAS.2022.105686)
+35. X. Zhang and Y. Demiris, "Visible and infrared image fusion using deep learning," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 45, no. 8, pp. 10535–10554, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3261282)
+36. Y. Liu, X. Chen, H. Peng and Z. Wang, "Multi-focus image fusion with a deep convolutional neural network," *Information Fusion*, vol. 36, pp. 191–207, 2017. [doi](https://doi.org/10.1016/j.inffus.2016.12.001)
+37. K. Ma, Z. Duanmu, H. Zhu, Y. Fang and Z. Wang, "Deep guided learning for fast multi-exposure image fusion," *IEEE Transactions on Image Processing*, vol. 29, pp. 2808–2819, 2020. [doi](https://doi.org/10.1109/TIP.2019.2952716)
+38. Z. Zhao, H. Bai, J. Zhang, Y. Zhang, S. Xu, Z. Lin, R. Timofte and L. Van Gool, "CDDFuse: Correlation-driven dual-branch feature decomposition for multi-modality image fusion," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2023, pp. 5906–5916. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Zhao_CDDFuse_Correlation-Driven_Dual-Branch_Feature_Decomposition_for_Multi-Modality_Image_Fusion_CVPR_2023_paper.html) [arXiv](https://arxiv.org/abs/2211.14461)
+39. J. Ma, W. Yu, P. Liang, C. Li and J. Jiang, "FusionGAN: A generative adversarial network for infrared and visible image fusion," *Information Fusion*, vol. 48, pp. 11–26, 2019. [doi](https://doi.org/10.1016/j.inffus.2018.09.004)
+40. H. Bai, J. Zhang, Z. Zhao, Y. Wu, L. Deng, Y. Cui, T. Feng and S. Xu, "Task-driven image fusion with learnable fusion loss," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2025, pp. 7457–7468. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Bai_Task-driven_Image_Fusion_with_Learnable_Fusion_Loss_CVPR_2025_paper.html) [arXiv](https://arxiv.org/abs/2412.03240)
+41. Z. Zhao, H. Bai, Y. Zhu, J. Zhang, S. Xu, Y. Zhang, K. Zhang, D. Meng, R. Timofte and L. Van Gool, "DDFM: Denoising diffusion model for multi-modality image fusion," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2023, pp. 8082–8093. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Zhao_DDFM_Denoising_Diffusion_Model_for_Multi-Modality_Image_Fusion_ICCV_2023_paper.html) [arXiv](https://arxiv.org/abs/2303.06840)
+42. X. Yi, H. Xu, H. Zhang, L. Tang and J. Ma, "Text-IF: Leveraging semantic text guidance for degradation-aware and interactive image fusion," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024, pp. 27026–27035. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Yi_Text-IF_Leveraging_Semantic_Text_Guidance_for_Degradation-Aware_and_Interactive_Image_CVPR_2024_paper.html) [arXiv](https://arxiv.org/abs/2403.16387)
+43. D. Wang, J. Liu, X. Fan and R. Liu, "Unsupervised misaligned infrared and visible image fusion via cross-modality image generation and registration," in *Proc. International Joint Conference on Artificial Intelligence (IJCAI)*, 2022, pp. 3508–3515. [doi](https://doi.org/10.24963/ijcai.2022/487) [arXiv](https://arxiv.org/abs/2205.11876)
+44. L. Tang, Y. Deng, Y. Ma, J. Huang and J. Ma, "SuperFusion: A versatile image registration and fusion network with semantic awareness," *IEEE/CAA Journal of Automatica Sinica*, vol. 9, no. 12, pp. 2121–2137, 2022. [doi](https://doi.org/10.1109/JAS.2022.106082)
+45. A. Toet, "The TNO multiband image data collection," *Data in Brief*, vol. 15, pp. 249–251, 2017. [doi](https://doi.org/10.1016/j.dib.2017.09.038)
+46. L. Tang, J. Yuan, H. Zhang, X. Jiang and J. Ma, "PIAFusion: A progressive infrared and visible image fusion network based on illumination aware," *Information Fusion*, vol. 83–84, pp. 79–92, 2022. [doi](https://doi.org/10.1016/j.inffus.2022.03.007) [MSRS](https://github.com/Linfeng-Tang/MSRS)
+47. Q. Ha, K. Watanabe, T. Karasawa, Y. Ushiku and T. Harada, "MFNet: Towards real-time semantic segmentation for autonomous vehicles with multi-spectral scenes," in *Proc. IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)*, 2017, pp. 5108–5115. [doi](https://doi.org/10.1109/IROS.2017.8206396)
+48. X. Jia, C. Zhu, M. Li, W. Tang and W. Zhou, "LLVIP: A visible-infrared paired dataset for low-light vision," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV) Workshops*, 2021, pp. 3496–3504. [CVF](https://openaccess.thecvf.com/content/ICCV2021W/RLQ/html/Jia_LLVIP_A_Visible-Infrared_Paired_Dataset_for_Low-Light_Vision_ICCVW_2021_paper.html) [arXiv](https://arxiv.org/abs/2108.10831)
+49. J. Cai, S. Gu and L. Zhang, "Learning a deep single image contrast enhancer from multi-exposure images," *IEEE Transactions on Image Processing*, vol. 27, no. 4, pp. 2049–2062, 2018. [doi](https://doi.org/10.1109/TIP.2018.2794218)
+50. X. Zhang, "Deep learning-based multi-focus image fusion: A survey and a comparative study," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 9, 2022. [doi](https://doi.org/10.1109/TPAMI.2021.3078906)
+51. F. Xu, J. Liu, Y. Song, H. Sun and X. Wang, "Multi-exposure image fusion techniques: A comprehensive review," *Remote Sensing*, vol. 14, no. 3, art. 771, 2022. [doi](https://doi.org/10.3390/rs14030771)
+52. Z. Zhao, H. Bai, J. Zhang, Y. Zhang, K. Zhang, S. Xu, D. Chen, R. Timofte and L. Van Gool, "Equivariant multi-modality image fusion," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024, pp. 25912–25921. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Zhao_Equivariant_Multi-Modality_Image_Fusion_CVPR_2024_paper.html) [arXiv](https://arxiv.org/abs/2305.11443)
+53. L. Tang, Y. Wang, M. Gong, Z. Li, Y. Deng, X. Yi, C. Li, H. Xu, H. Zhang and J. Ma, "VideoFusion: A spatio-temporal collaborative network for multi-modal video fusion," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2026, pp. 19559–19569. [CVF](https://openaccess.thecvf.com/content/CVPR2026/html/Tang_VideoFusion_A_Spatio-Temporal_Collaborative_Network_for_Multi-modal_Video_Fusion_CVPR_2026_paper.html)

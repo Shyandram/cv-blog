@@ -1,0 +1,1272 @@
+---
+title: "DLCV 08・三維重建：從多視角幾何到 NeRF 與 Gaussian Splatting"
+description: "一組照片如何變成三維模型：相機幾何、運動恢復結構與多視角立體視覺、神經輻射場與有號距離場、3D Gaussian Splatting、網格萃取、前饋式重建模型，以及如何評估重建結果，並附上經過測試的 NumPy 與 OpenCV 程式碼。"
+track: deep-learning
+order: 80
+level: advanced
+prereqs: [image-processing/dip-12-feature-extraction, deep-learning/dl-01-deep-learning-for-image-processing]
+tags: [3d-reconstruction, structure-from-motion, multi-view-stereo, nerf, gaussian-splatting, neural-implicit-surfaces, dust3r]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figRep from '../../../../assets/deep-learning/dl-08-3d-reconstruction/representations.png';
+import figTwoView from '../../../../assets/deep-learning/dl-08-3d-reconstruction/two-view.png';
+import figPipe from '../../../../assets/deep-learning/dl-08-3d-reconstruction/pipeline.png';
+import figSweep from '../../../../assets/deep-learning/dl-08-3d-reconstruction/plane-sweep.png';
+import figRay from '../../../../assets/deep-learning/dl-08-3d-reconstruction/ray-weights.png';
+import figSplat from '../../../../assets/deep-learning/dl-08-3d-reconstruction/splat-toy.png';
+import figMc from '../../../../assets/deep-learning/dl-08-3d-reconstruction/marching-cubes.png';
+
+## 你將學到
+
+- 三維重建產出什麼，以及儲存三維場景的常見方式（點、深度圖、體素、網格、有號距離函數、輻射場、3D 高斯）與各自的取捨。
+- 每種方法背後的相機幾何：針孔模型、對極幾何、本質矩陣與基礎矩陣、三角測量，並附上一個經過測試的 OpenCV 範例。
+- 傳統流程：運動恢復結構（structure from motion；配對、RANSAC、光束法平差、COLMAP）與多視角立體視覺（multi-view stereo；平面掃描、深度圖融合、MVSNet）。
+- 神經場如何靠「把場景畫出來」來重建場景：NeRF 的體積算繪、雜湊網格加速（Instant-NGP），以及 SDF 曲面（NeuS）。
+- 3D Gaussian Splatting 如何即時算繪並讓場景逐步長出來、網格如何萃取（marching cubes、Poisson、SuGaR、2DGS），以及前饋式模型（DUSt3R、MASt3R、VGGT）改變了什麼。
+- 如何評估影像與幾何（PSNR/SSIM/LPIPS、Chamfer 距離、F-score；DTU、Tanks and Temples、Mip-NeRF 360），以及重建會怎麼失敗。
+
+## 先看全貌
+
+你繞著一尊雕像走一圈，用手機拍了三十張照片。三維重建把這些照片變成一個可以旋轉、量測、3D 列印，或放進遊戲的三維模型。這裡有兩個問題必須一起回答：*每張照片的相機在哪裡*，以及*雕像表面的每一小塊在哪裡*。兩者都沒有現成答案，而且彼此互相幫忙。
+
+<Callout type="tip" title="用最簡單的話說">
+閉上一隻眼睛、舉起一根手指，換另一隻眼睛看，手指會「跳」一下。近的東西跳得很多，遠的東西幾乎不動。大腦就是靠這個跳動量感覺到深度。電腦對從不同位置拍的照片做同一件事：在兩張照片裡找到同一個點，量它「跳」了多少，就能算出它有多遠。對幾百萬個點都這樣做，就得到形狀。比較新的方法多了一招：先猜一個三維場景，再把每張照片應該長什麼樣子*畫*出來，畫得和真照片不一樣的地方，就修正原本的猜測。
+</Callout>
+
+**為什麼重要。** 地圖、電影布景、文化遺產典藏、機器人環境、擴增實境錨點，以及工廠的數位孿生（digital twin），都靠重建建立。它也清楚說明了深度學習如何改變電腦視覺：傳統流程是純粹的幾何與最佳化；神經輻射場（neural radiance field, NeRF）[5] 讓場景本身變成一個訓練出來的網路；3D Gaussian Splatting（3DGS）[6] 把網路換成數百萬個明確的小色塊，可以即時算繪；最新的模型則一次前向傳遞就預測出相機與幾何。
+
+圖 1 是本篇的路線圖。左邊的傳統階段至今仍餵給幾乎所有現代方法：NeRF 與 3DGS 都是用 COLMAP [2]、[4] 這類運動恢復結構軟體算出的相機位姿來訓練的。
+
+<Figure src={figPipe} alt="流程圖。影像先經過特徵、配對與 RANSAC，再進入含光束法平差的增量式運動恢復結構，產生相機與稀疏點。接著分成三條分支：MVS 深度圖加融合、NeRF 或 NeuS 神經場，以及 3D Gaussian Splatting。每條分支最後都得到網格，方式分別是 Poisson 或 TSDF 融合、marching cubes，或 SuGaR 與 2DGS。一條虛線弧線標示前饋式模型，它們從影像直接得到相機與稠密點。" caption="圖 1 — 本篇涵蓋的重建流程。傳統幾何（左）給出相機與稀疏點；稠密方法（右）給出完整模型；前饋式網路（虛線）跳過傳統階段。" />
+
+本篇假設你已經知道 [IP 12](/zh-tw/learn/image-processing/dip-12-feature-extraction/) 的關鍵點與描述子配對，也懂 [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/) 的深度網路基礎。幾何方面的標準教科書是 Hartley 與 Zisserman [1]。
+
+**相關篇章。** [DLCV 08A](/zh-tw/learn/deep-learning/dl-08a-depth-optical-flow/) 深入介紹重建背後的密集對應問題——立體匹配、單目深度與光流；[DLCV 09](/zh-tw/learn/deep-learning/dl-09-3d-object-detection/) 則利用三維幾何來偵測物體。
+
+## 什麼是三維重建
+
+**白話版。** 輸入是一組靜止場景的照片。輸出是每張照片的相機位置與朝向，加上場景形狀（通常還有顏色）的三維描述。
+
+**精確版。** 給定靜態場景的 $N$ 張影像 $I_1, \dots, I_N$。我們要求出每張影像的相機參數 $(K_i, R_i, \mathbf{t}_i)$（下一節定義），以及一個場景模型 $\mathcal{S}$，使得用第 $i$ 號相機算繪 $\mathcal{S}$ 時能重現 $I_i$。有兩種變體很重要。**幾何重建**要求精確的曲面，並以雷射或結構光掃描作為標準來評判。**新視角合成**（novel-view synthesis）要求從*沒有拍過*的相機位置產生逼真的影像，並以保留不用的照片來評判。NeRF 與 3DGS 是為第二個目標設計的，所以要從它們取得好的曲面，需要額外的功夫。
+
+這個問題有個內建的限制：光靠照片，整個場景放大或縮小都不會改變任何一張影像。近距離拍的玩具屋和遠距離拍的真房子，可以產生一模一樣的照片。因此除非有其他資訊（例如已知的距離，或校正過的立體相機組）來固定，否則從影像重建只能決定到**差一個尺度**（up to scale；也包括世界座標系的選擇）[1]。
+
+### 儲存三維場景的七種方式
+
+**白話版。** 世上沒有單一的「三維格式」。每一種表示法讓某些操作變容易（算繪、量測、編輯、學習），也讓另一些變困難。圖 2 用常見的七種表示法呈現同一個環面（torus），再加上第八種形式：點圖（pointmap），後面談前饋式模型時會遇到。
+
+<Figure src={figRep} alt="環面的八個小圖：表面點的散布；從單一相機看到的環面深度影像；由立方體組成的塊狀環面；三角形網格；有號距離場的一個切面，零等值線畫成兩個圓；密度切面，並標出沿一條光線的取樣點；俯視圖中沿兩個圓環排列的細長橢圓；以及一張彩色影像，其 RGB 值編碼了每個像素所見表面點的 X、Y、Z 座標。" caption="圖 2 — 一個形狀，八種編碼：(a) 點雲、(b) 深度圖、(c) 體素格、(d) 三角形網格、(e) 有號距離函數、(f) 輻射場（密度切面與沿一條光線的取樣點）、(g) 3D 高斯、(h) 點圖，也就是前饋式模型預測的逐像素三維點影像。" />
+
+| 表示法 | 儲存什麼 | 優點 | 缺點 |
+| --- | --- | --- | --- |
+| 點雲（point cloud） | 三維點的清單，常附顏色與法向量 | 簡單；三角測量與深度感測器的直接輸出 | 沒有曲面與連接關係；有破洞；很難算繪得漂亮 |
+| 深度圖（depth map） | 一台相機每個像素的一個距離 | 適合影像網路；容易逐視角估計 | 只涵蓋一個視角；必須融合 |
+| 體素格（voxel grid） | 三維格網每個格子的一個值（佔據、顏色） | 規則，容易用三維卷積處理 | 記憶體隨解析度的三次方成長 |
+| 網格（mesh） | 頂點與三角形 | 精簡、可編輯，是圖學引擎與 3D 印表機使用的格式 | 拓樸固定；很難直接從影像最佳化 |
+| 有號距離函數（SDF） | 到最近表面的距離，內部為負 | 以零等值面表示不漏水的表面；梯度就是法向量 | 需要封閉曲面；算繪前必須轉換 |
+| 輻射場（radiance field） | 每個三維點的密度與隨視角變化的顏色 | 逼真的新視角，包含細薄與毛茸茸的結構 | 光線步進算繪很慢；曲面是隱式的 |
+| 3D 高斯 | 許多帶有顏色與不透明度的小橢球 | 即時算繪；明確且可編輯 | 基元數量多（吃記憶體）；曲面定義不明確 |
+
+SDF 可以是儲存下來的格網，也可以是網路算出的函數：DeepSDF [20] 學習一個輸出有號距離的網路，Occupancy Networks [21] 則學習某點在物體內部的機率。兩者都稱為**神經隱式**（neural implicit）表示法，因為曲面是以一個學出來的函數的等值面隱含地給出。
+
+## 相機幾何基礎
+
+**白話版。** 要推理三維，得先有一個精確的模型描述相機如何把三維點變成像素。針孔模型只用一次矩陣乘法和一次除法就做到了。
+
+### 針孔相機：內參與外參
+
+相機對一個三維點做兩件事。它先描述這個點相對於相機自己的位置（在相機的左邊多遠、上方多高、前方多遠），再除以它的距離，把它壓平到感測器上。用符號寫：世界座標中的點 $\mathbf{X} \in \mathbb{R}^3$ 先被移到相機座標系，再投影：
+
+$$
+\mathbf{X}_c = R\,\mathbf{X} + \mathbf{t}, \qquad
+\lambda \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \mathbf{X}_c, \qquad
+K = \begin{bmatrix} f_x & s & c_x \\ 0 & f_y & c_y \\ 0 & 0 & 1 \end{bmatrix},
+$$
+
+其中 $R$（$3 \times 3$ 旋轉）與 $\mathbf{t}$（平移）是**外參**（extrinsics）：它們說明相機在哪裡、朝哪個方向；$\mathbf{X}_c$ 是相機座標中的點，$z$ 軸沿著視線方向；$K$ 存放**內參**（intrinsics）：以像素為單位的焦距 $f_x, f_y$、光軸與影像相交的主點 $(c_x, c_y)$，以及偏斜量 $s$（真實感測器中為零）；$(u, v)$ 是像素；$\lambda$ 等於該點的深度 $z_c$。除以深度，就是遠的東西看起來比較小的原因。相機中心在世界座標中是 $C = -R^\top \mathbf{t}$。把兩個步驟合併，得到 $3 \times 4$ 的**投影矩陣**（projection matrix）$P = K[R \mid \mathbf{t}]$。
+
+真實的鏡頭還會讓直線彎曲（徑向畸變）；校正工具會估計額外的畸變係數並先把影像去畸變，所以本篇其餘部分假設是理想的針孔相機。這裡使用的齊次座標（結尾帶一個 1）與 IP 02 單應性筆記中的相同（[單應性：投影轉換](/zh-tw/learn/image-processing/dip-02-fundamentals/notes/#單應性投影轉換)）。
+
+### 兩個視角：對極幾何
+
+**白話版。** 如果你在一張照片裡看到一個點，並不知道它有多遠，所以在三維中它可能落在一條射線上的任何位置。在第二張照片裡，這條射線會呈現為一條*直線*。真正的對應點一定落在這條線上。這把二維搜尋變成一維搜尋，反過來，也讓我們只憑配對點就能還原兩台相機的相對擺放。
+
+圖 3 (a) 畫出這個幾何。兩個相機中心與三維點 $\mathbf{X}$ 張成一個平面，稱為**對極平面**（epipolar plane）。它與每張影像相交成一條**對極線**（epipolar line）。相機 1 同一條射線上的任何點 $\mathbf{X}'$，在相機 1 中都有相同的像 $\mathbf{x}$，而它在相機 2 中的像會沿著那條線移動。
+
+<Figure src={figTwoView} alt="左：示意圖，兩個相機中心以基線相連，兩個傾斜的影像平面，一個三維點 X，以及相機 1 同一條射線上的第二個點 X'；兩者在影像 2 中投影到同一條綠線上。右：一張 640 × 480 的影像，藍色內點、代表被剔除配對的紅色叉號，以及十二條綠色對極線，每條線都通過一個圈起來的點。" caption="圖 3 — (a) 對極約束：通過 x 的射線上所有的點，都投影到影像 2 的同一條線上。(b) 下方程式範例的影像 2：由估計的本質矩陣算出的對極線，通過相配的點（圈起處）。" />
+
+用代數來說，令 $\hat{\mathbf{x}}_1 = K_1^{-1}(u_1, v_1, 1)^\top$ 與 $\hat{\mathbf{x}}_2 = K_2^{-1}(u_2, v_2, 1)^\top$ 為一組配對點的*正規化*座標（把內參去掉的像素）。若相機 2 相對於相機 1 的旋轉為 $R$、平移為 $\mathbf{t}$，則每個正確的配對都滿足
+
+$$
+\hat{\mathbf{x}}_2^\top E \,\hat{\mathbf{x}}_1 = 0, \qquad E = [\mathbf{t}]_\times R, \qquad
+[\mathbf{t}]_\times = \begin{bmatrix} 0 & -t_3 & t_2 \\ t_3 & 0 & -t_1 \\ -t_2 & t_1 & 0 \end{bmatrix},
+$$
+
+其中 $E$ 是 $3 \times 3$ 的**本質矩陣**（essential matrix）[7]，$[\mathbf{t}]_\times$ 是與 $\mathbf{t}$ 做外積的矩陣。這個式子說的是：兩條視線與基線落在同一個平面上。在像素座標中，同一個約束寫成 $\mathbf{x}_2^\top F \mathbf{x}_1 = 0$，其中**基礎矩陣**（fundamental matrix）$F = K_2^{-\top} E K_1^{-1}$，$\mathbf{x}_1, \mathbf{x}_2$ 是齊次像素座標。$F\mathbf{x}_1$ 正是圖 3 (b) 中畫在影像 2 上的對極線。
+
+用白話說：**$E$ 編碼了兩台已校正相機的相對位姿，$F$ 則在內參未知時做同樣的事。** $E$ 有五個自由度：旋轉三個，平移的*方向*兩個，平移的長度則因尺度不確定性而遺失。所以五組配對就夠了，這是 Nistér 的五點演算法 [9] 所解的最小情況。有八組或更多配對時，約束對 $E$ 或 $F$ 的九個元素是線性的：八點演算法 [7]、[8] 每組配對疊一個方程式，再用[奇異值分解](/zh-tw/learn/ml/ml-01a-linear-algebra/#奇異值分解)取零向量。
+
+*選讀：[正規化八點演算法](#正規化八點演算法)（見「補充資料」頁）。為什麼要先重新縮放像素座標、秩為 2 的那一步，以及兩種版本的測試。*
+
+知道 $E$ 之後，可以把它分解成 $R$ 和 $\mathbf{t}$ 的方向。分解會得到四個候選位姿；只有一個會讓這些點位在兩台相機的前方，這個檢查稱為**手性檢查**（cheirality check，或 chirality check）[1]。
+
+### 三角測量
+
+**白話版。** 兩台相機都已知時，一組配對點給出兩條射線。它們（幾乎）相交的地方就是三維點。有雜訊時，兩條線永遠不會剛好相交，所以我們挑一個最能同時解釋兩個觀測的點。
+
+最簡單的方法是線性的。每張影像對未知點給出兩個線性方程式（把未知深度消去的針孔方程式），四個方程式就像八點系統一樣，用 SVD 取一個小矩陣的零向量來解 [1]。三角測量出的點好不好，用它的**重投影誤差**（reprojection error）來判斷：把它投影回每張影像，量它與觀測點之間的像素距離。
+
+*選讀：[線性三角測量（DLT）](#線性三角測量dlt)（見「補充資料」頁）。四個方程式的完整寫法、為什麼線性解不是最佳解，以及基線如何控制誤差的測試。*
+
+準確度與兩條射線的夾角關係很大。對焦距為 $f$、基線為 $B$ 的兩台平行相機，深度為 $Z$ 的點在兩張影像之間會位移**視差**（disparity）$d = fB/Z$ 像素，所以視差的小誤差 $\delta d$ 會造成深度誤差 $\delta Z \approx Z^2 \delta d / (fB)$。深度誤差隨距離的平方成長，並隨基線變寬而縮小；練習 1 會用數字說明。
+
+### 程式碼：相對位姿與三角測量
+
+這段程式碼建立一個合成場景，把它投影到兩台帶有 0.5 像素雜訊的相機，將 15% 的配對換成隨機的錯誤配對，再用 OpenCV 還原相對位姿。`cv2.findEssentialMat` 在五點求解器外面包了一層 RANSAC（其文件指明用的是 Nistér 的演算法 [9]）；`cv2.recoverPose` 執行手性檢查。RANSAC 的答案來自最小樣本，所以我們再用所有內點以線性方式重新擬合 $E$，也就是 IP 12 的 RANSAC 筆記（[RANSAC：在有離群值時擬合模型](/zh-tw/learn/image-processing/dip-12-feature-extraction/notes/#ransac在有離群值時擬合模型)）所說的「在共識集合上重新擬合」那一步。
+
+```python
+import numpy as np
+import cv2
+
+rng = np.random.default_rng(0)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])   # focal length 800 px, principal point (320, 240)
+
+def look_at(C, target):
+    """Rotation of a camera at centre C that looks at target (rows: camera x, y, z axes)."""
+    z = (target - C) / np.linalg.norm(target - C)
+    x = np.cross([0.0, 1.0, 0.0], z); x /= np.linalg.norm(x)
+    return np.stack([x, np.cross(z, x), z])
+
+def project(K, R, t, X):
+    """Pinhole projection of world points X (N, 3) to pixels (N, 2)."""
+    x = (X @ R.T + t) @ K.T           # world -> camera -> homogeneous pixels
+    return x[:, :2] / x[:, 2:]        # divide by depth
+
+def linear_E(x1, x2, K):
+    """Least-squares E from many matches: each match gives one linear equation in E's 9 entries."""
+    Ki = np.linalg.inv(K)
+    a = np.c_[x1, np.ones(len(x1))] @ Ki.T               # normalized camera coordinates
+    b = np.c_[x2, np.ones(len(x2))] @ Ki.T
+    A = np.einsum('ni,nj->nij', b, a).reshape(-1, 9)      # row n encodes b_n^T E a_n = 0
+    E = np.linalg.svd(A)[2][-1].reshape(3, 3)             # best null vector of A
+    U, _, Vt = np.linalg.svd(E)
+    return U @ np.diag([1.0, 1.0, 0.0]) @ Vt              # nearest valid essential matrix
+
+X = rng.uniform([-3, -2, 4], [3, 2, 8], size=(300, 3))           # 300 scene points
+C2 = np.array([2.0, 0.0, 0.0])                                    # camera 2 centre: 2 units to the right
+R2 = look_at(C2, np.array([0.0, 0.0, 6.0])); t2 = -R2 @ C2        # camera 1 is the world frame
+x1 = project(K, np.eye(3), np.zeros(3), X) + rng.normal(0, 0.5, (300, 2))   # 0.5 px noise
+x2 = project(K, R2, t2, X) + rng.normal(0, 0.5, (300, 2))
+x2[:45] = rng.uniform([0, 0], [640, 480], (45, 2))                # 45 wrong matches (15 %)
+
+def pose_errors(R, t):
+    rot = np.degrees(np.arccos(np.clip((np.trace(R.T @ R2) - 1) / 2, -1, 1)))
+    return rot, np.degrees(np.arccos(t.ravel() @ t2 / np.linalg.norm(t2)))
+
+E, mask = cv2.findEssentialMat(x1, x2, K, method=cv2.RANSAC, prob=0.999, threshold=1.5)
+_, R, t, mask = cv2.recoverPose(E, x1, x2, K, mask=mask)
+inl = mask.ravel() > 0
+print(f"inliers kept: {inl.sum()} of 300 | wrong matches rejected: {(~inl[:45]).sum()} of 45")
+print("RANSAC estimate      : rotation error %.2f deg, translation direction error %.2f deg" % pose_errors(R, t))
+_, R, t, _ = cv2.recoverPose(linear_E(x1[inl], x2[inl], K), x1[inl], x2[inl], K)
+print("refit on all inliers : rotation error %.2f deg, translation direction error %.2f deg" % pose_errors(R, t))
+print(f"length of estimated t: {np.linalg.norm(t):.2f} (true baseline {np.linalg.norm(C2):.2f})")
+
+P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])     # P1 = K [I | 0]
+P2 = K @ np.hstack([R, t])                            # P2 = K [R | t]
+Xh = cv2.triangulatePoints(P1, P2, x1[inl].T, x2[inl].T)
+Xe = (Xh[:3] / Xh[3]).T                               # homogeneous -> Euclidean
+res = np.r_[np.linalg.norm(project(K, np.eye(3), np.zeros(3), Xe) - x1[inl], axis=1),
+            np.linalg.norm(project(K, R, t.ravel(), Xe) - x2[inl], axis=1)]
+print(f"reprojection error: RMS {np.sqrt(np.mean(res ** 2)):.2f} px")
+rel = np.linalg.norm(2.0 * Xe - X[inl], axis=1) / np.linalg.norm(X[inl], axis=1)   # scale fixed by the true baseline
+print(f"3D error after fixing the scale: median {100 * np.median(rel):.2f} % of the distance")
+```
+
+```text
+inliers kept: 250 of 300 | wrong matches rejected: 44 of 45
+RANSAC estimate      : rotation error 0.30 deg, translation direction error 0.42 deg
+refit on all inliers : rotation error 0.07 deg, translation direction error 0.46 deg
+length of estimated t: 1.00 (true baseline 2.00)
+reprojection error: RMS 0.40 px
+3D error after fixing the scale: median 0.31 % of the distance
+```
+
+這些數字只來自這次合成實驗。RANSAC 剔除了 45 個錯誤配對中的 44 個。用所有內點重新擬合，把旋轉誤差從 0.30° 降到 0.07°；平移方向則無論哪種都在半度以內。估計出的平移長度剛好是 1：OpenCV 只回傳它的方向，因為影像無法告訴我們真正的基線是 2。一旦從外部提供尺度，三角測量出的點與真實距離相差約 0.3% 以內。0.40 像素的重投影誤差低於 0.5 像素的雜訊水準，這在意料之中，因為這些點是對自己的觀測做擬合。
+
+## 運動恢復結構
+
+**白話版。** 運動恢復結構（structure from motion, SfM）把兩視角的技巧一次用到幾百張照片上：它在所有照片之間找到相配的點，一台一台地放置相機，三角測量出各個點，並持續修整所有東西，讓每個三維點都投影到它真正被看到的像素上。
+
+### 特徵、配對與幾何驗證
+
+首先，SfM 必須知道不同照片中的哪些像素拍到同一個實際的點。它從局部特徵開始。每張影像產生帶有描述子的關鍵點，例如 SIFT [11]（[IP 12](/zh-tw/learn/image-processing/dip-12-feature-extraction/#尺度不變特徵轉換sift)），再在影像對之間配對描述子（[IP 12，配對](/zh-tw/learn/image-processing/dip-12-feature-extraction/#配對)）。許多配對是錯的，所以每個影像對都要做**幾何驗證**：用 RANSAC [10] 擬合基礎矩陣（或本質矩陣、單應性），只有足夠多配對互相吻合時才保留該影像對 [2]。通過驗證的影像對組成**場景圖**（scene graph）：影像是節點，一條邊表示「這兩張影像看到相同的點」。
+
+### 增量式重建
+
+COLMAP 的論文描述了標準的增量式流程 [2]，它源自早期處理網路照片集的系統，例如 Photo Tourism [12]：
+
+1. **初始化**：選一對共享許多配對、基線又夠寬的影像；估計它們的相對位姿並三角測量共享的點。
+2. **註冊**新影像：解透視 n 點（Perspective-n-Point, PnP）問題，也就是在 RANSAC 之中，由它的關鍵點與已三角測量的三維點之間的配對求出相機位姿。
+3. **三角測量**新影像與至少一張已註冊影像都看到的新點。
+4. **光束法平差**（見下）同時修整所有相機與點，然後**過濾**重投影誤差大的點。
+5. 回到步驟 2 重複，直到再也沒有影像可以註冊。
+
+COLMAP 論文改進了其中每一步，包括如何挑選下一張影像，以及如何三角測量點。它最核心的教訓在步驟 4：註冊與三角測量必須與反覆的光束法平差、重新三角測量與離群值過濾交錯進行，因為沒有這些修整，小誤差會隨著影像一張張加入而累積，重建就會漂移 [2]。
+
+### 光束法平差
+
+**白話版。** 光束法平差（bundle adjustment, BA）是最後的修整：把每台相機和每個三維點都稍微移動一點，直到所有「光束」都和點實際被看到的像素對齊。
+
+BA 解的是下面這個非線性最小平方問題
+
+$$
+\min_{\{P_c\},\, \{\mathbf{X}_k\}} \; \sum_{(c,k) \in \mathcal{O}} \rho\!\left( \big\lVert \pi(P_c, \mathbf{X}_k) - \mathbf{x}_{ck} \big\rVert^2 \right),
+$$
+
+其中 $P_c$ 是相機 $c$ 的參數（位姿，內參未知時也包含內參），$\mathbf{X}_k$ 是三維點，$\mathcal{O}$ 是觀測的集合（點 $k$ 出現在影像 $c$ 中），$\mathbf{x}_{ck}$ 是觀測到的像素，$\pi$ 是針孔投影，$\rho$ 是降低離群值權重的穩健損失 [2]、[13]。標準的求解器是 Levenberg–Marquardt，一種帶阻尼的 Gauss–Newton 法。它之所以快，是因為每個殘差只依賴一台相機和一個點，所以 [Jacobian](/zh-tw/learn/ml/ml-01c-numerical-computation/#jacobian-與-hessian-矩陣)幾乎全是零 [2]、[13]。BA 無法固定整體的尺度與座標系，而且只會找到局部最小值，所以需要增量式步驟提供的好起點。
+
+*選讀：[程式碼中的光束法平差](#程式碼中的光束法平差)（見「補充資料」頁）。用 `scipy.optimize.least_squares` 寫成的完整小型 BA、它的稀疏模式，以及規範（gauge）問題。*
+
+### 實務上的 COLMAP
+
+COLMAP 是隨 [2] 與 [3] 釋出的開源 SfM 與 MVS 流程，有圖形介面與命令列介面 [4]。它輸出相機內參與位姿，加上稀疏點雲，這正是下面稠密方法的標準輸入：NeRF 論文中真實場景的位姿取自 COLMAP [5]，3DGS 則以 SfM 的點來初始化高斯 [6]。後面每個階段都繼承了這裡犯的誤差（見失效模式中的*位姿誤差*）。
+
+## 多視角立體視覺
+
+**白話版。** SfM 給出相機與一組稀疏的點。多視角立體視覺（multi-view stereo, MVS）補上其餘部分：對參考影像的每個像素，沿著其他影像中的對極線搜尋，找出所有視角對表面長相意見一致的那個深度。
+
+### 光度一致性與平面掃描
+
+核心的檢驗是**光度一致性**（photo-consistency）：如果某像素的表面點深度為 $Z$，那麼它周圍的小區塊，在每一張看得到該點的影像裡看起來都應該一樣。一個深度假設的分數，由區塊之間的匹配代價來打分，例如差的平方和（sum of squared differences, SSD）或正規化互相關。
+
+**平面掃描**（plane sweep）演算法 [14] 能有效率地檢驗許多深度。讓一個與參考影像平行的平面掃過一段深度範圍 $Z_1, \dots, Z_D$。對每個深度，把每張來源影像扭曲（warp）到參考視角，就像整個場景都落在那個平面上一樣；單一平面的扭曲是一個單應性。逐像素計算代價，把代價疊成大小為 $D \times H \times W$ 的**代價體**（cost volume），再為每個像素選出代價最低的深度：
+
+$$
+\hat{Z}(u, v) = \arg\min_{k} \; \sum_{(u', v') \in \mathcal{W}(u, v)} \big( I_{\text{ref}}(u', v') - \tilde{I}_{\text{src}}^{(k)}(u', v') \big)^2,
+$$
+
+其中 $\tilde{I}_{\text{src}}^{(k)}$ 是被深度 $Z_k$ 處的平面扭曲後的來源影像，$\mathcal{W}(u, v)$ 是像素周圍的小視窗。對兩台平行的相機（一對*校正過的*相機），平面單應性簡化成依視差 $fB/Z_k$ 做水平位移，程式碼也就能寫得很短。
+
+*選讀：[平面誘導的單應性](#平面誘導的單應性)（見「補充資料」頁）。一般相機位姿與傾斜平面的扭曲。*
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+rng = np.random.default_rng(0)
+H, W, f, B = 120, 160, 150.0, 0.5                     # image size, focal length (px), baseline
+tex = ndi.gaussian_filter(rng.random((400, 400)), 1.5)   # random texture painted on the world
+tex = (tex - tex.min()) / np.ptp(tex)
+
+def render(cx):
+    """Ray-cast a camera at (cx, 0, 0) looking down +Z: a square at Z=5 in front of a wall at Z=8."""
+    v, u = np.mgrid[0:H, 0:W].astype(float)
+    dx, dy = (u - W / 2) / f, (v - H / 2) / f          # ray direction (dx, dy, 1)
+    Xs, Ys = cx + 5 * dx, 5 * dy                        # hit point on the plane Z = 5
+    front = (np.abs(Xs) < 1) & (np.abs(Ys) < 1)         # inside the square?
+    Z = np.where(front, 5.0, 8.0)
+    X, Y = cx + Z * dx, Z * dy
+    img = ndi.map_coordinates(tex, [200 + 40 * Y + 100 * front, 200 + 40 * X], order=1)
+    img[~front & (X > 1.5) & (Y < -0.5)] = 0.5          # a textureless patch on the wall
+    return img, Z
+
+ref, Z_true = render(0.0)                              # reference camera
+src, _ = render(B)                                     # source camera, B to the right
+
+depths = 1 / np.linspace(1 / 10, 1 / 3.5, 80)          # depth hypotheses, uniform in 1/Z
+cost = np.empty((len(depths), H, W))
+for k, Z in enumerate(depths):
+    d = f * B / Z                                      # the plane Z induces a horizontal shift d
+    warped = ndi.shift(src, (0, d), order=1, mode='nearest')   # src pixel u - d lands on u
+    cost[k] = ndi.uniform_filter((ref - warped) ** 2, 7)       # windowed SSD photo-consistency
+Z_est = depths[cost.argmin(0)]                         # winner-take-all depth per pixel
+
+ok = np.abs(Z_est - Z_true) / Z_true < 0.05
+flat = (Z_true == 8) & (ref == 0.5)
+inner = np.zeros_like(ok); inner[8:-8, 20:-8] = True    # ignore borders the source camera cannot see
+print(f"pixels within 5% of the true depth: {100 * ok[inner & ~flat].mean():.1f}% (textured), "
+      f"{100 * ok[inner & flat].mean():.1f}% (textureless patch)")
+```
+
+```text
+pixels within 5% of the true depth: 95.3% (textured), 14.8% (textureless patch)
+```
+
+在有紋理的表面上，這次合成實驗中 95.3% 被評估的像素，其深度落在真值的 5% 以內。在無紋理的區塊裡只有 14.8%，因為對一塊平坦的灰色區塊來說，每個深度假設的匹配程度都一樣好。圖 4 (d) 直接顯示了這點：有紋理像素的代價曲線在真實深度處有一個尖銳的最小值；無紋理像素的曲線則是平的。有紋理表面上剩下的誤差出現在左邊界（只有一台相機看得到），以及方塊旁邊，那裡有一部分背景被第二台相機擋住（遮擋）。
+
+<Figure src={figSweep} alt="四個小圖：右上角有一塊平坦灰色矩形的灰階隨機紋理影像；真實深度圖，較淺的牆前面有一個深色方塊；估計的深度圖，大部分正確，但在灰色矩形、左邊界與方塊周圍有雜訊條紋；以及匹配代價對深度假設的曲線，有紋理的像素在深度 5 處有尖銳最小值，無紋理的像素則是一條平坦的零線。" caption="圖 4 — 合成校正影像對上的平面掃描立體視覺。(a) 含無紋理區塊（右上）的參考影像。(b) 真實深度。(c) 以 7 × 7 的 SSD 視窗得到的贏者全拿（winner-take-all）深度。(d) 兩個圈起像素的代價曲線；點線標示真實深度。" />
+
+### 從深度圖到單一模型
+
+每張影像一張深度圖，還不是一個模型。**深度圖融合**（depth-map fusion）把它們合併起來。Curless 與 Levoy 的體積法 [15] 在體素格裡存放每張深度圖所量到的、到表面的有號距離的滾動加權平均：
+
+$$
+D_{i+1}(\mathbf{x}) = \frac{W_i(\mathbf{x}) D_i(\mathbf{x}) + w_{i+1}(\mathbf{x})\, d_{i+1}(\mathbf{x})}{W_i(\mathbf{x}) + w_{i+1}(\mathbf{x})}, \qquad W_{i+1}(\mathbf{x}) = W_i(\mathbf{x}) + w_{i+1}(\mathbf{x}),
+$$
+
+其中 $d_{i+1}(\mathbf{x})$ 是體素 $\mathbf{x}$ 沿視線方向到深度圖 $i+1$ 所見表面的有號距離，$w_{i+1}$ 是它的信心權重，$D_i$、$W_i$ 是累積了 $i$ 張圖之後的距離與權重。表面是 $D$ 的零等值面，由 marching cubes（見下）萃取。實務上，距離在表面附近會被截斷，所以這個方法叫做 **TSDF**（truncated signed distance function，截斷有號距離函數）融合。COLMAP 的 MVS [3] 則是逐像素估計深度與法向量，使用逐像素的視角選擇與多視角幾何一致性檢查，再把一致的深度融合成稠密點雲。
+
+### 學習式 MVS
+
+**白話版。** MVS 中手工設計的部分，也就是區塊代價，以及清理代價體的規則，都可以從資料中學出來。
+
+MVSNet [16] 保留平面掃描的結構，但讓每一步都可微分。共用的 CNN 從所有影像擷取特徵，每個來源視角的特徵被扭曲到參考相機的正面平行平面上（可微分的單應性扭曲）。**以變異數為基礎的代價**把任意數量的視角合併成一個代價體：變異數低代表各視角意見一致。接著用三維 CNN 對代價體做正則化，沿深度軸做 softmax 得到每個深度的機率，在這個分布下的期望深度（「soft argmin」）是連續的輸出，可以用迴歸損失來訓練 [16]。MVSNet 在 DTU [37] 上訓練，並在不微調的情況下於 Tanks and Temples [38] 上評估 [16]。作者提出學習的動機，是低紋理、鏡面與反光的區域，手工設計的代價在那裡會失效 [16]。
+
+## 神經輻射場（NeRF）
+
+**白話版。** NeRF 把場景存成一個小小的神經網路，這個網路對空間中任何一點、任何觀看方向回答同一個問題：「這裡有多少東西，它朝我這個方向送出什麼顏色？」要產生一張影像，就對每個像素射出一條光線，在光線上許多點詢問網路，再把答案混合起來。訓練就是調整網路，直到算繪出來的影像和照片相符。
+
+### 以函數表示場景
+
+NeRF [5] 是一個多層感知器（multilayer perceptron）$F_\Theta : (\mathbf{x}, \mathbf{d}) \mapsto (\sigma, \mathbf{c})$，其中 $\mathbf{x} \in \mathbb{R}^3$ 是位置，$\mathbf{d}$ 是觀看方向，$\sigma \ge 0$ 是 $\mathbf{x}$ 處的**體積密度**（volume density），$\mathbf{c}$ 是朝 $\mathbf{d}$ 方向發出的 RGB 顏色。網路的設計讓密度只依賴位置，顏色則同時依賴方向，這讓 NeRF 能重現隨視角改變的亮面反光 [5]。一個網路只表示一個場景；沒有包含許多場景的訓練集。
+
+*選讀：[NeRF（Mildenhall 等人，2020）](#nerfmildenhall-等人2020)（見「論文導讀」頁）。論文想解決什麼、它的表格與消融實驗顯示了什麼，以及它沒有主張什麼。*
+
+### 沿光線的體積算繪
+
+**白話版。** 想像光線穿過一團濃淡不一的霧。每一小段霧都會用自己的顏色發光，同時擋住它後方的光。像素的顏色就是所有發光加起來，每一段發光都被它前方的霧減弱。
+
+相機光線為 $\mathbf{r}(t) = \mathbf{o} + t\mathbf{d}$，其中原點 $\mathbf{o}$ 是相機中心，方向是 $\mathbf{d}$，距離 $t$ 介於近界 $t_n$ 與遠界 $t_f$ 之間。依照經典的體積算繪 [17]，期望顏色為
+
+$$
+C(\mathbf{r}) = \int_{t_n}^{t_f} T(t)\, \sigma(\mathbf{r}(t))\, \mathbf{c}(\mathbf{r}(t), \mathbf{d})\, dt, \qquad
+T(t) = \exp\!\left( -\int_{t_n}^{t} \sigma(\mathbf{r}(s))\, ds \right),
+$$
+
+其中 $T(t)$ 是**透射率**（transmittance），即光線從 $t_n$ 走到 $t$ 沒有被擋住的機率 [5]。NeRF 用光線上的 $N$ 個取樣 $t_1 \lt \dots \lt t_N$ 來計算它：
+
+$$
+\hat{C}(\mathbf{r}) = \sum_{i=1}^{N} w_i\, \mathbf{c}_i, \qquad w_i = T_i\,\alpha_i, \qquad
+\alpha_i = 1 - e^{-\sigma_i \delta_i}, \qquad T_i = \prod_{j=1}^{i-1} (1 - \alpha_j),
+$$
+
+其中 $\sigma_i, \mathbf{c}_i$ 是網路在第 $i$ 個取樣處的輸出，$\delta_i = t_{i+1} - t_i$ 是間距，$\alpha_i$ 是第 $i$ 段的**不透明度**（opacity），$T_i$ 是通過它前面各段之後還剩下的光，$w_i$ 是第 $i$ 個取樣在像素中的權重。這正是半透明圖層由前到後的 **alpha 合成**（alpha compositing）[5]。權重的總和 $\sum_i w_i$ 是像素的總不透明度，$\sum_i w_i t_i$ 則是深度的估計。每一步都可微分，所以照片誤差可以一路傳回網路的權重。
+
+下面的程式碼用精確解來檢查這個數值積分。光線先穿過藍色的霧，再穿過一層紅色表面，最後抵達白色背景；對分段常數的密度，這些積分有封閉解。
+
+```python
+import numpy as np
+
+# One ray from t = 0 to t = 6: blue fog on [1, 2] (density 0.5), a red surface on [3, 3.5] (density 4),
+# white background behind everything.
+slabs = [(1.0, 2.0, 0.5, np.array([0.2, 0.4, 1.0])),
+         (3.0, 3.5, 4.0, np.array([1.0, 0.1, 0.1]))]
+bg = np.ones(3)
+
+def field(t):
+    """Density sigma(t) and colour c(t) at sample positions t."""
+    sigma, c = np.zeros_like(t), np.zeros(t.shape + (3,))
+    for a, b, s, col in slabs:
+        inside = (t >= a) & (t < b)
+        sigma[inside], c[inside] = s, col
+    return sigma, c
+
+def render(n):
+    """NeRF quadrature: alpha_i = 1 - exp(-sigma_i delta_i), T_i = prod_{j<i} (1 - alpha_j), w_i = T_i alpha_i."""
+    edges = np.linspace(0, 6, n + 1)
+    t, delta = (edges[:-1] + edges[1:]) / 2, np.diff(edges)
+    sigma, c = field(t)
+    alpha = 1 - np.exp(-sigma * delta)
+    T = np.concatenate([[1.0], np.cumprod(1 - alpha)[:-1]])
+    w = T * alpha
+    T_end = T[-1] * (1 - alpha[-1])                   # light that reaches the background
+    return w @ c + T_end * bg, w.sum(), w @ t
+
+# Analytic answer for piecewise-constant density (exact integrals of the volume rendering equation)
+C, acc, depth, T0 = np.zeros(3), 0.0, 0.0, 1.0
+for a, b, s, col in slabs:
+    L = b - a
+    absorbed = T0 * (1 - np.exp(-s * L))
+    C, acc = C + absorbed * col, acc + absorbed
+    depth += T0 * (a * (1 - np.exp(-s * L)) + (1 - np.exp(-s * L)) / s - L * np.exp(-s * L))
+    T0 *= np.exp(-s * L)
+C += T0 * bg
+print(f"analytic : colour {np.round(C, 4)}, opacity {acc:.4f}, depth {depth:.4f}")
+for n in [16, 64, 256, 1024]:
+    Cq, accq, dq = render(n)
+    print(f"N = {n:4d} : colour {np.round(Cq, 4)}, opacity {accq:.4f}, depth {dq:.4f}")
+```
+
+```text
+analytic : colour [0.6852 0.2919 0.528 ], opacity 0.9179, depth 2.2373
+N =   16 : colour [0.7498 0.3318 0.5195], opacity 0.8466, depth 2.1655
+N =   64 : colour [0.7006 0.2986 0.5232], opacity 0.9040, depth 2.2263
+N =  256 : colour [0.689  0.2934 0.5267], opacity 0.9146, depth 2.2348
+N = 1024 : colour [0.6862 0.2923 0.5277], opacity 0.9171, depth 2.2367
+```
+
+隨著取樣數增加，數值積分會收斂到解析解的顏色、不透明度與深度。取 16 個取樣時差距明顯，因為薄薄的表面層落進了一兩個太粗的區間。這就是 NeRF 不均勻取樣的原因：先由一個每條光線 64 個取樣的粗網路找出權重大的位置，再由細網路在那裡加上集中的 128 個取樣（階層式取樣）[5]。再看看深度：2.24（圖 5 用 256 個取樣時是 2.23），落在霧與表面之間，那裡其實沒有任何表面。半透明的「霧」出現在錯誤的位置，就是失效模式中所討論的漂浮物瑕疵的來源。圖 5 畫出這條光線的密度、透射率與權重。
+
+<Figure src={figRay} alt="沿著從 0 到 6 的一條光線的三張圖。密度在 1 到 2 之間為 0.5（藍色陰影），在 3 到 3.5 之間為 4（紅色陰影）。透射率從 1 開始，穿過霧時降到約 0.6，維持平坦，再穿過紅色層降到約 0.08。權重密度在霧的位置是一個低矮的方塊，在 3 的位置是一根高而衰減的尖峰；一條虛線標示介於兩者之間的期望深度 2.23。" caption="圖 5 — 程式碼中那條光線的體積算繪：(a) 密度、(b) 透射率、(c) 每單位長度的權重。期望深度（虛線）落在霧與表面之間，那裡什麼都沒有。" />
+
+### 位置編碼
+
+**白話版。** 一個直接輸入原始 $(x, y, z)$ 的普通 MLP，只能學到平滑而模糊的函數。改為輸入座標在許多頻率下的正弦與餘弦，它才能表示銳利的邊緣與細緻的紋理。
+
+NeRF 把每個座標 $p$（正規化到 $[-1, 1]$）映射成
+
+$$
+\gamma(p) = \big( \sin(2^0 \pi p), \cos(2^0 \pi p), \dots, \sin(2^{L-1} \pi p), \cos(2^{L-1} \pi p) \big),
+$$
+
+其中 $L$ 是頻帶數量：位置用 $L = 10$，方向用 $L = 4$ [5]。沒有這個編碼，論文的結果會失去細節 [5]。Tancik 等人 [18] 解釋了原因：座標 MLP 偏向低頻（頻譜偏差，spectral bias），而對輸入做傅立葉特徵映射就能消除這個偏差。這些正弦函數類似 Transformer 的位置資訊（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#位置資訊)），但這裡編碼的是連續座標，而不是 token 的位置。
+
+### 訓練，以及為什麼慢
+
+訓練只需要有位姿的影像，其他都不用。每一步從訓練影像中取樣一批像素（光線），用粗網路與細網路把它們算繪出來，並最小化顏色的平方誤差 [5]。問題出在成本。每個像素需要幾百次網路評估，一個場景需要幾十萬步。論文報告每個場景 100–300k 次迭代，在一張 NVIDIA V100 GPU 上約 1–2 天 [5]。算繪慢也是同樣的原因：論文每條光線使用 256 次網路查詢，每張影像介於 1.5 億到 2 億次之間，並報告在 V100 上每個畫面約 30 秒 [5]。
+
+### 加速：雜湊網格
+
+**白話版。** 不要叫一個大網路記住所有東西，而是把學到的特徵存在多個解析度的查找表裡，再用一個很小的網路來解碼。查表比跑許多層網路便宜得多。
+
+Instant-NGP [19] 以**多解析度雜湊編碼**（multiresolution hash encoding）取代頻率編碼。空間由 $L$ 層網格覆蓋，從粗到細。每一層網格在它的角點存放可訓練的特徵向量，但是放在大小固定為 $T$ 的表裡；在細的網格上，角點遠多於表中的項目，就由一個雜湊函數決定角點使用哪一項，所以好幾個角點共用同一項。要編碼一個點時，在每一層內插它周圍角點的特徵，串接起來，再交給一個小型 MLP。論文並不明確地解決共用項目的問題；它仰賴粗的層級和 MLP 自己把它們分開 [19]。作者報告在「幾秒內」就能訓練出高品質的結果，並在一張 GPU 上以 1920 × 1080 解析度做到幾十毫秒的算繪 [19]。這類以網格為基礎的編碼，現在在快速的 NeRF 變體中很常見。
+
+*選讀：[多解析度雜湊編碼](#多解析度雜湊編碼)（見「補充資料」頁）。各層解析度、雜湊函數、參數量，以及一個範例演算。*
+
+## 神經隱式曲面：NeuS
+
+**白話版。** NeRF 的密度不一定會形成乾淨的表面：它可以是一團雲。如果你想要曲面，就讓網路改為輸出*有號距離*，並用一種讓算繪出的權重剛好在表面上達到峰值的方式，把距離轉成不透明度。
+
+NeuS [22] 把場景表示成一個 SDF 網路 $f(\mathbf{x})$，它的零等值面就是曲面。它透過 sigmoid $\Phi_s(x) = (1 + e^{-sx})^{-1}$ 把 SDF 轉成不透明度，其中 $s$ 是會在訓練中增大的、學出來的銳利度。作者指出，最直覺的做法是直接把 logistic 密度 $\phi_s(f) = \Phi_s'(f)$ 當成體積密度，這樣得到的權重會在表面*之前*達到峰值（偏差），他們於是推導出一個一階無偏、又能處理遮擋的不透明度 [22]。離散形式為
+
+$$
+\alpha_i = \max\!\left( \frac{\Phi_s(f(\mathbf{p}_i)) - \Phi_s(f(\mathbf{p}_{i+1}))}{\Phi_s(f(\mathbf{p}_i))}, \; 0 \right),
+$$
+
+其中 $\mathbf{p}_i$ 是光線上第 $i$ 個取樣；權重之後使用與 NeRF 相同的合成公式。**Eikonal** 項 $\big(\lVert \nabla f \rVert - 1\big)^2$ 讓 $f$ 保持為合法的距離函數 [22]。因為曲面是等值面，用 marching cubes 就能直接得到網格。NeuS 不需要前景遮罩就能重建物體，並且在 DTU [37] 等資料上做過評估 [22]。
+
+*選讀：[為什麼 NeuS 的權重會在表面上達到峰值](#為什麼-neus-的權重會在表面上達到峰值)（見「補充資料」頁）。在一條光線上量測天真密度的偏差。*
+
+## 3D Gaussian Splatting
+
+**白話版。** 3DGS 不用你得沿著每條光線去查詢的網路，而是用數百萬個小小的、有顏色的、半透明的橢球來表示場景，像一團柔軟的顏料滴。要產生影像時，把每一滴投影到螢幕上成為一個柔軟的橢圓，再由前到後疊起來。沒有光線步進，也沒有網路：只有排序與混合，GPU 做起來非常快。
+
+### 高斯基元
+
+每個色塊都是一個三維的鐘形曲線：中心最濃，向外平滑淡出，而且在某些方向被拉得比其他方向更長。精確地說，每個基元 [6] 有中心 $\boldsymbol{\mu} \in \mathbb{R}^3$、決定大小與方向的共變異數 $\Sigma$、不透明度 $o \in [0, 1]$，以及以球諧函數（spherical harmonics）係數儲存的顏色（球面上一組平滑的函數，讓顏色可以隨觀看方向改變）。它在空間中的涵蓋範圍為
+
+$$
+G(\mathbf{x}) = \exp\!\left( -\tfrac12 (\mathbf{x} - \boldsymbol{\mu})^\top \Sigma^{-1} (\mathbf{x} - \boldsymbol{\mu}) \right), \qquad \Sigma = R\,S\,S^\top R^\top,
+$$
+
+其中 $S = \mathrm{diag}(s_1, s_2, s_3)$ 存放三個軸長，$R$ 是以單位四元數儲存的旋轉 [6]。這個分解保證 $\Sigma$ 在梯度下降期間一直是合法（半正定）的共變異數，直接最佳化 $\Sigma$ 的六個元素則做不到這一點 [6]。
+
+### 投影到影像
+
+**白話版。** 透過相機看到的三維橢球，看起來是二維的橢圓。3DGS 用相機投影的局部線性近似來算出這個橢圓，對小的高斯來說很準確。
+
+依照 EWA splatting [23]，投影後高斯的二維共變異數為
+
+$$
+\Sigma' = J\, W\, \Sigma\, W^\top J^\top,
+$$
+
+其中 $W$ 是世界到相機轉換的旋轉部分，$J$ 是在高斯中心處計算的透視投影 Jacobian，只取 $\Sigma'$ 左上角 $2 \times 2$ 的區塊，就得到影像空間中的橢圓 [6]、[23]。投影後的中心就是 $\boldsymbol{\mu}$ 的針孔投影。
+
+*選讀：[投影 3D 高斯：局部仿射近似](#投影-3d-高斯局部仿射近似)（見「補充資料」頁）。Jacobian 的完整寫法，以及近似何時失效。*
+
+### Alpha 合成與即時算繪
+
+像素顏色使用和 NeRF 相同的合成規則，只是對象換成覆蓋該像素、並依深度排序的高斯：
+
+$$
+C = \sum_{i} \mathbf{c}_i\, \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j), \qquad \alpha_i = o_i \exp\!\left( -\tfrac12 (\mathbf{u} - \boldsymbol{\mu}_i')^\top \Sigma_i'^{-1} (\mathbf{u} - \boldsymbol{\mu}_i') \right),
+$$
+
+其中 $\mathbf{u}$ 是像素位置，$\boldsymbol{\mu}_i'$ 與 $\Sigma_i'$ 是高斯 $i$ 投影後的中心與共變異數，$\mathbf{c}_i$ 是它隨視角變化的顏色。為什麼快？算繪器 [6] 把螢幕切成 $16 \times 16$ 像素的圖塊（tile），把每個可見的高斯指派給它碰到的圖塊，用 GPU 基數排序（radix sort）把所有（圖塊, 深度）鍵值一次排好，然後平行地由前到後混合每個圖塊的清單，像素幾乎不透明時就停止。沒有網路要評估，也沒有空白空間要取樣。論文報告在 1080p 達到即時（至少每秒 30 個畫面）的新視角合成，品質可與當時最好的 NeRF 變體相比 [6]。
+
+*選讀：[3D Gaussian Splatting（Kerbl 等人，2023）](#3d-gaussian-splattingkerbl-等人2023)（見「論文導讀」頁）。閱讀論文時如何把表示法和工程細節分開，以及它自己陳述的限制。*
+
+### 最佳化與自適應密度控制
+
+**白話版。** 訓練從稀疏的 SfM 點開始，每個點一個高斯，然後讓這組高斯長出來並修剪：缺少細節的地方就增加高斯，一個大高斯涵蓋太多的地方就把它分裂，看不見的高斯則移除。
+
+所有參數都用梯度下降來最佳化，損失為算繪影像與真實影像之間的 $(1 - \lambda)\mathcal{L}_1 + \lambda \mathcal{L}_{\text{D-SSIM}}$，其中 $\lambda = 0.2$ [6]。每 100 次迭代，這個方法會對視空間（view-space）位置梯度大的高斯進行加密，梯度大表示該區域還沒有被充分解釋 [6]：
+
+- 在重建不足區域中的*小*高斯會被**複製**（clone；複製並沿梯度方向移動）；
+- 在高變異區域中的*大*高斯會被**分裂**（split）成兩個較小的高斯，尺度除以 1.6；
+- 不透明度低於門檻的高斯會被**修剪**（prune）；此外，每 3000 次迭代會把所有不透明度重設到接近零，這限制了靠近輸入相機的漂浮物所造成的高斯增長 [6]。
+
+### 程式碼：二維 splatting 的小實驗
+
+這段程式碼用 Adam 最佳化器 [49]，把 40 個二維高斯擬合到一張 48 × 48 的影像，使用的正是上面的合成規則（深度順序固定，也沒有加密）。反向傳遞用鏈鎖律（chain rule）手寫出來（3DGS 論文也是明確推導梯度，而不是依賴自動微分 [6]）；梯度在撰寫本篇時已與有限差分核對過。
+
+```python
+import numpy as np
+from skimage.draw import disk, polygon, ellipse
+
+# Target: a small synthetic RGB image (48 x 48) on a black background
+H = W = 48
+target = np.zeros((H, W, 3))
+target[disk((16, 16), 9)] = [0.9, 0.2, 0.2]
+target[ellipse(30, 30, 6, 14, rotation=np.deg2rad(30))] = [0.2, 0.4, 0.9]
+target[polygon([40, 44, 34], [6, 22, 14])] = [0.2, 0.8, 0.3]
+ys, xs = np.mgrid[0:H, 0:W].astype(float)
+
+def sig(z):
+    return 1 / (1 + np.exp(-z))
+
+def render(p, target=None):
+    """Front-to-back alpha compositing of K 2D Gaussians (index order = depth order).
+    p: mu (K,2), log_s (K,2), theta (K,), op (K,) opacity logits, col (K,3) colour logits."""
+    c, s, th = sig(p['col']), np.exp(p['log_s']), p['theta']
+    dx = xs[None] - p['mu'][:, 0, None, None]; dy = ys[None] - p['mu'][:, 1, None, None]
+    ct, st = np.cos(th)[:, None, None], np.sin(th)[:, None, None]
+    u1, u2 = ct * dx + st * dy, -st * dx + ct * dy                   # offsets in the Gaussian's own axes
+    sx2, sy2 = (s[:, 0] ** 2)[:, None, None], (s[:, 1] ** 2)[:, None, None]
+    g = np.exp(-0.5 * (u1 ** 2 / sx2 + u2 ** 2 / sy2))               # Gaussian footprint
+    o = sig(p['op'])[:, None, None]
+    a = np.minimum(o * g, 0.99)                                       # alpha of each Gaussian at each pixel
+    T = np.cumprod(np.concatenate([np.ones((1, H, W)), 1 - a[:-1]]), axis=0)   # transmittance in front
+    w = a * T                                                          # compositing weights
+    img = np.einsum('khw,kc->hwc', w, c)                              # black background adds nothing
+    if target is None:
+        return img
+    # backward pass for the loss L = mean squared error (the chain rule written out by hand)
+    G = 2 * (img - target) / target.size                               # dL/dimg, shape (H, W, 3)
+    contrib = w[..., None] * c[:, None, None, :]                       # (K, H, W, 3)
+    behind = np.cumsum(contrib[::-1], axis=0)[::-1] - contrib          # colour from Gaussians behind k
+    dC_da = T[..., None] * c[:, None, None, :] - behind / (1 - a[..., None])
+    da = np.einsum('khwc,hwc->khw', dC_da, G) * (o * g < 0.99)
+    dq = da * o * g * -0.5                                             # through g = exp(-q / 2)
+    grads = {
+        'col': np.einsum('khw,hwc->kc', w, G) * c * (1 - c),
+        'op': (da * g).sum((1, 2)) * sig(p['op']) * (1 - sig(p['op'])),
+        'log_s': np.stack([(dq * -2 * u1 ** 2 / sx2).sum((1, 2)), (dq * -2 * u2 ** 2 / sy2).sum((1, 2))], 1),
+        'theta': (dq * 2 * u1 * u2 * (1 / sx2 - 1 / sy2)).sum((1, 2)),
+        'mu': -np.stack([(dq * (2 * u1 * ct / sx2 - 2 * u2 * st / sy2)).sum((1, 2)),
+                         (dq * (2 * u1 * st / sx2 + 2 * u2 * ct / sy2)).sum((1, 2))], 1),
+    }
+    return img, grads
+
+rng = np.random.default_rng(0)
+K = 40
+p = {'mu': rng.uniform(4, 44, (K, 2)), 'log_s': np.full((K, 2), np.log(3.0)), 'theta': rng.uniform(0, np.pi, K),
+     'op': np.zeros(K), 'col': np.zeros((K, 3))}
+lr = {'mu': 0.5, 'log_s': 0.05, 'theta': 0.05, 'op': 0.1, 'col': 0.1}
+m = {k: np.zeros_like(v) for k, v in p.items()}; v2 = {k: np.zeros_like(v) for k, v in p.items()}
+
+def psnr(img):
+    return 10 * np.log10(1 / np.mean((img - target) ** 2))
+
+for it in range(1, 501):
+    img, gr = render(p, target)
+    for k in p:                                                        # Adam update
+        m[k] = 0.9 * m[k] + 0.1 * gr[k]; v2[k] = 0.999 * v2[k] + 0.001 * gr[k] ** 2
+        p[k] -= lr[k] * (m[k] / (1 - 0.9 ** it)) / (np.sqrt(v2[k] / (1 - 0.999 ** it)) + 1e-8)
+    if it in (1, 50, 100, 200, 500):
+        print(f"iteration {it:3d}: PSNR {psnr(img):.2f} dB")
+```
+
+```text
+iteration   1: PSNR 11.32 dB
+iteration  50: PSNR 20.88 dB
+iteration 100: PSNR 21.85 dB
+iteration 200: PSNR 23.12 dB
+iteration 500: PSNR 23.57 dB
+```
+
+PSNR（定義見 [DLCV 04](/zh-tw/learn/deep-learning/dl-04-image-restoration/#全參考指標)）上升很快，然後在這次實驗中於 23.6 dB 附近持平。這個高原正是這個實驗的重點：只有固定數量的柔軟色塊時，尖銳的角落和三角形的細尖端都擬合不出來，而一開始就放在錯誤位置的色塊也會留在原地。這正是自適應密度控制要修正的問題，練習 4 請你把它加進去。圖 6 顯示擬合結果與最終的橢圓。
+
+<Figure src={figSplat} alt="五個小圖：黑色影像上有紅色圓盤、藍色傾斜橢圓與綠色三角形；由重疊色塊組成的模糊灰色起點；50 次迭代後三個形狀的柔和版本；500 次迭代後較清晰的版本，擬合出的橢圓以白色輪廓畫出，聚集在每個形狀內部；以及一條 PSNR 曲線，從約 11 dB 急遽上升，在約 23.6 dB 附近持平。" caption="圖 6 — 用 40 個高斯與 alpha 合成做的 splatting 小實驗：(a) 目標、(b) 起點、(c) 50 次與 (d) 500 次迭代後，並畫出每個高斯一個標準差的橢圓；(e) PSNR 對迭代次數。數字只來自這次小實驗。" />
+
+## 取得網格
+
+**白話版。** 圖學引擎、物理模擬器與 3D 印表機要的是三角形。上面每一種表示法都需要一個轉換步驟才能得到三角形，而轉換本身也會帶來誤差。
+
+### Marching cubes
+
+Marching cubes [24] 把取樣過的純量場（SDF、佔據或融合後的 TSDF）轉成某個等值面的三角形網格。它逐一走訪由八個相鄰格點取樣組成的每個立方體，看哪些角點在內部、哪些在外部，在符號改變的立方體邊上放置頂點（用場值的線性內插），再用查找表中的三角形把它們連起來。scikit-image 提供了實作 [46]。這段程式碼在幾種格網解析度下，萃取精確環面 SDF 的零等值面，並用下面評估一節定義的幾何指標來量測結果。
+
+```python
+import numpy as np
+from scipy.spatial import cKDTree
+from skimage.measure import marching_cubes
+
+R, r = 0.6, 0.25                                       # torus: ring radius R, tube radius r
+
+def sdf_torus(x, y, z):
+    """Exact signed distance to the torus (negative inside)."""
+    return np.hypot(np.hypot(x, y) - R, z) - r
+
+def sample_mesh(verts, faces, n, rng):
+    """n points spread uniformly over the area of a triangle mesh."""
+    tri = verts[faces]
+    area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    k = rng.choice(len(faces), n, p=area / area.sum())
+    a, b = rng.random((2, n, 1))
+    flip = a + b > 1; a[flip], b[flip] = 1 - a[flip], 1 - b[flip]
+    return tri[k, 0] + a * (tri[k, 1] - tri[k, 0]) + b * (tri[k, 2] - tri[k, 0])
+
+def sample_torus(n, rng):
+    """n points uniform over the true torus surface (rejection sampling on the area element)."""
+    u, v = rng.uniform(0, 2 * np.pi, (2, 3 * n))
+    ok = rng.random(3 * n) * (R + r) < R + r * np.cos(v)   # keep with probability proportional to R + r cos v
+    u, v = u[ok][:n], v[ok][:n]
+    return np.c_[(R + r * np.cos(v)) * np.cos(u), (R + r * np.cos(v)) * np.sin(u), r * np.sin(v)]
+
+def geometry_metrics(P, G, tau):
+    """Accuracy, completeness, Chamfer (their mean) and F-score at threshold tau."""
+    d_pg = cKDTree(G).query(P)[0]                      # each reconstructed point -> nearest true point
+    d_gp = cKDTree(P).query(G)[0]                      # each true point -> nearest reconstructed point
+    prec, rec = (d_pg < tau).mean(), (d_gp < tau).mean()
+    return d_pg.mean(), d_gp.mean(), (d_pg.mean() + d_gp.mean()) / 2, 2 * prec * rec / (prec + rec)
+
+rng = np.random.default_rng(0)
+G = sample_torus(100_000, rng)
+acc, comp, cd, fs = geometry_metrics(sample_torus(100_000, rng), G, tau=0.01)
+print(f"true surface vs itself: Chamfer {cd:.4f} | F-score@0.01 {fs:.3f}   (the floor set by sampling)")
+for n in [12, 24, 48, 96]:
+    ax = np.linspace(-1, 1, n)
+    vol = sdf_torus(*np.meshgrid(ax, ax, ax, indexing='ij'))
+    verts, faces, _, _ = marching_cubes(vol, level=0.0, spacing=(ax[1] - ax[0],) * 3)
+    verts -= 1.0                                       # grid index space -> world coordinates [-1, 1]
+    P = sample_mesh(verts, faces, 100_000, rng)
+    acc, comp, cd, fs = geometry_metrics(P, G, tau=0.01)
+    print(f"grid {n:2d}^3: {len(faces):6d} triangles | acc {acc:.4f} comp {comp:.4f} "
+          f"Chamfer {cd:.4f} | F-score@0.01 {fs:.3f} | max |SDF| on vertices {np.abs(sdf_torus(*verts.T)).max():.4f}")
+```
+
+```text
+true surface vs itself: Chamfer 0.0039 | F-score@0.01 0.995   (the floor set by sampling)
+grid 12^3:    448 triangles | acc 0.0154 comp 0.0154 Chamfer 0.0154 | F-score@0.01 0.299 | max |SDF| on vertices 0.0084
+grid 24^3:   2272 triangles | acc 0.0052 comp 0.0052 Chamfer 0.0052 | F-score@0.01 0.988 | max |SDF| on vertices 0.0032
+grid 48^3:   9568 triangles | acc 0.0040 comp 0.0039 Chamfer 0.0040 | F-score@0.01 0.995 | max |SDF| on vertices 0.0008
+grid 96^3:  38832 triangles | acc 0.0039 comp 0.0039 Chamfer 0.0039 | F-score@0.01 0.995 | max |SDF| on vertices 0.0002
+```
+
+這次實驗帶來兩個教訓。第一，即使在 12³ 的格網上，頂點也幾乎剛好落在曲面上（最大的 $|\text{SDF}|$ 是 0.0084），但 Chamfer 距離卻是 0.0154：頂點*之間*的平坦三角形橫切過彎曲的管面。第二，指標在約 0.0039 就不再改善，因為把*同一個*真實曲面的兩次獨立隨機取樣互相比較，本來就是這個值。量到的誤差只有相對於這個底線才有意義，而這個底線取決於取樣了多少個點。圖 7 顯示網格與曲線。
+
+<Figure src={figMc} alt="兩個有陰影的環面網格，一個是由 448 個大三角形組成的粗網格，一個是由 9568 個小三角形組成的細網格；以及一張對數刻度圖，Chamfer 距離隨格網解析度下降，趨近約 0.004 的點線取樣底線，門檻 0.01 的 F-score 則從約 0.1 升到幾乎 1。" caption="圖 7 — 在精確環面 SDF 上的 marching cubes：(a) 12³ 與 (b) 48³ 格網；(c) Chamfer 距離與門檻 τ = 0.01 的 F-score 對格網解析度，並附上比較真實曲面兩次取樣所得的底線。" />
+
+### Poisson 表面重建
+
+當輸入是帶有法向量的點雲（例如來自 MVS）時，Poisson 表面重建 [25] 是標準工具。它尋找一個指示函數（indicator function）$\chi$（內部為 1、外部為 0），使它的梯度與法向量相符，這就導出 Poisson 方程式 $\Delta \chi = \nabla \cdot \mathbf{V}$，其中 $\Delta$ 是 Laplacian，$\mathbf{V}$ 是由法向量建立的向量場；曲面是 $\chi$ 的一個等值面 [25]。因為它一次用上所有的點，所以對雜訊很穩健 [25]；屏蔽（screened）變體 [26] 還會把曲面拉向這些點。結果是不漏水的曲面，這很方便，但也表示資料中的破洞會被捏造出來的曲面補起來。
+
+### 從高斯得到網格
+
+3D 高斯並不定義曲面：最佳化之後，它們雜亂、互相重疊，而且常常和真實幾何對不齊。有兩條研究路線處理這個問題。**SuGaR** [27] 加入一個正則化項，鼓勵高斯平貼在曲面上，然後從高斯密度等值面上取樣的點，用 Poisson 重建萃取出網格，也可以選擇性地把新的高斯綁定到網格上，並一起精修兩者 [27]。**2D Gaussian Splatting** [28] 則改變基元：每個高斯是一個平坦、有方向的二維圓盤（曲面元素），用精確的光線–圓盤相交來算繪，再加上深度失真與法向量一致性損失。網格接著用 TSDF 融合把算繪出的深度圖融合得到 [28]，與上面 Curless 和 Levoy 的方法是同一個想法。
+
+## 前饋式重建
+
+**白話版。** 到目前為止的方法，每次都只針對一個場景做最佳化。最新的模型只訓練一次，使用大量三維資料，之後給它新的照片，它就在一次傳遞中輸出相機以及每個像素對應的稠密三維點，不需要配對、RANSAC 或光束法平差。
+
+**DUSt3R** [29] 輸入兩張內參與位姿都未知的影像，迴歸出兩張**點圖**（pointmap）：對每張影像的每個像素，給出它所看到的三維點，兩者都表示在第一台相機的座標系中 [29]。點圖是一張有三個通道 $(X, Y, Z)$ 的影像（圖 2 (h)）。由它可以推得深度、焦距、相對位姿與像素對應。這個網路是 Transformer [48] 的編碼器–解碼器：兩張影像通過同一個 [Vision Transformer](/zh-tw/learn/ml/ml-04-vision-transformers/#vision-transformervit) 編碼器 [47]，兩個解碼器透過交叉注意力交換資訊，再由迴歸頭輸出點圖與每個像素的信心值 [29]。輸出只定義到差一個未知的尺度 [29]。超過兩張影像時，DUSt3R 預測成對的點圖，再執行一次*全域對齊*，解出一組一致的點圖、位姿與每對影像的尺度，這是光束法平差在學習式幾何上的對應做法 [29]。
+
+**MASt3R** [30] 加入一個輸出稠密局部特徵的頭（以匹配損失訓練），以及快速的互惠配對機制，讓點圖網路也能產生準確的像素對應 [30]。**VGGT** [31] 更進一步：一個大型 Transformer 以交替的逐畫面與全域注意力，接收一張、幾張或數百張影像，一次預測所有影像的相機參數、深度圖、點圖與點軌跡；作者報告這只需不到一秒，而且不需進一步處理就常常勝過以最佳化為基礎的替代方法 [31]。
+
+這些模型並沒有讓幾何過時。它們的預測仍然可以精修：VGGT 的作者報告它的相機與軌跡是光束法平差很好的初始值，經過 BA 後準確度還能進一步提升 [31]。它們的準確度也取決於場景和訓練資料有多接近。不過，當影像很少、重疊很少或沒有校正時，它們是目前最好的工具。
+
+## 動態場景（簡介）
+
+**白話版。** 如果場景在動，單一個三維模型就不夠了：模型還必須依賴時間。
+
+常見的做法是一個標準（靜態）場景，加上隨時間變化的形變。D-NeRF [32] 把時間當成輸入，並一起學習兩個網路：一個把場景編碼在標準空間中，另一個把標準場景對應到給定時間的形變狀態；它只需要一台繞著場景移動的相機 [32]。4D Gaussian Splatting [33] 保留同一組 3D 高斯，並用一個輕量 MLP 預測它們在每個時間點的形變，這個 MLP 的輸入是分解過的時空特徵網格；論文報告了即時算繪，例如在 RTX 3090 GPU 上以 800 × 800 解析度達到每秒 82 個畫面 [33]。動態重建比靜態重建的限制少得多，因為每個瞬間被看到的視角更少。
+
+## 評估重建結果
+
+**白話版。** 有兩件不同的事可以量測：從新視角算繪出來的*畫面*看起來像不像真的照片，以及*形狀*在幾何上對不對。一個方法可能其中一項做得很好，另一項卻很差。
+
+### 新視角品質
+
+留出一些照片，用它們的相機位姿算繪重建結果，再做比較。標準指標是 PSNR、SSIM [34] 與 LPIPS [35]，全都定義在 [DLCV 04](/zh-tw/learn/deep-learning/dl-04-image-restoration/#全參考指標)。PSNR 與 SSIM 量測像素與結構的一致性；LPIPS 在深度特徵空間中量測感知相似度。常見的協定（3DGS 沿用自 Mip-NeRF 360）是把每次拍攝的每第 8 張照片留作測試集 [6]。新視角指標取決於留出的位姿是否正確，所以它們也會獎勵好的 SfM。
+
+### 幾何準確度
+
+令 $\mathcal{P}$ 為從重建結果取樣的點，$\mathcal{G}$ 為從真值掃描取樣的點。定義兩個有方向的距離
+
+$$
+\text{acc} = \frac{1}{|\mathcal{P}|} \sum_{\mathbf{p} \in \mathcal{P}} \min_{\mathbf{g} \in \mathcal{G}} \lVert \mathbf{p} - \mathbf{g} \rVert, \qquad
+\text{comp} = \frac{1}{|\mathcal{G}|} \sum_{\mathbf{g} \in \mathcal{G}} \min_{\mathbf{p} \in \mathcal{P}} \lVert \mathbf{g} - \mathbf{p} \rVert,
+$$
+
+其中 $|\cdot|$ 計算點的數目。**準確度**（accuracy）問的是「我的點離真值近嗎？」；**完整度**（completeness）問的是「真值是否全部被涵蓋？」。它們的和或平均是 **Chamfer 距離**，自 Fan 等人 [36] 以來被廣泛用作點集合的損失與指標，他們用的是平方距離的定義；各篇論文在是否平方、取總和還是平均上並不一致，所以比較數字前請先檢查定義。在 DTU 上，MVSNet 報告準確度與完整度的平均作為「整體」分數 [16]。
+
+Tanks and Temples [38] 用門檻 $\tau$ 而不是平均。令 $e_{\mathbf{p}}$ 為重建點到真值的距離，$e_{\mathbf{g}}$ 為真值點到重建結果的距離，
+
+$$
+P(\tau) = \frac{100}{|\mathcal{P}|} \sum_{\mathbf{p} \in \mathcal{P}} [\, e_{\mathbf{p}} \lt \tau \,], \qquad
+R(\tau) = \frac{100}{|\mathcal{G}|} \sum_{\mathbf{g} \in \mathcal{G}} [\, e_{\mathbf{g}} \lt \tau \,], \qquad
+F(\tau) = \frac{2 P(\tau) R(\tau)}{P(\tau) + R(\tau)},
+$$
+
+其中 $[\cdot]$ 在條件成立時為 1，否則為 0，$P$ 是精確率（以百分比表示），$R$ 是召回率，$F$ 是它們的調和平均，即 **F-score** [38]。因為是調和平均，只有重建結果同時準確又完整時 $F$ 才會高；一組稀疏但完美的點，或是填滿整個空間的點雲，兩者分數都很低 [38]。F-score 對少數遠處的離群值也很穩健，而這些離群值可能主導 Chamfer 的平均（練習 5）。
+
+### 資料集與基準
+
+- **DTU** [37]：包含 80 個桌面場景的多視角立體視覺資料集，每個場景有 49 或 64 個精確已知的相機位置（來自六軸工業機器人），參考幾何來自結構光掃描器 [37]。是 MVS 與神經曲面方法的標準資料集（NeuS 使用其中 15 個場景 [22]）。
+- **Tanks and Temples** [38]：在實驗室外拍攝的大型室內外場景的高解析度影片，真值來自工業雷射掃描器，分成*中等*與*進階*兩組，並在線上伺服器上用上面的 F-score 評估 [38]。
+- **Mip-NeRF 360** [39]：9 個無邊界場景（5 個室外、4 個室內），每個場景有一個中心物體與細節豐富的背景，為新視角合成而拍攝 [39]。3DGS 在它以及 Tanks and Temples 場景等資料上做評估 [6]。
+
+## 失效模式
+
+**白話版。** 上面每個方法都建立在同樣的假設上：場景是靜態的、表面從每個方向看起來都一樣、有紋理可以配對、各視角有重疊、相機是已知的。下面每種失效模式都打破其中一項。
+
+- **無紋理表面**（白牆、天空）。光度一致性在每個深度都相同，如同平面掃描那次實驗；重建結果會有破洞或雜訊。學習式 MVS 與前饋式模型用學到的先驗把它們補起來，而那些先驗可能是錯的。
+- **反光與透明表面。** 鏡子或有光澤的汽車會顯示一個反射的場景，而它移動的方式和表面不同，所以配對與密度都會出錯。NeRF 傾向用藏在半透明表面*底下*、位於物體*內部*的光源來偽造亮面反光；Ref-NeRF [40] 則改為建模繞表面法向量反射的輻射，改善了鏡面表面 [40]。
+- **視角太少。** 只有兩三張影像時，許多場景都能同樣好地解釋這些照片，逐場景最佳化會過度擬合（訓練視角很好，新視角卻壞掉）。像 DUSt3R [29] 這類前饋式模型是常見的解決辦法。
+- **漂浮物。** 自由空間中半透明的密度團塊，常常靠近相機，從訓練視角看起來沒問題，但從新視角看就像霧。Mip-NeRF 360 為它們命名，並加入以失真為基礎的正則化項來抑制它們 [39]；3DGS 為了同樣的原因會定期重設不透明度 [6]。
+- **尺度模糊。** 單眼影像集合只能把幾何固定到差一個尺度；要得到公制大小，需要已知距離、校正過的相機組，或其他感測器 [1]。
+- **位姿誤差。** NeRF 與 3DGS 假設位姿準確；小誤差就會讓細節變模糊。BARF [41] 同時最佳化位姿與輻射場，並對位置編碼使用由粗到細的排程，因為高頻否則會妨礙對位 [41]。
+- **移動的物體與光照變化**，例如拍攝過程中有人走過或太陽移動，破壞的是靜態場景這個假設本身。
+
+## 現代觀點
+
+### 綜述論文怎麼說
+
+有四篇回顧為本篇定下架構。Seitz 等人 [42] 為多視角立體視覺建立了傳統的分類法，至今仍能描述這裡的每一種方法：場景表示法、光度一致性量測、可見性模型、形狀先驗、重建演算法，以及對初始化的需求。Furukawa 與 Hernández [43] 把 MVS 呈現為由兩個要素組成的影像–幾何一致性最佳化：穩健的光度一致性量測與有效率的最佳化，並回顧成功的演算法與尚存的挑戰。Tewari 等人 [44] 回顧神經算繪，從場景表示法與可微分的影像形成，到新視角合成、跨場景泛化、動態內容、編輯與重新打光等應用，並列出尚未解決的問題，例如與傳統圖學工具的整合，以及可解釋性。Chen 與 Wang [45] 回顧 3D Gaussian Splatting：它的原理與最佳化、延伸它的七個方向、應用，以及效能比較；他們指出研究重心正從逐場景最佳化，轉向前饋式的高斯預測。
+
+*選讀：[「現代觀點」綜述導讀](#現代觀點綜述導讀)（見「論文導讀」頁）。每篇回顧涵蓋什麼、如何整理這個領域，以及可以從中帶走什麼。*
+
+### 2023–2026 的最新進展
+
+- **明確、可光柵化的表示法**贏得了速度競賽。自 3DGS [6] 以來，大量的視角合成工作建立在高斯基元之上。3DGS 綜述 [45] 把後續工作分成稀疏輸入、省記憶體、逼真的變體、更好的最佳化、帶有額外屬性的高斯、混合表示法，以及新的算繪演算法；幾何（SuGaR [27]、2DGS [28]）與動態（4DGS [33]）本身就是活躍的方向。
+- NeuS 這一系的**神經隱式曲面** [22]，在不漏水又準確的曲面比算繪速度重要時，仍是首選。
+- **前饋式幾何**是最大的改變。DUSt3R [29]、MASt3R [30] 與 VGGT [31] 直接從影像估計相機與稠密幾何；它們越來越常被用來初始化或取代傳統 SfM 流程的部分環節，3DGS 綜述 [45] 也描述了高斯上的同樣趨勢。
+- **傳統流程仍是基準。** COLMAP [2]、[3] 仍是訓練與評估時相機位姿的常用來源，光束法平差也仍用來精修學習式的預測。
+
+### 尚未解決的問題
+
+1. **幾何與外觀兼顧。** 為新視角調校的方法產生的曲面很差，而曲面準確的方法算繪得比較不逼真。能快速兼顧兩者的單一表示法仍未出現。
+2. **反射、透明與光照。** 把表面、材質與照明分開（逆向算繪，inverse rendering），對真實拍攝的資料仍未解決。
+3. **前饋式模型的泛化**：遠離訓練分布時的準確度、公制尺度，以及非常大的場景。
+4. **動態與野外拍攝**：有移動的人、變化的光線與很少的視角。
+5. **評估。** 「真值」中的位姿誤差、與取樣有關的 Chamfer 數字，以及不一致的指標定義，讓跨論文比較很脆弱。
+
+## 重點整理
+
+- 三維重建同時還原相機與場景；只靠影像時，結果只能決定到差一個尺度。
+- 針孔模型 $\lambda \mathbf{x} = K(R\mathbf{X} + \mathbf{t})$、對極約束 $\hat{\mathbf{x}}_2^\top E \hat{\mathbf{x}}_1 = 0$ 與三角測量，是每一種方法（無論新舊）的幾何核心。
+- 運動恢復結構串起配對、RANSAC、增量式註冊與光束法平差（最小化重投影誤差）；COLMAP 的輸出是稠密方法的標準輸入。
+- 多視角立體視覺透過平面掃描上的光度一致性求出逐像素的深度，並融合深度圖；它在沒有紋理的地方會失敗，MVSNet 則學習代價與它的正則化。
+- NeRF 沿光線用 alpha 合成算繪學出來的密度與顏色場；位置編碼帶來細節，雜湊網格帶來速度，NeuS 則把場變成無偏的 SDF 曲面。
+- 3D Gaussian Splatting 以排序與混合投影後的各向異性高斯，取代光線步進，並用複製、分裂與修剪讓它們長出來；它能即時算繪，但要得到曲面需要額外工作（SuGaR、2DGS）。
+- 前饋式模型（DUSt3R、MASt3R、VGGT）一次傳遞就預測相機與點圖，正在重塑傳統流程。
+- 用留出影像上的 PSNR/SSIM/LPIPS 評估影像，用準確度、完整度、Chamfer 距離與 F-score 評估幾何，並且一定要說明定義與取樣方式。
+
+## 練習
+
+1. **手算深度誤差。** 一對校正過的立體影像，$f = 800$ 像素，基線 $B = 0.1$ m。用 $\delta Z \approx Z^2 \delta d / (fB)$，如果視差差了 0.5 像素，$Z = 5$ m 的點深度誤差有多大？$B$ 要多大才能把誤差壓到 2 公分以下？
+
+<details>
+<summary>提示</summary>
+
+$\delta Z \approx 25 \cdot 0.5 / (800 \cdot 0.1) = 0.156$ m。解 $25 \cdot 0.5 / (800 B) \lt 0.02$ 得 $B \gt 0.78$ m。基線變寬有幫助，但也會讓兩個視角看起來差異更大，使配對更困難。
+
+</details>
+
+2. **看見尺度模糊。** 在兩視角的程式碼中，投影之前把所有場景點 `X` 與相機中心 `C2` 都乘以 3。證明像素座標不變，且估計出的位姿相同。列出三種可以固定尺度的外部資訊。
+
+<details>
+<summary>提示</summary>
+
+投影要除以深度，所以把 $\mathbf{X}$ 和 $\mathbf{t}$ 一起縮放會抵消：$K(R(3\mathbf{X}) + 3\mathbf{t}) = 3K(R\mathbf{X} + \mathbf{t})$。外部資訊：場景中量到的距離（尺或已知大小的標記）、立體相機組的已知基線，或其他感測器，例如慣性測量單元或 GPS。
+
+</details>
+
+3. **讀懂權重。** 在體積算繪的程式碼中，證明 $\sum_i w_i = 1 - \prod_i (1 - \alpha_i)$。然後移除霧的那一層，重新計算深度。為什麼穿過霧的光線的「深度」不是任何一個表面的深度？
+
+<details>
+<summary>提示</summary>
+
+用歸納法：$T_{i+1} = T_i(1 - \alpha_i)$，所以 $w_i = T_i - T_{i+1}$，總和可以逐項消去，得到 $T_1 - T_{N+1} = 1 - T_{N+1}$。沒有霧時，所有權重都落在紅色層上，深度接近 3。有霧時，$\sum_i w_i t_i$ 是兩個不同位置的平均，所以可能落在空白空間；漂浮物就是這樣破壞深度圖的。
+
+</details>
+
+4. **加入自適應密度控制。** 擴充二維 splatting 的程式碼：每 100 次迭代，找出累積位置梯度最大的高斯；複製小的、分裂大的（尺度除以 1.6），並移除不透明度低於 0.02 的高斯。把最後的 PSNR 與固定 40 個高斯的版本比較，也與單純從 80 個高斯開始的版本比較。
+
+<details>
+<summary>提示</summary>
+
+陣列變大時，Adam 的動差陣列 `m` 與 `v2` 也必須跟著變大（新增的列初始化為零）。供參考：單純從 80 個高斯而不是 40 個開始、其他都不變，在我們的實驗中第 500 次迭代達到 27.00 dB（40 個時是 23.57 dB）。加密應該把新的高斯放在誤差所在之處，例如三角形的角落。
+
+</details>
+
+5. **Chamfer 與 F-score。** 在 marching cubes 的程式碼中（格網 48），先在 $(0, 0, 0.6)$ 附近加入 1,000 個「漂浮物」點，然後改成刪掉 $x \lt 0$ 的那一半網格取樣。重新計算準確度、完整度、Chamfer 距離與 F-score。哪個指標對哪種缺陷有反應？
+
+<details>
+<summary>提示</summary>
+
+在我們的實驗中，漂浮物（占 1% 的點）讓準確度從 0.0040 升到 0.0097，Chamfer 距離從 0.0040 升到 0.0068，而門檻 0.01 的 F-score 幾乎沒動（0.995 到 0.990）。刪掉一半曲面後，準確度維持在 0.0040，但完整度升到 0.2226，Chamfer 距離升到 0.1133，F-score 降到 0.665。平均值對少數遠處的離群值很敏感；設門檻的分數則不會，但它們透過召回率清楚反映出缺少的部分。
+
+</details>
+
+6. **平面掃描的視窗大小。** 用 3、7 與 15 像素的 SSD 視窗執行平面掃描的程式碼。有紋理與無紋理的分數如何變化？方塊的邊緣又發生什麼事？
+
+<details>
+<summary>提示</summary>
+
+在我們的實驗中，有紋理的分數是 95.2%、95.3% 與 96.6%，無紋理的分數是 4.9%、14.8% 與 27.7%。大視窗會碰到平坦區塊外面的紋理，所以區塊內的像素從周圍借用深度；代價是深度邊緣變模糊，方塊看起來被「撐胖」進背景。學習式 MVS 用三維 CNN 取得這種脈絡，卻不產生模糊。
+
+</details>
+
+本篇建立的場景模型，也是 [DLCV 07](/zh-tw/learn/deep-learning/dl-07-world-models/) 世界模型的建構元件，在那裡，代理人必須預測三維環境如何變化。
+
+## 補充資料
+
+這些筆記是選讀：每一則從正文中取一個重點，講得更細。正文、程式碼與練習都不依賴它們。
+
+### 正規化八點演算法
+
+這則筆記說明如何用八組或更多配對線性地估計基礎矩陣，以及為什麼要先重新縮放像素座標。
+
+**線性系統。** 把 $F$ 寫成向量 $\mathbf{f} = (F_{11}, F_{12}, \dots, F_{33})$。一組配對 $\mathbf{x}_1 = (u_1, v_1, 1)$、$\mathbf{x}_2 = (u_2, v_2, 1)$ 滿足 $\mathbf{x}_2^\top F \mathbf{x}_1 = 0$，這是一個線性方程式 $\mathbf{a}^\top \mathbf{f} = 0$，其中 $\mathbf{a} = \mathbf{x}_2 \otimes \mathbf{x}_1$（全部九個乘積 $u_2 u_1, u_2 v_1, u_2, v_2 u_1, \dots, 1$）。疊起 $n \ge 8$ 組配對，得到 $A\mathbf{f} = \mathbf{0}$，其中 $A \in \mathbb{R}^{n \times 9}$。滿足 $\lVert \mathbf{f} \rVert = 1$ 的最小平方解，是 $A$ 最小奇異值所對應的右奇異向量 [7]、[8]。
+
+**秩為 2 的那一步。** 真正的基礎矩陣秩為 2（所有對極線都通過同一點，即對極點）。線性解通常秩為 3。用 Frobenius 範數下最接近的秩 2 矩陣取代它：計算 $F = U \,\mathrm{diag}(\sigma_1, \sigma_2, \sigma_3) V^\top$，再令 $\sigma_3 = 0$ [8]。對本質矩陣，兩個非零奇異值還必須相等，所以正文的程式碼才使用 $\mathrm{diag}(1, 1, 0)$。
+
+**為什麼要正規化。** 在像素座標中，$\mathbf{a}$ 的元素大小從約 1 到約 $10^5$（像素在幾百的範圍時的 $u_2 u_1$）。於是矩陣 $A^\top A$ 的條件很差（見 ML 01c 的[條件數](/zh-tw/learn/ml/ml-01c-numerical-computation/#線性系統的條件數)），雜訊在小的奇異向量中被放大。Hartley [8] 證明，一個簡單的修正就能讓線性演算法變得有競爭力：平移每張影像的點，使其重心在原點，並縮放使其到原點的平均距離為 $\sqrt{2}$，影像 1 用相似轉換 $T_1$，影像 2 用 $T_2$。在正規化座標中解 $\hat{F}$，強制秩為 2，再用 $F = T_2^\top \hat{F}\, T_1$ 還原正規化。
+
+**測試。** 這段程式碼在帶雜訊的配對（1 像素雜訊）上比較兩種版本，並在 1,000 組全新、無雜訊的配對上量測 Sampson 誤差，這是配對到對極約束的幾何距離的一階近似 [1]。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])
+a = np.deg2rad(12)
+R = np.array([[np.cos(a), 0, -np.sin(a)], [0, 1, 0], [np.sin(a), 0, np.cos(a)]])  # camera 2 rotation
+t = np.array([-1.0, 0.1, 0.1])                                                      # camera 2 translation
+X = rng.uniform([-3, -2, 4], [3, 2, 8], (100, 3))
+proj = lambda P: (P @ K.T)[:, :2] / (P @ K.T)[:, 2:]
+x1 = proj(X) + rng.normal(0, 1.0, (100, 2))           # 1 px noise
+x2 = proj(X @ R.T + t) + rng.normal(0, 1.0, (100, 2))
+
+def eight_point(x1, x2, normalize=True):
+    """Fundamental matrix from >= 8 matches (pixels); x2h^T F x1h = 0."""
+    def T_of(x):                                      # move centroid to 0, mean distance to sqrt(2)
+        c = x.mean(0); s = np.sqrt(2) / np.linalg.norm(x - c, axis=1).mean()
+        return np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1]])
+    T1, T2 = (T_of(x1), T_of(x2)) if normalize else (np.eye(3), np.eye(3))
+    a = np.c_[x1, np.ones(len(x1))] @ T1.T
+    b = np.c_[x2, np.ones(len(x2))] @ T2.T
+    A = np.einsum('ni,nj->nij', b, a).reshape(-1, 9)
+    F = np.linalg.svd(A)[2][-1].reshape(3, 3)
+    U, S, Vt = np.linalg.svd(F)
+    F = U @ np.diag([S[0], S[1], 0.0]) @ Vt           # enforce rank 2
+    F = T2.T @ F @ T1                                 # undo the normalization
+    return F / np.linalg.norm(F)
+
+def sampson(F, x1, x2):
+    """First-order geometric distance of each match to the epipolar constraint (pixels)."""
+    a, b = np.c_[x1, np.ones(len(x1))], np.c_[x2, np.ones(len(x2))]
+    Fa, Ftb = a @ F.T, b @ F
+    num = np.sum(b * Fa, axis=1) ** 2
+    return np.sqrt(num / (Fa[:, 0] ** 2 + Fa[:, 1] ** 2 + Ftb[:, 0] ** 2 + Ftb[:, 1] ** 2))
+
+tx = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]])
+F_true = np.linalg.inv(K).T @ tx @ R @ np.linalg.inv(K)       # F = K^-T [t]x R K^-1
+F_true /= np.linalg.norm(F_true)
+X_test = rng.uniform([-3, -2, 4], [3, 2, 8], (1000, 3))       # fresh, noise-free test matches
+y1, y2 = proj(X_test), proj(X_test @ R.T + t)
+for n in [8, 15, 100]:
+    for norm in [False, True]:
+        F = eight_point(x1[:n], x2[:n], norm)
+        print(f"{n:3d} matches, normalized={str(norm):5s}: mean Sampson error on test matches "
+              f"{sampson(F, y1, y2).mean():8.3f} px")
+print(f"true F on the same test matches: {sampson(F_true, y1, y2).mean():.2e} px")
+```
+
+```text
+  8 matches, normalized=False: mean Sampson error on test matches    3.186 px
+  8 matches, normalized=True : mean Sampson error on test matches    3.016 px
+ 15 matches, normalized=False: mean Sampson error on test matches    6.091 px
+ 15 matches, normalized=True : mean Sampson error on test matches    1.083 px
+100 matches, normalized=False: mean Sampson error on test matches    0.632 px
+100 matches, normalized=True : mean Sampson error on test matches    0.181 px
+true F on the same test matches: 2.34e-14 px
+```
+
+在 15 或 100 組配對時，正規化版本在這次實驗中準確了好幾倍；只有最少的 8 組帶雜訊配對時，兩者都很差，這也是 RANSAC 樣本之後要再用所有內點重新擬合的原因之一。陷阱：正規化必須逐張影像計算，秩 2 的那一步必須在還原正規化*之前*進行，而退化的配置（所有點在同一個平面上，或兩台相機之間沒有平移）無論用什麼演算法，都會讓 $F$ 無法確定。
+
+### 線性三角測量（DLT）
+
+這則筆記把正文用的線性三角測量完整寫出來，說明為什麼它的答案不是最佳解，並量測基線如何控制它的誤差。
+
+**方程式。** 把未知點寫成齊次形式 $\tilde{\mathbf{X}} = (X, Y, Z, 1)^\top$，令 $\mathbf{p}_i^{k\top}$ 為相機 $i$ 的投影矩陣 $P_i$ 的第 $k$ 列。針孔模型說 $\lambda_i (u_i, v_i, 1)^\top = P_i \tilde{\mathbf{X}}$，所以深度是 $\lambda_i = \mathbf{p}_i^{3\top} \tilde{\mathbf{X}}$。把它代入前兩列，就消去未知的深度，每張影像留下兩個線性方程式：
+
+$$
+A \tilde{\mathbf{X}} = \mathbf{0}, \qquad
+A = \begin{bmatrix} u_1 \mathbf{p}_1^{3\top} - \mathbf{p}_1^{1\top} \\ v_1 \mathbf{p}_1^{3\top} - \mathbf{p}_1^{2\top} \\ u_2 \mathbf{p}_2^{3\top} - \mathbf{p}_2^{1\top} \\ v_2 \mathbf{p}_2^{3\top} - \mathbf{p}_2^{2\top} \end{bmatrix},
+$$
+
+其中 $(u_i, v_i)$ 是影像 $i$ 中觀測到的像素，$A$ 是 $4 \times 4$ 的矩陣。這就是直接線性轉換（direct linear transformation, DLT）法 [1]。有雜訊時，$A$ 沒有精確的零向量。使 $\lVert A \tilde{\mathbf{X}} \rVert$ 最小的單位向量，是 $A$ 最小奇異值所對應的右奇異向量；把它除以最後一個元素，就得到歐氏空間中的點。每多一個視角就多兩列加進 $A$，其他都不變。
+
+**為什麼它不是最佳的。** 被最小化的量 $\lVert A \tilde{\mathbf{X}} \rVert$ 是*代數*誤差：它在像素上沒有直接的意義，而且影像座標重新縮放時它會跟著改變。在高斯像素雜訊下，合理的目標是重投影誤差，也就是 $\mathbf{X}$ 的投影與觀測點之間像素距離的平方和。Hartley 與 Zisserman [1] 描述了直接最小化它的方法。實務上，DLT 的答案是起點，之後再由光束法平差一起精修所有的點與相機。
+
+**邊界情況。** (i) 基線短或點很遠時，兩條射線幾乎平行，$A$ 接近秩 2，深度變得非常不確定。(ii) 無窮遠的點，其最後一個齊次座標為 0，所以最後的除法會失敗；這類點必須保持齊次形式，或者移除。(iii) 錯誤的配對可能產生位於相機後方的點，所以除以最後一個元素之後，要檢查深度 $\mathbf{p}_i^{3\top} \tilde{\mathbf{X}}$ 在每個視角中都是正的（正文的手性檢查）。
+
+**測試。** 這段程式碼對位於相機 1 前方 6 單位的一個點做三角測量，由兩台帶 0.5 像素雜訊的相機觀測，並使用三種基線。它把深度誤差的散布和正文的一階公式 $\delta Z \approx Z^2 \delta d / (fB)$ 比較；視差誤差是兩個獨立 0.5 像素誤差的差，標準差為 $0.5\sqrt{2}$ 像素。
+
+```python
+import numpy as np
+import cv2
+
+rng = np.random.default_rng(0)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])
+X_true = np.array([0.3, -0.2, 6.0])                     # one point, 6 units in front of camera 1
+
+def triangulate_dlt(P1, P2, x1, x2):
+    """Linear triangulation: four equations A X = 0 in the homogeneous point X (4-vector)."""
+    A = np.stack([x1[0] * P1[2] - P1[0], x1[1] * P1[2] - P1[1],
+                  x2[0] * P2[2] - P2[0], x2[1] * P2[2] - P2[1]])
+    Xh = np.linalg.svd(A)[2][-1]                         # right singular vector, smallest singular value
+    return Xh[:3] / Xh[3]                                # homogeneous -> Euclidean
+
+def proj(P, X):
+    x = P @ np.append(X, 1.0)
+    return x[:2] / x[2]
+
+P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+for B in [2.0, 0.5, 0.1]:                                # camera 2 sits B to the right, same orientation
+    P2 = K @ np.hstack([np.eye(3), [[-B], [0.0], [0.0]]])
+    dz = []
+    for _ in range(2000):
+        x1 = proj(P1, X_true) + rng.normal(0, 0.5, 2)      # 0.5 px noise in each image
+        x2 = proj(P2, X_true) + rng.normal(0, 0.5, 2)
+        dz.append(triangulate_dlt(P1, P2, x1, x2)[2] - X_true[2])
+    predicted = X_true[2] ** 2 * (0.5 * np.sqrt(2)) / (800 * B)   # Z^2 * std(disparity error) / (f B)
+    print(f"baseline {B:3.1f}: ray angle {np.degrees(np.arctan2(B, 6)):5.2f} deg | "
+          f"depth error std {np.std(dz):.4f} (first-order prediction {predicted:.4f})")
+Xcv = cv2.triangulatePoints(P1, P2, x1.reshape(2, 1), x2.reshape(2, 1)).ravel()
+print(f"difference from cv2.triangulatePoints: {np.abs(Xcv[:3] / Xcv[3] - triangulate_dlt(P1, P2, x1, x2)).max():.1e}")
+```
+
+```text
+baseline 2.0: ray angle 18.43 deg | depth error std 0.0158 (first-order prediction 0.0159)
+baseline 0.5: ray angle  4.76 deg | depth error std 0.0617 (first-order prediction 0.0636)
+baseline 0.1: ray angle  0.95 deg | depth error std 0.3166 (first-order prediction 0.3182)
+difference from cv2.triangulatePoints: 2.0e-13
+```
+
+量到的散布與一階預測吻合。把基線從 2 縮到 0.1 單位，使兩條射線的夾角小於一度，深度誤差就乘以 20。最後一行顯示 OpenCV 的 `cv2.triangulatePoints` 回傳的是同一個點，差異只有捨入誤差。
+
+### 程式碼中的光束法平差
+
+這則筆記用 SciPy 建立一個完整的小型光束法平差，說明殘差函數、Jacobian 的稀疏性，以及規範（gauge）自由度。
+
+**參數。** 每台相機有一個旋轉向量 $\boldsymbol{\omega} \in \mathbb{R}^3$（軸乘以角度）與一個平移 $\mathbf{t} \in \mathbb{R}^3$；每個點有三個座標。有 $n_c$ 台相機與 $n_p$ 個點時，共有 $6 n_c + 3 n_p$ 個未知數，每個觀測有兩個殘差（$u$ 與 $v$ 的誤差）。
+
+**規範（gauge）。** 把整個場景一起旋轉、平移或縮放，重投影誤差都不會改變：共有七個方向（旋轉三個、平移三個、尺度一個）讓代價保持不變。如果不固定它們，正規方程式是奇異的。這裡把相機 0 固定為單位矩陣，去掉六個；尺度保持自由，實際上由起始點固定。真實的系統會明確固定它，例如固定兩台相機之間的距離。
+
+**稀疏性。** 觀測 $(c, k)$ 的殘差只依賴相機 $c$ 與點 $k$，所以每一對 Jacobian 的列最多有 $6 + 3$ 個非零元素。把這個模式傳給 `least_squares`，它就能使用稀疏有限差分與稀疏求解器。
+
+```python
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.sparse import lil_matrix
+from scipy.spatial.transform import Rotation
+
+rng = np.random.default_rng(0)
+f, c = 800.0, np.array([320.0, 240.0])
+n_cam, n_pts = 4, 80
+X_true = rng.uniform([-3, -2, 4], [3, 2, 8], (n_pts, 3))
+rvec_true = np.array([[0, 0, 0], [0, -0.15, 0], [0, -0.3, 0.02], [0.05, -0.45, 0]])  # rotation vectors
+tvec_true = np.array([[0, 0, 0], [1.0, 0, 0.1], [2.0, 0.1, 0.3], [3.0, 0, 0.6]])
+
+def project(rvec, tvec, X):
+    Xc = Rotation.from_rotvec(rvec).apply(X) + tvec
+    return f * Xc[:, :2] / Xc[:, 2:] + c
+
+cam_idx = np.repeat(np.arange(n_cam), n_pts)           # every camera sees every point
+pt_idx = np.tile(np.arange(n_pts), n_cam)
+obs = np.concatenate([project(rvec_true[i], tvec_true[i], X_true) for i in range(n_cam)])
+obs += rng.normal(0, 0.5, obs.shape)                    # 0.5 px measurement noise
+
+def residuals(params):
+    """Reprojection errors. Camera 0 is held fixed (it defines the world frame)."""
+    cams = np.vstack([np.zeros(6), params[:6 * (n_cam - 1)].reshape(-1, 6)])
+    X = params[6 * (n_cam - 1):].reshape(-1, 3)
+    pred = np.empty_like(obs)
+    for i in range(n_cam):
+        m = cam_idx == i
+        pred[m] = project(cams[i, :3], cams[i, 3:], X[pt_idx[m]])
+    return (pred - obs).ravel()
+
+def sparsity():
+    """Each residual depends on one camera (6 numbers) and one point (3 numbers)."""
+    S = lil_matrix((2 * len(obs), 6 * (n_cam - 1) + 3 * n_pts), dtype=int)
+    for k, (i, j) in enumerate(zip(cam_idx, pt_idx)):
+        rows = [2 * k, 2 * k + 1]
+        if i > 0:
+            S[np.ix_(rows, range(6 * (i - 1), 6 * i))] = 1
+        S[np.ix_(rows, range(6 * (n_cam - 1) + 3 * j, 6 * (n_cam - 1) + 3 * j + 3))] = 1
+    return S
+
+# A rough start, as incremental SfM would provide: perturbed poses and points
+x0 = np.concatenate([np.c_[rvec_true[1:] + rng.normal(0, 0.02, (3, 3)),
+                           tvec_true[1:] + rng.normal(0, 0.1, (3, 3))].ravel(),
+                     (X_true + rng.normal(0, 0.2, X_true.shape)).ravel()])
+rms = lambda p: np.sqrt(np.mean(residuals(p) ** 2))
+sol = least_squares(residuals, x0, jac_sparsity=sparsity(), x_scale='jac', method='trf')
+print(f"unknowns {x0.size}, residuals {2 * len(obs)}, Jacobian non-zeros {sparsity().nnz} "
+      f"({100 * sparsity().nnz / (x0.size * 2 * len(obs)):.1f}%)")
+print(f"reprojection RMS: start {rms(x0):.2f} px -> after bundle adjustment {rms(sol.x):.3f} px")
+X_hat = sol.x[6 * (n_cam - 1):].reshape(-1, 3)
+print(f"median 3D point error after BA: {np.median(np.linalg.norm(X_hat - X_true, axis=1)):.4f} units")
+```
+
+```text
+unknowns 258, residuals 640, Jacobian non-zeros 4800 (2.9%)
+reprojection RMS: start 32.31 px -> after bundle adjustment 0.388 px
+median 3D point error after BA: 0.0122 units
+```
+
+即使在這個小問題中，Jacobian 也只有 2.9% 非零，而且問題越大比例越小，因為每增加一個點，新增的欄只會碰到它自己的觀測。重投影誤差從 32.31 像素降到 0.388 像素，略低於 0.5 像素的雜訊，與正文的兩視角擬合相同。正式的求解器還會更進一步：用 Schur 補（Schur complement）消去這些點，只對相機參數解一個縮減的系統 [13]，並使用穩健損失 $\rho$，讓少數錯誤配對無法拉偏解（這裡 `least_squares(..., loss='huber')` 就能做到）。
+
+### 平面誘導的單應性
+
+這則筆記給出平面掃描對一般相機使用的影像扭曲，正文的水平位移是它的特例。
+
+令一個平面在參考相機座標中為 $\mathbf{n}^\top \mathbf{X} = d$，其中單位法向量為 $\mathbf{n}$，到相機中心的距離為 $d$。令來源相機相對於參考相機的旋轉為 $R$、平移為 $\mathbf{t}$，並令 $K_r$、$K_s$ 為兩個內參矩陣。那麼，參考影像中每個射線打到該平面的像素 $\mathbf{x}_r$，都對應到來源像素
+
+$$
+\mathbf{x}_s \sim H \mathbf{x}_r, \qquad H = K_s \left( R + \frac{\mathbf{t}\,\mathbf{n}^\top}{d} \right) K_r^{-1},
+$$
+
+其中 $\sim$ 表示差一個比例因子的相等（齊次座標）[1]。一行推導：平面上的點滿足 $\mathbf{n}^\top \mathbf{X}/d = 1$，所以 $R\mathbf{X} + \mathbf{t} = (R + \mathbf{t}\mathbf{n}^\top/d)\mathbf{X}$，而 $\mathbf{X}$ 與 $K_r^{-1}\mathbf{x}_r$ 成正比。
+
+特殊情況：對於 $\mathbf{n} = (0, 0, 1)$、深度 $d = Z$ 的正面平行平面，內參 $K$ 相同、沒有旋轉、橫向平移 $\mathbf{t} = (-B, 0, 0)$（來源相機在右邊 $B$ 處），$H$ 會把每個像素向左位移 $fB/Z$，也就是程式碼中使用的視差。當 $d \to \infty$ 時，單應性趨近 $K_s R K_r^{-1}$，即*無窮遠單應性*，它只依賴旋轉：非常遠的點不會透露深度。陷阱：單應性的方向（參考到來源，或反過來）必須與扭曲取樣影像的方式一致，而深度假設最好在 $1/Z$ 上均勻取樣，因為在影像中線性變化的是視差，而不是深度。
+
+### 多解析度雜湊編碼
+
+這則筆記給出正文摘要過的 Instant-NGP 編碼的細節：格網解析度如何選擇、格網角點如何雜湊，以及這個編碼有多少參數。
+
+**層級。** 編碼有 $L$ 層。第 $l$ 層（$l = 0, \dots, L - 1$）是一個解析度為下式的格網
+
+$$
+N_l = \left\lfloor N_{\min} \, b^{\,l} \right\rfloor, \qquad
+b = \exp\!\left( \frac{\ln N_{\max} - \ln N_{\min}}{L - 1} \right),
+$$
+
+其中 $N_{\min}$ 與 $N_{\max}$ 是最粗與最細的解析度，$\lfloor \cdot \rfloor$ 表示無條件捨去，$b$ 是成長因子，所以各層解析度形成等比數列 [19]。論文的典型值是 $L = 16$ 層、每個表項 $F = 2$ 個特徵、每層 $T$ 介於 $2^{14}$ 與 $2^{24}$ 個表項、$N_{\min} = 16$，而 $N_{\max}$ 介於 512 與 524,288，依資料中最細的細節而選 [19]。
+
+**查詢。** 在第 $l$ 層，輸入點乘以 $N_l$，包含它的格網單元有 $2^d$ 個整數座標的角點（三維時 $d = 3$）。如果整個格網放得進表裡，也就是 $(N_l + 1)^d \le T$，每個角點都有自己的表項。否則，角點 $\mathbf{x} = (x_1, \dots, x_d)$ 使用下面這個表項
+
+$$
+h(\mathbf{x}) = \left( \bigoplus_{i=1}^{d} x_i \pi_i \right) \bmod T,
+$$
+
+其中 $\oplus$ 是位元 XOR，常數為 $\pi_1 = 1$、$\pi_2 = 2\,654\,435\,761$ 與 $\pi_3 = 805\,459\,861$ [19]。只有 $d - 1$ 個維度需要大質數來消除相關性，而 $\pi_1 = 1$ 讓沿第一軸相鄰的角點在記憶體中也相鄰 [19]。$2^d$ 個角點的特徵會依該點在單元內的位置，在每個維度上做線性內插（三維時為三線性內插）。所有 $L$ 層的內插向量會與任何額外輸入（例如編碼後的觀看方向）串接，再傳給 MLP [19]。
+
+**碰撞。** 在細的層級，許多角點共用同一個表項，而編碼不會偵測或解決這件事。發生碰撞的角點的梯度會被平均，所以梯度最大、也就是與損失最相關的角點，會主導共用的表項；作者主張，表因此集中在細節最重要的稀疏區域，而多解析度結構讓網路能分辨出碰撞 [19]。
+
+**參數量。** 不論 $N_{\max}$ 是多少，這些表最多含有 $T \cdot L \cdot F$ 個可訓練的數字 [19]。記憶體由 $T$ 決定，而不是由最細的解析度決定。
+
+**範例演算。** 這段程式碼用 $N_{\max} = 2048$ 與 $T = 2^{19}$（都在論文的典型範圍內）計算各層，並對三個相鄰的角點做雜湊。
+
+```python
+import numpy as np
+
+L, F, T = 16, 2, 2 ** 19                                 # levels, features per entry, table size
+N_min, N_max = 16, 2048                                  # coarsest and finest grid resolution
+b = np.exp((np.log(N_max) - np.log(N_min)) / (L - 1))   # growth factor between levels
+N = np.floor(N_min * b ** np.arange(L)).astype(int)     # resolution of each level
+dense = (N + 1) ** 3 <= T                                # does the full grid fit in the table?
+print(f"growth factor b = {b:.3f}; resolutions {N.tolist()}")
+print(f"levels stored 1:1 (no hashing): {dense.sum()}, hashed levels: {(~dense).sum()}")
+print(f"finest level: {(N[-1] + 1) ** 3:,} grid vertices share {T:,} entries "
+      f"(about {(N[-1] + 1) ** 3 / T:,.0f} per entry)")
+print(f"trainable encoding parameters: at most T * L * F = {T * L * F:,}")
+
+PI = np.array([1, 2654435761, 805459861], dtype=np.uint64)     # the primes of the paper (pi_1 = 1)
+def spatial_hash(corner):
+    """h(x) = (x_1 pi_1  XOR  x_2 pi_2  XOR  x_3 pi_3) mod T for an integer grid corner."""
+    return int(np.bitwise_xor.reduce(np.asarray(corner, dtype=np.uint64) * PI) % np.uint64(T))
+for corner in [(100, 200, 300), (101, 200, 300), (100, 201, 300)]:
+    print(f"corner {corner} -> table entry {spatial_hash(corner)}")
+```
+
+```text
+growth factor b = 1.382; resolutions [16, 22, 30, 42, 58, 80, 111, 153, 212, 294, 406, 561, 776, 1072, 1482, 2048]
+levels stored 1:1 (no hashing): 5, hashed levels: 11
+finest level: 8,602,523,649 grid vertices share 524,288 entries (about 16,408 per entry)
+trainable encoding parameters: at most T * L * F = 16,777,216
+corner (100, 200, 300) -> table entry 110768
+corner (101, 200, 300) -> table entry 110769
+corner (100, 201, 300) -> table entry 10497
+```
+
+在這些設定下，最粗的五層可以直接放進表裡，其餘十一層則使用雜湊。在最細的一層，大約 16,000 個格網角點共用每個表項，這之所以可行，只是因為其中大多數永遠不會得到大的梯度。最後三行顯示 $\pi_1 = 1$ 的效果：沿第一軸走一步會移到下一個表項，沿第二軸走一步則跳得很遠。
+
+### 為什麼 NeuS 的權重會在表面上達到峰值
+
+這則筆記在一條光線上量測 NeuS 當初設計來消除的偏差。
+
+取一條光線，在 $t^* = 3$ 處以某個角度碰到一個平面，所以沿光線的有號距離是 $f(t) = -\cos\theta \,(t - t^*)$，其中 $\cos\theta = 0.5$（表面前方為正，後方為負）。*天真*的做法是把 logistic 密度 $\phi_s(f(t))$（sigmoid $\Phi_s$ 的導數）當成 NeRF 的體積密度 $\sigma$。權重 $w(t) = T(t)\sigma(t)$ 於是在 $t^*$ 之前達到峰值：$\sigma$ 還在上升時，透射率 $T$ 已經在下降，兩者的乘積提早達到峰值。NeuS 改為定義不透明密度 $\rho(t) = \max\!\big(-\frac{d\Phi_s(f)/dt}{\Phi_s(f)}, 0\big)$，它的離散形式就是正文中的 $\alpha_i$ 公式；對平面而言，得到的權重恰好是以表面為中心的正規化 logistic 密度 [22]。
+
+```python
+import numpy as np
+
+t = np.linspace(0, 6, 6001)                            # dense samples along one ray
+t_star, cos_theta = 3.0, 0.5                           # the ray meets a plane at t* = 3, at 60 degrees
+f = -cos_theta * (t - t_star)                          # signed distance along the ray (positive outside)
+
+def weights_from_alpha(alpha):
+    T = np.concatenate([[1.0], np.cumprod(1 - alpha)[:-1]])
+    return T * alpha
+
+for s in [10.0, 40.0]:
+    Phi = 1 / (1 + np.exp(-s * f))                     # sigmoid of the SDF
+    phi = s * np.exp(-s * f) / (1 + np.exp(-s * f)) ** 2   # logistic density (derivative of Phi)
+    delta = np.diff(t, append=t[-1] + (t[1] - t[0]))
+    w_naive = weights_from_alpha(1 - np.exp(-phi * delta))                    # density = phi(SDF)
+    alpha_neus = np.clip((Phi[:-1] - Phi[1:]) / Phi[:-1], 0, 1)               # NeuS discrete opacity
+    w_neus = weights_from_alpha(np.append(alpha_neus, 0.0))
+    for name, w in [("naive", w_naive), ("NeuS ", w_neus)]:
+        print(f"s = {s:4.0f}, {name}: weight peak at t = {t[w.argmax()]:.3f}, "
+              f"mean depth {np.sum(w * t) / w.sum():.3f} (surface at 3.000)")
+```
+
+```text
+s =   10, naive: weight peak at t = 2.824, mean depth 2.810 (surface at 3.000)
+s =   10, NeuS : weight peak at t = 2.999, mean depth 2.999 (surface at 3.000)
+s =   40, naive: weight peak at t = 2.956, mean depth 2.953 (surface at 3.000)
+s =   40, NeuS : weight peak at t = 3.000, mean depth 2.999 (surface at 3.000)
+```
+
+在 $s = 10$ 時，天真權重的峰值提早了 0.18 單位，在 $s = 40$ 時提早了 0.04 單位：轉變越銳利，偏差越小，但永遠不會消失。NeuS 的權重在兩種情況下都在表面上達到峰值。論文證明了一階無偏，也就是對局部為平面的表面成立 [22]；在曲率很大的表面，或光線擦過表面時，仍會殘留小的偏差。一個實務上的陷阱：$s$ 是學出來的，如果初始化得太大，權重會集中在光線很少取樣到的極窄區帶，使訓練初期的梯度很弱。
+
+### 投影 3D 高斯：局部仿射近似
+
+這則筆記寫出 EWA splatting 與 3DGS 使用的 Jacobian，並量測這個近似有多好。
+
+透視投影 $\pi(x, y, z) = (f_x x / z, \; f_y y / z)$ 不是線性的，所以高斯的像並不剛好是高斯。EWA splatting [23] 在高斯中心 $\boldsymbol{\mu}_c = (x, y, z)$（相機座標）附近，以 $\pi$ 的一階泰勒展開取代它。Jacobian 為
+
+$$
+J = \frac{\partial \pi}{\partial (x, y, z)} = \begin{bmatrix} f_x / z & 0 & -f_x x / z^2 \\ 0 & f_y / z & -f_y y / z^2 \end{bmatrix},
+$$
+
+其中 $f_x, f_y$ 是以像素為單位的焦距。線性映射會把共變異數為 $\Sigma_c$ 的高斯，送到共變異數為 $J \Sigma_c J^\top$ 的高斯，這就是正文 $\Sigma' = J W \Sigma W^\top J^\top$ 的 $2 \times 2$ 區塊，其中 $\Sigma_c = W \Sigma W^\top$ [6]、[23]。這段程式碼把它和許多投影取樣點的精確共變異數比較，用同一個高斯在三種深度下做測試。
+
+```python
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+rng = np.random.default_rng(0)
+fx = fy = 500.0                                        # focal lengths (pixels)
+
+def project_cov(mu_c, Sigma_c):
+    """2D covariance of a 3D Gaussian (already in camera coordinates) under the local affine
+    approximation: Sigma' = J Sigma J^T, with J the Jacobian of (x, y, z) -> (fx x/z, fy y/z) at the mean."""
+    x, y, z = mu_c
+    J = np.array([[fx / z, 0, -fx * x / z ** 2],
+                  [0, fy / z, -fy * y / z ** 2]])
+    return J @ Sigma_c @ J.T
+
+S = np.diag([0.30, 0.10, 0.05])                        # axis lengths (standard deviations)
+Rm = Rotation.from_euler('xyz', [20, 40, 10], degrees=True).as_matrix()
+Sigma = Rm @ S @ S.T @ Rm.T                            # Sigma = R S S^T R^T
+for z in [2.0, 4.0, 8.0]:
+    mu = np.array([0.5, -0.3, z])
+    approx = project_cov(mu, Sigma)
+    P = rng.multivariate_normal(mu, Sigma, 200_000)    # Monte Carlo: project samples exactly
+    uv = np.c_[fx * P[:, 0] / P[:, 2], fy * P[:, 1] / P[:, 2]]
+    exact = np.cov(uv.T)
+    err = np.linalg.norm(approx - exact) / np.linalg.norm(exact)
+    print(f"depth {z:.0f}: std along axes (approx) {np.sqrt(np.linalg.eigvalsh(approx))[::-1].round(2)} px, "
+          f"(sampled) {np.sqrt(np.linalg.eigvalsh(exact))[::-1].round(2)} px, relative error {100 * err:.1f}%")
+```
+
+```text
+depth 2: std along axes (approx) [68.94 25.13] px, (sampled) [71.9  25.53] px, relative error 8.0%
+depth 4: std along axes (approx) [31.69 12.28] px, (sampled) [31.93 12.3 ] px, relative error 1.5%
+depth 8: std along axes (approx) [15.19  6.05] px, (sampled) [15.22  6.05] px, relative error 0.5%
+```
+
+高斯相對於距離很小時誤差很小（深度 8 時為 0.5%），靠近時誤差變大（深度 2 時為 8.0%），因為在較大的視角範圍內，投影更不線性。在 3DGS 中，這對靠近相機的大高斯和廣視野很重要；論文的限制一節提到大高斯造成的跳動（popping）與「斑駁」（splotchy）瑕疵 [6]，而 2DGS 論文指出，仿射近似只在影像中心附近才準確，且 3D 高斯給出的深度在不同視角間不一致；它用明確的光線–splat 相交取代這兩者 [28]。實作時有兩個陷阱：$J$ 必須在相機座標中計算（套用 $W$ 之後），而中心在相機後方或非常靠近相機（$z \to 0$）的高斯必須剔除，因為 $J$ 會爆掉。
+
+## 論文導讀
+
+這些導讀是選讀：每一篇帶你走過本篇所依據的一篇論文：它提出的問題、想法、呈現了什麼，以及閱讀時要檢查什麼。
+
+### NeRF（Mildenhall 等人，2020）
+
+**要解決的問題。** 給定一組相機已知的照片，從新的視角為一個複雜的真實場景合成逼真的影像。較早的方法不是混合鄰近的照片（離開輸入視角後出現瑕疵），就是最佳化離散的體素格（解析度受記憶體限制）[5]。
+
+**核心想法。** 把場景表示成存放在 MLP 中的連續五維函數（三維位置加二維觀看方向），用經典、可微分的體積算繪來算繪它，並用單純的顏色平方損失把它擬合到照片。有兩個要素讓它成功：輸入的位置編碼，以及用粗網路與細網路做的階層式取樣 [5]。
+
+**它呈現了什麼。** 在合成物體與真實的正面朝前場景上，NeRF 在 PSNR 與 SSIM 上勝過它所比較的神經與影像式算繪方法；在 LPIPS 上，除了真實場景中有一個影像式基準略好之外，它都是最好的 [5]。它也重現了隨視角變化的效果，例如鏡面反光 [5]。消融實驗表顯示了每個元件的貢獻：移除位置編碼或視角相依性，會明顯降低品質 [5]。
+
+**閱讀時要檢查什麼。** 檢查輸入是什麼：真實場景使用 COLMAP 的位姿 [5]，所以結果包含了 SfM 的品質。注意成本：每個場景在一張 GPU 上訓練約 1–2 天 [5]，這是論文坦白說明的；大部分後續工作都在處理這點。也注意什麼是它*沒有*主張的：NeRF 的目標是影像，而不是準確的曲面，它也假設場景靜止、光照不變。通訊版（CACM）[5] 為廣大讀者摘要了同一個方法。
+
+**為什麼在這裡重要。** NeRF 為本篇後面幾乎所有方法立下了範本：一個可微分的場景表示法，靠比較算繪結果與照片來訓練。
+
+### 3D Gaussian Splatting（Kerbl 等人，2023）
+
+**要解決的問題。** 輻射場給出最好的影像品質，但不是訓練與算繪都很慢（高品質），就是拿品質換速度；沒有一個能對完整、無邊界的場景在 1080p 做到即時算繪 [6]。
+
+**核心想法。** 從 SfM 的點開始，用保留體積場有用性質的各向異性 3D 高斯表示場景，以交錯進行的加密與修剪來最佳化它們，並用以圖塊為基礎、具可見性意識、每張影像只排序一次的光柵化器來算繪 [6]。
+
+**它呈現了什麼。** 品質可與先前最好的方法（Mip-NeRF 360）相比，訓練時間與最快的方法相當，且能即時算繪，結果出現在 Mip-NeRF 360 與 Tanks and Temples 等場景上 [6]。消融實驗分別檢驗了 SfM 初始化、以複製與分裂做的加密、各向異性共變異數、讓不限數量的高斯都能接收每個像素的梯度，以及球諧函數 [6]。
+
+**閱讀時要檢查什麼。** 把表示法（帶有球諧顏色的高斯）和工程細節（光柵化器與明確的梯度）分開。看訓練／測試協定（每第 8 張影像），並看哪些基準數字是作者重新跑的、哪些是抄來的 [6]。閱讀限制：觀測不足的區域出現瑕疵、拉長或「斑駁」的高斯、跳動、最佳化沒有正則化，以及記憶體使用量明顯高於以 NeRF 為基礎的方法 [6]。
+
+**為什麼在這裡重要。** 它以排序與混合取代了光線步進，也是本篇網格萃取、動態場景與前饋式高斯工作的起點。
+
+### 「現代觀點」綜述導讀
+
+這則導讀擴充「現代觀點」中的綜述摘要：每篇回顧涵蓋什麼、如何組織，以及可以從中帶走什麼。
+
+**A Comparison and Evaluation of Multi-View Stereo Reconstruction Algorithms**（Seitz、Curless、Diebel、Scharstein 與 Szeliski，CVPR 2006）[42] 以六個性質的分類法（場景表示法、光度一致性量測、可見性模型、形狀先驗、重建演算法、對初始化的需求）回顧 MVS 演算法，並引入具有高精確度真值的校正資料集與評估方法 [42]。讀它是為了學詞彙：幾乎所有後來的方法，包括神經方法，都能放進它的六個欄位裡。
+
+**Multi-View Stereo: A Tutorial**（Furukawa 與 Hernández，*Foundations and Trends in Computer Graphics and Vision*，2015）[43] 是一本實用、以演算法為主的專著。它把 MVS 定位為影像–幾何一致性最佳化，詳細說明光度一致性量測與最佳化方法，展示成功的演算法與產品如何結合它們，最後以結構先驗與尚存的挑戰收尾 [43]。讀它可以了解學習式 MVS 取代了什麼，以及為什麼。
+
+**Advances in Neural Rendering**（Tewari 等人，*Computer Graphics Forum*，2022，Eurographics 最新技術報告）[44] 把神經算繪整理成基礎（場景表示法、可微分影像形成、最佳化）與應用（靜態內容的新視角合成、跨場景泛化、非靜態內容、組合性與編輯、重新打光與材質、光場），接著是尚未解決的挑戰與社會影響 [44]。它早於 3DGS，所以讀它是為了了解 NeRF 時代及其未解決的問題。
+
+**A Survey on 3D Gaussian Splatting**（Chen 與 Wang，*ACM Computing Surveys*，2026）[45] 涵蓋輻射場的背景、3DGS 的原理與最佳化、改進它的七個方向（稀疏輸入、記憶體效率、逼真度、最佳化、額外屬性、混合表示法、新的算繪演算法）、應用領域與效能比較，接著是尚未解決的問題 [45]。它的未來方向一節描述了從逐場景最佳化轉向前饋式高斯預測，以及朝向以高斯為基礎的世界模型的趨勢 [45]。可以用它的分類法來定位新的 3DGS 論文。
+
+## 參考文獻
+
+1. R. Hartley and A. Zisserman, *Multiple View Geometry in Computer Vision*, 2nd ed., Cambridge University Press, 2004. [doi](https://doi.org/10.1017/CBO9780511811685)
+2. J. L. Schönberger and J.-M. Frahm, "Structure-from-motion revisited," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Schonberger_Structure-From-Motion_Revisited_CVPR_2016_paper.html)
+3. J. L. Schönberger, E. Zheng, J.-M. Frahm and M. Pollefeys, "Pixelwise view selection for unstructured multi-view stereo," in *Proc. ECCV*, 2016. [doi](https://doi.org/10.1007/978-3-319-46487-9_31)
+4. J. L. Schönberger et al., "COLMAP," official documentation (general-purpose structure-from-motion and multi-view stereo pipeline). [link](https://colmap.github.io/)
+5. B. Mildenhall, P. P. Srinivasan, M. Tancik, J. T. Barron, R. Ramamoorthi and R. Ng, "NeRF: Representing scenes as neural radiance fields for view synthesis," in *Proc. ECCV*, 2020; also *Communications of the ACM*, vol. 65, no. 1, pp. 99–106, 2022. [doi](https://doi.org/10.1007/978-3-030-58452-8_24) · [CACM doi](https://doi.org/10.1145/3503250) · [arXiv](https://arxiv.org/abs/2003.08934)
+6. B. Kerbl, G. Kopanas, T. Leimkühler and G. Drettakis, "3D Gaussian Splatting for real-time radiance field rendering," *ACM Transactions on Graphics*, vol. 42, no. 4, 2023. [doi](https://doi.org/10.1145/3592433) · [arXiv](https://arxiv.org/abs/2308.04079)
+7. H. C. Longuet-Higgins, "A computer algorithm for reconstructing a scene from two projections," *Nature*, vol. 293, pp. 133–135, 1981. [doi](https://doi.org/10.1038/293133a0)
+8. R. I. Hartley, "In defense of the eight-point algorithm," *IEEE TPAMI*, vol. 19, no. 6, pp. 580–593, 1997. [doi](https://doi.org/10.1109/34.601246)
+9. D. Nistér, "An efficient solution to the five-point relative pose problem," *IEEE TPAMI*, vol. 26, no. 6, pp. 756–770, 2004. [doi](https://doi.org/10.1109/TPAMI.2004.17)
+10. M. A. Fischler and R. C. Bolles, "Random sample consensus: A paradigm for model fitting with applications to image analysis and automated cartography," *Communications of the ACM*, vol. 24, no. 6, pp. 381–395, 1981. [doi](https://doi.org/10.1145/358669.358692)
+11. D. G. Lowe, "Distinctive image features from scale-invariant keypoints," *International Journal of Computer Vision*, vol. 60, no. 2, pp. 91–110, 2004. [doi](https://doi.org/10.1023/B:VISI.0000029664.99615.94)
+12. N. Snavely, S. M. Seitz and R. Szeliski, "Photo tourism: Exploring photo collections in 3D," *ACM Transactions on Graphics*, vol. 25, no. 3, pp. 835–846, 2006. [doi](https://doi.org/10.1145/1141911.1141964)
+13. B. Triggs, P. F. McLauchlan, R. I. Hartley and A. W. Fitzgibbon, "Bundle adjustment — A modern synthesis," in *Vision Algorithms: Theory and Practice*, LNCS 1883, pp. 298–372, Springer, 2000. [doi](https://doi.org/10.1007/3-540-44480-7_21)
+14. R. T. Collins, "A space-sweep approach to true multi-image matching," in *Proc. IEEE CVPR*, pp. 358–363, 1996. [doi](https://doi.org/10.1109/CVPR.1996.517097)
+15. B. Curless and M. Levoy, "A volumetric method for building complex models from range images," in *Proc. SIGGRAPH*, pp. 303–312, 1996. [doi](https://doi.org/10.1145/237170.237269)
+16. Y. Yao, Z. Luo, S. Li, T. Fang and L. Quan, "MVSNet: Depth inference for unstructured multi-view stereo," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yao_Yao_MVSNet_Depth_Inference_ECCV_2018_paper.html) · [doi](https://doi.org/10.1007/978-3-030-01237-3_47)
+17. N. Max, "Optical models for direct volume rendering," *IEEE Transactions on Visualization and Computer Graphics*, vol. 1, no. 2, pp. 99–108, 1995. [doi](https://doi.org/10.1109/2945.468400)
+18. M. Tancik, P. P. Srinivasan, B. Mildenhall, S. Fridovich-Keil, N. Raghavan, U. Singhal, R. Ramamoorthi, J. T. Barron and R. Ng, "Fourier features let networks learn high frequency functions in low dimensional domains," in *Proc. NeurIPS*, 2020. [proceedings](https://proceedings.neurips.cc/paper/2020/hash/55053683268957697aa39fba6f231c68-Abstract.html)
+19. T. Müller, A. Evans, C. Schied and A. Keller, "Instant neural graphics primitives with a multiresolution hash encoding," *ACM Transactions on Graphics*, vol. 41, no. 4, 2022. [doi](https://doi.org/10.1145/3528223.3530127) · [arXiv](https://arxiv.org/abs/2201.05989)
+20. J. J. Park, P. Florence, J. Straub, R. Newcombe and S. Lovegrove, "DeepSDF: Learning continuous signed distance functions for shape representation," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Park_DeepSDF_Learning_Continuous_Signed_Distance_Functions_for_Shape_Representation_CVPR_2019_paper.html)
+21. L. Mescheder, M. Oechsle, M. Niemeyer, S. Nowozin and A. Geiger, "Occupancy networks: Learning 3D reconstruction in function space," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Mescheder_Occupancy_Networks_Learning_3D_Reconstruction_in_Function_Space_CVPR_2019_paper.html)
+22. P. Wang, L. Liu, Y. Liu, C. Theobalt, T. Komura and W. Wang, "NeuS: Learning neural implicit surfaces by volume rendering for multi-view reconstruction," in *Proc. NeurIPS*, 2021. [proceedings](https://proceedings.neurips.cc/paper/2021/hash/e41e164f7485ec4a28741a2d0ea41c74-Abstract.html) · [arXiv](https://arxiv.org/abs/2106.10689)
+23. M. Zwicker, H. Pfister, J. van Baar and M. Gross, "EWA volume splatting," in *Proc. IEEE Visualization*, 2001. [doi](https://doi.org/10.1109/VISUAL.2001.964490)
+24. W. E. Lorensen and H. E. Cline, "Marching cubes: A high resolution 3D surface construction algorithm," in *Proc. SIGGRAPH*, pp. 163–169, 1987. [doi](https://doi.org/10.1145/37401.37422)
+25. M. Kazhdan, M. Bolitho and H. Hoppe, "Poisson surface reconstruction," in *Proc. Eurographics Symposium on Geometry Processing*, 2006. [doi](https://doi.org/10.2312/SGP/SGP06/061-070)
+26. M. Kazhdan and H. Hoppe, "Screened Poisson surface reconstruction," *ACM Transactions on Graphics*, vol. 32, no. 3, 2013. [doi](https://doi.org/10.1145/2487228.2487237)
+27. A. Guédon and V. Lepetit, "SuGaR: Surface-aligned Gaussian splatting for efficient 3D mesh reconstruction and high-quality mesh rendering," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Guedon_SuGaR_Surface-Aligned_Gaussian_Splatting_for_Efficient_3D_Mesh_Reconstruction_and_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2311.12775)
+28. B. Huang, Z. Yu, A. Chen, A. Geiger and S. Gao, "2D Gaussian splatting for geometrically accurate radiance fields," in *Proc. SIGGRAPH (Conference Papers)*, 2024. [doi](https://doi.org/10.1145/3641519.3657428) · [arXiv](https://arxiv.org/abs/2403.17888)
+29. S. Wang, V. Leroy, Y. Cabon, B. Chidlovskii and J. Revaud, "DUSt3R: Geometric 3D vision made easy," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Wang_DUSt3R_Geometric_3D_Vision_Made_Easy_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2312.14132)
+30. V. Leroy, Y. Cabon and J. Revaud, "Grounding image matching in 3D with MASt3R," in *Proc. ECCV*, 2024. [doi](https://doi.org/10.1007/978-3-031-73220-1_5) · [arXiv](https://arxiv.org/abs/2406.09756)
+31. J. Wang, M. Chen, N. Karaev, A. Vedaldi, C. Rupprecht and D. Novotny, "VGGT: Visual geometry grounded transformer," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wang_VGGT_Visual_Geometry_Grounded_Transformer_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2503.11651)
+32. A. Pumarola, E. Corona, G. Pons-Moll and F. Moreno-Noguer, "D-NeRF: Neural radiance fields for dynamic scenes," in *Proc. IEEE/CVF CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Pumarola_D-NeRF_Neural_Radiance_Fields_for_Dynamic_Scenes_CVPR_2021_paper.html)
+33. G. Wu, T. Yi, J. Fang, L. Xie, X. Zhang, W. Wei, W. Liu, Q. Tian and X. Wang, "4D Gaussian splatting for real-time dynamic scene rendering," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_4D_Gaussian_Splatting_for_Real-Time_Dynamic_Scene_Rendering_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2310.08528)
+34. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image quality assessment: From error visibility to structural similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+35. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The unreasonable effectiveness of deep features as a perceptual metric," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Zhang_The_Unreasonable_Effectiveness_CVPR_2018_paper.html)
+36. H. Fan, H. Su and L. J. Guibas, "A point set generation network for 3D object reconstruction from a single image," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Fan_A_Point_Set_CVPR_2017_paper.html)
+37. R. Jensen, A. Dahl, G. Vogiatzis, E. Tola and H. Aanæs, "Large scale multi-view stereopsis evaluation," in *Proc. IEEE CVPR*, pp. 406–413, 2014. [doi](https://doi.org/10.1109/CVPR.2014.59)
+38. A. Knapitsch, J. Park, Q.-Y. Zhou and V. Koltun, "Tanks and Temples: Benchmarking large-scale scene reconstruction," *ACM Transactions on Graphics*, vol. 36, no. 4, 2017. [doi](https://doi.org/10.1145/3072959.3073599) · [benchmark](https://www.tanksandtemples.org/)
+39. J. T. Barron, B. Mildenhall, D. Verbin, P. P. Srinivasan and P. Hedman, "Mip-NeRF 360: Unbounded anti-aliased neural radiance fields," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Barron_Mip-NeRF_360_Unbounded_Anti-Aliased_Neural_Radiance_Fields_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.12077)
+40. D. Verbin, P. Hedman, B. Mildenhall, T. Zickler, J. T. Barron and P. P. Srinivasan, "Ref-NeRF: Structured view-dependent appearance for neural radiance fields," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Verbin_Ref-NeRF_Structured_View-Dependent_Appearance_for_Neural_Radiance_Fields_CVPR_2022_paper.html)
+41. C.-H. Lin, W.-C. Ma, A. Torralba and S. Lucey, "BARF: Bundle-adjusting neural radiance fields," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Lin_BARF_Bundle-Adjusting_Neural_Radiance_Fields_ICCV_2021_paper.html)
+42. S. M. Seitz, B. Curless, J. Diebel, D. Scharstein and R. Szeliski, "A comparison and evaluation of multi-view stereo reconstruction algorithms," in *Proc. IEEE CVPR*, vol. 1, pp. 519–528, 2006. [doi](https://doi.org/10.1109/CVPR.2006.19)
+43. Y. Furukawa and C. Hernández, "Multi-view stereo: A tutorial," *Foundations and Trends in Computer Graphics and Vision*, vol. 9, no. 1–2, pp. 1–148, 2015. [doi](https://doi.org/10.1561/0600000052)
+44. A. Tewari, J. Thies, B. Mildenhall, P. Srinivasan, E. Tretschk, W. Yifan, C. Lassner, V. Sitzmann et al., "Advances in neural rendering," *Computer Graphics Forum*, vol. 41, no. 2, pp. 703–735, 2022. [doi](https://doi.org/10.1111/cgf.14507) · [arXiv](https://arxiv.org/abs/2111.05849)
+45. G. Chen and W. Wang, "A survey on 3D Gaussian splatting," *ACM Computing Surveys*, vol. 58, no. 12, 2026. [doi](https://doi.org/10.1145/3807511) · [arXiv](https://arxiv.org/abs/2401.03890)
+46. scikit-image contributors, "skimage.measure.marching_cubes," *scikit-image documentation (API reference)*. [docs](https://scikit-image.org/docs/stable/api/skimage.measure.html#skimage.measure.marching_cubes)
+47. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai et al., "An image is worth 16x16 words: Transformers for image recognition at scale," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+48. A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser and I. Polosukhin, "Attention is all you need," in *Proc. NeurIPS*, 2017. [proceedings](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html)
+49. D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1412.6980)
+

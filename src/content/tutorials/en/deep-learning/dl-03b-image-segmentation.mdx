@@ -1,0 +1,968 @@
+---
+title: "DLCV 03B · Image Segmentation: Semantic, Instance and Panoptic"
+description: "How deep networks label every pixel: the three segmentation tasks, fully convolutional and encoder–decoder networks, atrous convolution and multi-scale context, losses and metrics (mIoU, mask AP, panoptic quality), mask classification with MaskFormer and Mask2Former, and promptable and open-vocabulary segmentation."
+track: deep-learning
+order: 38
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection, image-processing/dip-10-segmentation]
+tags: [semantic-segmentation, instance-segmentation, panoptic-segmentation, deeplab, mask2former, mean-iou, panoptic-quality]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figTasks from '../../../../assets/deep-learning/dl-03b-image-segmentation/tasks.png';
+import figArch from '../../../../assets/deep-learning/dl-03b-image-segmentation/architectures.png';
+import figUp from '../../../../assets/deep-learning/dl-03b-image-segmentation/upsampling.png';
+import figDil from '../../../../assets/deep-learning/dl-03b-image-segmentation/dilation.png';
+import figPq from '../../../../assets/deep-learning/dl-03b-image-segmentation/pq-toy.png';
+
+## What you'll learn
+
+- The three segmentation tasks, defined precisely: semantic (a class per pixel), instance (a mask per object) and panoptic (a class and an object identity for every pixel), and the "stuff" versus "things" distinction behind them.
+- How a classification network becomes a per-pixel predictor: fully convolutional networks, output stride, upsampling of scores, encoder–decoders with skip connections, atrous (dilated) convolution and multi-scale context modules (ASPP, pyramid pooling).
+- Which losses train segmenters (per-pixel cross-entropy, Dice, focal) and why class imbalance makes the choice matter, with a NumPy experiment.
+- How each task is measured, in code: pixel accuracy and mean IoU, mask AP, and panoptic quality $\text{PQ} = \text{SQ} \times \text{RQ}$.
+- How mask classification (MaskFormer, Mask2Former) solves all three tasks with one architecture, and where promptable (SAM family) and open-vocabulary models fit in.
+
+## The big picture
+
+A detector draws a box around each object ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/)). A box is a rough answer: it contains background pixels, and it says nothing about the object's exact outline. **Segmentation** gives the exact answer. It decides, for every pixel, what that pixel belongs to.
+
+<Callout type="tip" title="Explain like I'm five">
+Give a child a colouring book page of a street and some crayons. **Semantic segmentation** is colouring by kind: every car blue, every person orange, the road grey, the sky light blue. Two cars that touch become one blue blob. **Instance segmentation** is putting a numbered sticker on each car and each person and colouring exactly inside that object's outline; the road and sky are left blank. **Panoptic segmentation** does both: every bit of the page gets a colour, and each car and person also gets its own number.
+</Callout>
+
+Why it matters. A self-driving car needs to know which pixels are drivable road, not just that "a road is somewhere in this box". A radiologist measuring a tumour needs its exact area. A photo editor that removes a person needs that person's outline. Robots that grasp objects, satellite images of fields and forests, and medical scans all need per-pixel answers.
+
+This chapter is the deep-learning sequel of two classical chapters. [IP 10](/en/learn/image-processing/dip-10-segmentation/) and [IP 11](/en/learn/image-processing/dip-11-active-contours/) segment an image with thresholds, region growing, graph cuts, watersheds and active contours, using no training data; this chapter learns the segmentation from labeled examples. [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/) introduced boxes, IoU, anchors, feature pyramids, the focal loss and Mask R-CNN; we reuse those ideas and link back instead of repeating them. The promptable Segment Anything models are introduced in [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#promptable-segmentation-sam-sam-2-sam-3) and [ML 09](/en/learn/ml/ml-09-foundation-models/#promptable-segmentation-the-segment-anything-family); here we only place them among the other tasks. Three surveys frame the field: Minaee et al. for the CNN era [1], Li et al. for transformer-based segmentation [2], and Zhou et al. for segmentation with foundation models [3]. We return to them in the Modern view.
+
+## Three tasks, one label map
+
+**Plain version.** All three tasks write labels onto the pixel grid. They differ in *which* labels: a class name only (semantic), an object identity for countable objects only (instance), or both for every pixel (panoptic).
+
+**Precise version.** Let $\Omega = \{1, \dots, H\} \times \{1, \dots, W\}$ be the set of pixel positions of an $H \times W$ image and let $\{1, \dots, K\}$ be the class labels.
+
+- **Semantic segmentation** predicts a label map $y : \Omega \to \{1, \dots, K\}$, one class $y(\mathbf{x})$ per pixel $\mathbf{x}$. It does not distinguish two objects of the same class.
+- **Instance segmentation** predicts a set $\{(m_j, c_j, s_j)\}_{j=1}^{N}$, where $m_j \in \{0, 1\}^{H \times W}$ is a binary mask, $c_j$ its class, $s_j \in [0, 1]$ a confidence score and $N$ varies per image. Masks may overlap, and only countable object classes are segmented. It is detection with a mask instead of a box.
+- **Panoptic segmentation** [4] maps each pixel $i$ to a pair $(l_i, z_i)$, where $l_i$ is the class and $z_i$ an instance id. Pixels with the same pair form one **segment**. Segments cannot overlap, since each pixel carries one pair, and no confidence scores are required.
+
+The panoptic paper names the two kinds of classes after an older distinction in vision. **Things** are countable objects with a well-defined shape, such as people, cars and animals. **Stuff** is amorphous regions of similar texture or material, such as sky, road and grass [4]. For a stuff class the instance id is ignored: all the sky in an image is one segment. Which classes are stuff and which are things is a design choice of each dataset. Pixels that are ambiguous or outside every class get a special **void** label and are not evaluated.
+
+<Figure src={figTasks} alt="Four panels of a synthetic street scene with sky, a building, grass, road, three cars and two people. Panel b colours pixels by class, so the two touching cars merge into one blue region. Panel c shows a separate coloured mask per car and person on a blank background. Panel d combines class colours for sky, building, grass and road with separate colours for each car and person, separated by white outlines." caption="Figure 1 — The three tasks on one synthetic scene. (b) Semantic: the two touching cars become one region. (c) Instance: one mask per object, stuff is not labeled. (d) Panoptic: every pixel gets a class, and every thing also gets its own identity." />
+
+| | Semantic | Instance | Panoptic |
+| --- | --- | --- | --- |
+| Labels | class per pixel | mask + class + score per object | (class, instance id) per pixel |
+| Classes covered | stuff and things | things only | stuff and things |
+| Overlaps allowed | no | yes | no |
+| Confidence scores | no | yes | no |
+| Standard metric | mean IoU | mask AP | panoptic quality (PQ) |
+
+The table explains why the three tasks long had separate methods: their outputs have different shapes, and each metric rewards something different. Most of this chapter follows that history: per-pixel classifiers for semantic segmentation first, then detector-based instance segmentation, then the panoptic task that forced the two to meet, and finally one architecture that handles all three.
+
+## From a classifier to a per-pixel classifier
+
+**Plain version.** Take an image classifier, remove the part that throws away "where", and it outputs a small grid of class scores instead of one score vector. Enlarge that grid back to the image size, and you have a segmenter.
+
+### Fully convolutional networks
+
+Long, Shelhamer and Darrell's **fully convolutional network (FCN)** [5] replaced the fully connected layers of a classification network with convolutions. A convolution works on an input of any size, so the network now maps an $H \times W$ image to a score map
+
+$$
+Z \in \mathbb{R}^{K \times \frac{H}{s} \times \frac{W}{s}},
+$$
+
+where $K$ is the number of classes and $s$ is the **output stride**, the ratio between the input resolution and the score-map resolution. A classification backbone pools and strides repeatedly; for the networks FCN started from, $s = 32$, so a $512 \times 512$ image yields a $16 \times 16$ grid of class scores. Each score vector $Z[:, u, v]$ summarizes a large window of the image, which is good for recognizing *what* is there, but one cell covers $32 \times 32$ pixels, which is bad for saying exactly *where* a boundary runs.
+
+FCN trains the whole network end to end with a per-pixel cross-entropy loss after upsampling $Z$ to the input size, starting from weights pretrained for classification. To recover detail, it fuses predictions from finer layers: the stride-32 scores are upsampled by 2 and added to a score map computed from the stride-16 layer, and again for stride 8. The paper calls the three versions FCN-32s, FCN-16s and FCN-8s, and shows that each finer fusion gives more detailed outlines [5]. Its summary of the idea is a good one-liner for the whole field: combine "what" from a deep, coarse layer with "where" from a shallow, fine layer. [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#encoderdecoders-for-dense-prediction) introduces the same idea in its section on encoder–decoders.
+
+### Upsample the scores, not the labels
+
+**Plain version.** If you decide the class at low resolution and then enlarge the decision, every boundary becomes a staircase of $s \times s$ blocks. If you first enlarge the *scores* smoothly and then decide per pixel, the boundaries fall between grid points.
+
+Bilinear interpolation computes the score at a fine position from the four nearest coarse cells. For a fine pixel that sits at fractional coarse coordinates $(u + a, v + b)$ with $u, v$ integers and $a, b \in [0, 1)$,
+
+$$
+\tilde{Z}_k = (1 - a)(1 - b)\, Z_k[u, v] + a(1 - b)\, Z_k[u + 1, v] + (1 - a)\, b\, Z_k[u, v + 1] + a\, b\, Z_k[u + 1, v + 1],
+$$
+
+where $Z_k$ is the score map of class $k$ and $\tilde{Z}_k$ the interpolated score. The predicted label is $\hat{y} = \arg\max_k \tilde{Z}_k$. FCN implements upsampling as a strided transposed convolution initialized to bilinear interpolation, and lets the network learn it [5]; transposed convolution is explained in [ML 03](/en/learn/ml/ml-03-convolutional-networks/#padding-stride-and-dilation). Most later models simply use fixed bilinear upsampling for the last step.
+
+The experiment below isolates the effect of output stride. It builds an **ideal** coarse score map, the fraction of each class inside each $s \times s$ cell, an idealized output for a stride-$s$ head, and compares the two orders of "enlarge" and "decide".
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+# Synthetic ground truth: 0 background, 1 large disk, 2 thin bar, 3 small square
+H = W = 256
+yy, xx = np.mgrid[0:H, 0:W]
+gt = np.zeros((H, W), int)
+gt[(yy - 120) ** 2 + (xx - 90) ** 2 < 60 ** 2] = 1
+gt[40:216, 178:184] = 2                        # 6 pixels wide
+gt[196:216, 60:80] = 3                         # 20 x 20 pixels
+K = 4
+
+def iou_per_class(gt, pred, K):
+    return np.array([((gt == k) & (pred == k)).sum() / ((gt == k) | (pred == k)).sum()
+                     for k in range(K)])
+
+onehot = np.stack([(gt == k).astype(float) for k in range(K)])
+print("stride | nearest labels: mIoU (per class) | bilinear scores: mIoU (per class)")
+for s in [4, 8, 16, 32]:
+    # ideal stride-s scores: the class fractions inside each s x s cell
+    coarse = onehot.reshape(K, H // s, s, W // s, s).mean(axis=(2, 4))
+    # (a) decide at low resolution, then enlarge the label map
+    lab_nn = np.kron(coarse.argmax(0), np.ones((s, s), int))
+    # (b) enlarge the scores with bilinear interpolation, then decide per pixel
+    up = np.stack([ndi.zoom(c, s, order=1, mode="nearest", grid_mode=True) for c in coarse])
+    lab_bi = up.argmax(0)
+    a, b = iou_per_class(gt, lab_nn, K), iou_per_class(gt, lab_bi, K)
+    print(f"{s:6d} | {a.mean():.3f} {np.round(a, 2)} | {b.mean():.3f} {np.round(b, 2)}")
+```
+
+```text
+stride | nearest labels: mIoU (per class) | bilinear scores: mIoU (per class)
+     4 | 0.906 [0.99 0.97 0.67 1.  ] | 0.994 [1.   1.   0.99 0.99]
+     8 | 0.825 [0.98 0.93 0.75 0.64] | 0.883 [0.99 0.99 0.7  0.86]
+    16 | 0.565 [0.95 0.89 0.   0.41] | 0.578 [0.97 0.97 0.   0.37]
+    32 | 0.421 [0.92 0.76 0.   0.  ] | 0.473 [0.96 0.93 0.   0.  ]
+```
+
+Three lessons come out of this toy run (the numbers are from the code above, not from any paper). Bilinear upsampling of scores is almost free and always at least as good for the large disk. But no upsampling can bring back what the coarse grid never saw: at stride 16 the 6-pixel bar is a minority in every cell and vanishes, and at stride 32 the 20-pixel square vanishes too. Thin and small structures need a small output stride or a decoder that brings fine features back. And mean IoU punishes those losses heavily, because the bar and the square count as much as the background (Figure 2).
+
+<Figure src={figUp} alt="Three square label maps and a line plot. The ground truth has a blue disk, a thin orange vertical bar and a small green square. At stride 16 with nearest-neighbour enlargement the disk has a blocky outline, the bar is gone and the square is partly wrong; with bilinear score upsampling the disk outline is smooth but the bar is still gone. The plot shows mean IoU falling from about 0.99 to 0.47 for bilinear scores and from 0.91 to 0.42 for nearest labels as the output stride grows from 4 to 32." caption="Figure 2 — Output stride limits what a segmenter can recover, even with ideal coarse scores. (b, c) Stride 16; dark overlay marks wrong pixels. (d) mIoU of the toy map for both upsampling orders." />
+
+### Encoder–decoders and skip connections
+
+**Plain version.** Instead of one big jump from coarse to fine, climb back up the resolution ladder one step at a time, and at each step borrow the detailed feature map that the encoder had at the same size.
+
+**U-Net** [6] made this symmetric: a contracting **encoder** of convolutions and downsampling, an expanding **decoder** of upsampling and convolutions, and at each level a skip connection that concatenates the encoder's feature map to the decoder's. The encoder supplies *what*, the skips supply *where*. The paper's design choices (unpadded convolutions, the overlap-tile strategy, a weighted loss for touching cells and strong elastic augmentation) are covered in the U-Net reading guide of IP 10.
+
+*Optional: [U-Net: a reading guide to the paper](/en/learn/image-processing/dip-10-segmentation/papers/#u-net-a-reading-guide-to-the-paper) (in the Paper guides of IP 10). What the paper claims, the output-size arithmetic of valid convolutions, and how to read its tables.*
+
+The opposite design keeps the decoder light. **DeepLabv3+** [7] runs the encoder to output stride 16, upsamples its features by 4, concatenates low-level features from the backbone at stride 4 (after a $1 \times 1$ convolution that reduces their channels), refines with a few $3 \times 3$ convolutions and upsamples by 4 again. The paper motivates the decoder by noting that a plain 16-fold bilinear upsampling, a "naive decoder", may not recover object details. Figure 3 compares the three shapes: FCN's few fused score maps, U-Net's full ladder, and DeepLab's context module plus a single skip.
+
+<Figure src={figArch} alt="Three block diagrams. FCN: encoder blocks shrinking from the image to 1/32, a score map at 1/32 upsampled by 2 twice with dashed skip arrows from the 1/16 and 1/8 encoder stages, then upsampled by 8 to per-pixel scores. U-Net style: an encoder shrinking to 1/16 and a decoder growing back to full size, with green arcs connecting encoder and decoder blocks of the same size. DeepLab style: an encoder reaching 1/16 whose last stage keeps 1/16 with atrous convolutions, an ASPP box with a 1x1 convolution, three 3x3 convolutions with rates 6, 12 and 18 and image pooling, then upsampling by 4, concatenation with 1/4 features, and upsampling by 4." caption="Figure 3 — Three ways to get from coarse features back to pixels. (a) FCN fuses score maps from a few finer stages. (b) A U-Net-style encoder–decoder upsamples step by step and concatenates same-size encoder maps. (c) DeepLabv3+ keeps stride 16 with atrous convolutions, adds multi-scale context with ASPP, and uses one low-level skip." />
+
+## Context without losing resolution
+
+**Plain version.** To label a pixel you need two things that pull in opposite directions: a wide view (is this grey patch a road or a wall?) and fine resolution (where exactly does the road end?). Atrous convolution and pooling pyramids give the wide view without shrinking the map.
+
+### Atrous (dilated) convolution
+
+Downsampling is the usual way a CNN grows its receptive field, the region of the input that one output can see ([DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#receptive-field) and [ML 03](/en/learn/ml/ml-03-convolutional-networks/#receptive-field) derive it). An **atrous** convolution ("à trous", with holes) spreads the taps of a small kernel apart instead. In 1-D, DeepLab [8] defines the output $y$ of an atrous convolution of input $x$ with a filter $w$ of length $K$ as
+
+$$
+y[i] = \sum_{k=1}^{K} x[i + r \cdot k]\, w[k],
+$$
+
+where $i$ indexes output positions and $r$ is the **rate**: the input is sampled every $r$ positions. Rate $r = 1$ is ordinary convolution. A $k \times k$ kernel with rate $r$ covers $k_e = k + (k - 1)(r - 1)$ pixels per side with the same $k^2$ weights and the same cost [8]. Yu and Koltun [9] called the same operation a dilated convolution and showed that stacking dilations that double from layer to layer grows the receptive field exponentially without losing resolution.
+
+The DeepLab recipe is to set the stride of the last downsampling layer to 1 and replace the convolutions that follow by atrous convolutions with rate 2, so that they still see the same image region with the same pretrained weights; repeating this for one more stage doubles the density again [8]. Typical models output stride 8 or 16 instead of 32 [10]. The price is compute and memory: stride 8 has four times as many positions as stride 16 in the last stages.
+
+```python
+import numpy as np
+
+def atrous_1d(x, w, r):
+    """y[i] = sum_k x[i + r*k] w[k] (DeepLab's Eq. 1), taps centred, zero padding."""
+    K = len(w); c = K // 2
+    xp = np.pad(x, r * c)
+    return np.array([sum(xp[i + r * (k)] * w[k] for k in range(K)) for i in range(len(x))])
+
+x = np.zeros(21); x[10] = 1.0                   # an impulse in the middle
+w = np.array([1.0, 1.0, 1.0])
+for r in [1, 2, 4]:
+    print(f"rate {r}: taps at offsets {[(k - 1) * r for k in range(3)]},",
+          "response", atrous_1d(x, w, r).astype(int))
+
+def receptive_field(kernels, rates, strides):
+    """Receptive field (in input pixels) of a stack of conv layers."""
+    rf, jump = 1, 1                              # jump = distance between neighbouring outputs, in input pixels
+    for k, r, s in zip(kernels, rates, strides):
+        rf += (r * (k - 1)) * jump
+        jump *= s
+    return rf, jump
+
+print("three 3x3, rates 1,1,1:", receptive_field([3, 3, 3], [1, 1, 1], [1, 1, 1]))
+print("three 3x3, rates 1,2,4:", receptive_field([3, 3, 3], [1, 2, 4], [1, 1, 1]))
+print("three 3x3, stride 2   :", receptive_field([3, 3, 3], [1, 1, 1], [2, 2, 2]))
+```
+
+```text
+rate 1: taps at offsets [-1, 0, 1], response [0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0 0]
+rate 2: taps at offsets [-2, 0, 2], response [0 0 0 0 0 0 0 0 1 0 1 0 1 0 0 0 0 0 0 0 0]
+rate 4: taps at offsets [-4, 0, 4], response [0 0 0 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 0 0 0]
+three 3x3, rates 1,1,1: (7, 1)
+three 3x3, rates 1,2,4: (15, 1)
+three 3x3, stride 2   : (15, 8)
+```
+
+The last two lines are the whole argument for atrous convolution. Three layers with rates 1, 2, 4 see 15 input pixels, exactly as many as three stride-2 layers, but they keep one output per input pixel (jump 1) instead of one per 8 pixels (Figure 4).
+
+<Figure src={figDil} alt="Left: four rows of dots labeled input, layer 1 rate 1, layer 2 rate 2 and layer 3 rate 4, with lines from one top output down through three taps per layer, reaching 15 consecutive input dots; an arrow marks a receptive field of 15 inputs with no downsampling. Right: three 11 by 11 grids showing the 9 taps of a 3x3 kernel at rate 1 (adjacent), rate 2 (spread over 5 by 5) and rate 4 (spread over 9 by 9)." caption="Figure 4 — Atrous convolution. (a) Stacking rates 1, 2 and 4 covers 15 inputs at full resolution. (b–d) A 3×3 kernel at rates 1, 2 and 4 keeps 9 weights but spans 3×3, 5×5 and 9×9 pixels." />
+
+Dilation has a catch. A single dilated layer only reads a sparse lattice of inputs, and stacking layers whose rates share a common factor leaves holes that no path ever reaches, a checkerboard artifact that Wang et al. call **gridding** [11]. The fix is to choose rates such as 1, 2, 5 that fill each other's gaps.
+
+*Optional: [Gridding in stacked dilated convolutions](#gridding-in-stacked-dilated-convolutions) (in the Supplementary notes). Which rate sequences leave holes, the hybrid-dilation rule, and a check in code.*
+
+### Multi-scale context: ASPP and pyramid pooling
+
+**Plain version.** Objects come at many sizes, and what a pixel is often depends on what surrounds it. So look at each position through several windows of different sizes at once, including one that sees the whole image, and let the network combine the answers.
+
+**Atrous spatial pyramid pooling (ASPP)** [8] applies several atrous convolutions with different rates in parallel to the same feature map and fuses their outputs, which probes the image at several effective scales. DeepLabv3 [10] uses one $1 \times 1$ convolution and three $3 \times 3$ convolutions with rates 6, 12 and 18 at output stride 16 (rates doubled at stride 8), plus an **image-level feature**: global average pooling of the whole map, a $1 \times 1$ convolution, and bilinear upsampling back. The reason for the image-level branch is a boundary effect the paper points out: as the rate approaches the feature-map size, more and more of the $3 \times 3$ taps fall outside the map, and the filter degenerates to a $1 \times 1$ filter that only uses its centre weight. The snippet counts this on a $65 \times 65$ map.
+
+```python
+import numpy as np
+
+n = 65                                           # feature map is n x n
+for r in [1, 6, 12, 18, 24, 36, 64]:
+    pos = np.arange(n)
+    inside_1d = np.array([[(0 <= p + r * d < n) for d in (-1, 0, 1)] for p in pos]).sum(1)
+    mean_taps = np.mean(np.outer(inside_1d, inside_1d))   # taps inside the map, averaged over positions
+    print(f"rate {r:2d}: mean valid taps {mean_taps:.2f} of 9")
+```
+
+```text
+rate  1: mean valid taps 8.82 of 9
+rate  6: mean valid taps 7.93 of 9
+rate 12: mean valid taps 6.92 of 9
+rate 18: mean valid taps 5.98 of 9
+rate 24: mean valid taps 5.11 of 9
+rate 36: mean valid taps 3.58 of 9
+rate 64: mean valid taps 1.06 of 9
+```
+
+At rate 64 a "3×3" filter is, on average, a single tap. Global pooling is the cheap and reliable way to get image-wide context.
+
+The **Pyramid Scene Parsing Network (PSPNet)** [12] reaches the same goal with pooling instead of dilation. Its pyramid pooling module pools the final feature map into $1 \times 1$, $2 \times 2$, $3 \times 3$ and $6 \times 6$ grids, reduces each with a $1 \times 1$ convolution, upsamples all of them back and concatenates them with the original features. The paper motivates it with errors of an FCN baseline on scene parsing, such as a "mismatched relationship": a boat on a river labeled as a car, although a car is seldom over a river [12].
+
+Early DeepLab versions also sharpened boundaries after the network with a fully connected conditional random field, which encourages pixels of similar colour and position to share a label [8]. DeepLabv3 improves on the earlier versions without it [10].
+
+*Optional: [Dense CRF post-processing](#dense-crf-post-processing) (in the Supplementary notes). The energy, its two Gaussian kernels, and why mean-field inference makes it fast.*
+
+### Attention as context
+
+A transformer gives every token a view of every other token in each layer, so "context" no longer needs a special module ([ML 04](/en/learn/ml/ml-04-vision-transformers/#the-vision-transformer-vit) explains the Vision Transformer, ViT [13]). The catch is resolution: plain ViT has one coarse token grid, and global attention over many tokens is costly. **SegFormer** [14] is a widely used answer for semantic segmentation. Its encoder is hierarchical, producing multi-scale features like a CNN, uses a reduced attention that shortens the key and value sequences, and needs no positional encoding, which avoids interpolating position codes when the test resolution differs from the training one. Its decoder is only a few MLP layers that fuse the multi-scale features. Hierarchical vision transformers are covered in [ML 04](/en/learn/ml/ml-04-vision-transformers/#swin-and-hierarchical-transformers).
+
+## Losses for dense prediction
+
+**Plain version.** A segmenter is trained by comparing its per-pixel probabilities with the true label map. Averaging a classification loss over pixels is the default, but when one class covers 99% of the image, that average mostly measures the easy class.
+
+**Per-pixel cross-entropy.** With $p_{\mathbf{x}}(k)$ the softmax probability of class $k$ at pixel $\mathbf{x}$ and $y(\mathbf{x})$ the true class,
+
+$$
+\mathcal{L}_{\text{CE}} = -\frac{1}{|\Omega'|} \sum_{\mathbf{x} \in \Omega'} w_{y(\mathbf{x})} \log p_{\mathbf{x}}\big(y(\mathbf{x})\big),
+$$
+
+where $\Omega'$ is the set of labeled (non-void) pixels and $w_k$ an optional weight per class, for example inversely proportional to the class frequency. Void pixels are simply left out of the sum; most frameworks implement this with an "ignore index".
+
+**Dice loss.** Milletari et al. [15] proposed to maximize the Dice coefficient between a soft prediction and the binary ground truth directly, as an alternative to re-weighting samples, because the anatomy of interest often occupies only a small part of a medical volume and training then tends to predict background everywhere. For foreground probabilities $p_i$ and labels $g_i \in \{0, 1\}$ over $N$ pixels, their form is
+
+$$
+D = \frac{2 \sum_{i=1}^{N} p_i g_i}{\sum_{i=1}^{N} p_i^2 + \sum_{i=1}^{N} g_i^2}, \qquad \mathcal{L}_{\text{Dice}} = 1 - D.
+$$
+
+A common variant uses $\sum p_i + \sum g_i$ in the denominator; with binary $p$ and $g$ both equal the overlap measure $2|A \cap B| / (|A| + |B|)$, a close relative of IoU. For several classes, the Dice loss is computed per class and averaged. Because $D$ is a ratio over the whole image, a small object counts as much as a large background.
+
+**Focal loss.** The focal loss [16] multiplies the cross-entropy of each pixel by $(1 - p_t)^\gamma$, where $p_t$ is the probability of the true class, so that easy pixels contribute little; it is derived in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#focal-loss-and-class-imbalance). Combinations are common: MaskFormer, discussed below, trains each binary mask with a weighted sum of a focal loss and a Dice loss [17].
+
+The experiment compares the losses on a 64×64 image whose foreground is a disk of 49 pixels, for three candidate predictions. "IoU@0.5" thresholds the probabilities at 0.5 and computes the IoU that an evaluation would report.
+
+```python
+import numpy as np
+
+H = W = 64
+yy, xx = np.mgrid[0:H, 0:W]
+r2 = (yy - 32) ** 2 + (xx - 32) ** 2
+g = (r2 <= 4 ** 2).astype(float)                # small foreground disk
+print(f"foreground pixels: {int(g.sum())} of {g.size} ({100 * g.mean():.1f}%)")
+
+def bce(p, g):
+    return -np.mean(g * np.log(p) + (1 - g) * np.log(1 - p))
+
+def weighted_bce(p, g):                          # weight each class by inverse frequency
+    wf, wb = 0.5 / g.mean(), 0.5 / (1 - g.mean())
+    return -np.mean(wf * g * np.log(p) + wb * (1 - g) * np.log(1 - p))
+
+def focal(p, g, gamma=2.0):
+    pt = np.where(g == 1, p, 1 - p)
+    return -np.mean((1 - pt) ** gamma * np.log(pt))
+
+def soft_dice_loss(p, g, eps=1e-6):
+    return 1 - (2 * (p * g).sum() + eps) / (p.sum() + g.sum() + eps)
+
+def iou_at_half(p, g):                           # the metric we actually report
+    m = p > 0.5
+    return (m & (g == 1)).sum() / (m | (g == 1)).sum()
+
+preds = {
+    "all background (p=0.05)":  np.full((H, W), 0.05),
+    "right shape, timid (0.4)": np.where(g == 1, 0.4, 0.05),
+    "bloated, confident (0.9)": np.where(r2 <= 8 ** 2, 0.9, 0.05),
+}
+print(f"{'prediction':26s} {'BCE':>6s} {'wBCE':>6s} {'focal':>6s} {'Dice':>6s} {'IoU@0.5':>8s}")
+for name, p in preds.items():
+    print(f"{name:26s} {bce(p, g):6.3f} {weighted_bce(p, g):6.3f} "
+          f"{focal(p, g):6.3f} {soft_dice_loss(p, g):6.3f} {iou_at_half(p, g):8.3f}")
+
+# Where does the BCE gradient come from? dL/dz = p - g per pixel (z = logit)
+p = preds["all background (p=0.05)"]
+grad = np.abs(p - g)
+print(f"share of |BCE gradient| from background pixels: {grad[g == 0].sum() / grad.sum():.2f}")
+```
+
+```text
+foreground pixels: 49 of 4096 (1.2%)
+prediction                    BCE   wBCE  focal   Dice  IoU@0.5
+all background (p=0.05)     0.087  1.524  0.032  0.981    0.000
+right shape, timid (0.4)    0.062  0.484  0.004  0.855    0.000
+bloated, confident (0.9)    0.133  0.119  0.068  0.791    0.249
+share of |BCE gradient| from background pixels: 0.81
+```
+
+Read the table row by row (all numbers are from this toy run). Plain binary cross-entropy (BCE) prefers "all background" to the bloated prediction, the only one that finds the object at the 0.5 threshold, because the bloated mask is wrong on about 150 background pixels and those outnumber the object. The unweighted focal loss, without the class weight $\alpha$, makes the same choice. Class-weighted BCE and Dice both rank the bloated prediction best and "all background" worst, in the same order as the IoU. The last line shows why plain BCE behaves this way: 81% of its gradient comes from background pixels that are already almost right. Note also how harshly soft Dice treats the timid prediction: the 4,047 background pixels at $p = 0.05$ add about 202 to the denominator, more than four times the object's area, so a soft prediction must be confident on the background too.
+
+In practice, cross-entropy (often with class weights or the focal modulation) is the default for natural-scene semantic segmentation, Dice or a Dice + cross-entropy sum is common for medical images with small structures, and mask-based models train each mask with Dice + focal. Losses that also penalize boundary or topology errors exist; three built from active-contour energies are summarized in [IP 11's Supplementary notes](/en/learn/image-processing/dip-11-active-contours/notes/#three-active-contour-losses-in-detail).
+
+*Optional: [The gradient of the soft Dice loss](#the-gradient-of-the-soft-dice-loss) (in the Supplementary notes). The derivative in closed form, why every background pixel gets the same push, and edge cases such as empty masks.*
+
+## Measuring semantic segmentation
+
+**Plain version.** Count, over the whole test set, how many pixels of each true class were given each predicted class. Every common score is a different summary of that table. The standard one, mean IoU, asks for each class "of all pixels that are this class or were called this class, what fraction got it right?", and then averages over classes.
+
+Let $n_{ij}$ be the number of pixels of true class $i$ predicted as class $j$, accumulated over all test images, and $t_i = \sum_j n_{ij}$ the number of pixels of class $i$. FCN [5] defines four metrics, with $K$ classes:
+
+$$
+\begin{aligned}
+\text{pixel accuracy} &= \frac{\sum_i n_{ii}}{\sum_i t_i}, &\qquad
+\text{mean accuracy} &= \frac{1}{K} \sum_i \frac{n_{ii}}{t_i}, \\
+\text{mean IoU} &= \frac{1}{K} \sum_i \frac{n_{ii}}{t_i + \sum_j n_{ji} - n_{ii}}, &\qquad
+\text{frequency-weighted IoU} &= \frac{1}{\sum_k t_k} \sum_i t_i \frac{n_{ii}}{t_i + \sum_j n_{ji} - n_{ii}}.
+\end{aligned}
+$$
+
+In the IoU of class $i$, the numerator $n_{ii}$ counts true positives and the denominator counts the union of true and predicted pixels: $t_i$ (true positives plus misses) plus $\sum_j n_{ji} - n_{ii}$ (false alarms). **Mean IoU (mIoU)** is the standard metric of PASCAL VOC, Cityscapes and ADE20K.
+
+```python
+import numpy as np
+
+def confusion(gt, pred, K, ignore=255):
+    """K x K matrix: rows = true class, columns = predicted class; 'ignore' pixels are skipped."""
+    keep = gt != ignore
+    return np.bincount(K * gt[keep] + pred[keep], minlength=K * K).reshape(K, K)
+
+def seg_metrics(C):
+    tp = np.diag(C).astype(float)
+    t = C.sum(1)                    # pixels of each true class
+    p = C.sum(0)                    # pixels predicted as each class
+    iou = tp / (t + p - tp)
+    return {"pixel acc": tp.sum() / C.sum(), "mean acc": np.mean(tp / t),
+            "mIoU": iou.mean(), "fwIoU": (t * iou).sum() / t.sum(), "IoU": np.round(iou, 3)}
+
+# Toy: road (0) covers most of the image, car (1) is medium, pole (2) is thin
+H, W = 120, 160
+gt = np.zeros((H, W), int)
+gt[60:100, 40:90] = 1
+gt[10:110, 130:133] = 2
+pred = gt.copy()
+pred[60:100, 86:90] = 0                         # car slightly too short
+pred[10:110, 130:133] = 0                       # the pole is missed entirely
+m = seg_metrics(confusion(gt, pred, 3))
+for k, v in m.items():
+    print(f"{k:9s}: {v:.3f}" if np.isscalar(v) else f"{k:9s}: {v}")
+```
+
+```text
+pixel acc: 0.976
+mean acc : 0.640
+mIoU     : 0.631
+fwIoU    : 0.953
+IoU      : [0.974 0.92  0.   ]
+```
+
+Missing the pole entirely costs 1.6% of pixel accuracy and almost nothing in frequency-weighted IoU, but a third of the mean IoU. That is why mIoU, which weighs every class equally, is the headline number. Four practical details matter when you compare papers:
+
+- The confusion matrix is accumulated over the **whole dataset**, then the IoUs are computed. Averaging per-image IoUs gives a different number.
+- Void pixels are excluded through the ignore label, as in `confusion` above.
+- mIoU still favours large objects *within* a class: one large car outweighs ten small ones. Cityscapes therefore also reports an instance-level **iIoU**, in which each pixel's contribution is weighted by the ratio of the class's average instance size to the size of its ground-truth instance [18].
+- Region overlap is insensitive to boundary quality on large objects, where a few pixels of boundary error hardly change the IoU. **Boundary IoU** [19] measures overlap only in a thin band along the contours.
+
+*Optional: [Boundary IoU in detail](#boundary-iou-in-detail) (in the Supplementary notes). Its definition, the band width, and a check in code that it scores the same boundary error equally on small and large objects.*
+
+## Instance segmentation
+
+**Plain version.** Instance segmentation is detection with an outline. The dominant approach finds each object first, as a detector would, and then segments the inside of its box.
+
+### Detect, then segment: Mask R-CNN
+
+**Mask R-CNN** [20] adds a small fully convolutional mask branch to the two-stage detector Faster R-CNN [21], which [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#two-stage-detectors-the-r-cnn-family) explains together with RoIAlign. For each region of interest, the branch predicts $K$ binary masks of size $m \times m$, one per class ($28 \times 28$ in the paper's variant built on a feature pyramid network, FPN [22]), and the loss uses a per-pixel sigmoid and the average binary cross-entropy on the mask of the ground-truth class only. Mask and class prediction are therefore **decoupled**: the box branch chooses the class, and masks of different classes do not compete, unlike the per-pixel softmax of an FCN; the paper's ablation finds that the per-class sigmoid gives large gains over a softmax [20]. At test time the $m \times m$ mask of the predicted class is resized to the box and binarized at 0.5.
+
+*Optional: [RoI pooling versus RoIAlign](/en/learn/deep-learning/dl-03-object-detection/notes/#roi-pooling-versus-roialign-sampling-without-rounding) (in the Supplementary notes of DLCV 03). Why rounding the box to the feature grid shifts masks, and the bilinear sampling that fixes it.*
+
+The fixed $28 \times 28$ grid is also Mask R-CNN's weakness: a large object's outline is drawn from a few hundred cells and comes out oversmoothed. **PointRend** [23] treats mask prediction like rendering in computer graphics: it starts from a coarse mask, repeatedly upsamples it bilinearly, and recomputes predictions only at the most uncertain points of the denser grid (for a binary mask, those with probabilities closest to 0.5), which lie mostly along the boundary.
+
+Other routes exist. **Bottom-up** methods first predict per-pixel quantities, such as an embedding vector or a distance to the object centre, and then group pixels into instances; a watershed on a predicted distance map, with markers found by the network, is the learned version of the marker-controlled watershed of [IP 10](/en/learn/image-processing/dip-10-segmentation/#the-use-of-markers). And **query-based** methods predict a set of masks directly, as described in the mask-classification section below.
+
+### Mask AP
+
+Instance segmentation is scored exactly like detection, with the COCO average precision of [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#the-coco-protocol), except that the IoU between a prediction and a ground-truth object is computed on masks instead of boxes [20]. The metric needs a confidence score per mask, because AP ranks predictions, and it allows overlapping masks: a detector may output several overlapping hypotheses and is only penalized for those that do not match. This is why instance outputs cannot be used as a panoptic map without further processing.
+
+## Panoptic segmentation
+
+**Plain version.** The panoptic task asks for one coherent picture: every pixel labeled, stuff and things alike, no overlaps, and a metric that treats a sky region and a car the same way.
+
+### The task and its metric
+
+Kirillov et al. [4] defined the task (the format is the one given in "Three tasks, one label map") together with a metric, **panoptic quality (PQ)**. PQ is computed in two steps.
+
+**1. Matching.** A predicted segment $p$ and a ground-truth segment $g$ of the same class match only if their IoU is strictly greater than 0.5. Because segments of a panoptic map cannot overlap, this match is **unique**: if $p_1$ and $p_2$ are disjoint predictions, then $\text{IoU}(p_1, g) + \text{IoU}(p_2, g) \le 1$, since each $|p_i \cap g| / |p_i \cup g| \le |p_i \cap g| / |g|$ and the two intersections share no pixel. So at most one prediction can exceed 0.5 for each $g$, and vice versa [4]. No optimal assignment step is needed.
+
+**2. Scoring.** For each class, the matches split the segments into true positives $\text{TP}$ (matched pairs), false positives $\text{FP}$ (unmatched predictions) and false negatives $\text{FN}$ (unmatched ground-truth segments). Then
+
+$$
+\text{PQ} = \frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}| + \tfrac{1}{2}|\text{FP}| + \tfrac{1}{2}|\text{FN}|}
+= \underbrace{\frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}|}}_{\text{segmentation quality (SQ)}} \times \underbrace{\frac{|\text{TP}|}{|\text{TP}| + \tfrac{1}{2}|\text{FP}| + \tfrac{1}{2}|\text{FN}|}}_{\text{recognition quality (RQ)}},
+$$
+
+where the sums run over matched pairs and $|\cdot|$ counts elements of a set. **SQ** is the average IoU of matched segments, and **RQ** is the familiar F1 score of detection. PQ is computed per class and averaged over classes, so a rare class counts as much as a frequent one; every segment counts equally regardless of its area. $\text{PQ}^{\text{St}}$ and $\text{PQ}^{\text{Th}}$ average over stuff and thing classes only. Void pixels are removed from predictions before matching, and unmatched predictions that consist mostly of void (or of a "crowd" region of the same class) are not counted as false positives [4]. The two factors are not independent, since SQ is measured only on the matched segments, so always report all three.
+
+The code implements this matching and scoring on the toy scene of Figure 5 (void handling reduced to its simplest form).
+
+```python
+import numpy as np
+
+def panoptic_quality(gt_seg, gt_cls, pr_seg, pr_cls):
+    """gt_seg/pr_seg: integer segment-id maps (0 = void); *_cls: dict segment id -> class.
+    Matches segments of the same class with IoU > 0.5 and returns per-class (PQ, SQ, RQ, TP, FP, FN)."""
+    out = {}
+    for c in sorted(set(gt_cls.values()) | set(pr_cls.values())):
+        g_ids = [i for i, k in gt_cls.items() if k == c]
+        p_ids = [i for i, k in pr_cls.items() if k == c]
+        ious, matched_p = [], set()
+        for gi in g_ids:
+            G = gt_seg == gi
+            for pj in p_ids:
+                P = (pr_seg == pj) & (gt_seg != 0)          # ignore predicted pixels on void
+                iou = (G & P).sum() / (G | P).sum()
+                if iou > 0.5:                                # unique by the matching theorem
+                    ious.append(iou); matched_p.add(pj)
+        tp = len(ious); fn = len(g_ids) - tp; fp = len(p_ids) - len(matched_p)
+        sq = np.mean(ious) if tp else 0.0
+        rq = tp / (tp + 0.5 * fp + 0.5 * fn)
+        out[c] = (sq * rq, sq, rq, tp, fp, fn)
+    return out
+
+H, W = 100, 200
+SKY, ROAD, CAR, PERSON = 0, 1, 2, 3
+def scene(boxes, sky_rows):
+    seg = np.full((H, W), 2); seg[:sky_rows] = 1          # segment 1 = sky, 2 = road
+    cls = {1: SKY, 2: ROAD}
+    for sid, (c, r0, r1, c0, c1) in enumerate(boxes, start=3):
+        seg[r0:r1, c0:c1] = sid; cls[sid] = c
+    return seg, cls
+
+gt_seg, gt_cls = scene([(CAR, 50, 80, 10, 55), (CAR, 50, 80, 65, 110),
+                        (CAR, 38, 52, 125, 150), (PERSON, 30, 80, 165, 185)], sky_rows=30)
+pr_seg, pr_cls = scene([(CAR, 52, 80, 13, 55),             # car A, slightly off
+                        (CAR, 55, 80, 65, 96),             # car B, too small
+                        (CAR, 84, 97, 110, 150),           # a car that is not there
+                        (PERSON, 30, 52, 165, 185),        # the person, split in two
+                        (PERSON, 52, 80, 165, 185)], sky_rows=33)   # car C is missed
+names = ["sky", "road", "car", "person"]
+res = panoptic_quality(gt_seg, gt_cls, pr_seg, pr_cls)
+for c, (pq, sq, rq, tp, fp, fn) in res.items():
+    print(f"{names[c]:6s} PQ {pq:.3f} = SQ {sq:.3f} x RQ {rq:.3f}  (TP {tp}, FP {fp}, FN {fn})")
+pqs = np.array([v[0] for v in res.values()])
+print(f"PQ {pqs.mean():.3f} | PQ_stuff {pqs[:2].mean():.3f} | PQ_things {pqs[2:].mean():.3f}")
+```
+
+```text
+sky    PQ 0.917 = SQ 0.917 x RQ 1.000  (TP 1, FP 0, FN 0)
+road   PQ 0.805 = SQ 0.805 x RQ 1.000  (TP 1, FP 0, FN 0)
+car    PQ 0.482 = SQ 0.723 x RQ 0.667  (TP 2, FP 1, FN 1)
+person PQ 0.373 = SQ 0.560 x RQ 0.667  (TP 1, FP 1, FN 0)
+PQ 0.644 | PQ_stuff 0.861 | PQ_things 0.428
+```
+
+<Figure src={figPq} alt="Left: a ground-truth panoptic map with sky, road, cars A, B and C and a tall person. Middle: a prediction with car A labeled TP 0.87, a smaller car B labeled TP 0.57, an extra car labeled FP 0.00, the missing car C marked as FN, and the person split into an upper piece labeled FP 0.44 and a lower piece labeled TP 0.56. Right: a table with SQ, RQ and PQ per class and the mean PQ of 0.644." caption="Figure 5 — Panoptic quality on a toy scene. Each predicted segment is labeled with its best IoU against ground truth of its class; only IoU above 0.5 counts as a match." />
+
+The toy shows how PQ reads errors (numbers from this run). The split person still gets a match, because the lower piece covers 56% of it, but the upper piece becomes a false positive: splitting an object costs recognition quality, not just segmentation quality. Car B, at IoU 0.57, counts as fully recognized, but its low IoU pulls the car's SQ down. A missed car and an invented car each cost half a segment in the denominator.
+
+### Early panoptic systems: merge two outputs
+
+**Plain version.** The first panoptic systems simply ran a semantic segmenter and an instance segmenter and pasted the results together.
+
+The panoptic paper's own baseline [4] does this with a non-maximum-suppression-like procedure. It sorts the instance masks by confidence, drops low-scoring ones, and walks down the list: each mask loses the pixels already claimed by earlier masks and is kept only if enough of it remains. The surviving thing segments are then combined with the semantic map, and any pixel claimed by both a thing and a stuff class goes to the thing. **Panoptic FPN** [24] then put both tasks into one network: a Mask R-CNN with a feature pyramid network (FPN [22], see [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#feature-pyramids-fpn)) plus a light semantic branch that upsamples and sums all pyramid levels at 1/4 scale. The semantic branch predicts the stuff classes plus a single "other" class for all thing pixels, so the two branches do not fight over objects.
+
+*Optional: [Panoptic Segmentation: a reading guide](#panoptic-segmentation-a-reading-guide) (in the Paper guides). How the paper defines the task and metric, what its human-consistency study shows, and how to read its tables.*
+
+## Mask classification: one model for all three tasks
+
+**Plain version.** Instead of asking "what class is this pixel?", ask "which regions are there, and what is each region?". Predict a fixed number of candidate masks and one class (or "nothing") for each. A semantic map, a set of instances and a panoptic map are then just different ways of reading the same list.
+
+### MaskFormer
+
+Cheng, Schwing and Kirillov [17] call the FCN formulation **per-pixel classification** and the Mask R-CNN and DETR formulation **mask classification**. Their observation is that mask classification is general enough for semantic segmentation too. **MaskFormer** predicts a set of $N$ probability–mask pairs $\{(p_i, m_i)\}_{i=1}^{N}$, where $p_i$ is a distribution over $K$ classes plus a "no object" label $\varnothing$, and $m_i \in [0, 1]^{H \times W}$ is a soft mask. Three modules produce them:
+
+1. A backbone and a **pixel decoder** produce per-pixel embeddings $\mathcal{E}_{\text{pixel}} \in \mathbb{R}^{C_E \times H \times W}$, where $C_E$ is the embedding dimension.
+2. A **transformer decoder** turns $N$ learnable queries into $N$ per-segment embeddings by attending to the image features, as in DETR [25].
+3. A linear classifier gives $p_i$, and a small MLP gives a mask embedding $\mathcal{E}_{\text{mask}}[:, i] \in \mathbb{R}^{C_E}$. The mask is a dot product followed by a sigmoid,
+
+$$
+m_i[h, w] = \sigma\big(\mathcal{E}_{\text{mask}}[:, i]^\top \, \mathcal{E}_{\text{pixel}}[:, h, w]\big),
+$$
+
+where $\sigma$ is the logistic sigmoid and $(h, w)$ a pixel position.
+
+Training matches predictions to ground-truth segments one to one, as DETR does for boxes ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#set-prediction-with-transformers-detr-and-its-descendants)), but with a matching cost built from class probabilities and mask losses instead of boxes. Matched predictions get a cross-entropy class loss and a focal + Dice mask loss; unmatched ones are trained to predict $\varnothing$ [17].
+
+At inference, two rules read the same output in different ways [17]. **Semantic inference** marginalizes over queries, $\hat{y}[h, w] = \arg\max_{c} \sum_i p_i(c)\, m_i[h, w]$, with $c$ ranging over the $K$ real classes. **Panoptic inference** assigns each pixel to one query, $\arg\max_{i:\, c_i \ne \varnothing} p_i(c_i)\, m_i[h, w]$, where $c_i$ is the most likely class of query $i$, so two queries of the same class give two instances. The snippet runs both rules on a tiny $6 \times 10$ example.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+# Ground-truth layout of a tiny 6 x 10 image: sky on top, road below, two cars on the road
+region = np.zeros((6, 10), int)               # 0 sky, 1 road, 2 car A, 3 car B
+region[2:] = 1
+region[3:5, 1:4] = 2
+region[3:5, 6:9] = 3
+
+# Pixel decoder output: a C_E = 4 dimensional embedding per pixel (here: noisy one-hot of the region)
+E_pixel = 6 * np.eye(4)[region].transpose(2, 0, 1) - 3 + 0.5 * rng.standard_normal((4, 6, 10))
+
+# Transformer decoder output for N = 5 queries: a mask embedding and class probabilities
+# over K = 3 classes (sky, road, car) plus "no object" (last column)
+E_mask = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [.2, .2, .2, .2]], float)
+p = np.array([[.90, .05, .03, .02],          # query 0: sky
+              [.05, .85, .05, .05],          # query 1: road
+              [.02, .08, .85, .05],          # query 2: a car
+              [.03, .07, .75, .15],          # query 3: another car
+              [.05, .05, .05, .85]])         # query 4: nothing
+
+m = 1 / (1 + np.exp(-np.einsum("nc,chw->nhw", E_mask, E_pixel)))   # N masks, sigmoid(dot product)
+
+# Semantic inference: sum over queries of p_i(c) * m_i, then argmax over the K real classes
+sem = np.einsum("nk,nhw->khw", p[:, :3], m).argmax(0)
+# Panoptic inference: each pixel goes to the query maximizing p_i(c_i) * m_i (no-object queries dropped)
+c_i = p.argmax(1)
+keep = c_i != 3
+score = p[np.arange(5), c_i][:, None, None] * m
+seg = np.where(keep[:, None, None], score, -1).argmax(0)
+print("semantic (0 sky, 1 road, 2 car):\n", sem)
+print("panoptic segment = query index:\n", seg)
+print("query classes:", c_i, "-> car segments:", [int(i) for i in np.unique(seg) if c_i[i] == 2])
+```
+
+```text
+semantic (0 sky, 1 road, 2 car):
+ [[0 0 0 0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0 0 0 0]
+ [1 1 1 1 1 1 1 1 1 1]
+ [1 2 2 2 1 1 2 2 2 1]
+ [1 2 2 2 1 1 2 2 2 1]
+ [1 1 1 1 1 1 1 1 1 1]]
+panoptic segment = query index:
+ [[0 0 0 0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0 0 0 0]
+ [1 1 1 1 1 1 1 1 1 1]
+ [1 2 2 2 1 1 3 3 3 1]
+ [1 2 2 2 1 1 3 3 3 1]
+ [1 1 1 1 1 1 1 1 1 1]]
+query classes: [0 1 2 2 3] -> car segments: [2, 3]
+```
+
+The semantic map merges both cars into class 2; the panoptic map keeps them apart as segments 2 and 3, from exactly the same network output. The paper reports that MaskFormer is on par with per-pixel classification on Cityscapes (19 classes) and better on datasets with larger vocabularies [17].
+
+### Mask2Former and its successors
+
+**Mask2Former** [26] kept MaskFormer's meta-architecture (backbone, pixel decoder, transformer decoder) and changed the decoder so that it trains faster and segments instances well. Its key component is **masked attention**: each query attends only to the pixels inside the mask it predicted at the previous layer. In layer $l$, with query features $X_l \in \mathbb{R}^{N \times C}$,
+
+$$
+X_l = \text{softmax}\big(\mathcal{M}_{l-1} + Q_l K_l^\top\big) V_l + X_{l-1}, \qquad
+\mathcal{M}_{l-1}(x, y) = \begin{cases} 0 & \text{if } M_{l-1}(x, y) = 1, \\ -\infty & \text{otherwise,} \end{cases}
+$$
+
+where $Q_l$ is a linear projection of $X_{l-1}$, $K_l$ and $V_l$ are projections of the image features, and $M_{l-1}$ is the previous layer's mask prediction, resized and binarized at 0.5. Adding $-\infty$ before the softmax gives zero attention weight outside the mask. The authors hypothesize that local features suffice to update a query, and that the slow convergence of earlier models came from cross-attention having to learn to focus on the object. Two further changes are a round-robin use of the pixel decoder's 1/32, 1/16 and 1/8 feature maps in successive decoder layers, for small objects, and computing the mask loss on sampled points instead of full masks, which the paper reports reduces training memory three-fold [26].
+
+*Optional: [Mask2Former: a reading guide](#mask2former-a-reading-guide) (in the Paper guides). What "universal" means in the paper, its ablations, how to read its comparison tables and the limitations it states.*
+
+Two later directions build on this design. **OneFormer** [27] trains a *single* model for all three tasks: it derives semantic and instance labels from panoptic annotations, samples one task per training image, and conditions the queries on a "task token", so that one set of weights serves every task. **EoMT** [28] removes the task-specific parts altogether. The authors argue that a large plain ViT with extensive pretraining can learn what the adapter, pixel decoder and transformer decoder supplied; they concatenate learnable queries to the patch tokens before the last ViT blocks, which then process both jointly, and report accuracy similar to the more complex models at much higher speed (up to four times faster with ViT-L).
+
+## Promptable and open-vocabulary segmentation
+
+**Plain version.** The models above segment a fixed list of classes they were trained on. Two newer families relax that list. Promptable models segment *whatever you point at*; open-vocabulary models segment *whatever you name*.
+
+**Promptable segmentation.** The Segment Anything Model (SAM) [29] returns a mask for a point, box or rough-mask prompt, and for an ambiguous point (shirt or person?) it returns several valid masks with confidence scores; it was trained on SA-1B, a dataset of over 1 billion masks on 11 million images built with a model-in-the-loop data engine. SAM 2 [30] extends this to video with a streaming memory, and SAM 3 [31] adds **promptable concept segmentation**: given a short noun phrase or image exemplars, it returns masks and identities for *all* matching instances. These models are described in [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#promptable-segmentation-sam-sam-2-sam-3) and [ML 09](/en/learn/ml/ml-09-foundation-models/#promptable-segmentation-the-segment-anything-family), and SAM 2 as a tracker in [DLCV 06](/en/learn/deep-learning/dl-06-object-tracking/#tracking-with-video-segmentation-models). In terms of this chapter's three tasks: SAM's masks carry **no class**, so on their own they are neither semantic nor panoptic output; a box from a detector plus SAM gives instance masks; and SAM 3's concept prompts make it an open-vocabulary instance segmenter. When you read "zero-shot" results with such models, check where the prompts came from: prompts derived from ground-truth boxes give the model a lot of information.
+
+**Open-vocabulary segmentation.** The key ingredient is a vision–language model such as CLIP [32], whose text encoder maps any class name to an embedding in the same space as image features ([ML 09](/en/learn/ml/ml-09-foundation-models/) covers it). Replace a segmenter's fixed classifier weights with text embeddings of the class names and the vocabulary becomes a list you type at test time. **LSeg** [33] does exactly this: a transformer image encoder produces per-pixel embeddings, a text encoder embeds the label names, and training aligns each pixel's embedding with the text embedding of its class, so that unseen labels can be used at test time without retraining. **CAT-Seg** [34] instead builds a **cost volume** of cosine similarities between CLIP image and text embeddings and aggregates it, which the authors find lets them fine-tune CLIP's encoders without overfitting to the training classes, a problem that made most earlier methods freeze CLIP. Zhu and Chen's survey [35] warns that evaluating "unseen" classes is difficult because the image–text pretraining data may already contain them.
+
+## Datasets and benchmarks
+
+**Plain version.** Pixel labels are expensive, so a few public datasets carry the field. Each one fixes a class list, a stuff/thing split and an evaluation protocol.
+
+| Dataset | Content | Scale and classes (from the papers) | Tasks |
+| --- | --- | --- | --- |
+| PASCAL VOC 2012 [36] | everyday objects | 20 object classes + background (as described in [8]) | semantic |
+| Cityscapes [18] | street scenes from 50 cities | 5,000 finely and 20,000 coarsely annotated images; 30 classes, 19 used for evaluation; 8 with instance labels [4] | semantic, instance, panoptic |
+| ADE20K [37] | diverse scenes, objects and parts | 20,210 / 2,000 / 3,000 train / val / test images; benchmark of the top 150 classes (SceneParse150); 100 things + 50 stuff for panoptic [4] | semantic, panoptic |
+| COCO [38] + COCO-Stuff [39] | everyday scenes | instance masks for 80 thing classes [24]; COCO-Stuff adds pixel labels for 91 stuff classes to all 164K images of COCO 2017; 80 things + 53 stuff in COCO panoptic [17] | instance, semantic, panoptic |
+| Mapillary Vistas [40] | street-level images worldwide | 25k images; 28 stuff + 37 thing classes [4] | semantic, instance, panoptic |
+
+Three facts about these datasets shape every result. First, **annotation is costly and noisy**: the panoptic paper's human-consistency study, in which two annotations of the same images are scored against each other, gives PQ values well below 100 on all three datasets it examines [4]. Second, **class lists are small** compared with the vocabulary of the world, which motivates the open-vocabulary models above. Third, **domains differ**: Cityscapes was recorded in 50 cities, primarily in Germany, and deliberately not in adverse weather [18], so a model trained on it meets different road markings, weather and cameras elsewhere. Bird's-eye-view map segmentation for driving, which predicts labels on a ground-plane grid instead of the image, is covered in [DLCV 09](/en/learn/deep-learning/dl-09-3d-object-detection/#lifting-images-into-the-birds-eye-view).
+
+## Failure modes and practical advice
+
+**Plain version.** Segmenters fail in predictable places: where structures are thin or small, along boundaries, on rare classes, and on images unlike the training set.
+
+- **Thin and small structures** (poles, wires, distant pedestrians) disappear at large output strides, as the first experiment showed. Use output stride 8 or a decoder with high-resolution skips, and evaluate with per-class IoU, not only mIoU.
+- **Boundaries** come out smooth or blocky. Bilinear score upsampling, decoders, point-based refinement such as PointRend [23] and boundary-aware metrics [19] address this.
+- **Class imbalance** biases the network toward frequent classes. Weighted cross-entropy, focal or Dice terms, and sampling images that contain rare classes help (see the loss experiment).
+- **Context errors**: a region labeled with a class that makes no sense in its surroundings (the boat labeled as a car in [12]). Global context modules and attention reduce them.
+- **Fragmented masks and holes**: per-pixel classifiers have no notion of shape. Morphological clean-up of predicted masks (opening, closing, hole filling; see [IP 09](/en/learn/image-processing/dip-09-morphology/)) is a cheap and common post-processing step.
+- **High-resolution inputs** exceed GPU memory. Run on overlapping tiles and blend the scores, the same overlap-tile idea as U-Net's.
+- **Domain shift**: performance drops on new cities, weather, sensors or medical scanners. Measure it with a held-out domain, not only a held-out split.
+
+## Modern view
+
+### What the surveys say
+
+**Minaee et al.** [1] review the CNN era of semantic and instance segmentation in ten families: fully convolutional networks, convolutional models with graphical models (such as CRFs), encoder–decoders, multi-scale and pyramid networks, R-CNN-based models for instances, dilated convolutions and the DeepLab family, recurrent networks, attention models, generative and adversarial models, and convolutional models combined with active contours. They also review datasets and reported results. Most families appear in this chapter's sections, with FCN, U-Net, PSPNet, DeepLab and Mask R-CNN as examples.
+
+**Li et al.** [2] organize transformer-based segmentation around one **meta-architecture** with a feature extractor, object queries and a transformer decoder, and classify methods by which component they modify: better backbones, cross-attention designs in the decoder, ways of optimizing the queries, and so on. They also cover video and point-cloud segmentation, foundation-model tuning, efficiency and medical segmentation, and they re-evaluate many methods on common benchmarks.
+
+**Zhou et al.** [3] review more than 300 methods of the foundation-model era, splitting the field into **generic** segmentation (semantic, instance, panoptic) and **promptable** segmentation (interactive, referring and few-shot). A central theme is that segmentation knowledge *emerges* in models trained without masks, such as CLIP, text-to-image diffusion models and self-supervised ViTs, which training-free methods exploit. **Zhu and Chen** [35] focus on open-vocabulary detection and segmentation and on how hard fair evaluation of "novel" classes is.
+
+### The state of the art, 2023–2026
+
+- **Universal query-based architectures** are the default for closed-vocabulary benchmarks: Mask2Former [26] and its descendants such as OneFormer [27] handle semantic, instance and panoptic segmentation with one design, and specialized per-pixel models remain common where speed or simplicity matters (SegFormer [14], DeepLab-style models [7]).
+- **Simpler models on larger pretraining**: EoMT [28] argues that compute is better spent on scaling a plain ViT encoder than on adding decoders and adapters.
+- **Promptable foundation models** (SAM [29], SAM 2 [30], SAM 3 [31]) turned class-agnostic masks, video propagation and concept prompts into reusable components, and their data engines changed how segmentation datasets are built.
+- **Open-vocabulary segmentation** builds on vision–language models (LSeg [33], CAT-Seg [34]); in many applications a model is now prompted with class names instead of retrained.
+
+### Open problems
+
+1. **Boundaries, small objects and thin structures.** Mask2Former's authors state that it still struggles with small objects [26], and region metrics hide boundary errors on large objects [19].
+2. **One model, trained once.** Universal architectures are still often trained separately per task and dataset; Mask2Former trained only on panoptic labels is slightly worse on the instance and semantic metrics than when trained on each task [26].
+3. **Open-vocabulary evaluation** depends on prompts and on what the pretraining data contained [35].
+4. **Data.** Pixel labels are expensive; the surveys point to scalable data engines, synthetic image–mask pairs from generative models and weak or no supervision as directions, each with its own domain gap [3], [2].
+5. **Efficiency.** Foundation-model segmenters are heavy; distillation, compression and parameter-efficient tuning are open engineering problems [3].
+6. **Understanding emergence.** Why models trained without masks learn to segment is not well explained [3].
+
+## Key takeaways
+
+- Semantic segmentation labels every pixel with a class; instance segmentation outputs a scored, possibly overlapping mask per thing; panoptic segmentation gives every pixel a class and an instance id, with stuff and things treated uniformly and no overlaps.
+- A fully convolutional network outputs a score map at output stride $s$; upsample scores (bilinearly), not labels, and remember that nothing smaller than about half a cell survives a large stride.
+- Detail comes back through decoders with skip connections (U-Net, DeepLabv3+); context comes from atrous convolution, ASPP with image pooling, pyramid pooling or attention.
+- Per-pixel cross-entropy is dominated by the frequent class; class weights, the focal loss or Dice-type losses counter imbalance, and they rank predictions differently.
+- mIoU (from a dataset-wide confusion matrix) weighs classes equally; mask AP scores ranked, overlapping instance masks; $\text{PQ} = \text{SQ} \times \text{RQ}$ scores non-overlapping segments matched at IoU above 0.5, which is unique.
+- Mask classification (MaskFormer, Mask2Former) predicts $N$ mask–class pairs and reads them as semantic, instance or panoptic output; masked attention made it competitive on all three tasks.
+- Promptable models (SAM family) segment what you point at but give no class; open-vocabulary models (LSeg, CAT-Seg) segment what you name, with evaluation pitfalls of their own.
+
+## Exercises
+
+1. **Output stride by hand.** A road scene is $1024 \times 2048$ pixels and a pole is 6 pixels wide. With ideal coarse scores (class fractions per cell) and argmax decisions, at which output strides can the pole survive at all, and why does its position relative to the grid matter? Check your answer by moving the bar in the first snippet by one or two pixels.
+
+<details>
+<summary>Hint</summary>
+
+The pole wins a cell only if it covers more than half of the cell's width, so $s \lt 12$; with $s = 8$ it survives only in cells where at least 5 of its 6 columns fall inside one 8-pixel cell. At $s = 4$ it always covers at least one full cell. Shifting the bar changes which cells it dominates, which is why the bar's stride-4 IoU in the nearest-label column of the snippet is 0.67, not 1 (a tie at exactly half a cell goes to the background, the first class).
+
+</details>
+
+2. **Atrous arithmetic.** (a) What is the effective size of a $3 \times 3$ kernel at rate 12? (b) A backbone stage often starts with stride 2 followed by $3 \times 3$ convolutions. If you remove the stride and use rate 2 instead, what happens to the output stride, the receptive field of the following layers, and the cost of those layers?
+
+<details>
+<summary>Hint</summary>
+
+(a) $k_e = 3 + 2 \cdot 11 = 25$. (b) The output stride halves (for example 32 to 16), every later layer covers the same image region as before (the rate compensates for the denser grid), and the later layers now run on four times as many positions, so their cost grows about four-fold.
+
+</details>
+
+3. **Losses with an empty mask.** Modify the loss snippet so that the image contains *no* foreground. What does each loss return for the "all background (p=0.05)" prediction, and what happens to the soft Dice loss without the `eps` term? How do implementations usually avoid the problem?
+
+<details>
+<summary>Hint</summary>
+
+With $g = 0$ everywhere, the Dice numerator is 0 (plus `eps`) and the denominator is $\sum p_i = 204.8$, so the loss is almost 1 however good the prediction is; for $p = 0$ everywhere it is $0/0$ without `eps`, and with `eps` it becomes $1 - \text{eps}/\text{eps} = 0$. `iou_at_half` also divides 0 by 0 when neither mask has a pixel. Common fixes: add a smoothing constant to numerator and denominator, compute Dice over the whole batch instead of per image, or combine Dice with cross-entropy.
+
+</details>
+
+4. **PQ by hand.** In the PQ snippet, replace the two person pieces by a single prediction rows 32 to 80. Predict the new person SQ, RQ and PQ before running the code. Then make car B larger so that its IoU drops below 0.5 by over-segmenting; how do the car's TP, FP and FN counts change?
+
+<details>
+<summary>Hint</summary>
+
+The single person prediction has IoU $48 \cdot 20 / (50 \cdot 20) = 0.96$, so $\text{SQ} = 0.96$, $\text{RQ} = 1$ and $\text{PQ} = 0.96$. If car B's IoU falls to 0.5 or below, that pair is no longer a match: car TP drops from 2 to 1, and FP and FN each rise by one.
+
+</details>
+
+5. **Semantic from panoptic, and back.** Using the mask-classification snippet, (a) derive the semantic map from the panoptic segment map and check it equals `sem`; (b) make query 3 predict "road" instead of "car" with probability 0.6 and explain both outputs. (c) Why can a semantic map not be turned back into a panoptic map in general?
+
+<details>
+<summary>Hint</summary>
+
+(a) Map each segment id to its class, `c_i[seg]`. (b) Query 3's mask still covers car B, so in the panoptic map car B stays segment 3, but that segment is now labeled road; because a stuff class has a single segment per image, the final output merges it with the road. In the semantic map car B becomes road too. Only one car is left in both. (c) A semantic map has no instance ids: touching objects of one class form one region, and splitting it needs information the map does not contain.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each takes one point from the main text and treats it in more detail. Nothing in the main text, code or exercises depends on them.
+
+### Gridding in stacked dilated convolutions
+
+This note explains which sequences of dilation rates leave holes in the receptive field, and a simple rule for choosing rates that do not.
+
+**The problem.** Take one output of a stack of $n$ dilated convolutions with kernel size $k$ and rates $r_1, \dots, r_n$, and ask which input positions influence it. In 1-D, the set of reachable offsets is the sum set $\{\sum_l r_l d_l : d_l \in \{-c, \dots, c\}\}$ with $c = (k - 1)/2$. If every $r_l$ is a multiple of some integer $q \gt 1$, every reachable offset is a multiple of $q$ as well: the output sees one input in $q$ along each axis, a regular lattice with holes. Neighbouring outputs then read disjoint lattices, and the output map shows a checkerboard pattern. Wang et al. [11] call this **gridding** and note that it gets worse at high rates, where a sparse kernel no longer covers any local neighbourhood.
+
+**The rule.** Their hybrid dilated convolution (HDC) uses different rates in consecutive layers, arranged in a sawtooth pattern, chosen so that the final receptive field covers a square region without holes. Define the maximum distance between two nonzero taps seen through layers $i$ to $n$ recursively as
+
+$$
+M_i = \max\big[M_{i+1} - 2 r_i,\; M_{i+1} - 2(M_{i+1} - r_i),\; r_i\big], \qquad M_n = r_n,
+$$
+
+where $r_i$ is the rate of layer $i$. The design goal is $M_2 \le k$. For $k = 3$, rates $(1, 2, 5)$ give $M_2 = 2$ and work, while $(1, 2, 9)$ give $M_2 = 5$ and do not [11]. They also state that the rates within a group should not have a common factor such as 2, 4, 8.
+
+**A check in code.** Counting the paths from each input offset to one output makes the holes visible.
+
+```python
+import numpy as np
+
+def coverage(rates, k=3):
+    """How many paths connect each input offset to one output of a stack of 1-D dilated convs."""
+    reach = np.array([1])
+    for r in rates:
+        taps = np.zeros(r * (k - 1) + 1, int); taps[::r] = 1      # a k-tap kernel with rate r
+        reach = np.convolve(reach, taps)
+    return reach
+
+for rates in [(2, 2, 2), (1, 2, 4), (1, 2, 5), (1, 2, 9)]:
+    c = coverage(rates)
+    print(f"rates {rates}: span {len(c)}, holes {int((c == 0).sum())}, paths {c}")
+```
+
+```text
+rates (2, 2, 2): span 13, holes 6, paths [1 0 3 0 6 0 7 0 6 0 3 0 1]
+rates (1, 2, 4): span 15, holes 0, paths [1 1 2 1 3 2 3 1 3 2 3 1 2 1 1]
+rates (1, 2, 5): span 17, holes 0, paths [1 1 2 1 2 2 2 2 1 2 2 2 2 1 2 1 1]
+rates (1, 2, 9): span 25, holes 4, paths [1 1 2 1 2 1 1 0 0 1 1 2 1 2 1 1 0 0 1 1 2 1 2 1 1]
+```
+
+Equal rates of 2 leave every second input unseen; a jump from 2 to 9 leaves gaps between the copies of the inner pattern. The path counts also show that coverage is uneven even without holes: some offsets are reached by three paths, others by one.
+
+**Edge cases.** ASPP is not affected in the same way, because its branches run in parallel on the same map and are combined, not stacked. And a backbone whose earlier, undilated layers already mix neighbouring pixels softens gridding in practice; the problem is strongest when several highly dilated layers follow each other.
+
+### Dense CRF post-processing
+
+This note describes the fully connected conditional random field that early DeepLab versions applied to the network's output to sharpen boundaries.
+
+**The model.** Treat every pixel $i$ as a node with a label $x_i$ and minimize the energy [8], [41]
+
+$$
+E(\mathbf{x}) = \sum_i \theta_i(x_i) + \sum_{i \lt j} \theta_{ij}(x_i, x_j),
+$$
+
+where the **unary** term $\theta_i(x_i) = -\log P(x_i)$ uses the network's probability $P(x_i)$ at pixel $i$, and the **pairwise** term connects *every* pair of pixels:
+
+$$
+\theta_{ij}(x_i, x_j) = \mu(x_i, x_j)\left[ w_1 \exp\!\Big(-\frac{\lVert \mathbf{p}_i - \mathbf{p}_j \rVert^2}{2\sigma_\alpha^2} - \frac{\lVert \mathbf{I}_i - \mathbf{I}_j \rVert^2}{2\sigma_\beta^2}\Big) + w_2 \exp\!\Big(-\frac{\lVert \mathbf{p}_i - \mathbf{p}_j \rVert^2}{2\sigma_\gamma^2}\Big) \right].
+$$
+
+Here $\mu(x_i, x_j) = 1$ if $x_i \ne x_j$ and 0 otherwise (a Potts penalty, so only disagreeing pairs pay), $\mathbf{p}_i$ is the position and $\mathbf{I}_i$ the RGB colour of pixel $i$, $w_1, w_2$ are weights, and $\sigma_\alpha, \sigma_\beta, \sigma_\gamma$ set the scales of the kernels. The first, **bilateral** kernel says that pixels close in both position and colour should share a label; the second only enforces spatial smoothness.
+
+**Why it is tractable.** A fully connected graph over a megapixel image has about $5 \times 10^{11}$ pixel pairs. Krähenbühl and Koltun [41] showed that under a mean-field approximation, in which the label distribution factorizes over pixels, each update of all pixels is a Gaussian filtering in a joint position–colour feature space; approximate high-dimensional filtering then makes each update linear, instead of quadratic, in the number of pixels.
+
+**What it does and does not do.** It snaps boundaries to colour edges, the same intuition as the [bilateral filter of IP 03](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-bilateral-filter-averaging-only-with-pixels-that-look-alike), and can fill small holes. It cannot recover an object the network missed, because the unary term dominates far from boundaries, and it adds parameters to tune on a validation set. DeepLabv3 reports its improvements without this post-processing [10].
+
+### The gradient of the soft Dice loss
+
+This note derives the derivative of the soft Dice coefficient and explains its unusual behaviour.
+
+**The derivative.** Use the sum form $D = 2I / S$ with $I = \sum_i p_i g_i$ and $S = \sum_i p_i + \sum_i g_i$, where $p_i \in [0, 1]$ are predicted probabilities and $g_i \in \{0, 1\}$ the labels. By the quotient rule, for pixel $j$,
+
+$$
+\frac{\partial D}{\partial p_j} = \frac{2 g_j S - 2 I}{S^2} = \frac{2\,(g_j S - I)}{S^2},
+$$
+
+because $\partial I / \partial p_j = g_j$ and $\partial S / \partial p_j = 1$. (Milletari et al. [15] give the analogous expression for their squared denominator.)
+
+**What it says.**
+
+- Every **background** pixel ($g_j = 0$) gets the same gradient $-2I / S^2$, whatever its current probability: Dice pushes all background probabilities down equally hard, unlike cross-entropy, whose push $p_j - g_j$ is proportional to each pixel's error.
+- Every **foreground** pixel gets the same positive gradient $2(S - I)/S^2$.
+- The size of the push depends on global sums. When the predicted and true masks are both small, $S$ is small and the gradients are large; this is how Dice "listens" to small objects, and also why it can be unstable early in training.
+
+The code checks the formula against finite differences.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+g = (rng.random(200) < 0.05).astype(float)       # 200 pixels, about 5% foreground
+p = rng.uniform(0.05, 0.6, 200)                  # some soft prediction
+
+def dice(p, g):
+    return 2 * (p * g).sum() / (p.sum() + g.sum())
+
+I, S = (p * g).sum(), p.sum() + g.sum()
+grad = 2 * (g * S - I) / S ** 2                  # analytic dD/dp_j
+eps = 1e-6
+num = np.array([(dice(p + eps * np.eye(200)[j], g) - dice(p - eps * np.eye(200)[j], g)) / (2 * eps)
+                for j in range(200)])
+print("max |analytic - numeric|:", f"{np.abs(grad - num).max():.1e}")
+print("distinct gradient values on background pixels:", np.unique(grad[g == 0].round(12)).size)
+print(f"foreground gradient {grad[g == 1][0]:+.5f}, background gradient {grad[g == 0][0]:+.5f}")
+```
+
+```text
+max |analytic - numeric|: 9.0e-12
+distinct gradient values on background pixels: 1
+foreground gradient +0.02793, background gradient -0.00099
+```
+
+**Edge cases.** If the ground truth is empty ($g = 0$), then $I = 0$ and $D = 0$ for any nonzero prediction, so the loss is 1 even for a nearly perfect prediction; if both are zero the ratio is undefined. Implementations add a smoothing constant to the numerator and denominator, compute the sums over the whole batch rather than per image, or add cross-entropy so that the gradient never depends on the Dice ratio alone. With these probabilities the gradient chain goes through a sigmoid or softmax, which multiplies each pixel's push by $p_j(1 - p_j)$, so saturated pixels still learn slowly.
+
+### Boundary IoU in detail
+
+This note defines Boundary IoU [19] and shows why it complements mask IoU.
+
+**The problem with mask IoU.** For a large object, almost all of its pixels are far from the boundary, so a prediction can get the outline wrong by several pixels and still have a mask IoU above 0.9. The Boundary IoU paper shows this sensitivity gap across object sizes and proposes a measure focused on the contour.
+
+**Definition.** For a ground-truth mask $G$ and a prediction $P$, let $G_d$ be the set of pixels within distance $d$ of the contour of $G$, and $P_d$ likewise for $P$. Boundary IoU is
+
+$$
+\text{Boundary IoU}(G, P) = \frac{|(G_d \cap G) \cap (P_d \cap P)|}{|(G_d \cap G) \cup (P_d \cap P)|},
+$$
+
+the IoU of the two **inner boundary bands**. The paper sets $d$ to a fixed fraction of the image diagonal (2% in its analysis), motivated by an observation that two annotators' contours of the same object rarely differ by more than about 1% of the image diagonal, regardless of object size. Replacing mask IoU by Boundary IoU in the AP and PQ protocols gives the paper's Boundary AP and Boundary PQ.
+
+**A check in code.** Predict each disk with a boundary that is 2 pixels too far out, once for a small and once for a large disk.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+def boundary_band(mask, d):
+    """Pixels of the mask that lie within distance d of its contour."""
+    return mask & (ndi.distance_transform_edt(mask) <= d)
+
+def mask_iou(a, b):
+    return (a & b).sum() / (a | b).sum()
+
+def boundary_iou(g, p, d):
+    return mask_iou(boundary_band(g, d), boundary_band(p, d))
+
+n = 256
+yy, xx = np.mgrid[0:n, 0:n]
+d = 0.02 * np.hypot(n, n)                        # 2% of the image diagonal, about 7 pixels
+for r in [10, 100]:
+    g = (yy - 128) ** 2 + (xx - 128) ** 2 <= r ** 2
+    p = (yy - 128) ** 2 + (xx - 128) ** 2 <= (r + 2) ** 2      # boundary 2 pixels too far out
+    print(f"radius {r:3d}: mask IoU {mask_iou(g, p):.3f}, boundary IoU {boundary_iou(g, p, d):.3f}")
+```
+
+```text
+radius  10: mask IoU 0.719, boundary IoU 0.596
+radius 100: mask IoU 0.961, boundary IoU 0.562
+```
+
+Mask IoU calls the large disk nearly perfect and the small one poor, for the same 2-pixel error. Boundary IoU scores both errors similarly, because it looks only at a band of the same width in both cases.
+
+**Edge cases.** When both masks are so small or thin that every pixel lies within $d$ of its contour, the bands are the whole masks and Boundary IoU equals mask IoU, so small objects are not over-penalized. The band is computed per object, so the measure is meant for instance and panoptic segments, not for a whole semantic map at once.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Panoptic Segmentation: a reading guide
+
+Kirillov, He, Girshick, Rother and Dollár, *Panoptic Segmentation*, CVPR 2019 [4]. This guide summarizes what the paper proposes and how to read its results.
+
+**The problem.** Semantic segmentation (stuff, per-pixel labels, mIoU) and instance segmentation (things, scored masks, AP) had grown into separate tasks with separate datasets, methods and metrics. The authors argue that the split may hide something important, and that earlier joint "scene parsing" work faded partly for lack of an agreed task definition and metric.
+
+**The idea.** The paper contributes a task and a metric, not a network. The task: every pixel gets a (class, instance id) pair, stuff ids are ignored, segments cannot overlap, and no confidence scores are needed. The metric: PQ, with a matching step whose IoU threshold of 0.5 makes the match unique (Theorem 1 in the paper, proved in a few lines) and a scoring step that factors into SQ and RQ. The desiderata are stated explicitly: completeness (stuff and things treated alike), interpretability and simplicity.
+
+**What it shows.**
+
+- *Human consistency* (its Tables 1 and 2). Doubly annotated images (30 from Cityscapes, 64 from ADE20K, 46 from Vistas) are scored against each other. Human PQ is far from perfect, stuff and things are similarly hard for humans, and for small objects RQ drops sharply while SQ stays reasonable: annotators miss small objects more than they mis-draw them.
+- *The threshold* (Figures 6 and 7). With an optimal bipartite matching and no threshold, fewer than 16% of matched pairs have IoU below 0.5, and lowering the threshold to 0.25 changes PQ much less than raising it to 0.75, which supports 0.5 as the default.
+- *Machine baselines* (Tables 3–6). Outputs of leading semantic and instance systems, obtained from the challenge organizers, are merged with the heuristic described in the main text. AP and PQ track each other for instance methods, and mIoU and PQ for semantic methods, with one telling exception: on ADE20K a semantic method that produces many small spurious patches loses much more PQ than mIoU, because PQ counts segments and mIoU counts pixels.
+- *Humans versus machines* (Table 6). Machines are close to humans in SQ but far behind in RQ: at the time, the main gap was recognition, not segmentation.
+
+**How to read the tables.** The human study uses small image sets, so the authors report bootstrapped error ranges; check them before reading small differences. The human-versus-machine comparison uses different test images and averages over slightly different class sets, which the paper itself flags as approximate. The paper also warns that human PQ values are not comparable across datasets, because class counts, coverage and scene complexity differ. The machine results are merges of competition entries, not a single trained model, so they describe the state of separate systems rather than a method.
+
+**Limits.** PQ gives every segment equal weight regardless of area, so a tiny missed object costs as much as a missed building; this is by design, but it changes which errors dominate. The 0.5 threshold ignores how good a match is beyond "more than half", which SQ only partly recovers. Boundary quality is not measured separately, a gap Boundary PQ [19] later addressed.
+
+**Why it matters here.** PQ is the metric of the panoptic section and the motivation for the universal models that follow; the paper's observation that recognition, not segmentation, was the bottleneck is a useful lens for reading later results.
+
+### Mask2Former: a reading guide
+
+Cheng, Misra, Schwing, Kirillov and Girdhar, *Masked-attention Mask Transformer for Universal Image Segmentation*, CVPR 2022 [26]. This guide explains what the paper claims and what to look for in its tables.
+
+**The problem.** "Universal" mask-classification models such as MaskFormer could address every segmentation task with the same architecture, but they lagged behind the best specialized model on instance segmentation and were expensive to train: the paper notes that MaskFormer needed 300 epochs on COCO and fit only one image on a 32 GB GPU. Researchers therefore kept building specialized architectures per task.
+
+**The idea.** Keep MaskFormer's meta-architecture and fix the transformer decoder:
+
+- **masked attention**, which restricts each query's cross-attention to the foreground of its own previous mask prediction (the equation in the main text);
+- **multi-scale features in round robin**, feeding the pixel decoder's 1/32, 1/16 and 1/8 maps to successive decoder layers, repeated $L$ times;
+- **optimization changes**: cross-attention before self-attention, learnable query features that are supervised directly (the authors say they behave like a region proposal network), and no dropout;
+- **point-sampled mask loss**: the loss is computed on $K = 12544$ ($112 \times 112$) sampled points, with uniform sampling for the matching cost and importance sampling for the final loss, following PointRend; the paper reports training memory falling from 18 GB to 6 GB per image.
+
+**What it shows.** The same architecture, trained separately per task and dataset, reaches or exceeds the specialized state of the art of the time on COCO, ADE20K, Cityscapes and Mapillary Vistas, for panoptic, instance and semantic segmentation (the abstract quotes 57.8 PQ on COCO panoptic, 50.1 AP on COCO instance and 57.7 mIoU on ADE20K). In the ablations (its Table 4), masked attention gives the largest improvement, more for instance and panoptic than for semantic segmentation, and the high-resolution multi-scale strategy matters too.
+
+**How to read the tables.**
+
+- *Check the training schedule column.* In the COCO panoptic table (its Table 1), DETR is trained for 500+25 epochs, MaskFormer for 300 and Mask2Former for 50; part of the paper's message is convergence speed, so compare at equal epochs where the paper provides them.
+- *Check backbone and pretraining.* Rows marked with a dagger use backbones pretrained on a larger classification dataset than the others, and the strongest rows use 200 queries instead of 100. Compare rows with the same backbone before crediting the decoder.
+- *Separate task-specific and panoptic-trained numbers.* The table also reports $\text{AP}^{\text{Th}}_{\text{pan}}$ and $\text{mIoU}_{\text{pan}}$, which come from the same model trained only with panoptic annotations; they are not the same as the numbers of models trained for instance or semantic segmentation.
+- *Look at cost columns.* Parameters, FLOPs and frames per second are reported next to accuracy; the largest models are much slower.
+
+**Limits stated by the authors.** A universal *architecture* is not yet a universal *model*: trained only on panoptic labels, Mask2Former is slightly worse on instance and semantic metrics than the same model trained with task-specific annotations (their Table 7), so it still needs per-task training. It also still struggles with small objects and does not fully exploit multi-scale features.
+
+**Why it matters here.** Mask2Former is the reference design behind the "mask classification" section and the baseline in most later tables, including OneFormer's single-model training and EoMT's encoder-only simplification.
+
+## References
+
+1. S. Minaee, Y. Boykov, F. Porikli, A. Plaza, N. Kehtarnavaz and D. Terzopoulos, "Image segmentation using deep learning: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 7, 2022. [doi](https://doi.org/10.1109/TPAMI.2021.3059968) · [arXiv](https://arxiv.org/abs/2001.05566)
+2. X. Li, H. Ding, H. Yuan, W. Zhang, J. Pang, G. Cheng, K. Chen, Z. Liu and C. C. Loy, "Transformer-based visual segmentation: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, no. 12, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3434373) · [arXiv](https://arxiv.org/abs/2304.09854)
+3. T. Zhou, W. Xia, F. Zhang, B. Chang, W. Wang, Y. Yuan, E. Konukoglu and D. Cremers, "Image segmentation in foundation model era: A survey," arXiv:2408.12957, 2024. [arXiv](https://arxiv.org/abs/2408.12957)
+4. A. Kirillov, K. He, R. Girshick, C. Rother and P. Dollár, "Panoptic segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00963) · [arXiv](https://arxiv.org/abs/1801.00868)
+5. J. Long, E. Shelhamer and T. Darrell, "Fully convolutional networks for semantic segmentation," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2015. [doi](https://doi.org/10.1109/CVPR.2015.7298965) · [arXiv](https://arxiv.org/abs/1411.4038)
+6. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional networks for biomedical image segmentation," in *Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, LNCS vol. 9351, 2015. [doi](https://doi.org/10.1007/978-3-319-24574-4_28)
+7. L.-C. Chen, Y. Zhu, G. Papandreou, F. Schroff and H. Adam, "Encoder-decoder with atrous separable convolution for semantic image segmentation," in *Proc. European Conference on Computer Vision (ECCV)*, 2018. [doi](https://doi.org/10.1007/978-3-030-01234-2_49) · [arXiv](https://arxiv.org/abs/1802.02611)
+8. L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy and A. L. Yuille, "DeepLab: Semantic image segmentation with deep convolutional nets, atrous convolution, and fully connected CRFs," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 40, no. 4, 2018. [doi](https://doi.org/10.1109/TPAMI.2017.2699184) · [arXiv](https://arxiv.org/abs/1606.00915)
+9. F. Yu and V. Koltun, "Multi-scale context aggregation by dilated convolutions," in *Proc. International Conference on Learning Representations (ICLR)*, 2016. [arXiv](https://arxiv.org/abs/1511.07122)
+10. L.-C. Chen, G. Papandreou, F. Schroff and H. Adam, "Rethinking atrous convolution for semantic image segmentation," arXiv:1706.05587, 2017. [arXiv](https://arxiv.org/abs/1706.05587)
+11. P. Wang, P. Chen, Y. Yuan, D. Liu, Z. Huang, X. Hou and G. Cottrell, "Understanding convolution for semantic segmentation," in *Proc. IEEE Winter Conference on Applications of Computer Vision (WACV)*, 2018. [doi](https://doi.org/10.1109/WACV.2018.00163) · [arXiv](https://arxiv.org/abs/1702.08502)
+12. H. Zhao, J. Shi, X. Qi, X. Wang and J. Jia, "Pyramid scene parsing network," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.660) · [arXiv](https://arxiv.org/abs/1612.01105)
+13. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner et al., "An image is worth 16x16 words: Transformers for image recognition at scale," in *Proc. International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+14. E. Xie, W. Wang, Z. Yu, A. Anandkumar, J. M. Alvarez and P. Luo, "SegFormer: Simple and efficient design for semantic segmentation with transformers," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/64f1f27bf1b4ec22924fd0acb550c235-Abstract.html) · [arXiv](https://arxiv.org/abs/2105.15203)
+15. F. Milletari, N. Navab and S.-A. Ahmadi, "V-Net: Fully convolutional neural networks for volumetric medical image segmentation," in *Proc. Fourth International Conference on 3D Vision (3DV)*, 2016. [doi](https://doi.org/10.1109/3DV.2016.79) · [arXiv](https://arxiv.org/abs/1606.04797)
+16. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+17. B. Cheng, A. G. Schwing and A. Kirillov, "Per-pixel classification is not all you need for semantic segmentation," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html) · [arXiv](https://arxiv.org/abs/2107.06278)
+18. M. Cordts, M. Omran, S. Ramos, T. Rehfeld, M. Enzweiler, R. Benenson, U. Franke, S. Roth and B. Schiele, "The Cityscapes dataset for semantic urban scene understanding," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [doi](https://doi.org/10.1109/CVPR.2016.350) · [arXiv](https://arxiv.org/abs/1604.01685)
+19. B. Cheng, R. Girshick, P. Dollár, A. C. Berg and A. Kirillov, "Boundary IoU: Improving object-centric image segmentation evaluation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.01508) · [arXiv](https://arxiv.org/abs/2103.16562)
+20. K. He, G. Gkioxari, P. Dollár and R. Girshick, "Mask R-CNN," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.322) · [arXiv](https://arxiv.org/abs/1703.06870)
+21. S. Ren, K. He, R. Girshick and J. Sun, "Faster R-CNN: Towards real-time object detection with region proposal networks," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 39, no. 6, 2017. [doi](https://doi.org/10.1109/TPAMI.2016.2577031)
+22. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature pyramid networks for object detection," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.106)
+23. A. Kirillov, Y. Wu, K. He and R. Girshick, "PointRend: Image segmentation as rendering," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2020. [doi](https://doi.org/10.1109/CVPR42600.2020.00982) · [arXiv](https://arxiv.org/abs/1912.08193)
+24. A. Kirillov, R. Girshick, K. He and P. Dollár, "Panoptic feature pyramid networks," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00656) · [arXiv](https://arxiv.org/abs/1901.02446)
+25. N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov and S. Zagoruyko, "End-to-end object detection with transformers," in *Proc. European Conference on Computer Vision (ECCV)*, 2020. [doi](https://doi.org/10.1007/978-3-030-58452-8_13) · [arXiv](https://arxiv.org/abs/2005.12872)
+26. B. Cheng, I. Misra, A. G. Schwing, A. Kirillov and R. Girdhar, "Masked-attention mask transformer for universal image segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2022. [doi](https://doi.org/10.1109/CVPR52688.2022.00135) · [arXiv](https://arxiv.org/abs/2112.01527)
+27. J. Jain, J. Li, M. Chiu, A. Hassani, N. Orlov and H. Shi, "OneFormer: One transformer to rule universal image segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.00292) · [arXiv](https://arxiv.org/abs/2211.06220)
+28. T. Kerssies, N. Cavagnero, A. Hermans, N. Norouzi, G. Averta, B. Leibe, G. Dubbelman and D. de Geus, "Your ViT is secretly an image segmentation model," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Kerssies_Your_ViT_is_Secretly_an_Image_Segmentation_Model_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2503.19108)
+29. A. Kirillov, E. Mintun, N. Ravi, H. Mao, C. Rolland, L. Gustafson et al., "Segment anything," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2023. [doi](https://doi.org/10.1109/ICCV51070.2023.00371) · [arXiv](https://arxiv.org/abs/2304.02643)
+30. N. Ravi, V. Gabeur, Y.-T. Hu, R. Hu, C. Ryali, T. Ma et al., "SAM 2: Segment anything in images and videos," in *Proc. International Conference on Learning Representations (ICLR)*, 2025. [OpenReview](https://openreview.net/forum?id=Ha6RTeWMd0) · [arXiv](https://arxiv.org/abs/2408.00714)
+31. N. Carion, L. Gustafson, Y.-T. Hu, S. Debnath, R. Hu, D. Suris et al., "SAM 3: Segment anything with concepts," in *Proc. International Conference on Learning Representations (ICLR)*, 2026. [OpenReview](https://openreview.net/forum?id=r35clVtGzw) · [arXiv](https://arxiv.org/abs/2511.16719)
+32. A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal et al., "Learning transferable visual models from natural language supervision," in *Proc. International Conference on Machine Learning (ICML)*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/radford21a.html)
+33. B. Li, K. Q. Weinberger, S. Belongie, V. Koltun and R. Ranftl, "Language-driven semantic segmentation," in *Proc. International Conference on Learning Representations (ICLR)*, 2022. [OpenReview](https://openreview.net/forum?id=RriDjddCLN) · [arXiv](https://arxiv.org/abs/2201.03546)
+34. S. Cho, H. Shin, S. Hong, A. Arnab, P. H. Seo and S. Kim, "CAT-Seg: Cost aggregation for open-vocabulary semantic segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024. [doi](https://doi.org/10.1109/CVPR52733.2024.00394) · [arXiv](https://arxiv.org/abs/2303.11797)
+35. C. Zhu and L. Chen, "A survey on open-vocabulary detection and segmentation: Past, present, and future," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, no. 12, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3413013)
+36. M. Everingham, L. Van Gool, C. K. I. Williams, J. Winn and A. Zisserman, "The PASCAL Visual Object Classes (VOC) challenge," *International Journal of Computer Vision*, vol. 88, no. 2, 2010. [doi](https://doi.org/10.1007/s11263-009-0275-4)
+37. B. Zhou, H. Zhao, X. Puig, S. Fidler, A. Barriuso and A. Torralba, "Scene parsing through ADE20K dataset," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.544) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Zhou_Scene_Parsing_Through_CVPR_2017_paper.html)
+38. T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan et al., "Microsoft COCO: Common objects in context," in *Proc. European Conference on Computer Vision (ECCV)*, 2014. [doi](https://doi.org/10.1007/978-3-319-10602-1_48) · [arXiv](https://arxiv.org/abs/1405.0312)
+39. H. Caesar, J. Uijlings and V. Ferrari, "COCO-Stuff: Thing and stuff classes in context," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00132) · [arXiv](https://arxiv.org/abs/1612.03716)
+40. G. Neuhold, T. Ollmann, S. Rota Bulò and P. Kontschieder, "The Mapillary Vistas dataset for semantic understanding of street scenes," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.534)
+41. P. Krähenbühl and V. Koltun, "Efficient inference in fully connected CRFs with Gaussian edge potentials," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2011. [NeurIPS](https://proceedings.neurips.cc/paper/2011/hash/beda24c1e1b46055dff2c39c98fd6fc1-Abstract.html) · [arXiv](https://arxiv.org/abs/1210.5644)

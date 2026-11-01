@@ -1,0 +1,775 @@
+---
+title: "DLCV 04C · Generative Image Restoration: Sampling a Plausible Answer"
+description: "Why regression-trained restorers blur, what it means to sample from the posterior instead, and how GAN priors, conditional and zero-shot diffusion, latent-diffusion and flow-based restorers do it, with the evaluation, cost and hallucination risks that come with them."
+track: deep-learning
+order: 47
+level: advanced
+prereqs: [deep-learning/dl-04-image-restoration, ml/ml-06-generative-models]
+tags: [generative-restoration, posterior-sampling, perception-distortion, diffusion-models, gan-prior, inverse-problems, hallucination, image-restoration]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figMeanSamples from '../../../../assets/deep-learning/dl-04c-generative-restoration/posterior-mean-vs-samples.png';
+import figPD from '../../../../assets/deep-learning/dl-04c-generative-restoration/perception-distortion-toy.png';
+import figTraj from '../../../../assets/deep-learning/dl-04c-generative-restoration/diffusion-trajectories.png';
+import figLoop from '../../../../assets/deep-learning/dl-04c-generative-restoration/guidance-loop.png';
+import figDps from '../../../../assets/deep-learning/dl-04c-generative-restoration/dps-toy.png';
+
+## What you'll learn
+
+- Why a network trained with a pixel loss returns the **posterior mean** $\mathbb E[x \mid y]$, and why that average of many plausible images looks blurry.
+- What "generative" restoration means: return a **sample** from the posterior $p(x \mid y)$, an image that is both realistic and consistent with the input, and what the **perception–distortion trade-off** says that costs.
+- The main families: GAN-based restorers and pretrained GAN priors; conditional diffusion restorers versus **zero-shot posterior sampling** with a pretrained diffusion model (DPS, DDRM, DDNM, ΠGDM); latent-diffusion restorers built on text-to-image models; one-step distilled models; flow-based restorers.
+- The "prior step + data-consistency step" loop behind zero-shot diffusion restoration, built from scratch on a 2-D toy with an exact score.
+- How to evaluate a stochastic restorer honestly (fidelity, realism, consistency with the input, several seeds, compute), how hallucination happens, and when *not* to use generative restoration.
+
+## The big picture
+
+[DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/) trained restoration networks to be close to the clean image on average. That works well for mild damage. When the damage destroys a lot of information (a 16-pixel-wide face, a heavily compressed photo, a large hole), "close on average" produces a smooth, waxy guess. Generative restoration takes a different stance: since many clean images are consistent with the input, *pick one of them*, and make sure it looks like a real photo.
+
+<Callout type="tip" title="Explain like I'm five">
+A friend shows you a tiny, blurry photo of a car's number plate and asks what it says. One way to answer is to imagine every plate that could look like this blur and mix them all together: you get a gray smudge, which is never exactly wrong but is useless to read. Another way is to draw one plate that really could look like that blur: crisp letters, nice and clear. That drawing *looks* great, but it is only one possibility, and the letters may not be the real ones. Regression restorers draw the smudge; generative restorers draw the crisp plate. This chapter is about drawing crisp plates well, and about never forgetting that they might be wrong.
+</Callout>
+
+Why it matters. The most convincing real-world super-resolution and face or old-photo restoration of recent years comes from generative models, GANs first and diffusion models since about 2021. The same machinery is used for medical and scientific inverse problems, where an invented detail can do real harm. So you need two skills at once: how these methods work, and how to measure what they invent.
+
+**Where this chapter sits.** It builds on the degradation model, losses and metrics of [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/) and the generative models of [ML 06](/en/learn/ml/ml-06-generative-models/); diffusion and flow matching are derived in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/), and here we only use them. Super-resolution, which has its own chapters ([DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/) for images, [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/) for video), appears here only as an example. All code runs in seconds on a CPU with NumPy and SciPy, on toy problems whose exact answer is known, so every claim can be checked.
+
+## Why regression gives blur: the posterior mean
+
+**Plain version.** If several clean images could have produced the same damaged input, a network trained to minimize the squared error cannot pick one: picking the wrong one costs too much. Its safest answer is their **average**, and an average of differently placed edges is a soft ramp. Blur is not a bug in the network; it is the correct answer to the question we asked.
+
+### One input, many answers
+
+Write the measurement as $y = \mathcal D(x) + n$, as in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/). For super-resolution, deblurring, inpainting or heavy compression, $\mathcal D$ throws information away, so a whole set of clean images $x$ explains the same $y$ almost equally well. In the Bayesian language, the uncertainty that remains after seeing $y$ is the **posterior distribution**
+
+$$
+p(x \mid y) = \frac{p(y \mid x)\, p(x)}{p(y)},
+$$
+
+where $p(x)$ is the **prior** (how likely an image is before we look at $y$: natural images are likely, noise is not), $p(y \mid x)$ is the **likelihood** (how well $x$ explains the measurement; for Gaussian noise of standard deviation $\sigma$ it is proportional to $\exp(-\|y - \mathcal D(x)\|^2 / 2\sigma^2)$), and $p(y)$ is a normalizing constant that does not depend on $x$. Mild damage gives a narrow posterior, and every reasonable method agrees. Severe damage gives a wide posterior, often with several separate modes ("the edge is here" or "two pixels to the right").
+
+### The math: squared error is minimized by the posterior mean
+
+A restoration network $f_\theta$ trained on pairs $(y, x)$ with the squared error minimizes the expected loss $\mathbb E\,\|f_\theta(y) - x\|^2$ over the data distribution. For each fixed $y$, the best output $\hat x$ minimizes
+
+$$
+\mathbb E\bigl[\|\hat x - x\|^2 \mid y\bigr]
+= \bigl\|\hat x - \mathbb E[x \mid y]\bigr\|^2 + \mathbb E\bigl[\|x - \mathbb E[x \mid y]\|^2 \mid y\bigr],
+$$
+
+where the expectation is over the posterior $p(x \mid y)$ and $\mathbb E[x \mid y]$ is the posterior mean. The second term does not depend on $\hat x$ (it is the irreducible uncertainty), so the minimum is at
+
+$$
+\hat x_{\text{MMSE}}(y) = \mathbb E[x \mid y] = \int x \, p(x \mid y)\, dx,
+$$
+
+the **minimum mean squared error (MMSE)** estimator. A large enough network trained long enough approaches it. (The L1 loss gives the per-pixel posterior *median* instead: sometimes sharper, but still chosen pixel by pixel rather than as one coherent image; [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#loss-functions) compares the losses.) The posterior mean is the right answer if you are scored by MSE or PSNR, and the wrong one if you want an image that looks real: averaging images with edges in different places gives an image with no sharp edge at all.
+
+### Code: a toy where the mean is blurry and every sample is sharp
+
+We need a problem whose posterior we can compute exactly. The clean "images" are 1-D signals of 64 pixels with one step edge (0 on the left, 1 on the right) at an unknown position between pixels 8 and 55, all equally likely. The degradation blurs with a Gaussian of standard deviation 3 pixels, keeps one pixel in eight and adds Gaussian noise of standard deviation 0.2. With only 48 possible clean signals, the posterior is an exact list of 48 probabilities.
+
+```python
+import numpy as np
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import wasserstein_distance
+
+rng = np.random.default_rng(0)
+n, factor, sigma = 64, 8, 0.2
+positions = np.arange(8, 56)                                     # where the edge may be
+X = (np.arange(n)[None, :] >= positions[:, None]).astype(float)  # every possible clean signal
+A = lambda x: gaussian_filter1d(x, 3.0, axis=-1, mode="nearest")[..., ::factor]  # blur, keep 1 of 8
+AX = A(X)                                                        # every candidate, degraded
+
+def posterior(y):
+    """Exact p(edge position | y): uniform prior, Gaussian noise of std sigma."""
+    logp = -np.sum((y - AX) ** 2, axis=1) / (2 * sigma**2)
+    p = np.exp(logp - logp.max())
+    return p / p.sum()
+
+truth, mean, post, prior = [], [], [], []
+for _ in range(2000):
+    x = X[rng.integers(len(positions))]
+    y = A(x) + sigma * rng.standard_normal(n // factor)
+    p = posterior(y)
+    truth.append(x)
+    mean.append(p @ X)                                           # posterior mean (MMSE)
+    post.append(X[rng.choice(len(positions), p=p)])              # a sample from p(x | y)
+    prior.append(X[rng.integers(len(positions))])                # a sample that ignores y
+truth = np.array(truth)
+
+for name, est in [("posterior mean", mean), ("posterior sample", post), ("prior sample", prior)]:
+    est = np.array(est)
+    mse = np.mean((est - truth) ** 2)
+    w1 = wasserstein_distance(est.ravel(), truth.ravel())        # pixel values like real ones?
+    jump = np.abs(np.diff(est, axis=1)).max(axis=1).mean()       # sharpest step (real: 1.0)
+    print(f"{name:16s} MSE {mse:.4f} | W1 {w1:.4f} | largest step {jump:.2f}")
+# posterior mean   MSE 0.0169 | W1 0.0243 | largest step 0.22
+# posterior sample MSE 0.0333 | W1 0.0010 | largest step 1.00
+# prior sample     MSE 0.2485 | W1 0.0076 | largest step 1.00
+```
+
+Three estimators are compared over 2,000 random test signals. The columns are the MSE to the clean signal; a crude "realism" score, the 1-D Wasserstein distance W1 between the distribution of output pixel values and that of real pixel values (real signals contain only 0s and 1s, so in-between gray values are unrealistic); and the height of the sharpest step in the output (1.0 for every real signal). All numbers in this chapter's code blocks come from our own runs.
+
+- The **posterior mean** has the lowest MSE, but its sharpest step averages 0.22: it is a ramp, not an edge, and its gray values make it statistically unlike any real signal.
+- A **posterior sample** is a real edge (step 1.00, W1 near zero) placed where the data allow. Its MSE is 0.0333, almost exactly **twice** the posterior mean's 0.0169. That factor of two is not a coincidence (next section).
+- A **prior sample** ignores $y$. It is perfectly realistic and useless: its MSE is about 15 times worse. Realism alone is not restoration. (Its W1 of 0.0076 instead of 0 is sampling noise of the 2,000-signal test.)
+
+<Figure src={figMeanSamples} alt="Left: a sharp black step edge at pixel 28, eight green noisy measurement squares, three blue posterior-sample edges at pixels 28 to 32, and a red smooth S-shaped posterior mean ramp. Right: a bar chart of the exact posterior over edge positions, peaked around 29 with the true position 28 marked." caption="Figure 1 — The step-edge toy for one input. (a) The posterior mean (red) is a smooth ramp; each posterior sample (blue) is a sharp edge, but they disagree about where. (b) The exact posterior over the edge position: the measurement narrows the position to a few pixels but cannot pin it down." />
+
+## What "generative" restoration means
+
+**Plain version.** A generative restorer does not output the average of all plausible answers. It outputs *one* plausible answer, ideally drawn at random with the right probabilities, so that if you ran it many times you would see the whole range of possibilities the input allows.
+
+**Precise version.** A generative (or stochastic, or posterior-sampling) restorer is a random map: given $y$ and a random seed $z$, it returns $\hat x = G(y, z)$ whose distribution, for fixed $y$, is meant to approximate $p(x \mid y)$. Three ingredients appear in every method of this chapter:
+
+1. **A prior** $p(x)$ of natural images, learned by a generative model (a GAN, a diffusion model, a flow, a codebook).
+2. **A likelihood or data-consistency term** that ties the output to the input, either explicitly ($\|y - \mathcal D(\hat x)\|^2$ with a known $\mathcal D$) or implicitly (a network that is shown $y$ and trained on pairs).
+3. **A way to produce samples**: one forward pass of a generator, or many steps of a sampler.
+
+A convenient identity connects the three. Taking the gradient of the logarithm of Bayes' rule with respect to $x$ removes the constant $p(y)$:
+
+$$
+\nabla_x \log p(x \mid y) = \nabla_x \log p(x) + \nabla_x \log p(y \mid x),
+$$
+
+where $\nabla_x \log p(x)$ is the **score** of the prior (a vector field pointing toward more likely images) and $\nabla_x \log p(y \mid x)$ is the gradient of the likelihood (pointing toward images that explain $y$ better). Every sampler that follows "uphill directions plus noise" can therefore be split into a *prior push* and a *data push*. This split is the backbone of zero-shot diffusion restoration below.
+
+There are two broad ways to build such a restorer:
+
+- **Learn the posterior directly** (supervised): train a conditional generator on pairs $(y, x)$, as conditional GANs and conditional diffusion models do. $\mathcal D$ never has to be written down, but a new degradation needs new training.
+- **Combine a prior with a known likelihood** (zero-shot): train an *unconditional* generative model on clean images once, then steer its sampler with $\mathcal D$ and $y$ at test time, as GAN inversion and DPS-type methods do. One model serves many tasks, but $\mathcal D$ must be known and sampling is usually slower.
+
+## The perception–distortion trade-off
+
+**Plain version.** You cannot have both the lowest possible error and perfectly realistic outputs. The lowest-error answer is the blurry average; perfectly realistic answers must commit to details, and a committed guess is sometimes wrong. The good news is that the price of realism is bounded: for squared error, at most a factor of two.
+
+**Precise version.** Blau and Michaeli [1] define, for any restoration method that outputs $\hat X$ from $Y$, its **distortion** $\mathbb E[\Delta(X, \hat X)]$, where $\Delta$ is any per-image distortion measure such as squared error, and its **perceptual quality** as a divergence $d(p_X, p_{\hat X})$ between the distribution of real images $p_X$ and the distribution of restored images $p_{\hat X}$ (zero means the outputs are statistically indistinguishable from real images, for example by a perfect discriminator). The **perception–distortion function** is
+
+$$
+P(D) = \min_{p_{\hat X \mid Y}} \; d\bigl(p_X, p_{\hat X}\bigr) \quad \text{subject to} \quad \mathbb E\bigl[\Delta(X, \hat X)\bigr] \le D,
+$$
+
+where the minimum is over all, possibly random, restoration methods $p_{\hat X \mid Y}$ and $D$ is the distortion budget. They prove that $P(D)$ is non-increasing, and convex when $d$ is convex in its second argument [1]. So there is an **unattainable region** near the origin of the (distortion, perception) plane: lowering distortion past a point forces outputs away from the real-image distribution. They also show that this holds for *any* distortion measure, not only for MSE.
+
+Two points on the curve matter most. Let $D_{\min}$ be the lowest possible distortion (achieved by the MMSE estimator for squared error) and $D_{\max}$ the lowest distortion achievable with perfect perceptual quality ($p_{\hat X} = p_X$). For squared error the paper proves (in its extended arXiv version [1])
+
+$$
+D_{\max} \le 2\, D_{\min},
+$$
+
+and the bound is reached by **posterior sampling**, $p_{\hat X \mid Y} = p_{X \mid Y}$. In PSNR terms, perfect realism never needs to cost more than about 3 dB, because $10 \log_{10} 2 \approx 3.01$. This is exactly the factor of two in our toy (0.0333 versus 0.0169). The paper also notes that the bound need not be tight: some problems allow perfect realism for less than twice the MMSE.
+
+*Optional: [Why posterior sampling exactly doubles the MSE](#why-posterior-sampling-exactly-doubles-the-mse) (in the Supplementary notes). A four-line proof of the factor of two.*
+
+Figure 2 places the toy's estimators on the plane. Between the posterior mean and the posterior sample we also plot simple blends $(1 - \lambda)\,\hat x_{\text{MMSE}} + \lambda\, \hat x_{\text{sample}}$, a simple way to trade the two. Their expected MSE is $(1 + \lambda^2) D_{\min}$, because a posterior sample's deviation from the mean is uncorrelated with the truth's deviation, so $\lambda = 1$ gives the factor of two. The blends are one achievable path; the true bound $P(D)$ may lie below it.
+
+<Figure src={figPD} alt="Scatter plot with log-scale MSE on the horizontal axis and a perception gap on the vertical axis. A red dot for the posterior mean sits at low MSE and high gap, a blue diamond for the posterior sample at roughly double MSE and near-zero gap, gray blend points connect them, and an orange square for a prior sample sits far to the right at near-zero gap." caption="Figure 2 — The perception–distortion plane for the step-edge toy, measured on 2,000 test signals. Moving from the posterior mean to a posterior sample lowers the perception gap to near zero and doubles the MSE. A prior sample is also realistic but ignores the input, so it is far to the right." />
+
+What this means in practice:
+
+- **A method is a point, not a score.** Report a distortion metric (PSNR, SSIM) *and* a perceptual one, and say which point your method aims for. Comparing a GAN restorer with an MSE restorer by PSNR alone is comparing two different targets.
+- **"Better PSNR and better realism" is possible only for methods away from the bound.** Once a method is near the curve, it can only move along it.
+- **Many generative restorers expose a knob** that slides along the curve: a GAN loss weight, a fidelity weight in CodeFormer [10], a feature-wrapping scalar in StableSR [24], a guidance scale in DiffBIR [25]. Choosing the knob is choosing a point on the trade-off.
+
+*Optional: [Blau and Michaeli, "The Perception-Distortion Tradeoff"](#blau-and-michaeli-the-perception-distortion-tradeoff-cvpr-2018) (in the Paper guides). How to read the theorems and the super-resolution comparison.*
+
+## Family 1: GAN-based restoration and GAN priors
+
+**Plain version.** A GAN adds a critic that has seen many real photos and complains whenever the restored image looks fake. The restorer learns to produce outputs the critic accepts, which pushes it off the blurry average and onto realistic texture. A second idea reuses a GAN that was already trained to *generate* faces or scenes: restoration becomes "find the image this generator can make that matches the damaged input".
+
+### Adversarial and perceptual losses
+
+The first route keeps supervised training and changes the loss ([DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#loss-functions) has the formulas). SRGAN [2] combined an adversarial loss with a loss on pretrained VGG features, following the perceptual-loss idea of Johnson et al. [3]; ESRGAN [4] improved the generator and discriminator; Real-ESRGAN [5] trained such a model on a rich synthetic degradation pipeline for real photos ([DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/) covers them in detail). In this chapter's terms, the total loss
+
+$$
+\mathcal L = \mathcal L_{\text{pixel}} + \lambda_p\, \mathcal L_{\text{feat}} + \lambda_a\, \mathcal L_{\text{adv}}
+$$
+
+has a pixel term $\mathcal L_{\text{pixel}}$ (L1 or L2, pulling toward the posterior mean), a feature term $\mathcal L_{\text{feat}}$ (matching deep features, which tolerates small shifts), and an adversarial term $\mathcal L_{\text{adv}}$ (pulling the output distribution toward real images), with weights $\lambda_p, \lambda_a \ge 0$. Blau and Michaeli point out that the adversarial term approximates a divergence $d(p_X, p_{\hat X})$, so minimizing this loss is a Lagrangian form of the perception–distortion problem, and changing $\lambda_a$ moves along the curve [1].
+
+Two caveats. Most such networks are **deterministic**, so they give *one* plausible answer, not samples with the right probabilities. And GAN training can **mode-collapse** ([ML 06](/en/learn/ml/ml-06-generative-models/#gans-learning-with-an-adversary)), while the adversarial term rewards any texture the discriminator likes, including textures that were never in the scene.
+
+### Pretrained GANs as image priors
+
+The second route separates "what images look like" from "what this input says". A GAN generator $G$ trained on clean images, for example a StyleGAN [6] trained on faces, maps a latent code $w$ to an image $G(w)$. Its outputs form a learned **image manifold**: restoration can search on that manifold for an image consistent with $y$.
+
+**GAN inversion by optimization.** Solve
+
+$$
+\hat w = \arg\min_{w} \; \bigl\| \mathcal D\bigl(G(w)\bigr) - y \bigr\|^2 + \lambda\, R(w), \qquad \hat x = G(\hat w),
+$$
+
+where $R$ keeps $w$ in the region the generator was trained on and $\lambda$ weights it. Nothing is trained per task, and $\mathcal D$ can be any differentiable degradation. PULSE [7] does this for face super-resolution, searching a StyleGAN's latent space for faces that downscale to the input; different random starts give different faces that all fit, a direct picture of "many answers".
+
+**Generators inside a feed-forward network.** To avoid one optimization per image, GLEAN [8] and GFP-GAN [9] put a pretrained, frozen GAN inside an encoder–decoder: the encoder reads the damaged image, the generator supplies realistic features, and one forward pass gives the result. CodeFormer [10] uses a learned discrete codebook of face parts instead of a GAN latent space and has a test-time knob that trades fidelity for quality.
+
+*Optional: [GAN-prior restorers in more detail](#gan-prior-restorers-in-more-detail) (in the Supplementary notes). How PULSE, GLEAN, GFP-GAN and CodeFormer use their priors, with a 2-D inversion toy.*
+
+**Strengths and limits.** GAN priors give sharp, realistic results in one pass on narrow domains with good generators, such as aligned faces. But they can only produce what the generator can produce: an input unlike the training faces is pulled toward a "typical" face, which is a fidelity and fairness problem, and the PULSE authors discuss such biases explicitly [7]. A diffusion-restoration survey [44] names unstable training and fake-looking textures as the two main weaknesses of GAN-based restoration, one motivation for the diffusion priors that follow. The survey of Xia et al. [47] reviews GAN inversion and its use for restoration and editing.
+
+## Family 2: diffusion models as priors
+
+**Plain version.** A diffusion model is a denoiser trained at every noise level. Starting from pure noise and denoising a little at a time turns noise into a realistic image. For restoration, we either *teach the denoiser to look at the damaged input* while it denoises (conditional diffusion), or we take a denoiser that only knows clean images and, after each small denoising step, *nudge* the current guess so that it agrees with the damaged input (zero-shot posterior sampling).
+
+### Diffusion in one page
+
+The full derivation is in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/); we need only four facts, in the variance-preserving DDPM convention [11].
+
+**Forward noising.** For a clean image $x_0$ and steps $t = 1, \dots, T$,
+
+$$
+x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\, \epsilon, \qquad \epsilon \sim \mathcal N(0, I),
+$$
+
+where $\bar\alpha_t \in (0, 1)$ decreases from about 1 (almost clean) to about 0 (pure noise) along a chosen schedule and $\epsilon$ is standard Gaussian noise.
+
+**A denoiser is a score estimator.** A network trained to predict $\epsilon$ from $x_t$ gives the score of the noisy distribution $p_t$: $\nabla_{x_t} \log p_t(x_t) \approx -\epsilon_\theta(x_t, t) / \sqrt{1 - \bar\alpha_t}$ ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#what-is-a-score-and-why-does-denoising-estimate-it)) [12].
+
+**Tweedie's formula** [13] turns the score into a clean-image estimate,
+
+$$
+\hat x_0(x_t) = \mathbb E[x_0 \mid x_t] = \frac{x_t + (1 - \bar\alpha_t)\, \nabla_{x_t} \log p_t(x_t)}{\sqrt{\bar\alpha_t}},
+$$
+
+where $\hat x_0$ is the *posterior mean* of the clean image given the noisy one, so it is blurry when $t$ is large, exactly as in the first section.
+
+**Sampling.** Start from $x_T \sim \mathcal N(0, I)$ and repeatedly draw $x_{t-1}$ from a Gaussian centered between $x_t$ and $\hat x_0(x_t)$ with a small, known variance ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#sampling-is-a-reverse-process)). Each step costs one network call; classic samplers use hundreds. Annealed Langevin dynamics with score networks [48] and the continuous-time SDE view [12] describe the same idea in other terms.
+
+**Code: diffusion with an exact score.** Image-scale diffusion needs a trained network. On a 2-D toy we can skip the network: if the "image" distribution is a mixture of Gaussians, every noisy marginal $p_t$ is again a mixture of Gaussians, and its score has a closed form. The prior below has four blobs with weights 0.1, 0.2, 0.3, 0.4 and standard deviation 0.3.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+mu = np.array([[-2.0, -2.0], [-2.0, 2.0], [2.0, -2.0], [2.0, 2.0]])  # a 2-D "image" prior:
+w = np.array([0.1, 0.2, 0.3, 0.4])                                   # four Gaussian blobs
+s2 = 0.3**2                                                          # each with variance s2 * I
+
+T = 200
+beta = np.linspace(1e-4, 0.05, T)
+alpha = 1 - beta
+abar = np.cumprod(alpha)
+
+def score(x, ab):
+    """Exact grad log p_t(x) of the noised mixture, plus responsibilities r."""
+    m, v = np.sqrt(ab) * mu, ab * s2 + (1 - ab)            # component k at time t: N(m_k, v I)
+    d2 = ((x[:, None, :] - m[None]) ** 2).sum(-1)         # (N, K) squared distances
+    logr = np.log(w) - d2 / (2 * v)
+    r = np.exp(logr - logr.max(1, keepdims=True)); r /= r.sum(1, keepdims=True)
+    return (r[:, :, None] * (m[None] - x[:, None, :])).sum(1) / v, r
+
+def x0_hat(x, ab):                                         # Tweedie: E[x_0 | x_t]
+    return (x + (1 - ab) * score(x, ab)[0]) / np.sqrt(ab)
+
+def ddpm_step(x, t, x0):
+    """Sample x_{t-1} from the Gaussian q(x_{t-1} | x_t, x_0 = x0)."""
+    ab_prev = abar[t - 1] if t > 0 else 1.0
+    mean = (np.sqrt(ab_prev) * beta[t] * x0 + np.sqrt(alpha[t]) * (1 - ab_prev) * x) / (1 - abar[t])
+    var = beta[t] * (1 - ab_prev) / (1 - abar[t])
+    return mean + np.sqrt(var) * rng.standard_normal(x.shape)
+
+x = rng.standard_normal((4000, 2))                         # start from pure noise
+for t in reversed(range(T)):
+    x = ddpm_step(x, t, x0_hat(x, abar[t]))
+_, r = score(x, 1.0)
+print("signal left at t=T:", round(abar[-1], 5))
+print("fraction per blob :", np.bincount(r.argmax(1), minlength=4) / len(x), "(target", w, ")")
+print("spread inside blob:", round(float(np.sqrt(((x - mu[r.argmax(1)]) ** 2).mean())), 3), "(target 0.3)")
+# signal left at t=T: 0.00612
+# fraction per blob : [0.09675 0.2005  0.3075  0.39525] (target [0.1 0.2 0.3 0.4] )
+# spread inside blob: 0.283 (target 0.3)
+```
+
+The sampler reproduces the blob weights to within sampling error. The spread inside each blob is 0.283 instead of 0.3: with only 200 coarse steps the reverse process is slightly too narrow (with 1,000 smaller steps we measured 0.296). This is the first lesson about **step count**: fewer steps are cheaper and less exact. Figure 3 shows the particle cloud contracting from noise to the four blobs.
+
+<Figure src={figTraj} alt="Four square panels. Left: a round cloud of blue points at the origin over circular density contours. Second: the cloud at an intermediate time, slightly shifted. Third: four separate clusters forming. Right: four tight clusters at plus or minus two, with 25 red jagged paths running from the center to the clusters." caption="Figure 3 — Reverse diffusion with the exact score of a four-blob prior. Gray contours show the noised density at each time; blue points are 1,500 samples; red lines (right) are 25 individual reverse paths. Paths are noisy because every step injects fresh noise." />
+
+### Route A: train a conditional diffusion restorer
+
+The direct approach lets the denoiser see the input: train $\epsilon_\theta(x_t, t, y)$ on pairs, so the sampler draws from an approximation of $p(x \mid y)$. **SR3** [14] did this for super-resolution: the upsampled low-resolution image is given to the U-Net with the noisy image, and sampling refines pure noise step by step. In the paper's human study on $8\times$ face super-resolution, raters were fooled by SR3 close to 50% of the time, against at most 34% for GAN baselines [14]. **Palette** [15] applied the recipe to colorization, inpainting, uncropping and JPEG restoration, and showed that one multi-task model can match task-specific ones.
+
+Conditional models need pairs and new training for each family of degradations, but they cope with noise and with operators that are hard to write down (camera processing, compression). Starting from pure noise wastes steps re-creating what $y$ already contains; **ResShift** [16] instead builds a chain that moves between the high- and low-resolution images by shifting their residual, and reports competitive results with only 15 sampling steps.
+
+### Route B: zero-shot posterior sampling with a pretrained model
+
+**Plain version.** Train one unconditional diffusion model on clean images. To restore, run its sampler as usual, but after every step check the current clean guess against the input and correct it a little. The model contributes "looks real"; the correction contributes "agrees with what we measured".
+
+**Precise version.** Apply the score identity of the previous section to the noisy variable $x_t$:
+
+$$
+\nabla_{x_t} \log p_t(x_t \mid y) = \nabla_{x_t} \log p_t(x_t) + \nabla_{x_t} \log p_t(y \mid x_t),
+$$
+
+where the first term is the pretrained model's score and the second is the **noisy likelihood**: how well the noisy state $x_t$ explains $y$. The first term we have. The second is the hard part, because $y$ depends on the *clean* image, and
+
+$$
+p_t(y \mid x_t) = \int p(y \mid x_0)\, p(x_0 \mid x_t)\, dx_0
+$$
+
+averages the likelihood over all clean images that could have produced $x_t$, which is intractable for an image-scale model. The methods differ mainly in how they approximate this term, and they all end up with the same loop (Figure 4): a **prior step** (one reverse-diffusion step with the pretrained model) and a **data-consistency step** (a gradient step, a projection or a closed-form correction toward $\mathcal D(\hat x_0) \approx y$).
+
+<Figure src={figLoop} alt="Block diagram. A noisy state x_t feeds a blue prior-step box (denoise to x-hat-0, step to level t minus 1), which feeds a green data-consistency box (nudge so that A x-hat-0 is close to y, by gradient or projection), fed from below by a yellow box with the measurement y and degradation A; the output is x_t minus 1, and a dashed arrow loops back to the start. A note lists DPS, DDNM and Pi-GDM as variants." caption="Figure 4 — The loop behind zero-shot diffusion restoration. The prior step uses a model trained only on clean images; the data step uses the known degradation. Methods differ in exactly how, and where in the step, the data correction is applied." />
+
+**DPS** (diffusion posterior sampling) [17] is the simplest to state. It replaces the average over $p(x_0 \mid x_t)$ by its mean, $p_t(y \mid x_t) \approx p(y \mid \hat x_0(x_t))$. With Gaussian noise this gives the data step
+
+$$
+x_{t-1} \leftarrow x'_{t-1} - \zeta_t\, \nabla_{x_t} \bigl\| y - \mathcal D\bigl(\hat x_0(x_t)\bigr) \bigr\|^2,
+$$
+
+where $x'_{t-1}$ is the result of the ordinary prior step and $\zeta_t > 0$ is a step size; the paper uses $\zeta_t = \zeta' / \|y - \mathcal D(\hat x_0)\|$ with a constant $\zeta'$. The gradient passes through $\hat x_0$, so it needs **backpropagation through the denoiser** at every step. Because it never projects exactly onto the measurements, DPS also works with noisy and nonlinear degradations (the paper includes Poisson noise, Fourier phase retrieval and non-uniform deblurring).
+
+The other members differ mainly in the data step:
+
+- **DDRM** (denoising diffusion restoration models) [18] handles linear degradations in the coordinates of the degradation's singular value decomposition, treating measured and unmeasured coordinates differently; no backpropagation, few steps.
+- **DDNM** (denoising diffusion null-space model) [19] copies the part of $\hat x_0$ that the measurement determines from the data, $A^{+}y$ (with $A^{+}$ the pseudoinverse of a linear $A$), and keeps the model's guess only in the part the measurement cannot see.
+- **ΠGDM** (pseudoinverse-guided diffusion models) [20] builds its guidance from a pseudoinverse of the degradation and an explicit uncertainty for $\hat x_0$; it backpropagates through the denoiser but not through the degradation, so it also covers non-differentiable measurements such as JPEG.
+- **DiffPIR** [21] puts plug-and-play splitting (a data step and a denoiser step in turn, as described in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/)) inside the diffusion sampler and reports good results with at most 100 network evaluations.
+
+*Optional: [How the zero-shot diffusion samplers differ](#how-the-zero-shot-diffusion-samplers-differ) (in the Supplementary notes). The data step of each method, the range–null-space split and the SVD view, with a three-line check.*
+
+**Code: a DPS-style sampler where the true posterior is known.** We reuse the four-blob prior and observe one linear projection of the 2-D "image", $y = A x + n$ with $A = [1, 1]/\sqrt 2$ and noise standard deviation $\sigma_y = 0.2$. The blobs at $(-2, 2)$ and $(2, -2)$ both have $Ax \approx 0$, so a measurement near 0 is genuinely ambiguous. Prior and likelihood are Gaussian within each blob, so the exact posterior is again a four-blob mixture and we can check the sampler against it. The Jacobian of $\hat x_0$ is taken by finite differences, cheap in 2-D; at image scale this is the backpropagation step.
+
+```python
+# Continues the previous snippet (same session): mu, w, s2, T, abar, x0_hat, ddpm_step.
+rng = np.random.default_rng(3)
+A = np.array([[1.0, 1.0]]) / np.sqrt(2)          # we only observe one projection of x
+sig_y = 0.2
+x_true = np.array([1.8, -2.1])
+y = A @ x_true + sig_y * rng.standard_normal(1)
+
+# Reference: the exact posterior of a Gaussian mixture under a linear-Gaussian measurement.
+S = (A @ A.T)[0, 0] * s2 + sig_y**2               # variance of y within one blob
+logpost = np.log(w) - (y - mu @ A.T)[:, 0] ** 2 / (2 * S)
+post_w = np.exp(logpost - logpost.max()); post_w /= post_w.sum()
+gain = s2 * A.T / S                               # Kalman gain, shape (2, 1)
+post_mu = mu + (y - mu @ A.T) @ gain.T            # posterior mean inside each blob
+post_cov = s2 * (np.eye(2) - gain @ A)
+k = rng.choice(4, size=2000, p=post_w)
+exact = post_mu[k] + rng.multivariate_normal(np.zeros(2), post_cov, size=2000)
+mmse = post_w @ post_mu                           # posterior mean
+least_sq = (np.linalg.pinv(A) @ y).ravel()        # minimum-norm solution of A x = y
+
+def data_grad(x, ab, h=1e-4):
+    """grad_x ||y - A x0_hat(x)||^2 through Tweedie's estimate (finite-difference Jacobian)."""
+    J = np.stack([(x0_hat(x + h * e, ab) - x0_hat(x - h * e, ab)) / (2 * h) for e in np.eye(2)], -1)
+    resid = y - x0_hat(x, ab) @ A.T                # (N, 1)
+    return -2 * np.einsum("nij,ik,nk->nj", J, A.T, resid), np.abs(resid)
+
+x = rng.standard_normal((2000, 2))
+for t in reversed(range(T)):
+    x_prior = ddpm_step(x, t, x0_hat(x, abar[t]))  # 1) prior step: one reverse-diffusion step
+    g, res = data_grad(x, abar[t])
+    x = x_prior - 0.1 / (res + 1e-8) * g           # 2) data-consistency step, DPS step size
+
+blob = lambda pts: np.bincount(np.argmin(((pts[:, None] - mu) ** 2).sum(-1), 1), minlength=4) / len(pts)
+print("least squares", least_sq.round(2), "| posterior mean", mmse.round(2), "| truth", x_true)
+for name, pts in [("exact posterior", exact), ("DPS", x)]:
+    print(f"{name:15s} blob shares {blob(pts)} | median |y - Ax| {np.median(np.abs(y - pts @ A.T)):.3f}"
+          f" | mean sq. error {np.mean(((pts - x_true) ** 2).sum(1)):.2f}")
+for name, est in [("least squares", least_sq), ("posterior mean", mmse)]:
+    print(f"{name:15s} sq. error {np.sum((est - x_true) ** 2):.2f}")
+# least squares [0.14 0.14] | posterior mean [ 0.5 -0.3] | truth [ 1.8 -2.1]
+# exact posterior blob shares [0.    0.409 0.591 0.   ] | median |y - Ax| 0.122 | mean sq. error 12.97
+# DPS             blob shares [0.     0.4055 0.5945 0.    ] | median |y - Ax| 0.100 | mean sq. error 13.09
+# least squares   sq. error 7.77
+# posterior mean  sq. error 4.93
+```
+
+Read the output with Figure 5:
+
+- The **least-squares** solution $A^{+}y$ and the **posterior mean** both lie *between* the two plausible blobs, where the prior is almost empty: the "blurry" answers of this toy. The posterior mean has the lowest squared error (4.93) because it hedges.
+- The **DPS-style samples** fall in the two right blobs with shares 0.41 and 0.59, matching the exact posterior. Their mean squared error (13.09) is much higher, because about 40% of them land in the other blob: a confident, wrong answer. That is posterior sampling working as intended, and also the 2-D version of a hallucinated detail.
+- DPS fits the measurement slightly *more* tightly than the true posterior (median residual 0.100 versus 0.122): it is an approximation, and its residual depends on the step size $\zeta'$ (Exercise 3). In high dimensions such deviations are much harder to see.
+
+<Figure src={figDps} alt="Two square panels with four gray prior blobs at plus or minus two. A green diagonal band marks images consistent with the measurement. Purple exact posterior samples (left) and blue DPS samples (right) form two clusters where the band crosses the blobs at upper-left and lower-right. An orange square (least squares) and a red dot (posterior mean) sit in the empty middle of the band; a gold star marks the truth in the lower-right blob." caption="Figure 5 — A linear inverse problem with a known posterior. (a) Exact posterior samples; (b) DPS-style samples from the loop of Figure 4. Both land in the two blobs the measurement allows, while least squares and the posterior mean land in the empty space between them." />
+
+*Optional: [Chung et al., "Diffusion Posterior Sampling for General Noisy Inverse Problems"](#chung-et-al-diffusion-posterior-sampling-for-general-noisy-inverse-problems-iclr-2023) (in the Paper guides). What the paper approximates, what it measured and what to check in its tables.*
+
+### Choosing between conditional and zero-shot
+
+| Question | Conditional (SR3, Palette, ResShift) | Zero-shot (DPS, DDRM, DDNM, ΠGDM, DiffPIR) |
+|---|---|---|
+| Training | One model per family of degradations, on pairs | One unconditional model on clean images |
+| Degradation at test time | Implicit; can be unknown if it was in training | Must be known (or estimated) and usually differentiable |
+| Noise and real camera pipelines | Handled if they were in training | Handled only as far as the likelihood model allows |
+| Cost per image | Tens to hundreds of steps, no backpropagation | Often hundreds of steps; DPS-type methods also backpropagate |
+| Good fit | One task with plenty of training pairs | Known physics, new operators, no retraining |
+
+A rough rule: if you can collect or synthesize pairs for exactly your degradation, train a conditional model (or a non-generative one). If the operator is known physics (a blur kernel, a sampling mask, a tomography projector) and retraining for every setting is impractical, zero-shot sampling is attractive.
+
+## Family 3: latent-diffusion and foundation-model restorers
+
+**Plain version.** The strongest image generators are large text-to-image diffusion models trained on huge image collections. They know what grass, fabric and brick look like far better than any restoration dataset could teach. Recent real-world restorers keep such a model frozen (or almost frozen), add a small network that shows it the damaged image, and let it paint in the missing detail. The result can look stunning, and it can invent things.
+
+### Building on a pretrained text-to-image model
+
+Latent diffusion [22] runs diffusion in the compressed latent space of an autoencoder instead of on pixels, which is what makes large text-to-image models affordable ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#latent-diffusion-and-diffusion-transformers)). ControlNet [23] showed how to add a new image condition to such a model, which its authors describe as pretrained with billions of images, without damaging it: the pretrained model is locked, a trainable copy of its encoding layers receives the condition, and the two are joined by zero-initialized convolutions, so training starts from the unchanged model. Restoration methods adapt both ideas. **StableSR** [24] keeps the generator fixed and injects the low-quality image through a time-aware encoder, with a user-set scalar that trades quality for fidelity. **DiffBIR** [25] first removes the degradation with an ordinary restoration network and then regenerates lost detail with a ControlNet-style adapter, again with a tunable fidelity guidance. **SUPIR** [26] scales up the prior and the data (the paper describes 20 million high-resolution images with text annotations) and lets text prompts steer the restoration.
+
+### Fewer steps: from hundreds to one
+
+Multi-step latent restorers are slow, and their random starting noise makes outputs vary from run to run. Distilled and re-designed models reduce both: **SinSR** [27], **OSEDiff** [28] and **TSD-SR** [30] restore in one step, and **InvSR** [29] in one to five, mostly by starting from the low-quality image instead of pure noise and by distilling a many-step teacher. The general distillation families (progressive, consistency, adversarial) are described in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#few-step-and-one-step-generation).
+
+*Optional: [Latent and one-step restorers, method by method](#latent-and-one-step-restorers-method-by-method) (in the Supplementary notes). What StableSR, DiffBIR, SUPIR, SinSR, OSEDiff, InvSR and TSD-SR each add.*
+
+Two consequences. First, a one-step restorer that starts from the input is nearly deterministic: it gives *one* plausible answer, like a GAN, rather than samples with the right spread. Second, step count is not the whole cost: a one-step model may have a larger network, and latent methods also pay for the autoencoder's encoder and decoder at full resolution.
+
+### The hallucination problem
+
+**Plain version.** A strong prior fills gaps with what is *typical*, not with what was *there*. Where the input says little, the output is mostly prior: it looks real, and nothing in the image tells you it was invented. Where it shows up:
+
+- **Text and symbols.** Letters on signs, plates and documents are very specific: a small error changes the meaning. A generative restorer can produce clean, legible, wrong characters.
+- **Faces and identity.** Face priors produce *a* face from the training distribution; for a specific person, a slightly different nose or eye is an identity change.
+- **Textures.** Brick, fabric and foliage may be replaced by a different but equally plausible pattern.
+- **Latent decoders.** The autoencoder of a latent restorer has its own reconstruction error; encode and decode a clean image to see what it alone changes, as [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#pretrained-image-and-video-generators-as-complete-pipelines) recommends.
+- **Medical and scientific images.** A plausible structure that is not there, or a real lesion smoothed away, is a diagnostic error. Bhadra et al. [35] analyze this in tomographic reconstruction by splitting an estimate into the part determined by the measurements and a **null-space** part supplied by the prior, and define a hallucination map from it.
+
+The null-space view explains the mechanism in one line, using the decomposition behind DDNM: for a linear $A$, any estimate $\hat x$ satisfies $\hat x = A^{+}A\hat x + (I - A^{+}A)\hat x$. Data consistency constrains only the first part. Everything in the second part, which is large when $A$ discards a lot, comes from the prior, so **a perfectly data-consistent output can still be largely invented**. Consistency with $y$ is necessary, never sufficient.
+
+Measuring hallucination is itself a research topic. A recent study of generative super-resolution argues that hallucinated details are poorly captured both by fidelity metrics and by no-reference quality models, and proposes a "Hallucination Score" obtained by prompting a multimodal large language model, which its authors found to align closely with human judgments [36].
+
+## Family 4: flow matching and rectified flow restorers
+
+**Plain version.** Flow matching learns a smooth "velocity field" that carries noise to images along nearly straight paths, so it needs few steps. For restoration, one can carry a *blurry best guess* to a realistic image, or plug a pretrained flow into the same prior-plus-data loop as diffusion.
+
+Flow matching [31] and rectified flow [32] train a network to predict the velocity of a path between a simple distribution and the data distribution; samples come from integrating an ordinary differential equation, and straight paths need few integration steps ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#flow-matching-learn-a-transport-velocity)). Two verified restoration uses:
+
+- **PMRF** (posterior-mean rectified flow) [33] targets the point $D_{\max}$ of the perception–distortion section directly: the estimator with the lowest MSE among those whose outputs are distributed like real images. Following a theoretical result the paper cites, it first predicts the **posterior mean** (an ordinary MMSE network) and then **transports** that blurry estimate to a realistic image with a rectified flow model that approximates the optimal transport map. This is a clean way to think about the whole chapter: first get the best average, then move it as little as possible to make it look real.
+- **PnP-Flow** [34] defines a time-dependent denoiser from a pretrained flow-matching model and alternates gradient steps on the data-fidelity term, reprojections onto the learned flow path, and denoising: the loop of Figure 4 with a flow instead of a diffusion model, avoiding backpropagation through the ODE.
+
+## Evaluating generative restoration
+
+**Plain version.** Ask four separate questions: is the output close to the truth (when you have it)? Does it look real? Does it agree with the input? And how much does it change when you run it again? One number cannot answer all four, and a pretty picture answers none of them.
+
+The metric definitions are in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#evaluation-metrics). For a generative restorer, use them as follows.
+
+1. **Fidelity, when a reference exists.** PSNR and SSIM [39] (low distortion), LPIPS [38] (perceptual distance to the reference). Expect generative methods to lose PSNR against regression methods. An exact posterior sampler loses about 3 dB against the MMSE estimator, so a much larger gap to a strong regression model means the method is far from the best trade-off, not that it is "more realistic".
+2. **Realism.** No-reference metrics such as NIQE [41], MUSIQ [42] and CLIP-IQA [43] score single images; FID [40] compares the *distribution* of a set of outputs with real images, which is the quantity $d(p_X, p_{\hat X})$ of the trade-off but needs many images. No-reference metrics can be gamed by adding texture, so never use them alone.
+3. **Consistency with the input.** Re-apply the degradation and compare: $\|y - \mathcal D(\hat x)\|$ should be about the noise level. This needs no reference and catches outputs that ignore the input. It cannot catch null-space hallucinations (previous section).
+4. **Stochasticity.** A sampler gives a distribution of outputs. Report it.
+
+**Reporting several samples.** The snippet continues the step-edge toy: one test input, eight restorations per run, and three runs with different seeds, as three users of the same method would see.
+
+```python
+# Continues the first snippet (same session): X, A, posterior, positions, sigma, n, factor.
+rng = np.random.default_rng(5)
+x = X[20]                                                   # a test signal: edge at pixel 28
+y = A(x) + sigma * rng.standard_normal(n // factor)
+p = posterior(y)
+for seed in range(3):                                       # three "users" with different seeds
+    r = np.random.default_rng(seed)
+    S = X[r.choice(len(positions), size=8, p=p)]            # 8 restorations of the same input
+    err = ((S - x) ** 2).mean(axis=1)
+    print(f"seed {seed}: MSE mean {err.mean():.4f} ± {err.std():.4f} | best of 8 {err.min():.4f}"
+          f" | edges at {sorted(set(np.argmax(S, axis=1).tolist()))}")
+S = X[rng.choice(len(positions), size=200, p=p)]
+std = S.std(axis=0)                                         # per-pixel spread across samples
+print("pixels with std > 0.1:", np.flatnonzero(std > 0.1), "| true edge at", np.argmax(x))
+# seed 0: MSE mean 0.0273 ± 0.0268 | best of 8 0.0000 | edges at [23, 24, 26, 27, 28, 29]
+# seed 1: MSE mean 0.0273 ± 0.0103 | best of 8 0.0156 | edges at [25, 26, 27, 29, 30]
+# seed 2: MSE mean 0.0293 ± 0.0213 | best of 8 0.0000 | edges at [24, 25, 26, 27, 28]
+# pixels with std > 0.1: [22 23 24 25 26 27 28 29 30] | true edge at 28
+```
+
+Three lessons, each with a reporting rule:
+
+- **The spread is as large as the mean.** On one input, the per-sample MSE varies by about as much as its average. Report the mean and the spread over samples (and over seeds), not one sample.
+- **"Best of K" is an oracle.** Picking the sample closest to the ground truth gives an MSE of zero for two of the three seeds, a number no user can obtain because users do not have the ground truth. If a paper reports best-of-K, it must say so, and it should not be compared with single-sample results. (DPS, for example, reports the best of four samples for phase retrieval, following common practice for that problem, and says so [17].)
+- **Sample variation is a free uncertainty map.** The per-pixel standard deviation over 200 samples is large exactly around the edge (pixels 22 to 30) and zero elsewhere. Showing such a map next to the restored image tells a viewer where *not* to trust the details. For calibrated guarantees, conformal methods can wrap any image-to-image regressor with per-pixel intervals that contain the true value with a chosen probability [37].
+
+**Compute.** Report the number of network evaluations (NFE), including guidance and any extra passes, the resolution, the hardware and wall-clock time, and for latent methods the autoencoder's cost. As a concrete anchor, the DPS paper reports about 95 seconds per $256 \times 256$ FFHQ image and about 600 seconds per ImageNet image, each with 1,000 network evaluations on one RTX 2080 Ti GPU [17]. Distilled one-step restorers cut the step count to one, but compare full pipelines, not step counts.
+
+**A minimal honest report**: PSNR/SSIM and LPIPS on references; two or three no-reference metrics from different families, plus FID on a large enough set; the re-degradation residual; mean and spread over samples and seeds; NFE and time; a user study for headline claims; and a gallery that includes failures, not only the best-looking results.
+
+## Failure modes and when NOT to use generative restoration
+
+**Plain version.** Generative restoration is the right tool when the goal is a pleasant, plausible picture. It is the wrong tool when the picture will be used as evidence.
+
+**Typical failure modes.**
+
+- **Hallucinated specifics**: text, digits, faces, small objects, medical findings (see the hallucination section).
+- **Ignoring the input**: weak data consistency, especially with strong guidance toward the prior or a prompt, gives realistic images of a slightly different scene; color shifts are a known issue of diffusion super-resolution [46].
+- **Mismatch between assumed and real degradation**: zero-shot methods need the right $\mathcal D$. A wrong blur kernel or noise level is propagated by the data step, and the prior then makes the wrong answer look convincing.
+- **Out-of-distribution inputs**: a prior trained on faces or natural photos pulls microscopy, satellite or medical images toward the wrong "typical" appearance, and faces unlike the training data toward the typical face (the bias discussed for PULSE [7]).
+- **Instability across runs and sizes**: different seeds give different details, and models trained at a fixed size need special handling for larger images (StableSR's progressive aggregation sampling is one answer [24]).
+- **Cost**: hundreds of network calls per image, or a very large one-step network.
+
+**When not to use it**, or to use it only with explicit labeling and uncertainty:
+
+- **Evidence and measurement**: forensic, legal, journalistic and surveillance use, license plates, documents to be read, anything where a person will act on a detail. Prefer an MMSE restorer (smooth, but it does not commit to specifics) or show a set of samples with an uncertainty map.
+- **Medicine and science**: diagnosis, quantification and any downstream measurement. Use methods validated for the task, with hallucination analysis such as [35], and keep the measured data visible.
+- **Mild degradations**: when the posterior is narrow (light noise, $2\times$ super-resolution of a clean image), a regression network already gives a sharp answer, faster and with less risk.
+- **Pipelines that feed another algorithm** (detection, OCR, measurement): restoration should be judged by the downstream task; invented detail can create false detections.
+
+A short decision rule: if a wrong but realistic detail is worse than a blurry region, do not use a generative restorer without uncertainty reporting.
+
+## Modern view
+
+**Survey papers.**
+
+- **Li et al., "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey" (IJCV 2025)** [44]. Splits diffusion restoration into **supervised** methods (grouped by how they condition the sampler) and **zero-shot** methods (projection, decomposition and posterior estimation), adds blind and real-world restoration, and compares methods on several tasks. Takeaway: the best perceptual quality, with sampling cost, model size, real-world degradations and evaluation as the main obstacles.
+- **Daras et al., "A Survey on Diffusion Models for Inverse Problems" (arXiv 2024)** [45]. Covers methods that use a *pretrained* diffusion model without further training, in four families by how they treat the measurement term: **explicit approximations** of $\nabla \log p_t(y \mid x_t)$ (DPS, ΠGDM and the DDRM family among them), **variational inference**, **CSGM-type** latent optimization and **asymptotically exact** Monte Carlo methods; a second taxonomy sorts them by how consistency is enforced (gradients, projections, sampling, optimization). Takeaway: many seemingly different methods compute a measurement error and "lift" it back to image space in different ways, and the field lacks a standard benchmark of quality versus compute.
+- **Moser et al., "Diffusion Models, Image Super-Resolution, and Everything: A Survey" (IEEE TNNLS 2025)** [46]. Concentrates on super-resolution: foundations, input domains (pixel or latent), conditioning, guidance, corruption spaces and zero-shot methods. Takeaway: diffusion closed much of the gap to human preference, while computational cost, comparability between papers, explainability and color shifts are open.
+- **Xia et al., "GAN Inversion: A Survey" (IEEE TPAMI 2023)** [47]. Reviews how images are mapped back into a pretrained GAN's latent space and how this supports restoration and editing. Takeaway: the GAN-prior methods of Family 1 are special cases of inversion, and their limits are the generator's coverage and the inversion's cost.
+
+*Optional: [Li et al., "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey"](#li-et-al-diffusion-models-for-image-restoration-and-enhancement-a-comprehensive-survey-ijcv-2025) (in the Paper guides). How to use the survey's taxonomy and comparison tables.*
+
+**State of the art, 2023–2026.**
+
+1. **Pretrained text-to-image models became the default prior for real-world restoration**, connected through adapters (StableSR, DiffBIR, SUPIR), with explicit fidelity knobs because uncontrolled generation drifts from the input.
+2. **Step counts fell from hundreds to one** through residual-shifting chains, distillation and inversion (ResShift, SinSR, OSEDiff, InvSR, TSD-SR). One-step models trade the posterior's spread for speed and repeatability.
+3. **Zero-shot posterior sampling matured into a family** with shared structure (DPS, DDRM, DDNM, ΠGDM, DiffPIR) and was extended to flows (PnP-Flow), with surveys that unify the approximations [45].
+4. **Theory re-entered practice**: the perception–distortion bound now guides method design directly, as in PMRF's "posterior mean, then transport" [33].
+5. **Hallucination started to be measured**, not only mentioned, for example with dedicated scores [36].
+
+**Open problems.**
+
+- **Measuring faithfulness**: no accepted metric says "sharp *and* correct". Fidelity metrics penalize all detail; no-reference metrics reward invented detail.
+- **True posterior sampling at image scale**: zero-shot methods are approximate (our toy shows a small bias even in 2-D), and few-step models give little diversity. Calibrated uncertainty for high-resolution images is largely open.
+- **Unknown degradations**: zero-shot methods need $\mathcal D$; supervised ones need the right training distribution.
+- **Cost**: high-resolution and video restoration with large priors remain expensive.
+- **Responsible use**: domain shift, demographic bias of face priors and the labeling of generated content are unsolved in practice.
+
+## Key takeaways
+
+- With a squared-error loss, the optimal restorer outputs the **posterior mean** $\mathbb E[x \mid y]$; when the input allows several answers, that average is blurry. Blur is the correct answer to the MSE question.
+- **Generative restoration** returns a plausible sample from $p(x \mid y)$ instead: realistic and consistent with the input, but committed to details that may be wrong.
+- The **perception–distortion trade-off** [1] makes realism and low distortion incompatible beyond a bound; for MSE, perfect realism costs at most twice the minimum MSE (about 3 dB), reached by posterior sampling.
+- GAN losses and **pretrained GAN priors** (PULSE, GLEAN, GFP-GAN; codebook priors such as CodeFormer) restore in one pass but only within the generator's domain.
+- Diffusion restoration is either **conditional** (trained on pairs: SR3, Palette, ResShift) or **zero-shot** (a pretrained prior plus a data-consistency step: DPS, DDRM, DDNM, ΠGDM, DiffPIR), all built on the loop "prior step, then data step".
+- **Latent-diffusion restorers** (StableSR, DiffBIR, SUPIR) give the most convincing real-world results; **distilled** ones (SinSR, OSEDiff, InvSR, TSD-SR) need one or a few steps. All can hallucinate, and data consistency cannot detect null-space inventions.
+- Evaluate with fidelity, realism, re-degradation consistency, **several samples and seeds** (never an undisclosed best-of-K), uncertainty maps and full compute cost.
+- Do not use generative restoration where a realistic wrong detail is worse than a blurry region: evidence, medicine, science, text to be read.
+
+## Exercises
+
+1. **The factor of two, by hand.** In the step-edge toy, suppose that for one input the posterior puts probability 0.5 on an edge at pixel 30 and 0.5 on an edge at pixel 32, and the truth is at 30. Compute the MSE (per pixel, over 64 pixels) of the posterior mean and the *expected* MSE of a posterior sample. Is the ratio two? Explain why the factor of two in the theorem is an average over inputs, not a guarantee for each input.
+
+<details>
+<summary>Hint</summary>
+
+The two candidates differ only at pixels 30 and 31. The mean is 0.5 there, so its MSE is $2 \times 0.25 / 64 \approx 0.0078$; a sample is right with probability 0.5 and wrong by 1 at two pixels otherwise, so its expected MSE is $0.5 \times 2/64 \approx 0.0156$: a ratio of two. If instead the posterior put 0.9 on the wrong position, the ratio for *this* truth would be $1.8/1.62 \approx 1.1$. The theorem averages over $x$ and $y$ jointly, where the truth itself is distributed like the posterior.
+
+</details>
+
+2. **Walking the trade-off.** Using the first snippet, compute MSE and W1 for (a) the posterior mean plus Gaussian noise of standard deviation 0.1, (b) the posterior *median* edge position (choose the position where the posterior's cumulative probability first exceeds 0.5), and (c) the posterior *mode*. Place them on Figure 2's plane. Which are near the posterior-sample point?
+
+<details>
+<summary>Hint</summary>
+
+Adding noise does not create edges: in our run the largest step was only 0.40, W1 grew to about 0.095 (noise creates many unrealistic in-between values) and the MSE grew to 0.0274, so (a) moves *away* from both goals. The median and the mode are single real edges, so their W1 is near zero like a sample's (0.0009 and 0.0011 in our run), and their MSE (0.0245 and 0.0259) is *below* a random sample's (0.0338) because they never pick an unlikely position. They are deterministic, though: they do not reproduce the posterior's spread, which a set-level metric could detect (all outputs for similar inputs agree).
+
+</details>
+
+3. **DPS step size.** In the DPS-style snippet, replace the constant 0.1 in the data step by 0.02, 0.5 and 2.0. For each, report the blob shares, the median residual $|y - Ax|$ and the mean squared error, and compare with the exact posterior. Then replace the normalized step $0.1 / (\text{res} + 10^{-8})\, g$ by an unnormalized step $0.2\, g$. What do you conclude about how DPS's step size relates to the noise level $\sigma_y$?
+
+<details>
+<summary>Hint</summary>
+
+With the normalized step, each data step has roughly the same length whatever the residual, so the final median residual settles near the constant itself (in our runs 0.021, 0.100, 0.496 and 1.994 for 0.02, 0.1, 0.5 and 2.0). Large values leave residuals far above the noise level and distort the blob shares (0.24 and 0.76 at 2.0, against 0.41 and 0.59 exactly); at 0.02 about 1% of the samples ended in a blob the measurement rules out, because the early corrections were too weak. The unnormalized step $0.2\,g$ gave a median residual of 0.007, far tighter than the noise level allows. Neither choice is tied to $\sigma_y$ the way an exact posterior is: the step size is a tuned hyperparameter, one reason DPS is an approximation.
+
+</details>
+
+4. **Steps and accuracy.** In the diffusion snippet, run the sampler with $T = 50$ (and `beta = np.linspace(1e-4, 0.2, T)`) and with $T = 1000$ (and `np.linspace(1e-4, 0.01, T)`). Record the spread inside each blob. Relate the result to the cost discussion and to why distilled one-step restorers are trained rather than obtained by simply using fewer steps.
+
+<details>
+<summary>Hint</summary>
+
+In our runs the spread was about 0.263 for 50 steps, 0.283 for 200 and 0.296 for 1,000 (target 0.3): coarse steps make the reverse process too narrow even with the *exact* score. A one-step model cannot get its accuracy by taking one huge step of the same sampler; it must be trained (distilled or built differently) to jump correctly.
+
+</details>
+
+5. **Null-space hallucination.** Take a 1-D signal of length 16 and $A$ = average of consecutive pairs (an $8 \times 16$ matrix). Compute $P = A^{+}A$ and verify that $P$ is a projection ($P^2 = P$). Construct two different signals with exactly the same measurement $Ax$, one smooth and one with a sharp checkerboard pattern. Which one would a generative prior of natural signals pick, and which part of each signal is "invented"?
+
+<details>
+<summary>Hint</summary>
+
+The null space of pair-averaging contains every pattern that alternates sign within a pair, $(+a, -a)$ with any amplitude $a$ per pair; adding it to a smooth signal leaves $Ax$ unchanged. The within-pair differences, $(I - P)x$, are invisible to the data and supplied entirely by the prior: a smooth-signal prior picks small ones, a texture prior may add some. This is the hallucination-map idea of [35].
+
+</details>
+
+6. **Design an evaluation.** You must decide whether a one-step latent-diffusion restorer can replace an MSE-trained network for restoring scanned archival documents. Write the evaluation protocol: data, metrics, number of samples and seeds, a check for hallucinated characters, compute measurements, and a decision rule.
+
+<details>
+<summary>Hint</summary>
+
+Use real scans with references where possible (rescan at high resolution) plus synthetic degradations of clean documents. Report PSNR/SSIM/LPIPS, a no-reference metric, and, crucially, an OCR character error rate against the true text for both methods and for several seeds; also report how often two seeds disagree on a character (an uncertainty signal). Include NFE, time and memory including the autoencoder. Decide by the task: if the generative model raises character errors or changes characters between seeds, keep the MSE network for reading and use the generative one only for display, clearly labeled.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional background that the main text does not depend on.
+
+### Why posterior sampling exactly doubles the MSE
+
+**Plain version.** A posterior sample is like a second, independent draw of the truth. The distance between two independent draws is, on average, twice the distance of either draw from their common mean.
+
+**Precise version.** Fix $y$ and let $m = \mathbb E[x \mid y]$. If $\hat x$ is drawn from $p(x \mid y)$ independently of the true $x$, both $x$ and $\hat x$ have mean $m$ and the same covariance given $y$. Then
+
+$$
+\mathbb E\bigl[\|\hat x - x\|^2 \mid y\bigr]
+= \mathbb E\bigl[\|\hat x - m\|^2 \mid y\bigr] + \mathbb E\bigl[\|x - m\|^2 \mid y\bigr] - 2\, \mathbb E\bigl[(\hat x - m)^\top (x - m) \mid y\bigr]
+= 2\, \mathbb E\bigl[\|x - m\|^2 \mid y\bigr],
+$$
+
+where the cross term vanishes because $\hat x - m$ and $x - m$ are independent with zero mean given $y$, and the two remaining terms are equal because $\hat x$ and $x$ have the same conditional distribution. Averaging over $y$ gives $\text{MSE}(\text{sample}) = 2\, \text{MSE}(\text{MMSE})$. The blends of Figure 2 follow the same way: $(1-\lambda) m + \lambda \hat x - x = (m - x) + \lambda(\hat x - m)$, and the two parts are uncorrelated, so the MSE is $(1 + \lambda^2) D_{\min}$. Blau and Michaeli give this argument in an appendix of [1]. Note what the proof needs: an *exact* posterior sample. An approximate sampler can be above or below the factor of two.
+
+### GAN-prior restorers in more detail
+
+**Plain version.** All four methods ask a pretrained generator "which image that you can draw matches this input?". They differ in how they ask: by searching the generator's input space for each image (PULSE), or by training an encoder that asks in one shot (GLEAN, GFP-GAN, CodeFormer).
+
+**The methods.** PULSE [7] optimizes the latent code of a pretrained StyleGAN [6] so that the generated face, downscaled, matches the low-resolution input, and restricts the search to the region where high-dimensional Gaussian latent vectors concentrate (near a sphere), so outputs stay realistic. Its paper includes a discussion of the method's limitations and biases. GLEAN [8] builds an encoder–bank–decoder network around a pretrained GAN whose weights stay fixed during training: the encoder turns the low-resolution input into latent codes and features for the "latent bank", and a decoder with multi-resolution skip connections fuses the bank's features into the output, for large upscaling factors and several categories (faces, cats, cars, buildings). GFP-GAN [9] pairs a U-Net degradation-removal module with a pretrained face GAN and connects them with channel-split spatial feature transform layers, which modulate part of the GAN's features with spatial information from the input while leaving the rest free, as a balance between realness and fidelity. CodeFormer [10] learns a discrete codebook of high-quality face parts, predicts the code sequence of a degraded face with a transformer (restoration becomes code prediction), and adds a controllable feature transformation whose weight trades fidelity against quality at test time.
+
+**A 2-D inversion toy.** If a generator can produce several images that all match the input, an optimizer started from different random points finds different ones. Take a toy "generator" $G(w) = (\cos w, \sin w)$, which maps a scalar latent $w$ to the unit circle (the "manifold of real images"), and a measurement $y = x_1 + n$ that observes only the first coordinate. Minimizing $(\cos w - y)^2$ has two solutions on the circle for $|y| \lt 1$, $w = \pm \arccos y$, the upper and lower points with the same $x_1$. The snippet runs gradient descent from 10 random starts:
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+y = 0.3                                            # we observe only x1 = cos(w)
+w = rng.uniform(-np.pi, np.pi, size=10)            # 10 random starting latents
+for _ in range(500):
+    w -= 0.2 * 2 * (np.cos(w) - y) * (-np.sin(w))  # gradient of (cos w - y)^2
+x = np.stack([np.cos(w), np.sin(w)], 1)
+print(np.unique(x.round(3), axis=0))
+# [[ 0.3   -0.954]
+#  [ 0.3    0.954]]
+```
+
+Both answers explain $y$ exactly and both lie on the manifold: this is the PULSE situation [7] in miniature. Which one an optimizer returns depends on its start, not on any probability, so plain inversion gives plausible answers but not posterior samples with the right frequencies.
+
+### How the zero-shot diffusion samplers differ
+
+**Plain version.** DPS, DDRM, DDNM, ΠGDM and DiffPIR all run the loop of Figure 4. They differ in the data step: a gradient through the denoiser, a split of the image into measured and unmeasured coordinates, a projection that copies the measured part from the data, a pseudoinverse-based guidance term, or a plug-and-play data subproblem.
+
+**The methods.** DDRM [18] handles linear degradations $y = Hx + n$ through the singular value decomposition of $H$; its paper reports competitive results with as few as 20 network evaluations and needs no backpropagation. DDNM [19] uses the range–null-space projection below; DDNM+ adds handling of noise. ΠGDM [20] approximates $p(x_0 \mid x_t)$ by a Gaussian $\mathcal N(\hat x_0, r_t^2 I)$ with a time-dependent standard deviation $r_t$; for linear measurements this makes $p_t(y \mid x_t)$ Gaussian too, and the guidance becomes a vector–Jacobian product through the denoiser only, which is why it extends to non-differentiable measurements given a suitable pseudoinverse. DiffPIR [21] alternates, inside the diffusion sampler, a data subproblem solved for the current clean estimate and a denoising step by the diffusion model, the plug-and-play splitting of classical restoration.
+
+**Range–null-space projection and the SVD view.** A linear measurement sees only part of an image. You can split any image into the part the measurement sees and the part it cannot see; a zero-shot restorer may invent the invisible part but should copy the visible part from the data.
+
+**Precise version.** For a linear operator $A \in \mathbb R^{m \times d}$ with Moore–Penrose pseudoinverse $A^{+}$, the matrix $P = A^{+}A$ is the orthogonal projector onto the row space of $A$, and every $x$ splits as
+
+$$
+x = \underbrace{A^{+}A\,x}_{\text{range part}} + \underbrace{(I - A^{+}A)\,x}_{\text{null-space part}}, \qquad A\,(I - A^{+}A)\,x = 0,
+$$
+
+where $I$ is the $d \times d$ identity. For noiseless data $y = Ax$, the range part equals $A^{+}y$. DDNM [19] therefore corrects each clean estimate as $\hat x_0 \leftarrow A^{+}y + (I - A^{+}A)\,\hat x_0$: the measured part is copied from the data, the unmeasured part is kept from the diffusion model. DDRM [18] reaches a similar split through the singular value decomposition $A = U \Sigma V^\top$ (with $U$, $V$ orthogonal and $\Sigma$ diagonal): in the coordinates $V^\top x$, each coordinate is either scaled by a nonzero singular value (measured, possibly with noise of known size) or multiplied by zero (unmeasured), and its sampler treats the two kinds separately. A three-line check:
+
+```python
+import numpy as np
+
+A = np.kron(np.eye(8), [[0.5, 0.5]])               # average consecutive pairs: 8 x 16
+P = np.linalg.pinv(A) @ A                          # projector onto the measured part
+x = np.random.default_rng(0).standard_normal(16)
+print(np.allclose(P @ P, P), np.allclose(A @ (x - P @ x), 0), int(round(np.trace(P))))
+# True True 8
+```
+
+The projector is idempotent, the null-space part is invisible to $A$, and the trace shows that 8 of the 16 dimensions are measured: the other 8 are entirely up to the prior.
+
+### Latent and one-step restorers, method by method
+
+**Plain version.** The latent restorers differ in how they show the damaged image to a frozen generator and in which fidelity knob they offer; the one-step models differ in how they teach a network to jump straight to the answer.
+
+**Multi-step latent restorers.** StableSR [24] keeps the pretrained text-to-image model fixed and trains a time-aware encoder that injects features of the low-quality image; a controllable feature wrapping module mixes encoder features into the autoencoder's decoder with a user-set scalar, to recover fidelity lost to the sampler's randomness; and progressive aggregation sampling handles images larger than the model's native size. DiffBIR [25] splits blind restoration into degradation removal (a restoration module gives a smooth, faithful image) and information regeneration (IRControlNet, an adapter for a latent diffusion model trained on such cleaned conditions), with a region-adaptive restoration guidance whose scale trades realness against fidelity at sampling time. SUPIR [26] combines a large generative prior and model scaling with a training set of 20 million high-resolution, high-quality images with descriptive text, text prompts to steer restoration, negative-quality prompts to push away from low quality, and a restoration-guided sampling method meant to limit fidelity problems.
+
+**One- and few-step models.** ResShift [16] shortened the chain by moving between the high- and low-resolution images (15 steps in the paper). SinSR [27] derives a deterministic sampler from an accelerated diffusion super-resolution model, distills it into a one-step student and adds a consistency-preserving loss that also uses the ground truth; the paper reports up to a tenfold speed-up. OSEDiff [28] starts from the low-quality image, fine-tunes the pretrained network with small trainable layers and regularizes the one-step output with variational score distillation in latent space. InvSR [29] trains a noise predictor that places the low-quality image at an intermediate point of a pretrained diffusion trajectory, so sampling can take any number of steps from one to five. TSD-SR [30] proposes a target score distillation objective and a distribution-aware sampling module for one-step real-world super-resolution.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Blau and Michaeli, "The Perception-Distortion Tradeoff" (CVPR 2018)
+
+**The problem.** By 2017, super-resolution methods trained with adversarial losses produced images that people preferred, yet they scored worse in PSNR and SSIM than MSE-trained networks. Was this a flaw of the metrics, or something unavoidable?
+
+**The idea.** Define perceptual quality as a property of the *output distribution*, the divergence between the distribution of restored images and that of real images (which a perfect discriminator would detect), and study the best possible distortion for each level of perceptual quality, over all possible estimators [1].
+
+**What it showed.** The perception–distortion function is monotone, and convex for convex divergences, so the trade-off is a mathematical property of the problem, not of a particular metric or network, and it holds for every distortion measure. For squared error, perfect perceptual quality costs at most twice the minimum MSE, reached by posterior sampling (in the extended arXiv version). GAN training with a distortion term and an adversarial term is a principled way to approach the bound. The paper then plots many super-resolution methods of the time on the plane, using no-reference metrics as proxies for perceptual quality.
+
+**How to read it.** Start with the definitions and Theorem 2 (the trade-off), then the factor-of-two result and its proof in the appendix, which is the argument in our Supplementary notes. When reading the experimental plots, check: (a) that the "perceptual quality" axis there is a no-reference metric (a proxy), not the divergence of the theory; (b) that the bound is drawn qualitatively, since it cannot be computed for real images; (c) which color channel and evaluation protocol were used for PSNR.
+
+**Limits.** The theory is about distributions and expectations; it says nothing about which *particular* details an estimator invents, so it does not measure hallucination. The bound is not computable for natural images, and the factor of two is an upper bound, not a prediction.
+
+**Why it matters here.** It is the theory behind every section of this chapter: why MSE networks blur, why generative methods lose PSNR, and why a method should be described by a point on a plane rather than a single score.
+
+### Chung et al., "Diffusion Posterior Sampling for General Noisy Inverse Problems" (ICLR 2023)
+
+**The problem.** Earlier diffusion solvers for inverse problems mostly enforced exact consistency with the measurement by projection, which works for noiseless linear problems but amplifies noise and does not apply to nonlinear measurements [17].
+
+**The idea.** Approximate the intractable noisy likelihood $p(y \mid x_t)$ by $p(y \mid \hat x_0(x_t))$, with $\hat x_0$ from Tweedie's formula, and take a gradient step on $\|y - \mathcal A(\hat x_0)\|^2$ after each ordinary reverse step (Algorithm 1 in the paper; a Poisson version uses a weighted norm). The paper bounds the error of this approximation (a "Jensen gap") and argues that it shrinks as measurement noise grows.
+
+**What it showed.** On FFHQ and ImageNet at $256 \times 256$ (1,000 validation images each) with Gaussian measurement noise of standard deviation 0.05, it compared DPS with DDRM, manifold-constrained gradients, plug-and-play ADMM, total-variation optimization and score-SDE solvers on inpainting, super-resolution and Gaussian and motion deblurring, reporting FID and LPIPS; it also handled Poisson noise, Fourier phase retrieval and non-uniform deblurring. The appendix reports about 95 seconds (FFHQ) and 600 seconds (ImageNet) per image with 1,000 network evaluations on one RTX 2080 Ti.
+
+**How to read it.** Read Section 3 with Figure 2 (the graphical model of $y$, $x_0$, $x_t$), then Algorithm 1, then the step-size choice $\zeta_i = \zeta' / \|y - \mathcal A(\hat x_0(x_i))\|$ and the per-task values of $\zeta'$ in the appendix. Check: (a) that the tables report FID and LPIPS, so they measure realism and perceptual similarity, not PSNR; (b) that phase-retrieval numbers use the best of four samples for every method; (c) the NFE and wall-clock comparison in the appendix, where DPS is far slower than DDRM; (d) how sensitive results are to $\zeta'$, which is tuned per task.
+
+**Limits.** The likelihood approximation is uncontrolled for small noise and strongly multimodal $p(x_0 \mid x_t)$; samples are not guaranteed to follow the true posterior (our toy shows a small bias even in 2-D); each step needs backpropagation through the network; and the degradation must be known and differentiable.
+
+**Why it matters here.** DPS is the clearest instance of the prior-step + data-step loop and the template for many later zero-shot methods, and its appendix is a model of the cost reporting this chapter asks for.
+
+### Li et al., "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey" (IJCV 2025)
+
+**The problem.** Diffusion-based restoration grew quickly, with very different conditioning schemes, training regimes and benchmarks, which made methods hard to compare and follow [44].
+
+**The idea.** Organize the field by learning paradigm (supervised versus zero-shot), then by how each method conditions or constrains the sampler, then by how it addresses blind and real-world degradations, and close with experimental comparisons and open directions.
+
+**What it showed.** Its sections give a usable map: supervised methods are grouped by the form of conditioning and modeling (low-quality image as condition, pre-processed references, revised diffusion processes, residual generation, latent diffusion, efficient transfer learning); zero-shot methods by projection, decomposition and posterior estimation; real-world methods by degradation simulation, kernel estimation, domain translation and degradation-invariant learning. Its experiments section collects results on super-resolution, inpainting, deblurring and real-world restoration with PSNR, SSIM, LPIPS and FID. Its discussion highlights sampling efficiency, model size and compression, degradation estimation, all-in-one restoration and language-guided restoration.
+
+**How to read it.** Use Sections 3 and 4 as a catalogue: find the group your problem belongs to, then read the two or three papers it cites there. In the comparison tables, check which numbers were rerun by the authors and which were copied from papers, the resolution and number of steps, and whether a method's training data overlaps the test sets. Read Section 6 for open problems.
+
+**Limits.** Like any survey of a fast field, it lags the newest methods (for example the 2025 one-step distillation methods), and its categories overlap: one method can fit several groups. Its numbers are not a benchmark in their own right.
+
+**Why it matters here.** It places every method in this chapter's families into a larger map, and its supervised/zero-shot split is the same as this chapter's Route A and Route B.
+
+## References
+
+1. Y. Blau and T. Michaeli, "The Perception-Distortion Tradeoff," in *Proc. IEEE/CVF CVPR*, 2018, pp. 6228–6237 (extended version on arXiv). [doi](https://doi.org/10.1109/CVPR.2018.00652) · [arXiv](https://arxiv.org/abs/1711.06077)
+2. C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017, pp. 105–114. [doi](https://doi.org/10.1109/CVPR.2017.19) · [arXiv](https://arxiv.org/abs/1609.04802)
+3. J. Johnson, A. Alahi and L. Fei-Fei, "Perceptual Losses for Real-Time Style Transfer and Super-Resolution," in *Proc. ECCV*, 2016, pp. 694–711. [doi](https://doi.org/10.1007/978-3-319-46475-6_43) · [arXiv](https://arxiv.org/abs/1603.08155)
+4. X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018 (LNCS, 2019), pp. 63–79. [doi](https://doi.org/10.1007/978-3-030-11021-5_5) · [arXiv](https://arxiv.org/abs/1809.00219)
+5. X. Wang, L. Xie, C. Dong and Y. Shan, "Real-ESRGAN: Training Real-World Blind Super-Resolution with Pure Synthetic Data," in *Proc. IEEE/CVF ICCV Workshops*, 2021, pp. 1905–1914. [doi](https://doi.org/10.1109/ICCVW54120.2021.00217) · [arXiv](https://arxiv.org/abs/2107.10833)
+6. T. Karras, S. Laine and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," in *Proc. IEEE/CVF CVPR*, 2019, pp. 4396–4405. [doi](https://doi.org/10.1109/CVPR.2019.00453) · [arXiv](https://arxiv.org/abs/1812.04948)
+7. S. Menon, A. Damian, S. Hu, N. Ravi and C. Rudin, "PULSE: Self-Supervised Photo Upsampling via Latent Space Exploration of Generative Models," in *Proc. IEEE/CVF CVPR*, 2020, pp. 2434–2442. [doi](https://doi.org/10.1109/CVPR42600.2020.00251) · [arXiv](https://arxiv.org/abs/2003.03808)
+8. K. C. K. Chan, X. Wang, X. Xu, J. Gu and C. C. Loy, "GLEAN: Generative Latent Bank for Large-Factor Image Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2021, pp. 14240–14249. [doi](https://doi.org/10.1109/CVPR46437.2021.01402) · [arXiv](https://arxiv.org/abs/2012.00739)
+9. X. Wang, Y. Li, H. Zhang and Y. Shan, "Towards Real-World Blind Face Restoration with Generative Facial Prior," in *Proc. IEEE/CVF CVPR*, 2021, pp. 9164–9174. [doi](https://doi.org/10.1109/CVPR46437.2021.00905) · [arXiv](https://arxiv.org/abs/2101.04061)
+10. S. Zhou, K. C. K. Chan, C. Li and C. C. Loy, "Towards Robust Blind Face Restoration with Codebook Lookup Transformer," in *Proc. NeurIPS*, vol. 35, 2022, pp. 30599–30611. [doi](https://doi.org/10.52202/068431-2218) · [arXiv](https://arxiv.org/abs/2206.11253)
+11. J. Ho, A. Jain and P. Abbeel, "Denoising Diffusion Probabilistic Models," in *Proc. NeurIPS*, 2020. [proceedings](https://proceedings.neurips.cc/paper/2020/hash/4c5bcfec8584af0d967f1ab10179ca4b-Abstract.html) · [arXiv](https://arxiv.org/abs/2006.11239)
+12. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon and B. Poole, "Score-Based Generative Modeling through Stochastic Differential Equations," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2011.13456)
+13. B. Efron, "Tweedie's Formula and Selection Bias," *Journal of the American Statistical Association*, vol. 106, no. 496, pp. 1602–1614, 2011. [doi](https://doi.org/10.1198/jasa.2011.tm11181)
+14. C. Saharia, J. Ho, W. Chan, T. Salimans, D. J. Fleet and M. Norouzi, "Image Super-Resolution via Iterative Refinement," *IEEE TPAMI*, 2022 (early access). [doi](https://doi.org/10.1109/TPAMI.2022.3204461) · [arXiv](https://arxiv.org/abs/2104.07636)
+15. C. Saharia, W. Chan, H. Chang, C. Lee, J. Ho, T. Salimans, D. Fleet and M. Norouzi, "Palette: Image-to-Image Diffusion Models," in *Proc. ACM SIGGRAPH Conference*, 2022, pp. 1–10. [doi](https://doi.org/10.1145/3528233.3530757) · [arXiv](https://arxiv.org/abs/2111.05826)
+16. Z. Yue, J. Wang and C. C. Loy, "ResShift: Efficient Diffusion Model for Image Super-resolution by Residual Shifting," in *Proc. NeurIPS*, vol. 36, 2023, pp. 13294–13307. [doi](https://doi.org/10.52202/075280-0583) · [arXiv](https://arxiv.org/abs/2307.12348)
+17. H. Chung, J. Kim, M. T. McCann, M. L. Klasky and J. C. Ye, "Diffusion Posterior Sampling for General Noisy Inverse Problems," in *Proc. ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.14687)
+18. B. Kawar, M. Elad, S. Ermon and J. Song, "Denoising Diffusion Restoration Models," in *Proc. NeurIPS*, vol. 35, 2022, pp. 23593–23606. [doi](https://doi.org/10.52202/068431-1714) · [arXiv](https://arxiv.org/abs/2201.11793)
+19. Y. Wang, J. Yu and J. Zhang, "Zero-Shot Image Restoration Using Denoising Diffusion Null-Space Model," in *Proc. ICLR*, 2023. [arXiv](https://arxiv.org/abs/2212.00490)
+20. J. Song, A. Vahdat, M. Mardani and J. Kautz, "Pseudoinverse-Guided Diffusion Models for Inverse Problems," in *Proc. ICLR*, 2023. [ICLR page](https://iclr.cc/virtual/2023/poster/11030)
+21. Y. Zhu, K. Zhang, J. Liang, J. Cao, B. Wen, R. Timofte and L. Van Gool, "Denoising Diffusion Models for Plug-and-Play Image Restoration," in *Proc. IEEE/CVF CVPR Workshops*, 2023, pp. 1219–1229. [doi](https://doi.org/10.1109/CVPRW59228.2023.00129) · [arXiv](https://arxiv.org/abs/2305.08995)
+22. R. Rombach, A. Blattmann, D. Lorenz, P. Esser and B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," in *Proc. IEEE/CVF CVPR*, 2022, pp. 10674–10685. [doi](https://doi.org/10.1109/CVPR52688.2022.01042) · [arXiv](https://arxiv.org/abs/2112.10752)
+23. L. Zhang, A. Rao and M. Agrawala, "Adding Conditional Control to Text-to-Image Diffusion Models," in *Proc. IEEE/CVF ICCV*, 2023, pp. 3813–3824. [doi](https://doi.org/10.1109/ICCV51070.2023.00355) · [arXiv](https://arxiv.org/abs/2302.05543)
+24. J. Wang, Z. Yue, S. Zhou, K. C. K. Chan and C. C. Loy, "Exploiting Diffusion Prior for Real-World Image Super-Resolution," *International Journal of Computer Vision*, vol. 132, no. 12, pp. 5929–5949, 2024. [doi](https://doi.org/10.1007/s11263-024-02168-7) · [arXiv](https://arxiv.org/abs/2305.07015)
+25. X. Lin, J. He, Z. Chen, Z. Lyu, B. Dai, F. Yu, Y. Qiao, W. Ouyang and C. Dong, "DiffBIR: Toward Blind Image Restoration with Generative Diffusion Prior," in *Proc. ECCV*, 2024 (LNCS), pp. 430–448. [doi](https://doi.org/10.1007/978-3-031-73202-7_25) · [arXiv](https://arxiv.org/abs/2308.15070)
+26. F. Yu, J. Gu, Z. Li, J. Hu, X. Kong, X. Wang, J. He, Y. Qiao and C. Dong, "Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration In the Wild," in *Proc. IEEE/CVF CVPR*, 2024, pp. 25669–25680. [doi](https://doi.org/10.1109/CVPR52733.2024.02425) · [arXiv](https://arxiv.org/abs/2401.13627)
+27. Y. Wang, W. Yang, X. Chen, Y. Wang, L. Guo, L.-P. Chau, Z. Liu, Y. Qiao, A. C. Kot and B. Wen, "SinSR: Diffusion-Based Image Super-Resolution in a Single Step," in *Proc. IEEE/CVF CVPR*, 2024, pp. 25796–25805. [doi](https://doi.org/10.1109/CVPR52733.2024.02437) · [arXiv](https://arxiv.org/abs/2311.14760)
+28. R. Wu, L. Sun, Z. Ma and L. Zhang, "One-Step Effective Diffusion Network for Real-World Image Super-Resolution," in *Proc. NeurIPS*, vol. 37, 2024, pp. 92529–92553. [doi](https://doi.org/10.52202/079017-2938) · [arXiv](https://arxiv.org/abs/2406.08177)
+29. Z. Yue, K. Liao and C. C. Loy, "Arbitrary-steps Image Super-resolution via Diffusion Inversion," in *Proc. IEEE/CVF CVPR*, 2025, pp. 23153–23163. [doi](https://doi.org/10.1109/CVPR52734.2025.02156) · [arXiv](https://arxiv.org/abs/2412.09013)
+30. L. Dong, Q. Fan, Y. Guo, Z. Wang, Q. Zhang, J. Chen, Y. Luo and C. Zou, "TSD-SR: One-Step Diffusion with Target Score Distillation for Real-World Image Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2025, pp. 23174–23184. [doi](https://doi.org/10.1109/CVPR52734.2025.02158) · [arXiv](https://arxiv.org/abs/2411.18263)
+31. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel and M. Le, "Flow Matching for Generative Modeling," in *Proc. ICLR*, 2023. [arXiv](https://arxiv.org/abs/2210.02747)
+32. X. Liu, C. Gong and Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," in *Proc. ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.03003)
+33. G. Ohayon, T. Michaeli and M. Elad, "Posterior-Mean Rectified Flow: Towards Minimum MSE Photo-Realistic Image Restoration," in *Proc. ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.00418)
+34. S. Martin, A. Gagneux, P. Hagemann and G. Steidl, "PnP-Flow: Plug-and-Play Image Restoration with Flow Matching," in *Proc. ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.02423)
+35. S. Bhadra, V. A. Kelkar, F. J. Brooks and M. A. Anastasio, "On Hallucinations in Tomographic Image Reconstruction," *IEEE Transactions on Medical Imaging*, vol. 40, no. 11, pp. 3249–3260, 2021. [doi](https://doi.org/10.1109/TMI.2021.3077857) · [arXiv](https://arxiv.org/abs/2012.00646)
+36. W. Ren, R. Goyal, Z. Hu, T. T. Aumentado-Armstrong, I. Mohomed and A. Levinshtein, "Hallucination Score: Towards Mitigating Hallucinations in Generative Image Super-Resolution," arXiv:2507.14367, 2025. [arXiv](https://arxiv.org/abs/2507.14367)
+37. A. N. Angelopoulos, A. P. Kohli, S. Bates, M. I. Jordan, J. Malik, T. Alshaabi, S. Upadhyayula and Y. Romano, "Image-to-Image Regression with Distribution-Free Uncertainty Quantification and Applications in Imaging," in *Proc. ICML*, PMLR 162, 2022. [proceedings](https://proceedings.mlr.press/v162/angelopoulos22a.html) · [arXiv](https://arxiv.org/abs/2202.05265)
+38. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+39. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+40. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler and S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," in *Proc. NeurIPS (NIPS)*, 2017. [arXiv](https://arxiv.org/abs/1706.08500)
+41. A. Mittal, R. Soundararajan and A. C. Bovik, "Making a 'Completely Blind' Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+42. J. Ke, Q. Wang, Y. Wang, P. Milanfar and F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," in *Proc. IEEE/CVF ICCV*, 2021, pp. 5128–5137. [doi](https://doi.org/10.1109/ICCV48922.2021.00510) · [arXiv](https://arxiv.org/abs/2108.05997)
+43. J. Wang, K. C. K. Chan and C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," in *Proc. AAAI*, vol. 37, no. 2, 2023, pp. 2555–2563. [doi](https://doi.org/10.1609/aaai.v37i2.25353) · [arXiv](https://arxiv.org/abs/2207.12396)
+44. X. Li, Y. Ren, X. Jin, C. Lan, X. Wang, W. Zeng, X. Wang and Z. Chen, "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey," *International Journal of Computer Vision*, vol. 133, no. 11, pp. 8078–8108, 2025. [doi](https://doi.org/10.1007/s11263-025-02570-9) · [arXiv](https://arxiv.org/abs/2308.09388)
+45. G. Daras, H. Chung, C.-H. Lai, Y. Mitsufuji, J. C. Ye, P. Milanfar, A. G. Dimakis and M. Delbracio, "A Survey on Diffusion Models for Inverse Problems," arXiv:2410.00083, 2024. [arXiv](https://arxiv.org/abs/2410.00083)
+46. B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+47. W. Xia, Y. Zhang, Y. Yang, J.-H. Xue, B. Zhou and M.-H. Yang, "GAN Inversion: A Survey," *IEEE TPAMI*, vol. 45, no. 3, pp. 3121–3138, 2023. [doi](https://doi.org/10.1109/TPAMI.2022.3181070) · [arXiv](https://arxiv.org/abs/2101.05278)
+48. Y. Song and S. Ermon, "Generative Modeling by Estimating Gradients of the Data Distribution," in *Proc. NeurIPS*, 2019. [arXiv](https://arxiv.org/abs/1907.05600)

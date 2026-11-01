@@ -27,6 +27,8 @@ for (const file of process.argv.slice(2)) {
     const prose = body.replace(/^(```|~~~)[\s\S]*?^\1/gm, '').replace(/`[^`\n]*`/g, '').replace(/\$\$[\s\S]*?\$\$/g, '').replace(/(?<!\\)\$[^$\n]*\$/g, '');
     const imported = new Set([...prose.matchAll(/^import\s+(?:\{([^}]*)\}|(\w+))\s+from\s+/gm)].flatMap(m => (m[1] ?? m[2]).split(',').map(s => s.trim().split(/\s+as\s+/).pop())));
     for (const tag of new Set([...prose.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)].map(m => m[1]))) if (!imported.has(tag)) problems.push(`component <${tag}> is used but not imported at the top level`);
+    // KaTeX does not run inside JSX attributes: `$…$` in a caption or alt text would show up as raw TeX.
+    for (const m of body.matchAll(/\b(caption|alt)="([^"]*)"/g)) if (/(?<!\\)\$[^$\n]+\$/.test(m[2])) problems.push(`math ($…$) inside a ${m[1]} attribute is not rendered; use plain symbols: "${m[2].slice(0, 60)}…"`);
   }
   try {
     const out = await compile(body, {

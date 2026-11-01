@@ -1,0 +1,1271 @@
+---
+title: "DLCV 08 · 3D Reconstruction: From Multi-View Geometry to NeRF and Gaussian Splatting"
+description: "How a set of photos becomes a 3D model: camera geometry, structure from motion and multi-view stereo, neural radiance fields and signed distance fields, 3D Gaussian Splatting, mesh extraction, feed-forward reconstruction models, and how reconstructions are evaluated, with tested NumPy and OpenCV code."
+track: deep-learning
+order: 80
+level: advanced
+prereqs: [image-processing/dip-12-feature-extraction, deep-learning/dl-01-deep-learning-for-image-processing]
+tags: [3d-reconstruction, structure-from-motion, multi-view-stereo, nerf, gaussian-splatting, neural-implicit-surfaces, dust3r]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figRep from '../../../../assets/deep-learning/dl-08-3d-reconstruction/representations.png';
+import figTwoView from '../../../../assets/deep-learning/dl-08-3d-reconstruction/two-view.png';
+import figPipe from '../../../../assets/deep-learning/dl-08-3d-reconstruction/pipeline.png';
+import figSweep from '../../../../assets/deep-learning/dl-08-3d-reconstruction/plane-sweep.png';
+import figRay from '../../../../assets/deep-learning/dl-08-3d-reconstruction/ray-weights.png';
+import figSplat from '../../../../assets/deep-learning/dl-08-3d-reconstruction/splat-toy.png';
+import figMc from '../../../../assets/deep-learning/dl-08-3d-reconstruction/marching-cubes.png';
+
+## What you'll learn
+
+- What 3D reconstruction produces, and the common ways to store a 3D scene (points, depth maps, voxels, meshes, signed distance functions, radiance fields, 3D Gaussians) with their trade-offs.
+- The camera geometry behind every method: the pinhole model, epipolar geometry, the essential and fundamental matrices and triangulation, with a tested OpenCV example.
+- The classical pipeline: structure from motion (matching, RANSAC, bundle adjustment, COLMAP) and multi-view stereo (plane sweep, depth-map fusion, MVSNet).
+- How neural fields reconstruct a scene by rendering it: NeRF's volume rendering, hash-grid speed-ups (Instant-NGP) and SDF surfaces (NeuS).
+- How 3D Gaussian Splatting renders and grows a scene in real time, how meshes are extracted (marching cubes, Poisson, SuGaR, 2DGS), and what feed-forward models (DUSt3R, MASt3R, VGGT) change.
+- How to evaluate views and geometry (PSNR/SSIM/LPIPS, Chamfer distance, F-score; DTU, Tanks and Temples, Mip-NeRF 360), and how reconstruction fails.
+
+## The big picture
+
+You walk around a statue and take thirty photos with your phone. 3D reconstruction turns those photos into a 3D model you can spin, measure, 3D-print or place in a game. Two questions must be answered together: *where was the camera for each photo*, and *where is each piece of the statue's surface*. Neither is given, and each helps answer the other.
+
+<Callout type="tip" title="Explain like I'm five">
+Close one eye and hold up a finger: it jumps when you switch eyes. Things that are close jump a lot and things far away hardly move. Your brain uses this jump to feel depth. A computer does the same with photos taken from different places: it finds the same spot in two photos, measures how much it "jumped", and works out how far away it is. Do that for millions of spots and you have the shape. The newer methods add one more trick: they keep guessing the 3D scene, *draw* what each photo should look like, and fix the guess wherever the drawing does not match the real photo.
+</Callout>
+
+**Why it matters.** Reconstruction is how maps, film sets, cultural-heritage archives, robot environments, augmented-reality anchors and digital twins of factories are built. It is also a clean example of how deep learning changed computer vision: the classical pipeline is pure geometry and optimization; neural radiance fields (NeRF) [5] made the scene itself a trained network; 3D Gaussian Splatting (3DGS) [6] replaced the network with millions of small, explicit blobs that render in real time; and the newest models predict cameras and geometry in a single forward pass.
+
+Figure 1 shows the roadmap of this tutorial. The classical stages on the left still feed almost every modern method: NeRF and 3DGS are trained on camera poses computed by structure-from-motion software such as COLMAP [2], [4].
+
+<Figure src={figPipe} alt="A flow diagram. Images go to features, matching and RANSAC, then to incremental structure from motion with bundle adjustment, producing cameras and sparse points. Three branches follow: MVS depth maps with fusion, NeRF or NeuS neural fields, and 3D Gaussian Splatting. Each branch ends in a mesh via Poisson or TSDF fusion, marching cubes, or SuGaR and 2DGS. A dashed arc marks feed-forward models that go from images directly to cameras and dense points." caption="Figure 1 — The reconstruction pipeline covered in this tutorial. Classical geometry (left) gives cameras and sparse points; dense methods (right) give a full model; feed-forward networks (dashed) shortcut the classical stages." />
+
+This tutorial assumes you know keypoints and descriptor matching from [IP 12](/en/learn/image-processing/dip-12-feature-extraction/) and the basics of deep networks from [DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/). The standard textbook for the geometry is Hartley and Zisserman [1].
+
+**Related chapters.** [DLCV 08A](/en/learn/deep-learning/dl-08a-depth-optical-flow/) treats the dense correspondence problems behind reconstruction — stereo matching, monocular depth and optical flow — in depth, and [DLCV 09](/en/learn/deep-learning/dl-09-3d-object-detection/) uses 3D geometry to detect objects.
+
+## What 3D reconstruction is
+
+**Plain version.** The input is a set of photos of a scene that does not move. The output is the camera position and orientation for every photo, plus a description of the scene's shape (and usually its colour) in 3D.
+
+**Precise version.** We are given $N$ images $I_1, \dots, I_N$ of a static scene. We want camera parameters $(K_i, R_i, \mathbf{t}_i)$ for each image (defined in the next section) and a scene model $\mathcal{S}$ such that rendering $\mathcal{S}$ with camera $i$ reproduces $I_i$. Two variants matter. **Geometric reconstruction** asks for an accurate surface; it is judged against laser or structured-light scans. **Novel-view synthesis** asks for realistic images from camera positions that were *not* photographed; it is judged against held-out photos. NeRF and 3DGS were designed for the second goal, which is why extracting a good surface from them took extra work.
+
+The problem has a built-in limitation: from photos alone, the whole scene can be scaled up or down without changing any image. A toy house photographed from close by and a real house photographed from far away can produce the same pictures. Reconstruction from images is therefore defined only **up to scale** (and up to the choice of the world coordinate frame) unless something else, such as a known distance or a calibrated stereo rig, fixes it [1].
+
+### Seven ways to store a 3D scene
+
+**Plain version.** There is no single "3D format". Each representation makes some operations easy (rendering, measuring, editing, learning) and others hard. Figure 2 shows the same torus in each of the seven common ones, plus an eighth form, the pointmap, that we meet with the feed-forward models later.
+
+<Figure src={figRep} alt="Eight small panels of a torus: a scatter of surface points; a depth image of the torus seen from one camera; a blocky torus made of cubes; a triangle mesh; a slice of a signed distance field with the zero contour drawn as two circles; a density slice with sample points along one ray; elongated ellipses arranged around two rings in a top view; and a colourful image whose RGB values encode the X, Y, Z coordinates of each pixel's surface point." caption="Figure 2 — One shape, eight encodings: (a) point cloud, (b) depth map, (c) voxel grid, (d) triangle mesh, (e) signed distance function, (f) radiance field (density slice and samples along a ray), (g) 3D Gaussians, (h) a pointmap, the per-pixel 3D-point image predicted by feed-forward models." />
+
+| Representation | What is stored | Strengths | Weaknesses |
+| --- | --- | --- | --- |
+| Point cloud | A list of 3D points, often with colour and normal | Simple; direct output of triangulation and depth sensors | No surface or connectivity; holes; hard to render nicely |
+| Depth map | One distance per pixel of one camera | Fits image networks; easy to estimate per view | Covers one viewpoint only; must be fused |
+| Voxel grid | A value (occupancy, colour) per cell of a 3D grid | Regular, easy to process with 3D convolutions | Memory grows with the cube of resolution |
+| Mesh | Vertices and triangles | Compact, editable, what graphics engines and printers use | Fixed topology; hard to optimize directly from images |
+| Signed distance function (SDF) | Distance to the nearest surface, negative inside | Watertight surface as the zero level set; normals from the gradient | Needs a closed surface; must be converted for rendering |
+| Radiance field | Density and view-dependent colour at every 3D point | Photorealistic novel views, including thin and fuzzy structures | Slow to render with ray marching; surface is implicit |
+| 3D Gaussians | Many small ellipsoids with colour and opacity | Real-time rendering; explicit and editable | Many primitives (memory); surfaces are not well defined |
+
+An SDF can be a stored grid or a function computed by a network: DeepSDF [20] learns a network that outputs signed distance, and Occupancy Networks [21] learn the probability that a point is inside the object. Both are called **neural implicit** representations, because the surface is given implicitly as a level set of a learned function.
+
+## Camera geometry essentials
+
+**Plain version.** Before we can reason about 3D, we need a precise model of how a camera turns a 3D point into a pixel. The pinhole model does this with one matrix multiplication and one division.
+
+### The pinhole camera: intrinsics and extrinsics
+
+A camera does two things to a 3D point. It first describes the point relative to itself (how far to the left, up and ahead of the camera it is), then flattens it onto the sensor by dividing by its distance. In symbols, a world point $\mathbf{X} \in \mathbb{R}^3$ is first moved into the camera's coordinate frame, then projected:
+
+$$
+\mathbf{X}_c = R\,\mathbf{X} + \mathbf{t}, \qquad
+\lambda \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K \mathbf{X}_c, \qquad
+K = \begin{bmatrix} f_x & s & c_x \\ 0 & f_y & c_y \\ 0 & 0 & 1 \end{bmatrix},
+$$
+
+where $R$ (a $3 \times 3$ rotation) and $\mathbf{t}$ (a translation) are the **extrinsics**: they say where the camera is and which way it points; $\mathbf{X}_c$ is the point in camera coordinates, with the $z$ axis along the viewing direction; $K$ holds the **intrinsics**: focal lengths $f_x, f_y$ in pixels, the principal point $(c_x, c_y)$ where the optical axis meets the image, and a skew $s$ that is zero for real sensors; $(u, v)$ is the pixel; and $\lambda$ equals the depth $z_c$ of the point. Dividing by depth is what makes far things look small. The camera centre in world coordinates is $C = -R^\top \mathbf{t}$. Combining both steps gives the $3 \times 4$ **projection matrix** $P = K[R \mid \mathbf{t}]$.
+
+Real lenses also bend straight lines (radial distortion); calibration tools estimate extra distortion coefficients and undistort the images first, so the rest of this tutorial assumes an ideal pinhole. The homogeneous coordinates used here, with their trailing 1, are the same as in the homography note of IP 02 ([Homography: the projective transform](/en/learn/image-processing/dip-02-fundamentals/notes/#homography-the-projective-transform)).
+
+### Two views: epipolar geometry
+
+**Plain version.** If you see a point in one photo, you do not know how far away it is, so in 3D it could lie anywhere on a ray. In the second photo, that ray appears as a *line*. The true match must sit on that line. This turns a 2D search into a 1D search and, in reverse, lets us recover how the two cameras are placed from matched points alone.
+
+Figure 3 (a) shows the geometry. The two camera centres and the 3D point $\mathbf{X}$ span a plane, the **epipolar plane**. It cuts each image in an **epipolar line**. Any point $\mathbf{X}'$ on the same ray of camera 1 has the same image $\mathbf{x}$ in camera 1, and its image in camera 2 moves along that line.
+
+<Figure src={figTwoView} alt="Left: a schematic with two camera centres joined by a baseline, two tilted image planes, a 3D point X and a second point X' on the same ray of camera 1; both project into image 2 on one green line. Right: a 640 by 480 image with blue inlier points, red crosses for rejected matches and twelve green epipolar lines, each passing through a circled point." caption="Figure 3 — (a) The epipolar constraint: all points on the ray through x project onto one line in image 2. (b) Image 2 of the code example below: epipolar lines computed from the estimated essential matrix pass through the matching points (circled)." />
+
+In algebra, let $\hat{\mathbf{x}}_1 = K_1^{-1}(u_1, v_1, 1)^\top$ and $\hat{\mathbf{x}}_2 = K_2^{-1}(u_2, v_2, 1)^\top$ be the *normalized* coordinates of a matched pair (pixels with the intrinsics removed). If camera 2 sits at rotation $R$ and translation $\mathbf{t}$ relative to camera 1, every correct match satisfies
+
+$$
+\hat{\mathbf{x}}_2^\top E \,\hat{\mathbf{x}}_1 = 0, \qquad E = [\mathbf{t}]_\times R, \qquad
+[\mathbf{t}]_\times = \begin{bmatrix} 0 & -t_3 & t_2 \\ t_3 & 0 & -t_1 \\ -t_2 & t_1 & 0 \end{bmatrix},
+$$
+
+where $E$ is the $3 \times 3$ **essential matrix** [7] and $[\mathbf{t}]_\times$ is the matrix that computes the cross product with $\mathbf{t}$. The equation says that the two viewing rays and the baseline lie in one plane. In pixel coordinates the same constraint reads $\mathbf{x}_2^\top F \mathbf{x}_1 = 0$ with the **fundamental matrix** $F = K_2^{-\top} E K_1^{-1}$, where $\mathbf{x}_1, \mathbf{x}_2$ are homogeneous pixel coordinates. $F\mathbf{x}_1$ is exactly the epipolar line in image 2 drawn in Figure 3 (b).
+
+In plain words: **$E$ encodes the relative pose of two calibrated cameras, and $F$ does the same when the intrinsics are unknown.** $E$ has five degrees of freedom: three for the rotation and two for the *direction* of the translation, whose length is lost to the scale ambiguity. Five matches therefore suffice, the minimal case solved by Nistér's five-point algorithm [9]. With eight or more matches the constraint is linear in the nine entries of $E$ or $F$: the eight-point algorithm [7], [8] stacks one equation per match and takes the null vector with the [singular value decomposition](/en/learn/ml/ml-01a-linear-algebra/#singular-value-decomposition).
+
+*Optional: [The normalized eight-point algorithm](#the-normalized-eight-point-algorithm) (in the Supplementary notes). Why the pixel coordinates must be rescaled first, the rank-2 step, and a test of both versions.*
+
+Once $E$ is known, it can be factored into $R$ and the direction of $\mathbf{t}$. The factorization gives four candidate poses; only one places the points in front of both cameras, which is called the **cheirality** (or chirality) check [1].
+
+### Triangulation
+
+**Plain version.** With both cameras known, a matched pair gives two rays. Where they (almost) cross is the 3D point. Noise means they never meet exactly, so we pick the point that best explains both observations.
+
+The simplest method is linear. Each image gives two linear equations in the unknown point (the pinhole equation with the unknown depth eliminated), and the four equations are solved, like the eight-point system, as the null vector of a small matrix with the SVD [1]. The quality of a triangulated point is judged by its **reprojection error**: project it back into each image and measure the pixel distance to the observed point.
+
+*Optional: [Linear triangulation (DLT)](#linear-triangulation-dlt) (in the Supplementary notes). The four equations written out, why the linear answer is not the optimal one, and a test of how the baseline controls the error.*
+
+Accuracy depends strongly on the angle between the two rays. For two parallel cameras with focal length $f$ and baseline $B$, a point at depth $Z$ shifts by the **disparity** $d = fB/Z$ pixels between the images, so a small disparity error $\delta d$ gives a depth error $\delta Z \approx Z^2 \delta d / (fB)$. Depth error grows with the square of distance and shrinks with a wider baseline; Exercise 1 puts numbers on this.
+
+### Code: relative pose and triangulation
+
+The snippet builds a synthetic scene, projects it into two cameras with 0.5-pixel noise, replaces 15% of the matches by random wrong ones, and then recovers the relative pose with OpenCV. `cv2.findEssentialMat` runs RANSAC around the five-point solver (its documentation names Nistér's algorithm [9]); `cv2.recoverPose` performs the cheirality check. RANSAC's answer comes from a minimal sample, so we refit $E$ linearly on all inliers, the "refit on the consensus set" step described in the RANSAC note of IP 12 ([RANSAC: fitting a model despite outliers](/en/learn/image-processing/dip-12-feature-extraction/notes/#ransac-fitting-a-model-despite-outliers)).
+
+```python
+import numpy as np
+import cv2
+
+rng = np.random.default_rng(0)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])   # focal length 800 px, principal point (320, 240)
+
+def look_at(C, target):
+    """Rotation of a camera at centre C that looks at target (rows: camera x, y, z axes)."""
+    z = (target - C) / np.linalg.norm(target - C)
+    x = np.cross([0.0, 1.0, 0.0], z); x /= np.linalg.norm(x)
+    return np.stack([x, np.cross(z, x), z])
+
+def project(K, R, t, X):
+    """Pinhole projection of world points X (N, 3) to pixels (N, 2)."""
+    x = (X @ R.T + t) @ K.T           # world -> camera -> homogeneous pixels
+    return x[:, :2] / x[:, 2:]        # divide by depth
+
+def linear_E(x1, x2, K):
+    """Least-squares E from many matches: each match gives one linear equation in E's 9 entries."""
+    Ki = np.linalg.inv(K)
+    a = np.c_[x1, np.ones(len(x1))] @ Ki.T               # normalized camera coordinates
+    b = np.c_[x2, np.ones(len(x2))] @ Ki.T
+    A = np.einsum('ni,nj->nij', b, a).reshape(-1, 9)      # row n encodes b_n^T E a_n = 0
+    E = np.linalg.svd(A)[2][-1].reshape(3, 3)             # best null vector of A
+    U, _, Vt = np.linalg.svd(E)
+    return U @ np.diag([1.0, 1.0, 0.0]) @ Vt              # nearest valid essential matrix
+
+X = rng.uniform([-3, -2, 4], [3, 2, 8], size=(300, 3))           # 300 scene points
+C2 = np.array([2.0, 0.0, 0.0])                                    # camera 2 centre: 2 units to the right
+R2 = look_at(C2, np.array([0.0, 0.0, 6.0])); t2 = -R2 @ C2        # camera 1 is the world frame
+x1 = project(K, np.eye(3), np.zeros(3), X) + rng.normal(0, 0.5, (300, 2))   # 0.5 px noise
+x2 = project(K, R2, t2, X) + rng.normal(0, 0.5, (300, 2))
+x2[:45] = rng.uniform([0, 0], [640, 480], (45, 2))                # 45 wrong matches (15 %)
+
+def pose_errors(R, t):
+    rot = np.degrees(np.arccos(np.clip((np.trace(R.T @ R2) - 1) / 2, -1, 1)))
+    return rot, np.degrees(np.arccos(t.ravel() @ t2 / np.linalg.norm(t2)))
+
+E, mask = cv2.findEssentialMat(x1, x2, K, method=cv2.RANSAC, prob=0.999, threshold=1.5)
+_, R, t, mask = cv2.recoverPose(E, x1, x2, K, mask=mask)
+inl = mask.ravel() > 0
+print(f"inliers kept: {inl.sum()} of 300 | wrong matches rejected: {(~inl[:45]).sum()} of 45")
+print("RANSAC estimate      : rotation error %.2f deg, translation direction error %.2f deg" % pose_errors(R, t))
+_, R, t, _ = cv2.recoverPose(linear_E(x1[inl], x2[inl], K), x1[inl], x2[inl], K)
+print("refit on all inliers : rotation error %.2f deg, translation direction error %.2f deg" % pose_errors(R, t))
+print(f"length of estimated t: {np.linalg.norm(t):.2f} (true baseline {np.linalg.norm(C2):.2f})")
+
+P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])     # P1 = K [I | 0]
+P2 = K @ np.hstack([R, t])                            # P2 = K [R | t]
+Xh = cv2.triangulatePoints(P1, P2, x1[inl].T, x2[inl].T)
+Xe = (Xh[:3] / Xh[3]).T                               # homogeneous -> Euclidean
+res = np.r_[np.linalg.norm(project(K, np.eye(3), np.zeros(3), Xe) - x1[inl], axis=1),
+            np.linalg.norm(project(K, R, t.ravel(), Xe) - x2[inl], axis=1)]
+print(f"reprojection error: RMS {np.sqrt(np.mean(res ** 2)):.2f} px")
+rel = np.linalg.norm(2.0 * Xe - X[inl], axis=1) / np.linalg.norm(X[inl], axis=1)   # scale fixed by the true baseline
+print(f"3D error after fixing the scale: median {100 * np.median(rel):.2f} % of the distance")
+```
+
+```text
+inliers kept: 250 of 300 | wrong matches rejected: 44 of 45
+RANSAC estimate      : rotation error 0.30 deg, translation direction error 0.42 deg
+refit on all inliers : rotation error 0.07 deg, translation direction error 0.46 deg
+length of estimated t: 1.00 (true baseline 2.00)
+reprojection error: RMS 0.40 px
+3D error after fixing the scale: median 0.31 % of the distance
+```
+
+These numbers are from this synthetic run only. RANSAC rejects 44 of the 45 wrong matches. Refitting on all inliers reduces the rotation error from 0.30° to 0.07°; the translation direction stays within half a degree either way. The estimated translation has length exactly 1: OpenCV returns only its direction, because the images cannot tell the true baseline of 2. Once the scale is supplied from outside, the triangulated points are within about 0.3% of their true distance. The reprojection error of 0.40 px is below the 0.5 px noise level, as expected when the points are fitted to their own observations.
+
+## Structure from motion
+
+**Plain version.** Structure from motion (SfM) does the two-view trick for hundreds of photos at once: it finds matching points across all of them, places the cameras one by one, triangulates the points, and keeps polishing everything so that all 3D points project onto their observed pixels.
+
+### Features, matching and geometric verification
+
+First, SfM must know which pixels in different photos show the same physical point. It starts with local features. Each image yields keypoints with descriptors, such as SIFT [11] ([IP 12](/en/learn/image-processing/dip-12-feature-extraction/#scale-invariant-feature-transform-sift)), and descriptors are matched between image pairs ([IP 12, Matching](/en/learn/image-processing/dip-12-feature-extraction/#matching)). Many matches are wrong, so each pair is **geometrically verified**: RANSAC [10] fits a fundamental matrix (or an essential matrix or a homography) and keeps the pair only if enough matches agree [2]. The verified pairs form a **scene graph**: images are nodes, and an edge means "these two images see the same points".
+
+### Incremental reconstruction
+
+COLMAP's paper describes the standard incremental pipeline [2], which grew out of earlier systems for Internet photo collections such as Photo Tourism [12]:
+
+1. **Initialize** with a carefully chosen pair of images that share many matches and have a wide baseline; estimate their relative pose and triangulate the shared points.
+2. **Register** a new image by solving the Perspective-n-Point (PnP) problem: find the camera pose from matches between its keypoints and already triangulated 3D points, inside RANSAC.
+3. **Triangulate** new points seen by the new image and at least one registered image.
+4. **Bundle adjust** (below) to refine all cameras and points together, then **filter** points with large reprojection error.
+5. Repeat from step 2 until no more images can be registered.
+
+The COLMAP paper improves each of these steps, including how the next image is chosen and how points are triangulated. Its central lesson is in step 4: registration and triangulation must be interleaved with repeated bundle adjustment, re-triangulation and outlier filtering, because without that refinement small errors accumulate as images are added and the reconstruction drifts [2].
+
+### Bundle adjustment
+
+**Plain version.** Bundle adjustment (BA) is the final polish: move every camera and every 3D point a little until all the "bundles" of rays line up with the pixels where the points were actually seen.
+
+BA solves the nonlinear least-squares problem
+
+$$
+\min_{\{P_c\},\, \{\mathbf{X}_k\}} \; \sum_{(c,k) \in \mathcal{O}} \rho\!\left( \big\lVert \pi(P_c, \mathbf{X}_k) - \mathbf{x}_{ck} \big\rVert^2 \right),
+$$
+
+where $P_c$ are the parameters of camera $c$ (pose, and intrinsics if unknown), $\mathbf{X}_k$ are the 3D points, $\mathcal{O}$ is the set of observations (point $k$ seen in image $c$), $\mathbf{x}_{ck}$ is the observed pixel, $\pi$ is the pinhole projection, and $\rho$ is a robust loss that down-weights outliers [2], [13]. The standard solver is Levenberg–Marquardt, a damped Gauss–Newton method. It is fast because each residual depends on only one camera and one point, so the [Jacobian](/en/learn/ml/ml-01c-numerical-computation/#jacobian-and-hessian-matrices) is almost all zeros [2], [13]. BA cannot fix the global scale and coordinate frame, and it finds only a local minimum, so it needs the good starting point that the incremental steps provide.
+
+*Optional: [Bundle adjustment in code](#bundle-adjustment-in-code) (in the Supplementary notes). A complete small BA with `scipy.optimize.least_squares`, its sparsity pattern, and the gauge problem.*
+
+### COLMAP in practice
+
+COLMAP is the open-source SfM and MVS pipeline released with [2] and [3], with a graphical and a command-line interface [4]. It outputs the camera intrinsics and poses plus a sparse point cloud, the standard input of the dense methods below: the NeRF paper takes the poses of its real scenes from COLMAP [5], and 3DGS initializes its Gaussians from the SfM points [6]. Every later stage inherits the errors made here (see *Pose errors* under failure modes).
+
+## Multi-view stereo
+
+**Plain version.** SfM gives cameras and a sparse set of points. Multi-view stereo (MVS) fills in the rest: for every pixel of a reference image it searches, along the epipolar line in the other images, for the depth at which all views agree on what the surface looks like.
+
+### Photo-consistency and plane sweep
+
+The core test is **photo-consistency**: if a pixel's surface point is at depth $Z$, then the small patch around it should look the same in every image that sees that point. A depth hypothesis is scored by a matching cost such as the sum of squared differences (SSD) or normalized cross-correlation between patches.
+
+The **plane sweep** algorithm [14] tests many depths efficiently. Sweep a plane, parallel to the reference image, through a range of depths $Z_1, \dots, Z_D$. For each depth, warp every source image onto the reference view as if the whole scene lay on that plane; the warp for one plane is a homography. Compute the cost per pixel, stack the costs into a **cost volume** of size $D \times H \times W$, and choose for each pixel the depth with the lowest cost:
+
+$$
+\hat{Z}(u, v) = \arg\min_{k} \; \sum_{(u', v') \in \mathcal{W}(u, v)} \big( I_{\text{ref}}(u', v') - \tilde{I}_{\text{src}}^{(k)}(u', v') \big)^2,
+$$
+
+where $\tilde{I}_{\text{src}}^{(k)}$ is the source image warped by the plane at depth $Z_k$ and $\mathcal{W}(u, v)$ is a small window around the pixel. For two parallel cameras (a *rectified* pair), the plane homography reduces to a horizontal shift by the disparity $fB/Z_k$, which keeps the code short.
+
+*Optional: [The plane-induced homography](#the-plane-induced-homography) (in the Supplementary notes). The warp for general camera poses and tilted planes.*
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+rng = np.random.default_rng(0)
+H, W, f, B = 120, 160, 150.0, 0.5                     # image size, focal length (px), baseline
+tex = ndi.gaussian_filter(rng.random((400, 400)), 1.5)   # random texture painted on the world
+tex = (tex - tex.min()) / np.ptp(tex)
+
+def render(cx):
+    """Ray-cast a camera at (cx, 0, 0) looking down +Z: a square at Z=5 in front of a wall at Z=8."""
+    v, u = np.mgrid[0:H, 0:W].astype(float)
+    dx, dy = (u - W / 2) / f, (v - H / 2) / f          # ray direction (dx, dy, 1)
+    Xs, Ys = cx + 5 * dx, 5 * dy                        # hit point on the plane Z = 5
+    front = (np.abs(Xs) < 1) & (np.abs(Ys) < 1)         # inside the square?
+    Z = np.where(front, 5.0, 8.0)
+    X, Y = cx + Z * dx, Z * dy
+    img = ndi.map_coordinates(tex, [200 + 40 * Y + 100 * front, 200 + 40 * X], order=1)
+    img[~front & (X > 1.5) & (Y < -0.5)] = 0.5          # a textureless patch on the wall
+    return img, Z
+
+ref, Z_true = render(0.0)                              # reference camera
+src, _ = render(B)                                     # source camera, B to the right
+
+depths = 1 / np.linspace(1 / 10, 1 / 3.5, 80)          # depth hypotheses, uniform in 1/Z
+cost = np.empty((len(depths), H, W))
+for k, Z in enumerate(depths):
+    d = f * B / Z                                      # the plane Z induces a horizontal shift d
+    warped = ndi.shift(src, (0, d), order=1, mode='nearest')   # src pixel u - d lands on u
+    cost[k] = ndi.uniform_filter((ref - warped) ** 2, 7)       # windowed SSD photo-consistency
+Z_est = depths[cost.argmin(0)]                         # winner-take-all depth per pixel
+
+ok = np.abs(Z_est - Z_true) / Z_true < 0.05
+flat = (Z_true == 8) & (ref == 0.5)
+inner = np.zeros_like(ok); inner[8:-8, 20:-8] = True    # ignore borders the source camera cannot see
+print(f"pixels within 5% of the true depth: {100 * ok[inner & ~flat].mean():.1f}% (textured), "
+      f"{100 * ok[inner & flat].mean():.1f}% (textureless patch)")
+```
+
+```text
+pixels within 5% of the true depth: 95.3% (textured), 14.8% (textureless patch)
+```
+
+On textured surfaces 95.3% of the evaluated pixels get a depth within 5% of the truth in this synthetic run. In the textureless patch only 14.8% do, because every depth hypothesis matches a flat grey patch equally well. Figure 4 (d) shows this directly: the cost curve of the textured pixel has one sharp minimum at the true depth; the curve of the textureless pixel is flat. The remaining errors on textured surfaces sit at the left border (seen by one camera only) and next to the square, where part of the background is hidden from the second camera (occlusion).
+
+<Figure src={figSweep} alt="Four panels: a grayscale random-texture image with a flat grey rectangle in the top right; the true depth map, a dark square in front of a lighter wall; the estimated depth map, mostly correct but with noisy stripes in the grey rectangle, at the left border and around the square; and a plot of matching cost against depth hypothesis, with a sharp minimum at depth 5 for a textured pixel and a flat zero line for a textureless pixel." caption="Figure 4 — Plane-sweep stereo on a synthetic rectified pair. (a) Reference image with a textureless patch (top right). (b) True depth. (c) Winner-take-all depth from a 7 × 7 SSD window. (d) Cost curves for the two circled pixels; dotted lines mark the true depths." />
+
+### From depth maps to one model
+
+A depth map per image is not yet one model. **Depth-map fusion** merges them. The volumetric method of Curless and Levoy [15] stores, in a voxel grid, a running weighted average of the signed distance to the surface measured by each depth map:
+
+$$
+D_{i+1}(\mathbf{x}) = \frac{W_i(\mathbf{x}) D_i(\mathbf{x}) + w_{i+1}(\mathbf{x})\, d_{i+1}(\mathbf{x})}{W_i(\mathbf{x}) + w_{i+1}(\mathbf{x})}, \qquad W_{i+1}(\mathbf{x}) = W_i(\mathbf{x}) + w_{i+1}(\mathbf{x}),
+$$
+
+where $d_{i+1}(\mathbf{x})$ is the signed distance from voxel $\mathbf{x}$ to the surface seen in depth map $i+1$ along the viewing ray, $w_{i+1}$ is its confidence weight, and $D_i$, $W_i$ are the accumulated distance and weight after $i$ maps. The surface is the zero level set of $D$, extracted by marching cubes (below). In practice the distances are truncated near the surface, hence the name **TSDF** (truncated signed distance function) fusion. COLMAP's MVS [3] instead estimates a depth and a normal per pixel with per-pixel view selection and a multi-view geometric consistency check, then fuses the consistent depths into a dense point cloud.
+
+### Learning-based MVS
+
+**Plain version.** The hand-made parts of MVS, the patch cost and the rules that clean up the cost volume, can be learned from data.
+
+MVSNet [16] keeps the plane-sweep structure but makes every step differentiable. A shared CNN extracts features from all images, and the features of each source view are warped onto fronto-parallel planes of the reference camera (differentiable homography warping). A **variance-based cost** merges any number of views into one cost volume: low variance means the views agree. A 3D CNN regularizes the volume, a softmax along the depth axis gives a probability per depth, and the expected depth under that distribution (the "soft argmin") is a continuous output that can be trained with a regression loss [16]. MVSNet was trained on DTU [37] and evaluated on Tanks and Temples [38] without fine-tuning [16]. Its authors motivate learning with the low-textured, specular and reflective regions where hand-made costs fail [16].
+
+## Neural radiance fields (NeRF)
+
+**Plain version.** NeRF stores a scene as a small neural network that answers one question for any point in space and any viewing direction: "how much stuff is here, and what colour does it send toward me?" To make an image, it shoots a ray through each pixel, asks the network at many points along the ray, and blends the answers. Training adjusts the network until the rendered images match the photos.
+
+### The scene as a function
+
+NeRF [5] is a multilayer perceptron $F_\Theta : (\mathbf{x}, \mathbf{d}) \mapsto (\sigma, \mathbf{c})$, where $\mathbf{x} \in \mathbb{R}^3$ is a position, $\mathbf{d}$ a viewing direction, $\sigma \ge 0$ the **volume density** at $\mathbf{x}$ and $\mathbf{c}$ the RGB colour emitted toward $\mathbf{d}$. The network is built so that density depends on position only, while colour also depends on direction, which lets NeRF reproduce shiny highlights that change with the viewpoint [5]. One network represents one scene; there is no training set of many scenes.
+
+*Optional: [NeRF (Mildenhall et al., 2020)](#nerf-mildenhall-et-al-2020) (in the Paper guides). What the paper set out to solve, what its tables and ablations show, and what it does not claim.*
+
+### Volume rendering along a ray
+
+**Plain version.** Picture the ray as passing through fog of varying thickness. Each bit of fog both glows with its own colour and blocks the light from behind it. The pixel colour is the sum of all the glows, each dimmed by the fog in front of it.
+
+A camera ray is $\mathbf{r}(t) = \mathbf{o} + t\mathbf{d}$ with origin $\mathbf{o}$ (the camera centre), direction $\mathbf{d}$ and distance $t$ between near and far bounds $t_n$ and $t_f$. Following classical volume rendering [17], the expected colour is
+
+$$
+C(\mathbf{r}) = \int_{t_n}^{t_f} T(t)\, \sigma(\mathbf{r}(t))\, \mathbf{c}(\mathbf{r}(t), \mathbf{d})\, dt, \qquad
+T(t) = \exp\!\left( -\int_{t_n}^{t} \sigma(\mathbf{r}(s))\, ds \right),
+$$
+
+where $T(t)$ is the **transmittance**, the probability that the ray travels from $t_n$ to $t$ without being stopped [5]. NeRF evaluates it with $N$ samples $t_1 \lt \dots \lt t_N$ along the ray:
+
+$$
+\hat{C}(\mathbf{r}) = \sum_{i=1}^{N} w_i\, \mathbf{c}_i, \qquad w_i = T_i\,\alpha_i, \qquad
+\alpha_i = 1 - e^{-\sigma_i \delta_i}, \qquad T_i = \prod_{j=1}^{i-1} (1 - \alpha_j),
+$$
+
+where $\sigma_i, \mathbf{c}_i$ are the network outputs at sample $i$, $\delta_i = t_{i+1} - t_i$ is the spacing, $\alpha_i$ is the **opacity** of segment $i$, $T_i$ is the light that survives the segments before it, and $w_i$ is the weight of sample $i$ in the pixel. This is exactly front-to-back **alpha compositing** of semi-transparent layers [5]. The sum of the weights, $\sum_i w_i$, is the pixel's total opacity, and $\sum_i w_i t_i$ is an estimate of depth. Every step is differentiable, so the photo error can be pushed back into the network weights.
+
+The snippet checks the quadrature against an exact answer. The ray crosses blue fog, then a red surface layer, then reaches a white background; for piecewise-constant density the integrals have closed forms.
+
+```python
+import numpy as np
+
+# One ray from t = 0 to t = 6: blue fog on [1, 2] (density 0.5), a red surface on [3, 3.5] (density 4),
+# white background behind everything.
+slabs = [(1.0, 2.0, 0.5, np.array([0.2, 0.4, 1.0])),
+         (3.0, 3.5, 4.0, np.array([1.0, 0.1, 0.1]))]
+bg = np.ones(3)
+
+def field(t):
+    """Density sigma(t) and colour c(t) at sample positions t."""
+    sigma, c = np.zeros_like(t), np.zeros(t.shape + (3,))
+    for a, b, s, col in slabs:
+        inside = (t >= a) & (t < b)
+        sigma[inside], c[inside] = s, col
+    return sigma, c
+
+def render(n):
+    """NeRF quadrature: alpha_i = 1 - exp(-sigma_i delta_i), T_i = prod_{j<i} (1 - alpha_j), w_i = T_i alpha_i."""
+    edges = np.linspace(0, 6, n + 1)
+    t, delta = (edges[:-1] + edges[1:]) / 2, np.diff(edges)
+    sigma, c = field(t)
+    alpha = 1 - np.exp(-sigma * delta)
+    T = np.concatenate([[1.0], np.cumprod(1 - alpha)[:-1]])
+    w = T * alpha
+    T_end = T[-1] * (1 - alpha[-1])                   # light that reaches the background
+    return w @ c + T_end * bg, w.sum(), w @ t
+
+# Analytic answer for piecewise-constant density (exact integrals of the volume rendering equation)
+C, acc, depth, T0 = np.zeros(3), 0.0, 0.0, 1.0
+for a, b, s, col in slabs:
+    L = b - a
+    absorbed = T0 * (1 - np.exp(-s * L))
+    C, acc = C + absorbed * col, acc + absorbed
+    depth += T0 * (a * (1 - np.exp(-s * L)) + (1 - np.exp(-s * L)) / s - L * np.exp(-s * L))
+    T0 *= np.exp(-s * L)
+C += T0 * bg
+print(f"analytic : colour {np.round(C, 4)}, opacity {acc:.4f}, depth {depth:.4f}")
+for n in [16, 64, 256, 1024]:
+    Cq, accq, dq = render(n)
+    print(f"N = {n:4d} : colour {np.round(Cq, 4)}, opacity {accq:.4f}, depth {dq:.4f}")
+```
+
+```text
+analytic : colour [0.6852 0.2919 0.528 ], opacity 0.9179, depth 2.2373
+N =   16 : colour [0.7498 0.3318 0.5195], opacity 0.8466, depth 2.1655
+N =   64 : colour [0.7006 0.2986 0.5232], opacity 0.9040, depth 2.2263
+N =  256 : colour [0.689  0.2934 0.5267], opacity 0.9146, depth 2.2348
+N = 1024 : colour [0.6862 0.2923 0.5277], opacity 0.9171, depth 2.2367
+```
+
+The quadrature converges to the analytic colour, opacity and depth as the number of samples grows. With 16 samples it is visibly off, because the thin surface layer falls into one or two coarse bins. This is why NeRF does not sample uniformly: a coarse network with 64 samples per ray first finds where the weights are large, and a fine network adds 128 samples concentrated there (hierarchical sampling) [5]. Note also the depth: 2.24 (2.23 with the 256 samples of Figure 5), between the fog and the surface, where no surface exists. Semi-transparent "fog" in the wrong place is the origin of the floater artifacts discussed under failure modes. Figure 5 plots the density, transmittance and weights for this ray.
+
+<Figure src={figRay} alt="Three plots along a ray from 0 to 6. Density is 0.5 between 1 and 2 (shaded blue) and 4 between 3 and 3.5 (shaded red). Transmittance starts at 1, decays to about 0.6 across the fog, stays flat, then drops to about 0.08 across the red layer. The weight density shows a low block over the fog and a tall decaying spike at 3; a dashed line marks the expected depth 2.23 between them." caption="Figure 5 — Volume rendering of the ray in the code: (a) density, (b) transmittance, (c) weights per unit length. The expected depth (dashed) lies between the fog and the surface, where nothing is." />
+
+### Positional encoding
+
+**Plain version.** A plain MLP fed with raw $(x, y, z)$ learns smooth, blurry functions. Feeding it sines and cosines of the coordinates at many frequencies lets it represent sharp edges and fine texture.
+
+NeRF maps each coordinate $p$ (normalized to $[-1, 1]$) to
+
+$$
+\gamma(p) = \big( \sin(2^0 \pi p), \cos(2^0 \pi p), \dots, \sin(2^{L-1} \pi p), \cos(2^{L-1} \pi p) \big),
+$$
+
+where $L$ is the number of frequency bands: $L = 10$ for position and $L = 4$ for direction [5]. Without the encoding, the paper's results lose their fine detail [5]. Tancik et al. [18] explained why: coordinate MLPs are biased toward low frequencies (a spectral bias), and a Fourier feature mapping of the input removes this bias. The sinusoids resemble the positional information of Transformers ([ML 04](/en/learn/ml/ml-04-vision-transformers/#positional-information)), but here they encode continuous coordinates rather than token positions.
+
+### Training, and why it is slow
+
+Training needs posed images and nothing else. Each step samples a batch of pixels (rays) from the training images, renders them with the coarse and fine networks, and minimizes the squared colour error [5]. The cost is the problem. Every pixel needs hundreds of network evaluations, and a scene needs a few hundred thousand steps. The paper reports 100–300k iterations, about 1–2 days on one NVIDIA V100 GPU, per scene [5]. Rendering is slow for the same reason: the paper uses 256 network queries per ray, between 150 and 200 million per image, and reports about 30 seconds per frame on a V100 [5].
+
+### Making it fast: hash grids
+
+**Plain version.** Instead of asking one big network to remember everything, store learned features in lookup tables at several resolutions, and use a tiny network to decode them. Looking up a table is far cheaper than running many network layers.
+
+Instant-NGP [19] replaces the frequency encoding with a **multiresolution hash encoding**. Space is covered by $L$ grids, from coarse to fine. Each grid stores trainable feature vectors at its corners, but in a table of fixed size $T$; on fine grids, where there are far more corners than table entries, a hash function decides which entry a corner uses, so several corners share one entry. To encode a point, the features of the corners around it are interpolated on every level, concatenated and passed to a small MLP. The paper does not resolve the shared entries explicitly; it relies on the coarse levels and the MLP to sort them out [19]. The authors report training of high-quality results "in a matter of seconds" and rendering in tens of milliseconds at 1920 × 1080 on one GPU [19]. Grid-based encodings of this kind are now common in fast NeRF variants.
+
+*Optional: [The multiresolution hash encoding](#the-multiresolution-hash-encoding) (in the Supplementary notes). The level resolutions, the hash function, the parameter count, and a worked example.*
+
+## Neural implicit surfaces: NeuS
+
+**Plain version.** NeRF's density does not have to form a clean surface: it can be a cloud. If you want a surface, let the network output a *signed distance* instead, and convert distance to opacity in a way that makes the rendered weight peak exactly on the surface.
+
+NeuS [22] represents the scene as an SDF network $f(\mathbf{x})$ whose zero level set is the surface. It converts the SDF into opacity through the sigmoid $\Phi_s(x) = (1 + e^{-sx})^{-1}$, where $s$ is a learned sharpness that grows during training. The authors show that the obvious choice, using the logistic density $\phi_s(f) = \Phi_s'(f)$ directly as the volume density, gives weights that peak *before* the surface (the bias), and they derive an opacity that is unbiased to first order and still handles occlusion [22]. In discrete form,
+
+$$
+\alpha_i = \max\!\left( \frac{\Phi_s(f(\mathbf{p}_i)) - \Phi_s(f(\mathbf{p}_{i+1}))}{\Phi_s(f(\mathbf{p}_i))}, \; 0 \right),
+$$
+
+where $\mathbf{p}_i$ is the $i$-th sample on the ray; the weights then follow the same compositing formula as NeRF. An **Eikonal** term $\big(\lVert \nabla f \rVert - 1\big)^2$ keeps $f$ a valid distance function [22]. Because the surface is a level set, a mesh follows directly from marching cubes. NeuS reconstructs objects without foreground masks, and it was evaluated on DTU [37] among other data [22].
+
+*Optional: [Why NeuS weights peak on the surface](#why-neus-weights-peak-on-the-surface) (in the Supplementary notes). The bias of the naive density, measured on one ray.*
+
+## 3D Gaussian Splatting
+
+**Plain version.** Instead of a network you must query along every ray, 3DGS represents the scene with millions of small, coloured, semi-transparent ellipsoids, like a cloud of soft paint drops. To make an image it projects each drop onto the screen as a soft ellipse and stacks them from front to back. No ray marching, no network: just sorting and blending, which a GPU does very fast.
+
+### The Gaussian primitive
+
+Each blob is a 3D bell curve: dense at its centre, fading smoothly outward, and stretched more in some directions than in others. Precisely, each primitive [6] has a centre $\boldsymbol{\mu} \in \mathbb{R}^3$, a covariance $\Sigma$ that sets its size and orientation, an opacity $o \in [0, 1]$ and a colour stored as spherical-harmonic coefficients (a small set of smooth functions on the sphere, so the colour can change with the viewing direction). Its footprint in space is
+
+$$
+G(\mathbf{x}) = \exp\!\left( -\tfrac12 (\mathbf{x} - \boldsymbol{\mu})^\top \Sigma^{-1} (\mathbf{x} - \boldsymbol{\mu}) \right), \qquad \Sigma = R\,S\,S^\top R^\top,
+$$
+
+where $S = \mathrm{diag}(s_1, s_2, s_3)$ holds the three axis lengths and $R$ is a rotation stored as a unit quaternion [6]. The factorization guarantees that $\Sigma$ stays a valid (positive semi-definite) covariance during gradient descent, which optimizing the six entries of $\Sigma$ directly would not [6].
+
+### Projection to the image
+
+**Plain version.** A 3D ellipsoid seen through a camera looks like a 2D ellipse. 3DGS computes that ellipse with a local linear approximation of the camera projection, which is accurate for small Gaussians.
+
+Following EWA splatting [23], the 2D covariance of the projected Gaussian is
+
+$$
+\Sigma' = J\, W\, \Sigma\, W^\top J^\top,
+$$
+
+where $W$ is the rotation part of the world-to-camera transform, $J$ is the Jacobian of the perspective projection evaluated at the Gaussian's centre, and keeping only the top-left $2 \times 2$ block of $\Sigma'$ gives the image-space ellipse [6], [23]. The projected centre is simply the pinhole projection of $\boldsymbol{\mu}$.
+
+*Optional: [Projecting a 3D Gaussian: the local affine approximation](#projecting-a-3d-gaussian-the-local-affine-approximation) (in the Supplementary notes). The Jacobian written out, and when the approximation breaks.*
+
+### Alpha compositing and real-time rendering
+
+The pixel colour uses the same compositing rule as NeRF, but over the Gaussians that cover the pixel, sorted by depth:
+
+$$
+C = \sum_{i} \mathbf{c}_i\, \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j), \qquad \alpha_i = o_i \exp\!\left( -\tfrac12 (\mathbf{u} - \boldsymbol{\mu}_i')^\top \Sigma_i'^{-1} (\mathbf{u} - \boldsymbol{\mu}_i') \right),
+$$
+
+where $\mathbf{u}$ is the pixel position, $\boldsymbol{\mu}_i'$ and $\Sigma_i'$ are the projected centre and covariance of Gaussian $i$, and $\mathbf{c}_i$ its view-dependent colour. Why is it fast? The renderer [6] splits the screen into $16 \times 16$-pixel tiles, assigns each visible Gaussian to the tiles it touches, sorts all (tile, depth) keys once with a GPU radix sort, and then blends each tile's list front to back in parallel, stopping a pixel once it is nearly opaque. There is no network to evaluate and no empty space to sample. The paper reports real-time (at least 30 frames per second) novel-view synthesis at 1080p with quality comparable to the best NeRF variant of the time [6].
+
+*Optional: [3D Gaussian Splatting (Kerbl et al., 2023)](#3d-gaussian-splatting-kerbl-et-al-2023) (in the Paper guides). How to separate the representation from the engineering when you read the paper, and its stated limitations.*
+
+### Optimization and adaptive density control
+
+**Plain version.** Training starts from the sparse SfM points, one Gaussian per point, and then grows and prunes the set: where detail is missing it adds Gaussians, where one big Gaussian covers too much it splits it, and invisible ones are removed.
+
+All parameters are optimized by gradient descent on the loss $(1 - \lambda)\mathcal{L}_1 + \lambda \mathcal{L}_{\text{D-SSIM}}$ between rendered and real images, with $\lambda = 0.2$ [6]. Every 100 iterations the method densifies Gaussians whose view-space position gradient is large, a sign that the region is not yet well explained [6]:
+
+- a *small* Gaussian in an under-reconstructed region is **cloned** (copied and moved along the gradient);
+- a *large* Gaussian in a region of high variance is **split** into two smaller ones, with scales divided by 1.6;
+- Gaussians with opacity below a threshold are **pruned**; in addition, all opacities are reset close to zero every 3000 iterations, which limits the growth of Gaussians caused by floaters close to the input cameras [6].
+
+### Code: a toy 2D splatting fit
+
+The snippet fits 40 two-dimensional Gaussians to a 48 × 48 image with the Adam optimizer [49], using exactly the compositing rule above (with a fixed depth order and no densification). The backward pass is written out by hand with the chain rule (the 3DGS paper likewise derives its gradients explicitly instead of relying on automatic differentiation [6]); the gradient was checked against finite differences while writing this tutorial.
+
+```python
+import numpy as np
+from skimage.draw import disk, polygon, ellipse
+
+# Target: a small synthetic RGB image (48 x 48) on a black background
+H = W = 48
+target = np.zeros((H, W, 3))
+target[disk((16, 16), 9)] = [0.9, 0.2, 0.2]
+target[ellipse(30, 30, 6, 14, rotation=np.deg2rad(30))] = [0.2, 0.4, 0.9]
+target[polygon([40, 44, 34], [6, 22, 14])] = [0.2, 0.8, 0.3]
+ys, xs = np.mgrid[0:H, 0:W].astype(float)
+
+def sig(z):
+    return 1 / (1 + np.exp(-z))
+
+def render(p, target=None):
+    """Front-to-back alpha compositing of K 2D Gaussians (index order = depth order).
+    p: mu (K,2), log_s (K,2), theta (K,), op (K,) opacity logits, col (K,3) colour logits."""
+    c, s, th = sig(p['col']), np.exp(p['log_s']), p['theta']
+    dx = xs[None] - p['mu'][:, 0, None, None]; dy = ys[None] - p['mu'][:, 1, None, None]
+    ct, st = np.cos(th)[:, None, None], np.sin(th)[:, None, None]
+    u1, u2 = ct * dx + st * dy, -st * dx + ct * dy                   # offsets in the Gaussian's own axes
+    sx2, sy2 = (s[:, 0] ** 2)[:, None, None], (s[:, 1] ** 2)[:, None, None]
+    g = np.exp(-0.5 * (u1 ** 2 / sx2 + u2 ** 2 / sy2))               # Gaussian footprint
+    o = sig(p['op'])[:, None, None]
+    a = np.minimum(o * g, 0.99)                                       # alpha of each Gaussian at each pixel
+    T = np.cumprod(np.concatenate([np.ones((1, H, W)), 1 - a[:-1]]), axis=0)   # transmittance in front
+    w = a * T                                                          # compositing weights
+    img = np.einsum('khw,kc->hwc', w, c)                              # black background adds nothing
+    if target is None:
+        return img
+    # backward pass for the loss L = mean squared error (the chain rule written out by hand)
+    G = 2 * (img - target) / target.size                               # dL/dimg, shape (H, W, 3)
+    contrib = w[..., None] * c[:, None, None, :]                       # (K, H, W, 3)
+    behind = np.cumsum(contrib[::-1], axis=0)[::-1] - contrib          # colour from Gaussians behind k
+    dC_da = T[..., None] * c[:, None, None, :] - behind / (1 - a[..., None])
+    da = np.einsum('khwc,hwc->khw', dC_da, G) * (o * g < 0.99)
+    dq = da * o * g * -0.5                                             # through g = exp(-q / 2)
+    grads = {
+        'col': np.einsum('khw,hwc->kc', w, G) * c * (1 - c),
+        'op': (da * g).sum((1, 2)) * sig(p['op']) * (1 - sig(p['op'])),
+        'log_s': np.stack([(dq * -2 * u1 ** 2 / sx2).sum((1, 2)), (dq * -2 * u2 ** 2 / sy2).sum((1, 2))], 1),
+        'theta': (dq * 2 * u1 * u2 * (1 / sx2 - 1 / sy2)).sum((1, 2)),
+        'mu': -np.stack([(dq * (2 * u1 * ct / sx2 - 2 * u2 * st / sy2)).sum((1, 2)),
+                         (dq * (2 * u1 * st / sx2 + 2 * u2 * ct / sy2)).sum((1, 2))], 1),
+    }
+    return img, grads
+
+rng = np.random.default_rng(0)
+K = 40
+p = {'mu': rng.uniform(4, 44, (K, 2)), 'log_s': np.full((K, 2), np.log(3.0)), 'theta': rng.uniform(0, np.pi, K),
+     'op': np.zeros(K), 'col': np.zeros((K, 3))}
+lr = {'mu': 0.5, 'log_s': 0.05, 'theta': 0.05, 'op': 0.1, 'col': 0.1}
+m = {k: np.zeros_like(v) for k, v in p.items()}; v2 = {k: np.zeros_like(v) for k, v in p.items()}
+
+def psnr(img):
+    return 10 * np.log10(1 / np.mean((img - target) ** 2))
+
+for it in range(1, 501):
+    img, gr = render(p, target)
+    for k in p:                                                        # Adam update
+        m[k] = 0.9 * m[k] + 0.1 * gr[k]; v2[k] = 0.999 * v2[k] + 0.001 * gr[k] ** 2
+        p[k] -= lr[k] * (m[k] / (1 - 0.9 ** it)) / (np.sqrt(v2[k] / (1 - 0.999 ** it)) + 1e-8)
+    if it in (1, 50, 100, 200, 500):
+        print(f"iteration {it:3d}: PSNR {psnr(img):.2f} dB")
+```
+
+```text
+iteration   1: PSNR 11.32 dB
+iteration  50: PSNR 20.88 dB
+iteration 100: PSNR 21.85 dB
+iteration 200: PSNR 23.12 dB
+iteration 500: PSNR 23.57 dB
+```
+
+PSNR (defined in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#full-reference-metrics)) rises quickly and then levels off near 23.6 dB in this run. The plateau is the point of the exercise: with a fixed number of soft blobs, sharp corners and the thin tip of the triangle cannot be fitted, and blobs that started in the wrong place stay there. That is exactly what adaptive density control fixes, and Exercise 4 asks you to add it. Figure 6 shows the fit and the final ellipses.
+
+<Figure src={figSplat} alt="Five panels: a black image with a red disk, a blue tilted ellipse and a green triangle; a blurry grey start made of overlapping blobs; a soft version of the three shapes after 50 iterations; a sharper version after 500 iterations with white outlines of the fitted ellipses clustered inside each shape; and a PSNR curve rising steeply from about 11 dB and flattening near 23.6 dB." caption="Figure 6 — Toy splatting with 40 Gaussians and alpha compositing: (a) target, (b) start, (c) after 50 and (d) 500 iterations, with each Gaussian's one-standard-deviation ellipse; (e) PSNR against iteration. Numbers are from this toy run only." />
+
+## Getting meshes
+
+**Plain version.** Graphics engines, physics simulators and 3D printers want triangles. Every representation above needs a conversion step to produce them, and the conversion can add its own errors.
+
+### Marching cubes
+
+Marching cubes [24] turns a sampled scalar field (an SDF, an occupancy or a fused TSDF) into a triangle mesh of one level set. It visits each cube of eight neighbouring grid samples, looks at which corners are inside and which are outside, places vertices on the cube edges where the sign changes (by linear interpolation of the field values), and connects them with triangles from a lookup table. scikit-image provides an implementation [46]. The snippet extracts the zero level set of an exact torus SDF at several grid resolutions and measures the result with the geometric metrics defined in the evaluation section below.
+
+```python
+import numpy as np
+from scipy.spatial import cKDTree
+from skimage.measure import marching_cubes
+
+R, r = 0.6, 0.25                                       # torus: ring radius R, tube radius r
+
+def sdf_torus(x, y, z):
+    """Exact signed distance to the torus (negative inside)."""
+    return np.hypot(np.hypot(x, y) - R, z) - r
+
+def sample_mesh(verts, faces, n, rng):
+    """n points spread uniformly over the area of a triangle mesh."""
+    tri = verts[faces]
+    area = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    k = rng.choice(len(faces), n, p=area / area.sum())
+    a, b = rng.random((2, n, 1))
+    flip = a + b > 1; a[flip], b[flip] = 1 - a[flip], 1 - b[flip]
+    return tri[k, 0] + a * (tri[k, 1] - tri[k, 0]) + b * (tri[k, 2] - tri[k, 0])
+
+def sample_torus(n, rng):
+    """n points uniform over the true torus surface (rejection sampling on the area element)."""
+    u, v = rng.uniform(0, 2 * np.pi, (2, 3 * n))
+    ok = rng.random(3 * n) * (R + r) < R + r * np.cos(v)   # keep with probability proportional to R + r cos v
+    u, v = u[ok][:n], v[ok][:n]
+    return np.c_[(R + r * np.cos(v)) * np.cos(u), (R + r * np.cos(v)) * np.sin(u), r * np.sin(v)]
+
+def geometry_metrics(P, G, tau):
+    """Accuracy, completeness, Chamfer (their mean) and F-score at threshold tau."""
+    d_pg = cKDTree(G).query(P)[0]                      # each reconstructed point -> nearest true point
+    d_gp = cKDTree(P).query(G)[0]                      # each true point -> nearest reconstructed point
+    prec, rec = (d_pg < tau).mean(), (d_gp < tau).mean()
+    return d_pg.mean(), d_gp.mean(), (d_pg.mean() + d_gp.mean()) / 2, 2 * prec * rec / (prec + rec)
+
+rng = np.random.default_rng(0)
+G = sample_torus(100_000, rng)
+acc, comp, cd, fs = geometry_metrics(sample_torus(100_000, rng), G, tau=0.01)
+print(f"true surface vs itself: Chamfer {cd:.4f} | F-score@0.01 {fs:.3f}   (the floor set by sampling)")
+for n in [12, 24, 48, 96]:
+    ax = np.linspace(-1, 1, n)
+    vol = sdf_torus(*np.meshgrid(ax, ax, ax, indexing='ij'))
+    verts, faces, _, _ = marching_cubes(vol, level=0.0, spacing=(ax[1] - ax[0],) * 3)
+    verts -= 1.0                                       # grid index space -> world coordinates [-1, 1]
+    P = sample_mesh(verts, faces, 100_000, rng)
+    acc, comp, cd, fs = geometry_metrics(P, G, tau=0.01)
+    print(f"grid {n:2d}^3: {len(faces):6d} triangles | acc {acc:.4f} comp {comp:.4f} "
+          f"Chamfer {cd:.4f} | F-score@0.01 {fs:.3f} | max |SDF| on vertices {np.abs(sdf_torus(*verts.T)).max():.4f}")
+```
+
+```text
+true surface vs itself: Chamfer 0.0039 | F-score@0.01 0.995   (the floor set by sampling)
+grid 12^3:    448 triangles | acc 0.0154 comp 0.0154 Chamfer 0.0154 | F-score@0.01 0.299 | max |SDF| on vertices 0.0084
+grid 24^3:   2272 triangles | acc 0.0052 comp 0.0052 Chamfer 0.0052 | F-score@0.01 0.988 | max |SDF| on vertices 0.0032
+grid 48^3:   9568 triangles | acc 0.0040 comp 0.0039 Chamfer 0.0040 | F-score@0.01 0.995 | max |SDF| on vertices 0.0008
+grid 96^3:  38832 triangles | acc 0.0039 comp 0.0039 Chamfer 0.0039 | F-score@0.01 0.995 | max |SDF| on vertices 0.0002
+```
+
+Two lessons come from this run. First, the vertices are almost exactly on the surface even on the 12³ grid (the largest $|\text{SDF}|$ is 0.0084), yet the Chamfer distance is 0.0154: the flat triangles *between* the vertices cut across the curved tube. Second, the metric stops improving at about 0.0039, because comparing two independent random samplings of the *same* true surface already gives that value. A measured error is meaningful only relative to this floor, which depends on how many points are sampled. Figure 7 shows the meshes and the curves.
+
+<Figure src={figMc} alt="Two shaded torus meshes, a coarse one with 448 large triangles and a fine one with 9568 small triangles, and a log-scale plot of Chamfer distance falling with grid resolution toward a dotted sampling floor near 0.004, with the F-score at threshold 0.01 rising from about 0.1 to almost 1." caption="Figure 7 — Marching cubes on an exact torus SDF: (a) 12³ and (b) 48³ grids; (c) Chamfer distance and F-score at τ = 0.01 against grid resolution, with the floor obtained by comparing two samplings of the true surface." />
+
+### Poisson surface reconstruction
+
+When the input is a point cloud with normals, as from MVS, Poisson surface reconstruction [25] is the standard tool. It seeks an indicator function $\chi$ (1 inside, 0 outside) whose gradient matches the normals, which leads to the Poisson equation $\Delta \chi = \nabla \cdot \mathbf{V}$, where $\Delta$ is the Laplacian and $\mathbf{V}$ the vector field built from the normals; the surface is a level set of $\chi$ [25]. Because it uses all points at once, it is robust to noise [25]; the screened variant [26] also pulls the surface toward the points. The result is watertight, which is convenient but means that holes in the data are filled with invented surface.
+
+### Meshes from Gaussians
+
+3D Gaussians do not define a surface: after optimization they are unorganized, overlapping and often not aligned with the true geometry. Two lines of work address this. **SuGaR** [27] adds a regularization term that encourages the Gaussians to lie flat on the surface, then extracts a mesh with Poisson reconstruction from points sampled on the level set of the Gaussians' density, and optionally binds new Gaussians to the mesh and refines both together [27]. **2D Gaussian Splatting** [28] changes the primitive: each Gaussian is a flat, oriented 2D disk (a surface element), rendered with an exact ray–disk intersection, plus depth-distortion and normal-consistency losses. Meshes are then obtained by fusing the rendered depth maps with TSDF fusion [28], the same idea as Curless and Levoy's method above.
+
+## Feed-forward reconstruction
+
+**Plain version.** Everything so far optimizes one scene at a time. The newest models are trained once on large collections of 3D data and then, given new photos, output the cameras and a dense 3D point for every pixel in a single pass, without matching, RANSAC or bundle adjustment.
+
+**DUSt3R** [29] takes two images with unknown intrinsics and poses and regresses two **pointmaps**: for each pixel of each image, the 3D point it sees, both expressed in the coordinate frame of the first camera [29]. A pointmap is an image with three channels $(X, Y, Z)$ (Figure 2 (h)). From it, depth, focal length, relative pose and pixel correspondences all follow. The network is a Transformer [48] encoder–decoder: both images go through the same [Vision Transformer](/en/learn/ml/ml-04-vision-transformers/#the-vision-transformer-vit) encoder [47], and two decoders exchange information through cross-attention before regression heads output the pointmaps and a confidence per pixel [29]. The output is defined only up to an unknown scale [29]. For more than two images, DUSt3R predicts pairwise pointmaps and then runs a *global alignment* that solves for one consistent set of pointmaps, poses and per-pair scales, a learned-geometry counterpart of bundle adjustment [29].
+
+**MASt3R** [30] adds a head that outputs dense local features trained with a matching loss, and a fast reciprocal matching scheme, so that the pointmap network also yields accurate pixel correspondences [30]. **VGGT** [31] goes further: a large Transformer with alternating frame-wise and global attention takes one, a few or hundreds of images and predicts camera parameters, depth maps, pointmaps and point tracks for all of them at once; the authors report that this takes less than a second and often beats optimization-based alternatives without further processing [31].
+
+These models do not make geometry obsolete. Their predictions can still be refined: the VGGT authors report that its cameras and tracks are a good initialization for bundle adjustment, which improves accuracy further [31]. Their accuracy also depends on how close a scene is to their training data. They are, however, the best tools available when images are few, overlap little or have no calibration.
+
+## Dynamic scenes (brief)
+
+**Plain version.** If the scene moves, a single 3D model is not enough: the model must also depend on time.
+
+The common recipe is a canonical (static) scene plus a deformation over time. D-NeRF [32] adds time as an input and learns two networks together: one encodes the scene in a canonical space, the other maps that canonical scene to its deformed state at a given time; it works from a single camera moving around the scene [32]. 4D Gaussian Splatting [33] keeps one set of 3D Gaussians and predicts their deformation at each timestamp with a lightweight MLP fed by a factorized space–time feature grid; the paper reports real-time rendering, for example 82 frames per second at 800 × 800 on an RTX 3090 GPU [33]. Dynamic reconstruction is much less constrained than static reconstruction, because each moment is seen from fewer viewpoints.
+
+## Evaluating reconstructions
+
+**Plain version.** Two different things can be measured: whether the *pictures* rendered from new viewpoints look like real photos, and whether the *shape* is geometrically correct. A method can do well on one and badly on the other.
+
+### Novel-view quality
+
+Hold out some photos, render the reconstruction from their camera poses, and compare. The standard metrics are PSNR, SSIM [34] and LPIPS [35], all defined in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#full-reference-metrics). PSNR and SSIM measure pixel and structural agreement; LPIPS measures perceptual similarity in deep-feature space. A common protocol, which 3DGS adopts from Mip-NeRF 360, holds out every 8th photo of a capture as the test set [6]. Novel-view metrics depend on the held-out poses being correct, so they also reward good SfM.
+
+### Geometric accuracy
+
+Let $\mathcal{P}$ be points sampled from the reconstruction and $\mathcal{G}$ points from the ground-truth scan. Define the two directed distances
+
+$$
+\text{acc} = \frac{1}{|\mathcal{P}|} \sum_{\mathbf{p} \in \mathcal{P}} \min_{\mathbf{g} \in \mathcal{G}} \lVert \mathbf{p} - \mathbf{g} \rVert, \qquad
+\text{comp} = \frac{1}{|\mathcal{G}|} \sum_{\mathbf{g} \in \mathcal{G}} \min_{\mathbf{p} \in \mathcal{P}} \lVert \mathbf{g} - \mathbf{p} \rVert,
+$$
+
+where $|\cdot|$ counts points. **Accuracy** asks "are my points near the truth?"; **completeness** asks "is all of the truth covered?". Their sum or mean is the **Chamfer distance**, widely used as a loss and metric for point sets since Fan et al. [36], who define it with squared distances; papers differ in squaring and in sum versus mean, so check the definition before comparing numbers. On DTU, MVSNet reports the mean of accuracy and completeness as an "overall" score [16].
+
+Tanks and Temples [38] uses a threshold $\tau$ instead of averages. With $e_{\mathbf{p}}$ the distance from a reconstructed point to the ground truth and $e_{\mathbf{g}}$ the distance from a ground-truth point to the reconstruction,
+
+$$
+P(\tau) = \frac{100}{|\mathcal{P}|} \sum_{\mathbf{p} \in \mathcal{P}} [\, e_{\mathbf{p}} \lt \tau \,], \qquad
+R(\tau) = \frac{100}{|\mathcal{G}|} \sum_{\mathbf{g} \in \mathcal{G}} [\, e_{\mathbf{g}} \lt \tau \,], \qquad
+F(\tau) = \frac{2 P(\tau) R(\tau)}{P(\tau) + R(\tau)},
+$$
+
+where $[\cdot]$ is 1 if the condition holds and 0 otherwise, $P$ is precision (in percent), $R$ is recall and $F$ is their harmonic mean, the **F-score** [38]. Because it is a harmonic mean, $F$ is high only if the reconstruction is both accurate and complete; a sparse set of perfect points or a cloud that fills all space both score poorly [38]. The F-score is also robust to a few far outliers, which can dominate a Chamfer average (Exercise 5).
+
+### Datasets and benchmarks
+
+- **DTU** [37]: a multi-view stereo dataset of 80 tabletop scenes, each with 49 or 64 precisely known camera positions from a six-axis industrial robot and reference geometry from a structured-light scanner [37]. Standard for MVS and neural surface methods (NeuS uses 15 of its scenes [22]).
+- **Tanks and Temples** [38]: high-resolution video of large indoor and outdoor scenes captured outside the lab, with ground truth from an industrial laser scanner, split into an *intermediate* and an *advanced* group, and evaluated by the F-score above on an online server [38].
+- **Mip-NeRF 360** [39]: 9 unbounded scenes (5 outdoor, 4 indoor), each with a central object and a detailed background, captured for novel-view synthesis [39]. 3DGS evaluates on it together with Tanks and Temples scenes, among others [6].
+
+## Failure modes
+
+**Plain version.** Every method above rests on the same assumptions: the scene is static, its surfaces look the same from every direction, there is texture to match, the views overlap, and the cameras are known. Each failure mode below breaks one of them.
+
+- **Textureless surfaces** (white walls, sky). Photo-consistency is equal at every depth, as in the plane-sweep run; reconstructions show holes or noise. Learned MVS and feed-forward models fill them with learned priors, which may be wrong.
+- **Reflective and transparent surfaces.** A mirror or a glossy car shows a reflected scene that moves differently from the surface, so matching and density both go wrong. NeRF tends to fake a highlight with light sources hidden *inside* the object under a semi-transparent surface; Ref-NeRF [40] instead models the radiance reflected about the surface normal, which improves specular surfaces [40].
+- **Few views.** With two or three images, many scenes explain the photos equally well, and per-scene optimization overfits (good training views, broken new views). Feed-forward models such as DUSt3R [29] are the usual remedy.
+- **Floaters.** Semi-transparent blobs of density in free space, often close to the cameras, that look right from training views but appear as fog from new views. Mip-NeRF 360 names them and adds a distortion-based regularizer to suppress them [39]; 3DGS resets opacities periodically for the same reason [6].
+- **Scale ambiguity.** Monocular image collections fix geometry only up to scale; metric size needs a known distance, a calibrated rig or other sensors [1].
+- **Pose errors.** NeRF and 3DGS assume accurate poses; small errors blur fine detail. BARF [41] jointly optimizes the poses and the radiance field, using a coarse-to-fine schedule on the positional encoding, because the high frequencies otherwise hurt registration [41].
+- **Moving objects and lighting changes**, such as people walking through a capture or the sun moving, break the static-scene assumption itself.
+
+## Modern view
+
+### What the surveys say
+
+Four reviews frame this tutorial. Seitz et al. [42] gave multi-view stereo its classical taxonomy, which still describes every method here: the scene representation, the photo-consistency measure, the visibility model, the shape prior, the reconstruction algorithm and the initialization requirements. Furukawa and Hernández [43] present MVS as an image–geometry consistency optimization built from two ingredients, robust photometric consistency measures and efficient optimization, and survey the successful algorithms and remaining challenges. Tewari et al. [44] review neural rendering, from scene representations and differentiable image formation to applications such as novel-view synthesis, generalization across scenes, dynamic content, editing and relighting, and list open problems such as integration with classical graphics tools and interpretability. Chen and Wang [45] survey 3D Gaussian Splatting: its principles and optimization, seven directions that extend it, its applications, and performance comparisons; they identify a shift from per-scene optimization toward feed-forward Gaussian prediction.
+
+*Optional: [Guide to the Modern view surveys](#guide-to-the-modern-view-surveys) (in the Paper guides). What each review covers, how it organizes the field and what to take from it.*
+
+### The state of the art, 2023–2026
+
+- **Explicit, rasterizable representations** won the speed race. Since 3DGS [6], a large share of view-synthesis work builds on Gaussian primitives. The 3DGS survey [45] groups the follow-up work into sparse-input, memory-efficient and photorealistic variants, better optimization, Gaussians with extra properties, hybrid representations and new rendering algorithms; geometry (SuGaR [27], 2DGS [28]) and dynamics (4DGS [33]) are active directions of their own.
+- **Neural implicit surfaces** in the NeuS line [22] remain the choice when a watertight, accurate surface matters more than rendering speed.
+- **Feed-forward geometry** is the largest change. DUSt3R [29], MASt3R [30] and VGGT [31] estimate cameras and dense geometry directly from images; they are increasingly used to initialize or replace parts of the classical SfM pipeline, and the 3DGS survey [45] describes the same trend for Gaussians.
+- **The classical pipeline remains the reference.** COLMAP [2], [3] is still the usual source of camera poses for training and evaluation, and bundle adjustment is still used to refine learned predictions.
+
+### Open problems
+
+1. **Geometry and appearance together.** Methods tuned for novel views produce poor surfaces, and accurate-surface methods render less realistically. One representation that does both, fast, is still open.
+2. **Reflections, transparency and lighting.** Separating surface, material and illumination (inverse rendering) is unsolved for real captures.
+3. **Generalization of feed-forward models**: accuracy far from the training distribution, metric scale, and very large scenes.
+4. **Dynamic and in-the-wild captures** with moving people, changing light and few viewpoints.
+5. **Evaluation.** Pose errors in the "ground truth", sampling-dependent Chamfer numbers and inconsistent metric definitions make cross-paper comparisons fragile.
+
+## Key takeaways
+
+- 3D reconstruction recovers both cameras and scene; from images alone the result is defined only up to scale.
+- The pinhole model $\lambda \mathbf{x} = K(R\mathbf{X} + \mathbf{t})$, the epipolar constraint $\hat{\mathbf{x}}_2^\top E \hat{\mathbf{x}}_1 = 0$ and triangulation are the geometric core of every method, old or new.
+- Structure from motion chains matching, RANSAC, incremental registration and bundle adjustment (reprojection-error minimization); COLMAP's output is the standard input to dense methods.
+- Multi-view stereo finds per-pixel depth by photo-consistency over a plane sweep and fuses depth maps; it fails where there is no texture, and MVSNet learns the cost and its regularization.
+- NeRF renders a learned density and colour field with alpha compositing along rays; positional encoding gives detail, hash grids give speed, and NeuS turns the field into an unbiased SDF surface.
+- 3D Gaussian Splatting replaces ray marching by sorting and blending projected anisotropic Gaussians, and grows them with clone, split and prune; it renders in real time but needs extra work (SuGaR, 2DGS) for surfaces.
+- Feed-forward models (DUSt3R, MASt3R, VGGT) predict cameras and pointmaps in one pass and are reshaping the classical pipeline.
+- Evaluate views with PSNR/SSIM/LPIPS on held-out images and geometry with accuracy, completeness, Chamfer distance and F-score, always stating the definition and sampling.
+
+## Exercises
+
+1. **Depth error by hand.** A rectified stereo pair has $f = 800$ px and baseline $B = 0.1$ m. Using $\delta Z \approx Z^2 \delta d / (fB)$, how large is the depth error for a point at $Z = 5$ m if the disparity is off by 0.5 px? How large must $B$ be to bring it under 2 cm?
+
+<details>
+<summary>Hint</summary>
+
+$\delta Z \approx 25 \cdot 0.5 / (800 \cdot 0.1) = 0.156$ m. Solving $25 \cdot 0.5 / (800 B) \lt 0.02$ gives $B \gt 0.78$ m. A wider baseline helps, but it also makes the two views look more different, which makes matching harder.
+
+</details>
+
+2. **See the scale ambiguity.** In the two-view snippet, multiply all scene points `X` and the camera centre `C2` by 3 before projecting. Show that the pixel coordinates do not change and that the estimated pose is the same. Name three pieces of outside information that would fix the scale.
+
+<details>
+<summary>Hint</summary>
+
+Projection divides by depth, so scaling $\mathbf{X}$ and $\mathbf{t}$ together cancels: $K(R(3\mathbf{X}) + 3\mathbf{t}) = 3K(R\mathbf{X} + \mathbf{t})$. Outside information: a measured distance in the scene (a ruler or a marker of known size), the known baseline of a stereo rig, or another sensor such as an inertial measurement unit or GPS.
+
+</details>
+
+3. **Read the weights.** In the volume-rendering snippet, prove that $\sum_i w_i = 1 - \prod_i (1 - \alpha_i)$. Then remove the fog slab and recompute the depth. Why is the "depth" of a ray that passes through fog not the depth of any surface?
+
+<details>
+<summary>Hint</summary>
+
+By induction: $T_{i+1} = T_i(1 - \alpha_i)$ so $w_i = T_i - T_{i+1}$, and the sum telescopes to $T_1 - T_{N+1} = 1 - T_{N+1}$. Without fog, all weight sits on the red layer and the depth lands near 3. With fog, $\sum_i w_i t_i$ averages two separate places, so it can fall in empty space; this is how a floater corrupts a depth map.
+
+</details>
+
+4. **Add adaptive density control.** Extend the toy splatting snippet: every 100 iterations, find the Gaussians with the largest accumulated position gradient; clone the small ones and split the large ones (divide the scales by 1.6), and remove those whose opacity falls below 0.02. Compare the final PSNR with the fixed 40 Gaussians, and with simply starting from 80 Gaussians.
+
+<details>
+<summary>Hint</summary>
+
+When the arrays grow, the Adam moment arrays `m` and `v2` must grow with them (initialize the new rows at zero). For reference, simply starting from 80 Gaussians instead of 40, with nothing else changed, reached 27.00 dB at iteration 500 in our run (23.57 dB with 40). Densification should place the new Gaussians where the error is, for example at the triangle's corners.
+
+</details>
+
+5. **Chamfer versus F-score.** In the marching-cubes snippet (grid 48), first add 1,000 "floater" points near $(0, 0, 0.6)$, then instead delete the half of the mesh samples with $x \lt 0$. Recompute accuracy, completeness, Chamfer distance and F-score. Which metric reacts to which defect?
+
+<details>
+<summary>Hint</summary>
+
+In our run, the floaters (1% of the points) raised accuracy from 0.0040 to 0.0097 and the Chamfer distance from 0.0040 to 0.0068, while the F-score at 0.01 barely moved (0.995 to 0.990). Deleting half the surface left accuracy at 0.0040 but raised completeness to 0.2226, the Chamfer distance to 0.1133, and lowered the F-score to 0.665. Averages are sensitive to a few far outliers; thresholded scores are not, but they report missing parts clearly through recall.
+
+</details>
+
+6. **Window size in plane sweep.** Run the plane-sweep snippet with SSD windows of 3, 7 and 15 pixels. How do the textured and textureless scores change, and what happens to the edges of the square?
+
+<details>
+<summary>Hint</summary>
+
+In our run the textured score was 95.2%, 95.3% and 96.6%, and the textureless score 4.9%, 14.8% and 27.7%. Large windows reach texture outside the flat patch, so its pixels borrow depth from their surroundings; the price is that depth edges are blurred and the square appears "fattened" into the background. Learned MVS uses a 3D CNN to get this context without the blur.
+
+</details>
+
+The scene models built here are also a building block of the world models in [DLCV 07](/en/learn/deep-learning/dl-07-world-models/), where an agent must predict how a 3D environment changes.
+
+## Supplementary notes
+
+These notes are optional: each one takes a single point from the main text and goes into finer detail. Nothing in the main text, code or exercises depends on them.
+
+### The normalized eight-point algorithm
+
+This note explains how to estimate the fundamental matrix linearly from eight or more matches, and why rescaling the pixel coordinates first is essential.
+
+**The linear system.** Write $F$ as a vector $\mathbf{f} = (F_{11}, F_{12}, \dots, F_{33})$. A match $\mathbf{x}_1 = (u_1, v_1, 1)$, $\mathbf{x}_2 = (u_2, v_2, 1)$ satisfies $\mathbf{x}_2^\top F \mathbf{x}_1 = 0$, which is one linear equation $\mathbf{a}^\top \mathbf{f} = 0$ with $\mathbf{a} = \mathbf{x}_2 \otimes \mathbf{x}_1$ (all nine products $u_2 u_1, u_2 v_1, u_2, v_2 u_1, \dots, 1$). Stacking $n \ge 8$ matches gives $A\mathbf{f} = \mathbf{0}$ with $A \in \mathbb{R}^{n \times 9}$. The least-squares solution with $\lVert \mathbf{f} \rVert = 1$ is the right singular vector of $A$ for its smallest singular value [7], [8].
+
+**The rank-2 step.** A true fundamental matrix has rank 2 (all epipolar lines pass through one point, the epipole). The linear solution usually has rank 3. Replace it by the closest rank-2 matrix in the Frobenius norm: compute $F = U \,\mathrm{diag}(\sigma_1, \sigma_2, \sigma_3) V^\top$ and set $\sigma_3 = 0$ [8]. For an essential matrix the two non-zero singular values must also be equal, which is why the main-text code uses $\mathrm{diag}(1, 1, 0)$.
+
+**Why normalize.** In pixel coordinates the entries of $\mathbf{a}$ range from about 1 to about $10^5$ ($u_2 u_1$ for pixels in the hundreds). The matrix $A^\top A$ is then badly conditioned (see [condition number](/en/learn/ml/ml-01c-numerical-computation/#condition-number-of-a-linear-system) in ML 01c), and noise is amplified in the small singular vector. Hartley [8] showed that a simple fix makes the linear algorithm competitive: translate each image's points so that their centroid is at the origin and scale them so that their mean distance from the origin is $\sqrt{2}$, with a similarity $T_1$ for image 1 and $T_2$ for image 2. Solve for $\hat{F}$ in the normalized coordinates, enforce rank 2, then undo the normalization with $F = T_2^\top \hat{F}\, T_1$.
+
+**A test.** The snippet compares both versions on noisy matches (1 px noise) and measures the Sampson error, a first-order approximation of the geometric distance of a match to the epipolar constraint [1], on 1,000 fresh noise-free matches.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])
+a = np.deg2rad(12)
+R = np.array([[np.cos(a), 0, -np.sin(a)], [0, 1, 0], [np.sin(a), 0, np.cos(a)]])  # camera 2 rotation
+t = np.array([-1.0, 0.1, 0.1])                                                      # camera 2 translation
+X = rng.uniform([-3, -2, 4], [3, 2, 8], (100, 3))
+proj = lambda P: (P @ K.T)[:, :2] / (P @ K.T)[:, 2:]
+x1 = proj(X) + rng.normal(0, 1.0, (100, 2))           # 1 px noise
+x2 = proj(X @ R.T + t) + rng.normal(0, 1.0, (100, 2))
+
+def eight_point(x1, x2, normalize=True):
+    """Fundamental matrix from >= 8 matches (pixels); x2h^T F x1h = 0."""
+    def T_of(x):                                      # move centroid to 0, mean distance to sqrt(2)
+        c = x.mean(0); s = np.sqrt(2) / np.linalg.norm(x - c, axis=1).mean()
+        return np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1]])
+    T1, T2 = (T_of(x1), T_of(x2)) if normalize else (np.eye(3), np.eye(3))
+    a = np.c_[x1, np.ones(len(x1))] @ T1.T
+    b = np.c_[x2, np.ones(len(x2))] @ T2.T
+    A = np.einsum('ni,nj->nij', b, a).reshape(-1, 9)
+    F = np.linalg.svd(A)[2][-1].reshape(3, 3)
+    U, S, Vt = np.linalg.svd(F)
+    F = U @ np.diag([S[0], S[1], 0.0]) @ Vt           # enforce rank 2
+    F = T2.T @ F @ T1                                 # undo the normalization
+    return F / np.linalg.norm(F)
+
+def sampson(F, x1, x2):
+    """First-order geometric distance of each match to the epipolar constraint (pixels)."""
+    a, b = np.c_[x1, np.ones(len(x1))], np.c_[x2, np.ones(len(x2))]
+    Fa, Ftb = a @ F.T, b @ F
+    num = np.sum(b * Fa, axis=1) ** 2
+    return np.sqrt(num / (Fa[:, 0] ** 2 + Fa[:, 1] ** 2 + Ftb[:, 0] ** 2 + Ftb[:, 1] ** 2))
+
+tx = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]])
+F_true = np.linalg.inv(K).T @ tx @ R @ np.linalg.inv(K)       # F = K^-T [t]x R K^-1
+F_true /= np.linalg.norm(F_true)
+X_test = rng.uniform([-3, -2, 4], [3, 2, 8], (1000, 3))       # fresh, noise-free test matches
+y1, y2 = proj(X_test), proj(X_test @ R.T + t)
+for n in [8, 15, 100]:
+    for norm in [False, True]:
+        F = eight_point(x1[:n], x2[:n], norm)
+        print(f"{n:3d} matches, normalized={str(norm):5s}: mean Sampson error on test matches "
+              f"{sampson(F, y1, y2).mean():8.3f} px")
+print(f"true F on the same test matches: {sampson(F_true, y1, y2).mean():.2e} px")
+```
+
+```text
+  8 matches, normalized=False: mean Sampson error on test matches    3.186 px
+  8 matches, normalized=True : mean Sampson error on test matches    3.016 px
+ 15 matches, normalized=False: mean Sampson error on test matches    6.091 px
+ 15 matches, normalized=True : mean Sampson error on test matches    1.083 px
+100 matches, normalized=False: mean Sampson error on test matches    0.632 px
+100 matches, normalized=True : mean Sampson error on test matches    0.181 px
+true F on the same test matches: 2.34e-14 px
+```
+
+With 15 or 100 matches the normalized version is several times more accurate in this run; with the minimum of 8 noisy matches both are poor, which is one reason RANSAC samples are followed by a refit on all inliers. Pitfalls: the normalization must be computed per image, the rank-2 step must happen *before* denormalization, and degenerate configurations (all points on one plane, or no translation between the cameras) leave $F$ undetermined whatever the algorithm.
+
+### Linear triangulation (DLT)
+
+This note writes out the linear triangulation used in the main text, explains why its answer is not the optimal one, and measures how the baseline controls its error.
+
+**The equations.** Write the unknown point in homogeneous form $\tilde{\mathbf{X}} = (X, Y, Z, 1)^\top$ and let $\mathbf{p}_i^{k\top}$ be the $k$-th row of the projection matrix $P_i$ of camera $i$. The pinhole model says $\lambda_i (u_i, v_i, 1)^\top = P_i \tilde{\mathbf{X}}$, so the depth is $\lambda_i = \mathbf{p}_i^{3\top} \tilde{\mathbf{X}}$. Substituting it into the first two rows removes the unknown depth and leaves two linear equations per image:
+
+$$
+A \tilde{\mathbf{X}} = \mathbf{0}, \qquad
+A = \begin{bmatrix} u_1 \mathbf{p}_1^{3\top} - \mathbf{p}_1^{1\top} \\ v_1 \mathbf{p}_1^{3\top} - \mathbf{p}_1^{2\top} \\ u_2 \mathbf{p}_2^{3\top} - \mathbf{p}_2^{1\top} \\ v_2 \mathbf{p}_2^{3\top} - \mathbf{p}_2^{2\top} \end{bmatrix},
+$$
+
+where $(u_i, v_i)$ is the observed pixel in image $i$ and $A$ is a $4 \times 4$ matrix. This is the direct linear transformation (DLT) method [1]. With noise, $A$ has no exact null vector. The unit vector that minimizes $\lVert A \tilde{\mathbf{X}} \rVert$ is the right singular vector of $A$ for its smallest singular value; dividing it by its last entry gives the Euclidean point. Each additional view adds two more rows to $A$ and nothing else changes.
+
+**Why it is not optimal.** The quantity minimized, $\lVert A \tilde{\mathbf{X}} \rVert$, is an *algebraic* error: it has no direct meaning in pixels, and it changes if the image coordinates are rescaled. With Gaussian pixel noise, the sensible goal is the reprojection error, the sum of squared pixel distances between the projections of $\mathbf{X}$ and the observations. Hartley and Zisserman [1] describe methods that minimize it directly. In practice the DLT answer is the starting point, and bundle adjustment then refines all points and cameras together.
+
+**Edge cases.** (i) When the baseline is short or the point is far away, the two rays are almost parallel, $A$ is close to rank 2, and the depth becomes very uncertain. (ii) A point at infinity has last homogeneous coordinate 0, so the final division fails; such points must be kept in homogeneous form or removed. (iii) A wrong match can produce a point behind a camera, so after dividing by the last entry, check that the depth $\mathbf{p}_i^{3\top} \tilde{\mathbf{X}}$ is positive in every view (the cheirality check of the main text).
+
+**A test.** The snippet triangulates one point 6 units in front of camera 1, seen by two cameras with 0.5 px noise, for three baselines. It compares the spread of the depth error with the first-order formula $\delta Z \approx Z^2 \delta d / (fB)$ of the main text; the disparity error, a difference of two independent 0.5 px errors, has standard deviation $0.5\sqrt{2}$ px.
+
+```python
+import numpy as np
+import cv2
+
+rng = np.random.default_rng(0)
+K = np.array([[800.0, 0, 320], [0, 800.0, 240], [0, 0, 1]])
+X_true = np.array([0.3, -0.2, 6.0])                     # one point, 6 units in front of camera 1
+
+def triangulate_dlt(P1, P2, x1, x2):
+    """Linear triangulation: four equations A X = 0 in the homogeneous point X (4-vector)."""
+    A = np.stack([x1[0] * P1[2] - P1[0], x1[1] * P1[2] - P1[1],
+                  x2[0] * P2[2] - P2[0], x2[1] * P2[2] - P2[1]])
+    Xh = np.linalg.svd(A)[2][-1]                         # right singular vector, smallest singular value
+    return Xh[:3] / Xh[3]                                # homogeneous -> Euclidean
+
+def proj(P, X):
+    x = P @ np.append(X, 1.0)
+    return x[:2] / x[2]
+
+P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+for B in [2.0, 0.5, 0.1]:                                # camera 2 sits B to the right, same orientation
+    P2 = K @ np.hstack([np.eye(3), [[-B], [0.0], [0.0]]])
+    dz = []
+    for _ in range(2000):
+        x1 = proj(P1, X_true) + rng.normal(0, 0.5, 2)      # 0.5 px noise in each image
+        x2 = proj(P2, X_true) + rng.normal(0, 0.5, 2)
+        dz.append(triangulate_dlt(P1, P2, x1, x2)[2] - X_true[2])
+    predicted = X_true[2] ** 2 * (0.5 * np.sqrt(2)) / (800 * B)   # Z^2 * std(disparity error) / (f B)
+    print(f"baseline {B:3.1f}: ray angle {np.degrees(np.arctan2(B, 6)):5.2f} deg | "
+          f"depth error std {np.std(dz):.4f} (first-order prediction {predicted:.4f})")
+Xcv = cv2.triangulatePoints(P1, P2, x1.reshape(2, 1), x2.reshape(2, 1)).ravel()
+print(f"difference from cv2.triangulatePoints: {np.abs(Xcv[:3] / Xcv[3] - triangulate_dlt(P1, P2, x1, x2)).max():.1e}")
+```
+
+```text
+baseline 2.0: ray angle 18.43 deg | depth error std 0.0158 (first-order prediction 0.0159)
+baseline 0.5: ray angle  4.76 deg | depth error std 0.0617 (first-order prediction 0.0636)
+baseline 0.1: ray angle  0.95 deg | depth error std 0.3166 (first-order prediction 0.3182)
+difference from cv2.triangulatePoints: 2.0e-13
+```
+
+The measured spread matches the first-order prediction. Shrinking the baseline from 2 to 0.1 units, which makes the angle between the rays smaller than one degree, multiplies the depth error by 20. The last line shows that OpenCV's `cv2.triangulatePoints` returns the same point up to rounding.
+
+### Bundle adjustment in code
+
+This note builds a complete small bundle adjustment with SciPy, to show the residual function, the sparsity of the Jacobian and the gauge freedom.
+
+**Parameters.** Each camera has a rotation vector $\boldsymbol{\omega} \in \mathbb{R}^3$ (axis times angle) and a translation $\mathbf{t} \in \mathbb{R}^3$; each point has three coordinates. With $n_c$ cameras and $n_p$ points, there are $6 n_c + 3 n_p$ unknowns and two residuals (the $u$ and $v$ errors) per observation.
+
+**Gauge.** Reprojection errors do not change if the whole scene is rotated, translated or scaled together: seven directions (three for rotation, three for translation, one for scale) leave the cost unchanged. Without fixing them, the normal equations are singular. Here camera 0 is held fixed at the identity, which removes six; the scale stays free and is effectively pinned by the starting point. Real systems fix it explicitly, for example by fixing the distance between two cameras.
+
+**Sparsity.** A residual of observation $(c, k)$ depends only on camera $c$ and point $k$, so each pair of Jacobian rows has at most $6 + 3$ non-zeros. Passing this pattern to `least_squares` lets it use sparse finite differences and a sparse solver.
+
+```python
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.sparse import lil_matrix
+from scipy.spatial.transform import Rotation
+
+rng = np.random.default_rng(0)
+f, c = 800.0, np.array([320.0, 240.0])
+n_cam, n_pts = 4, 80
+X_true = rng.uniform([-3, -2, 4], [3, 2, 8], (n_pts, 3))
+rvec_true = np.array([[0, 0, 0], [0, -0.15, 0], [0, -0.3, 0.02], [0.05, -0.45, 0]])  # rotation vectors
+tvec_true = np.array([[0, 0, 0], [1.0, 0, 0.1], [2.0, 0.1, 0.3], [3.0, 0, 0.6]])
+
+def project(rvec, tvec, X):
+    Xc = Rotation.from_rotvec(rvec).apply(X) + tvec
+    return f * Xc[:, :2] / Xc[:, 2:] + c
+
+cam_idx = np.repeat(np.arange(n_cam), n_pts)           # every camera sees every point
+pt_idx = np.tile(np.arange(n_pts), n_cam)
+obs = np.concatenate([project(rvec_true[i], tvec_true[i], X_true) for i in range(n_cam)])
+obs += rng.normal(0, 0.5, obs.shape)                    # 0.5 px measurement noise
+
+def residuals(params):
+    """Reprojection errors. Camera 0 is held fixed (it defines the world frame)."""
+    cams = np.vstack([np.zeros(6), params[:6 * (n_cam - 1)].reshape(-1, 6)])
+    X = params[6 * (n_cam - 1):].reshape(-1, 3)
+    pred = np.empty_like(obs)
+    for i in range(n_cam):
+        m = cam_idx == i
+        pred[m] = project(cams[i, :3], cams[i, 3:], X[pt_idx[m]])
+    return (pred - obs).ravel()
+
+def sparsity():
+    """Each residual depends on one camera (6 numbers) and one point (3 numbers)."""
+    S = lil_matrix((2 * len(obs), 6 * (n_cam - 1) + 3 * n_pts), dtype=int)
+    for k, (i, j) in enumerate(zip(cam_idx, pt_idx)):
+        rows = [2 * k, 2 * k + 1]
+        if i > 0:
+            S[np.ix_(rows, range(6 * (i - 1), 6 * i))] = 1
+        S[np.ix_(rows, range(6 * (n_cam - 1) + 3 * j, 6 * (n_cam - 1) + 3 * j + 3))] = 1
+    return S
+
+# A rough start, as incremental SfM would provide: perturbed poses and points
+x0 = np.concatenate([np.c_[rvec_true[1:] + rng.normal(0, 0.02, (3, 3)),
+                           tvec_true[1:] + rng.normal(0, 0.1, (3, 3))].ravel(),
+                     (X_true + rng.normal(0, 0.2, X_true.shape)).ravel()])
+rms = lambda p: np.sqrt(np.mean(residuals(p) ** 2))
+sol = least_squares(residuals, x0, jac_sparsity=sparsity(), x_scale='jac', method='trf')
+print(f"unknowns {x0.size}, residuals {2 * len(obs)}, Jacobian non-zeros {sparsity().nnz} "
+      f"({100 * sparsity().nnz / (x0.size * 2 * len(obs)):.1f}%)")
+print(f"reprojection RMS: start {rms(x0):.2f} px -> after bundle adjustment {rms(sol.x):.3f} px")
+X_hat = sol.x[6 * (n_cam - 1):].reshape(-1, 3)
+print(f"median 3D point error after BA: {np.median(np.linalg.norm(X_hat - X_true, axis=1)):.4f} units")
+```
+
+```text
+unknowns 258, residuals 640, Jacobian non-zeros 4800 (2.9%)
+reprojection RMS: start 32.31 px -> after bundle adjustment 0.388 px
+median 3D point error after BA: 0.0122 units
+```
+
+Only 2.9% of the Jacobian is non-zero even in this tiny problem, and the fraction shrinks as problems grow, because each new point adds columns that touch only its own observations. The reprojection error falls from 32.31 px to 0.388 px, just below the 0.5 px noise, as for the two-view fit in the main text. Production solvers go further: they eliminate the points with the Schur complement and solve a reduced system in the camera parameters only [13], and they use a robust loss $\rho$ so that a few wrong matches cannot pull the solution (here `least_squares(..., loss='huber')` would do that).
+
+### The plane-induced homography
+
+This note gives the image warp used by plane sweep for general cameras, of which the horizontal shift in the main text is a special case.
+
+Let a plane be $\mathbf{n}^\top \mathbf{X} = d$ in the reference camera's coordinates, with unit normal $\mathbf{n}$ and distance $d$ from the camera centre. Let the source camera be at rotation $R$ and translation $\mathbf{t}$ relative to the reference camera, and let $K_r$, $K_s$ be the two intrinsic matrices. Then every pixel $\mathbf{x}_r$ of the reference image whose ray hits the plane maps to the source pixel
+
+$$
+\mathbf{x}_s \sim H \mathbf{x}_r, \qquad H = K_s \left( R + \frac{\mathbf{t}\,\mathbf{n}^\top}{d} \right) K_r^{-1},
+$$
+
+where $\sim$ means equality up to a scale factor (homogeneous coordinates) [1]. Derivation in one line: a point on the plane satisfies $\mathbf{n}^\top \mathbf{X}/d = 1$, so $R\mathbf{X} + \mathbf{t} = (R + \mathbf{t}\mathbf{n}^\top/d)\mathbf{X}$, and $\mathbf{X}$ is proportional to $K_r^{-1}\mathbf{x}_r$.
+
+Special cases: for a fronto-parallel plane $\mathbf{n} = (0, 0, 1)$ at depth $d = Z$, identical intrinsics $K$, no rotation and a sideways translation $\mathbf{t} = (-B, 0, 0)$ (the source camera $B$ to the right), $H$ shifts every pixel left by $fB/Z$, the disparity used in the snippet. As $d \to \infty$ the homography tends to $K_s R K_r^{-1}$, the *infinite homography*, which depends on rotation only: very distant points do not reveal depth. Pitfalls: the homography direction (reference to source or the reverse) must match how the warp samples the image, and depth hypotheses are best spaced uniformly in $1/Z$, because disparity, not depth, is what changes linearly in the image.
+
+### The multiresolution hash encoding
+
+This note gives the details of the Instant-NGP encoding summarized in the main text: how the grid resolutions are chosen, how grid corners are hashed, and how many parameters the encoding has.
+
+**Levels.** The encoding has $L$ levels. Level $l$, for $l = 0, \dots, L - 1$, is a grid of resolution
+
+$$
+N_l = \left\lfloor N_{\min} \, b^{\,l} \right\rfloor, \qquad
+b = \exp\!\left( \frac{\ln N_{\max} - \ln N_{\min}}{L - 1} \right),
+$$
+
+where $N_{\min}$ and $N_{\max}$ are the coarsest and finest resolutions, $\lfloor \cdot \rfloor$ rounds down, and $b$ is the growth factor, so the resolutions form a geometric progression [19]. The paper's typical values are $L = 16$ levels, $F = 2$ features per table entry, $T$ between $2^{14}$ and $2^{24}$ entries per level, $N_{\min} = 16$, and $N_{\max}$ between 512 and 524,288, chosen to match the finest detail in the data [19].
+
+**Lookup.** On level $l$, the input point is scaled by $N_l$, and the grid cell that contains it has $2^d$ corners with integer coordinates ($d = 3$ in 3D). If the whole grid fits in the table, that is $(N_l + 1)^d \le T$, every corner gets its own entry. Otherwise a corner $\mathbf{x} = (x_1, \dots, x_d)$ uses the entry
+
+$$
+h(\mathbf{x}) = \left( \bigoplus_{i=1}^{d} x_i \pi_i \right) \bmod T,
+$$
+
+where $\oplus$ is bitwise XOR and the constants are $\pi_1 = 1$, $\pi_2 = 2\,654\,435\,761$ and $\pi_3 = 805\,459\,861$ [19]. Only $d - 1$ of the dimensions need a large prime to decorrelate them, and $\pi_1 = 1$ keeps corners that are neighbours along the first axis next to each other in memory [19]. The features of the $2^d$ corners are interpolated linearly in each dimension (trilinearly in 3D) according to the point's position inside the cell. The interpolated vectors of all $L$ levels are concatenated, together with any extra inputs such as the encoded viewing direction, and passed to the MLP [19].
+
+**Collisions.** On fine levels many corners share one entry, and the encoding does not detect or resolve this. The gradients of colliding corners are averaged, so the corners with the largest gradients, those most relevant to the loss, dominate the shared entry; the authors argue that the table therefore concentrates on the sparse regions with the most important fine detail, and that the multiresolution structure lets the network tell collisions apart [19].
+
+**Parameter count.** The tables hold at most $T \cdot L \cdot F$ trainable numbers, whatever $N_{\max}$ is [19]. Memory is fixed by $T$, not by the finest resolution.
+
+**A worked example.** The snippet computes the levels for $N_{\max} = 2048$ and $T = 2^{19}$, values inside the paper's typical ranges, and hashes three neighbouring corners.
+
+```python
+import numpy as np
+
+L, F, T = 16, 2, 2 ** 19                                 # levels, features per entry, table size
+N_min, N_max = 16, 2048                                  # coarsest and finest grid resolution
+b = np.exp((np.log(N_max) - np.log(N_min)) / (L - 1))   # growth factor between levels
+N = np.floor(N_min * b ** np.arange(L)).astype(int)     # resolution of each level
+dense = (N + 1) ** 3 <= T                                # does the full grid fit in the table?
+print(f"growth factor b = {b:.3f}; resolutions {N.tolist()}")
+print(f"levels stored 1:1 (no hashing): {dense.sum()}, hashed levels: {(~dense).sum()}")
+print(f"finest level: {(N[-1] + 1) ** 3:,} grid vertices share {T:,} entries "
+      f"(about {(N[-1] + 1) ** 3 / T:,.0f} per entry)")
+print(f"trainable encoding parameters: at most T * L * F = {T * L * F:,}")
+
+PI = np.array([1, 2654435761, 805459861], dtype=np.uint64)     # the primes of the paper (pi_1 = 1)
+def spatial_hash(corner):
+    """h(x) = (x_1 pi_1  XOR  x_2 pi_2  XOR  x_3 pi_3) mod T for an integer grid corner."""
+    return int(np.bitwise_xor.reduce(np.asarray(corner, dtype=np.uint64) * PI) % np.uint64(T))
+for corner in [(100, 200, 300), (101, 200, 300), (100, 201, 300)]:
+    print(f"corner {corner} -> table entry {spatial_hash(corner)}")
+```
+
+```text
+growth factor b = 1.382; resolutions [16, 22, 30, 42, 58, 80, 111, 153, 212, 294, 406, 561, 776, 1072, 1482, 2048]
+levels stored 1:1 (no hashing): 5, hashed levels: 11
+finest level: 8,602,523,649 grid vertices share 524,288 entries (about 16,408 per entry)
+trainable encoding parameters: at most T * L * F = 16,777,216
+corner (100, 200, 300) -> table entry 110768
+corner (101, 200, 300) -> table entry 110769
+corner (100, 201, 300) -> table entry 10497
+```
+
+With these settings the five coarsest levels fit their tables directly and the other eleven are hashed. On the finest level, about 16,000 grid corners share each table entry, which is workable only because most of them never receive a large gradient. The last three lines show the effect of $\pi_1 = 1$: a step along the first axis moves to the next entry, while a step along the second axis jumps far away.
+
+### Why NeuS weights peak on the surface
+
+This note measures, on one ray, the bias that NeuS was designed to remove.
+
+Take a ray that meets a plane at $t^* = 3$ at an angle, so the signed distance along the ray is $f(t) = -\cos\theta \,(t - t^*)$ with $\cos\theta = 0.5$ (positive in front of the surface, negative behind). The *naive* choice uses the logistic density $\phi_s(f(t))$, the derivative of the sigmoid $\Phi_s$, as NeRF's volume density $\sigma$. The weight $w(t) = T(t)\sigma(t)$ then peaks before $t^*$: transmittance $T$ is already falling while $\sigma$ is still rising, and their product peaks early. NeuS defines instead an opaque density $\rho(t) = \max\!\big(-\frac{d\Phi_s(f)/dt}{\Phi_s(f)}, 0\big)$, whose discrete form is the $\alpha_i$ formula of the main text; for a plane the resulting weight is exactly the normalized logistic density centred on the surface [22].
+
+```python
+import numpy as np
+
+t = np.linspace(0, 6, 6001)                            # dense samples along one ray
+t_star, cos_theta = 3.0, 0.5                           # the ray meets a plane at t* = 3, at 60 degrees
+f = -cos_theta * (t - t_star)                          # signed distance along the ray (positive outside)
+
+def weights_from_alpha(alpha):
+    T = np.concatenate([[1.0], np.cumprod(1 - alpha)[:-1]])
+    return T * alpha
+
+for s in [10.0, 40.0]:
+    Phi = 1 / (1 + np.exp(-s * f))                     # sigmoid of the SDF
+    phi = s * np.exp(-s * f) / (1 + np.exp(-s * f)) ** 2   # logistic density (derivative of Phi)
+    delta = np.diff(t, append=t[-1] + (t[1] - t[0]))
+    w_naive = weights_from_alpha(1 - np.exp(-phi * delta))                    # density = phi(SDF)
+    alpha_neus = np.clip((Phi[:-1] - Phi[1:]) / Phi[:-1], 0, 1)               # NeuS discrete opacity
+    w_neus = weights_from_alpha(np.append(alpha_neus, 0.0))
+    for name, w in [("naive", w_naive), ("NeuS ", w_neus)]:
+        print(f"s = {s:4.0f}, {name}: weight peak at t = {t[w.argmax()]:.3f}, "
+              f"mean depth {np.sum(w * t) / w.sum():.3f} (surface at 3.000)")
+```
+
+```text
+s =   10, naive: weight peak at t = 2.824, mean depth 2.810 (surface at 3.000)
+s =   10, NeuS : weight peak at t = 2.999, mean depth 2.999 (surface at 3.000)
+s =   40, naive: weight peak at t = 2.956, mean depth 2.953 (surface at 3.000)
+s =   40, NeuS : weight peak at t = 3.000, mean depth 2.999 (surface at 3.000)
+```
+
+The naive weights peak 0.18 units early at $s = 10$ and 0.04 units early at $s = 40$: the bias shrinks as the transition sharpens, but never vanishes. The NeuS weights peak on the surface for both. The paper proves unbiasedness to first order, that is, for locally planar surfaces [22]; on strongly curved surfaces, or where a ray grazes a surface, small biases remain. A practical pitfall: $s$ is learned, and if it is initialized too large, the weights are concentrated in a very narrow band that rays rarely sample, so gradients are weak early in training.
+
+### Projecting a 3D Gaussian: the local affine approximation
+
+This note writes out the Jacobian used by EWA splatting and 3DGS, and measures how good the approximation is.
+
+The perspective projection $\pi(x, y, z) = (f_x x / z, \; f_y y / z)$ is not linear, so the image of a Gaussian is not exactly a Gaussian. EWA splatting [23] replaces $\pi$ near the Gaussian's centre $\boldsymbol{\mu}_c = (x, y, z)$ (in camera coordinates) by its first-order Taylor expansion. The Jacobian is
+
+$$
+J = \frac{\partial \pi}{\partial (x, y, z)} = \begin{bmatrix} f_x / z & 0 & -f_x x / z^2 \\ 0 & f_y / z & -f_y y / z^2 \end{bmatrix},
+$$
+
+where $f_x, f_y$ are the focal lengths in pixels. A linear map sends a Gaussian with covariance $\Sigma_c$ to a Gaussian with covariance $J \Sigma_c J^\top$, which is the $2 \times 2$ block of $\Sigma' = J W \Sigma W^\top J^\top$ in the main text, with $\Sigma_c = W \Sigma W^\top$ [6], [23]. The snippet compares this with the exact covariance of many projected samples, for the same Gaussian at three depths.
+
+```python
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+rng = np.random.default_rng(0)
+fx = fy = 500.0                                        # focal lengths (pixels)
+
+def project_cov(mu_c, Sigma_c):
+    """2D covariance of a 3D Gaussian (already in camera coordinates) under the local affine
+    approximation: Sigma' = J Sigma J^T, with J the Jacobian of (x, y, z) -> (fx x/z, fy y/z) at the mean."""
+    x, y, z = mu_c
+    J = np.array([[fx / z, 0, -fx * x / z ** 2],
+                  [0, fy / z, -fy * y / z ** 2]])
+    return J @ Sigma_c @ J.T
+
+S = np.diag([0.30, 0.10, 0.05])                        # axis lengths (standard deviations)
+Rm = Rotation.from_euler('xyz', [20, 40, 10], degrees=True).as_matrix()
+Sigma = Rm @ S @ S.T @ Rm.T                            # Sigma = R S S^T R^T
+for z in [2.0, 4.0, 8.0]:
+    mu = np.array([0.5, -0.3, z])
+    approx = project_cov(mu, Sigma)
+    P = rng.multivariate_normal(mu, Sigma, 200_000)    # Monte Carlo: project samples exactly
+    uv = np.c_[fx * P[:, 0] / P[:, 2], fy * P[:, 1] / P[:, 2]]
+    exact = np.cov(uv.T)
+    err = np.linalg.norm(approx - exact) / np.linalg.norm(exact)
+    print(f"depth {z:.0f}: std along axes (approx) {np.sqrt(np.linalg.eigvalsh(approx))[::-1].round(2)} px, "
+          f"(sampled) {np.sqrt(np.linalg.eigvalsh(exact))[::-1].round(2)} px, relative error {100 * err:.1f}%")
+```
+
+```text
+depth 2: std along axes (approx) [68.94 25.13] px, (sampled) [71.9  25.53] px, relative error 8.0%
+depth 4: std along axes (approx) [31.69 12.28] px, (sampled) [31.93 12.3 ] px, relative error 1.5%
+depth 8: std along axes (approx) [15.19  6.05] px, (sampled) [15.22  6.05] px, relative error 0.5%
+```
+
+The error is small when the Gaussian is small compared with its distance (0.5% at depth 8) and grows as it comes closer (8.0% at depth 2), because the projection is less linear over a larger angle. In 3DGS this matters for large Gaussians near the camera and at wide fields of view; the paper's limitations section mentions popping and "splotchy" artifacts from large Gaussians [6], and the 2DGS paper points out that the affine approximation is accurate only near the image centre and that 3D Gaussians give depth that is inconsistent across viewpoints; it replaces both with an explicit ray–splat intersection [28]. Two pitfalls when implementing it: $J$ must be evaluated in camera coordinates (after applying $W$), and a Gaussian whose centre is behind or very close to the camera ($z \to 0$) must be culled, since $J$ blows up.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### NeRF (Mildenhall et al., 2020)
+
+**The problem.** Given a set of photos with known cameras, synthesize photorealistic images from new viewpoints of a complex real scene. Earlier methods either blended nearby photos (artifacts away from the inputs) or optimized discrete voxel grids (memory-limited resolution) [5].
+
+**The idea.** Represent the scene as a continuous 5D function (3D position plus 2D viewing direction) stored in an MLP, render it with classical, differentiable volume rendering, and fit it to the photos with a plain squared colour loss. Two ingredients make it work: the positional encoding of the inputs, and hierarchical sampling with a coarse and a fine network [5].
+
+**What it showed.** On synthetic objects and on real forward-facing scenes, NeRF outperformed the neural and image-based rendering methods it compared against in PSNR and SSIM; on LPIPS it was best except on the real scenes, where one image-based baseline was slightly better [5]. It also reproduced view-dependent effects such as specular highlights [5]. The ablation table shows the contribution of each component: removing the positional encoding or the view dependence clearly lowers quality [5].
+
+**How to read it.** Check what the inputs are: real scenes use COLMAP poses [5], so results include SfM quality. Note the cost: about 1–2 days of training per scene on one GPU [5], which the paper states openly; most follow-up work attacks this. Notice what is *not* claimed: NeRF targets images, not accurate surfaces, and it assumes a static scene with constant lighting. The communications version [5] (CACM) summarizes the same method for a broad audience.
+
+**Why it matters here.** NeRF set the template used by nearly everything after it in this tutorial: a differentiable scene representation trained by comparing renderings with photos.
+
+### 3D Gaussian Splatting (Kerbl et al., 2023)
+
+**The problem.** Radiance fields gave the best image quality, but either trained and rendered slowly (high quality) or traded quality for speed; none reached real-time rendering at 1080p for complete, unbounded scenes [6].
+
+**The idea.** Start from the SfM points, represent the scene with anisotropic 3D Gaussians that keep the useful properties of a volumetric field, optimize them with interleaved densification and pruning, and render them with a tile-based, visibility-aware rasterizer that sorts once per image [6].
+
+**What it showed.** Quality comparable to the best previous method (Mip-NeRF 360) with training times competitive with the fastest methods, and real-time rendering, on the Mip-NeRF 360 and Tanks and Temples scenes among others [6]. The ablations isolate initialization from SfM, densification by cloning and splitting, anisotropic covariances, letting an unlimited number of Gaussians per pixel receive gradients, and spherical harmonics [6].
+
+**How to read it.** Separate the representation (Gaussians with spherical-harmonic colour) from the engineering (the rasterizer and explicit gradients). Look at the train/test protocol (every 8th image) and at which baseline numbers were re-run by the authors and which were copied [6]. Read the limitations: artifacts in poorly observed regions, elongated or "splotchy" Gaussians, popping, no regularization of the optimization, and memory consumption significantly higher than NeRF-based methods [6].
+
+**Why it matters here.** It replaced ray marching with sorting and blending, and it is the starting point of the mesh-extraction, dynamic-scene and feed-forward Gaussian work in this tutorial.
+
+### Guide to the Modern view surveys
+
+This guide expands the survey summary in the Modern view: what each review covers, how it is organized and what to take from it.
+
+**A Comparison and Evaluation of Multi-View Stereo Reconstruction Algorithms** (Seitz, Curless, Diebel, Scharstein and Szeliski, CVPR 2006) [42] surveys MVS algorithms with a six-property taxonomy (scene representation, photo-consistency measure, visibility model, shape prior, reconstruction algorithm, initialization requirements), and introduces calibrated datasets with high-accuracy ground truth and an evaluation methodology [42]. Read it for the vocabulary: almost every later method, including neural ones, can be placed in its six columns.
+
+**Multi-View Stereo: A Tutorial** (Furukawa and Hernández, *Foundations and Trends in Computer Graphics and Vision*, 2015) [43] is a practical, algorithm-focused monograph. It frames MVS as image–geometry consistency optimization, explains photometric consistency measures and optimization methods in detail, shows how successful algorithms and products combine them, and ends with structural priors and open challenges [43]. Read it to understand what learned MVS replaced and why.
+
+**Advances in Neural Rendering** (Tewari et al., *Computer Graphics Forum*, 2022, Eurographics state-of-the-art report) [44] organizes neural rendering into fundamentals (scene representations, differentiable image formation, optimization) and applications (novel-view synthesis of static content, generalization over scenes, non-static content, compositionality and editing, relighting and materials, light fields), followed by open challenges and social implications [44]. It predates 3DGS, so read it for the NeRF era and its open questions.
+
+**A Survey on 3D Gaussian Splatting** (Chen and Wang, *ACM Computing Surveys*, 2026) [45] covers the background of radiance fields, the principles and optimization of 3DGS, seven directions that improve it (sparse input, memory efficiency, photorealism, optimization, extra properties, hybrid representations, new rendering algorithms), application areas and a performance comparison, followed by open questions [45]. Its future-directions section describes the move from per-scene optimization to feed-forward Gaussian prediction and toward Gaussian-based world models [45]. Use its taxonomy to place new 3DGS papers.
+
+## References
+
+1. R. Hartley and A. Zisserman, *Multiple View Geometry in Computer Vision*, 2nd ed., Cambridge University Press, 2004. [doi](https://doi.org/10.1017/CBO9780511811685)
+2. J. L. Schönberger and J.-M. Frahm, "Structure-from-motion revisited," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Schonberger_Structure-From-Motion_Revisited_CVPR_2016_paper.html)
+3. J. L. Schönberger, E. Zheng, J.-M. Frahm and M. Pollefeys, "Pixelwise view selection for unstructured multi-view stereo," in *Proc. ECCV*, 2016. [doi](https://doi.org/10.1007/978-3-319-46487-9_31)
+4. J. L. Schönberger et al., "COLMAP," official documentation (general-purpose structure-from-motion and multi-view stereo pipeline). [link](https://colmap.github.io/)
+5. B. Mildenhall, P. P. Srinivasan, M. Tancik, J. T. Barron, R. Ramamoorthi and R. Ng, "NeRF: Representing scenes as neural radiance fields for view synthesis," in *Proc. ECCV*, 2020; also *Communications of the ACM*, vol. 65, no. 1, pp. 99–106, 2022. [doi](https://doi.org/10.1007/978-3-030-58452-8_24) · [CACM doi](https://doi.org/10.1145/3503250) · [arXiv](https://arxiv.org/abs/2003.08934)
+6. B. Kerbl, G. Kopanas, T. Leimkühler and G. Drettakis, "3D Gaussian Splatting for real-time radiance field rendering," *ACM Transactions on Graphics*, vol. 42, no. 4, 2023. [doi](https://doi.org/10.1145/3592433) · [arXiv](https://arxiv.org/abs/2308.04079)
+7. H. C. Longuet-Higgins, "A computer algorithm for reconstructing a scene from two projections," *Nature*, vol. 293, pp. 133–135, 1981. [doi](https://doi.org/10.1038/293133a0)
+8. R. I. Hartley, "In defense of the eight-point algorithm," *IEEE TPAMI*, vol. 19, no. 6, pp. 580–593, 1997. [doi](https://doi.org/10.1109/34.601246)
+9. D. Nistér, "An efficient solution to the five-point relative pose problem," *IEEE TPAMI*, vol. 26, no. 6, pp. 756–770, 2004. [doi](https://doi.org/10.1109/TPAMI.2004.17)
+10. M. A. Fischler and R. C. Bolles, "Random sample consensus: A paradigm for model fitting with applications to image analysis and automated cartography," *Communications of the ACM*, vol. 24, no. 6, pp. 381–395, 1981. [doi](https://doi.org/10.1145/358669.358692)
+11. D. G. Lowe, "Distinctive image features from scale-invariant keypoints," *International Journal of Computer Vision*, vol. 60, no. 2, pp. 91–110, 2004. [doi](https://doi.org/10.1023/B:VISI.0000029664.99615.94)
+12. N. Snavely, S. M. Seitz and R. Szeliski, "Photo tourism: Exploring photo collections in 3D," *ACM Transactions on Graphics*, vol. 25, no. 3, pp. 835–846, 2006. [doi](https://doi.org/10.1145/1141911.1141964)
+13. B. Triggs, P. F. McLauchlan, R. I. Hartley and A. W. Fitzgibbon, "Bundle adjustment — A modern synthesis," in *Vision Algorithms: Theory and Practice*, LNCS 1883, pp. 298–372, Springer, 2000. [doi](https://doi.org/10.1007/3-540-44480-7_21)
+14. R. T. Collins, "A space-sweep approach to true multi-image matching," in *Proc. IEEE CVPR*, pp. 358–363, 1996. [doi](https://doi.org/10.1109/CVPR.1996.517097)
+15. B. Curless and M. Levoy, "A volumetric method for building complex models from range images," in *Proc. SIGGRAPH*, pp. 303–312, 1996. [doi](https://doi.org/10.1145/237170.237269)
+16. Y. Yao, Z. Luo, S. Li, T. Fang and L. Quan, "MVSNet: Depth inference for unstructured multi-view stereo," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yao_Yao_MVSNet_Depth_Inference_ECCV_2018_paper.html) · [doi](https://doi.org/10.1007/978-3-030-01237-3_47)
+17. N. Max, "Optical models for direct volume rendering," *IEEE Transactions on Visualization and Computer Graphics*, vol. 1, no. 2, pp. 99–108, 1995. [doi](https://doi.org/10.1109/2945.468400)
+18. M. Tancik, P. P. Srinivasan, B. Mildenhall, S. Fridovich-Keil, N. Raghavan, U. Singhal, R. Ramamoorthi, J. T. Barron and R. Ng, "Fourier features let networks learn high frequency functions in low dimensional domains," in *Proc. NeurIPS*, 2020. [proceedings](https://proceedings.neurips.cc/paper/2020/hash/55053683268957697aa39fba6f231c68-Abstract.html)
+19. T. Müller, A. Evans, C. Schied and A. Keller, "Instant neural graphics primitives with a multiresolution hash encoding," *ACM Transactions on Graphics*, vol. 41, no. 4, 2022. [doi](https://doi.org/10.1145/3528223.3530127) · [arXiv](https://arxiv.org/abs/2201.05989)
+20. J. J. Park, P. Florence, J. Straub, R. Newcombe and S. Lovegrove, "DeepSDF: Learning continuous signed distance functions for shape representation," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Park_DeepSDF_Learning_Continuous_Signed_Distance_Functions_for_Shape_Representation_CVPR_2019_paper.html)
+21. L. Mescheder, M. Oechsle, M. Niemeyer, S. Nowozin and A. Geiger, "Occupancy networks: Learning 3D reconstruction in function space," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Mescheder_Occupancy_Networks_Learning_3D_Reconstruction_in_Function_Space_CVPR_2019_paper.html)
+22. P. Wang, L. Liu, Y. Liu, C. Theobalt, T. Komura and W. Wang, "NeuS: Learning neural implicit surfaces by volume rendering for multi-view reconstruction," in *Proc. NeurIPS*, 2021. [proceedings](https://proceedings.neurips.cc/paper/2021/hash/e41e164f7485ec4a28741a2d0ea41c74-Abstract.html) · [arXiv](https://arxiv.org/abs/2106.10689)
+23. M. Zwicker, H. Pfister, J. van Baar and M. Gross, "EWA volume splatting," in *Proc. IEEE Visualization*, 2001. [doi](https://doi.org/10.1109/VISUAL.2001.964490)
+24. W. E. Lorensen and H. E. Cline, "Marching cubes: A high resolution 3D surface construction algorithm," in *Proc. SIGGRAPH*, pp. 163–169, 1987. [doi](https://doi.org/10.1145/37401.37422)
+25. M. Kazhdan, M. Bolitho and H. Hoppe, "Poisson surface reconstruction," in *Proc. Eurographics Symposium on Geometry Processing*, 2006. [doi](https://doi.org/10.2312/SGP/SGP06/061-070)
+26. M. Kazhdan and H. Hoppe, "Screened Poisson surface reconstruction," *ACM Transactions on Graphics*, vol. 32, no. 3, 2013. [doi](https://doi.org/10.1145/2487228.2487237)
+27. A. Guédon and V. Lepetit, "SuGaR: Surface-aligned Gaussian splatting for efficient 3D mesh reconstruction and high-quality mesh rendering," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Guedon_SuGaR_Surface-Aligned_Gaussian_Splatting_for_Efficient_3D_Mesh_Reconstruction_and_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2311.12775)
+28. B. Huang, Z. Yu, A. Chen, A. Geiger and S. Gao, "2D Gaussian splatting for geometrically accurate radiance fields," in *Proc. SIGGRAPH (Conference Papers)*, 2024. [doi](https://doi.org/10.1145/3641519.3657428) · [arXiv](https://arxiv.org/abs/2403.17888)
+29. S. Wang, V. Leroy, Y. Cabon, B. Chidlovskii and J. Revaud, "DUSt3R: Geometric 3D vision made easy," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Wang_DUSt3R_Geometric_3D_Vision_Made_Easy_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2312.14132)
+30. V. Leroy, Y. Cabon and J. Revaud, "Grounding image matching in 3D with MASt3R," in *Proc. ECCV*, 2024. [doi](https://doi.org/10.1007/978-3-031-73220-1_5) · [arXiv](https://arxiv.org/abs/2406.09756)
+31. J. Wang, M. Chen, N. Karaev, A. Vedaldi, C. Rupprecht and D. Novotny, "VGGT: Visual geometry grounded transformer," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wang_VGGT_Visual_Geometry_Grounded_Transformer_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2503.11651)
+32. A. Pumarola, E. Corona, G. Pons-Moll and F. Moreno-Noguer, "D-NeRF: Neural radiance fields for dynamic scenes," in *Proc. IEEE/CVF CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Pumarola_D-NeRF_Neural_Radiance_Fields_for_Dynamic_Scenes_CVPR_2021_paper.html)
+33. G. Wu, T. Yi, J. Fang, L. Xie, X. Zhang, W. Wei, W. Liu, Q. Tian and X. Wang, "4D Gaussian splatting for real-time dynamic scene rendering," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_4D_Gaussian_Splatting_for_Real-Time_Dynamic_Scene_Rendering_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2310.08528)
+34. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image quality assessment: From error visibility to structural similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+35. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The unreasonable effectiveness of deep features as a perceptual metric," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Zhang_The_Unreasonable_Effectiveness_CVPR_2018_paper.html)
+36. H. Fan, H. Su and L. J. Guibas, "A point set generation network for 3D object reconstruction from a single image," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Fan_A_Point_Set_CVPR_2017_paper.html)
+37. R. Jensen, A. Dahl, G. Vogiatzis, E. Tola and H. Aanæs, "Large scale multi-view stereopsis evaluation," in *Proc. IEEE CVPR*, pp. 406–413, 2014. [doi](https://doi.org/10.1109/CVPR.2014.59)
+38. A. Knapitsch, J. Park, Q.-Y. Zhou and V. Koltun, "Tanks and Temples: Benchmarking large-scale scene reconstruction," *ACM Transactions on Graphics*, vol. 36, no. 4, 2017. [doi](https://doi.org/10.1145/3072959.3073599) · [benchmark](https://www.tanksandtemples.org/)
+39. J. T. Barron, B. Mildenhall, D. Verbin, P. P. Srinivasan and P. Hedman, "Mip-NeRF 360: Unbounded anti-aliased neural radiance fields," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Barron_Mip-NeRF_360_Unbounded_Anti-Aliased_Neural_Radiance_Fields_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.12077)
+40. D. Verbin, P. Hedman, B. Mildenhall, T. Zickler, J. T. Barron and P. P. Srinivasan, "Ref-NeRF: Structured view-dependent appearance for neural radiance fields," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Verbin_Ref-NeRF_Structured_View-Dependent_Appearance_for_Neural_Radiance_Fields_CVPR_2022_paper.html)
+41. C.-H. Lin, W.-C. Ma, A. Torralba and S. Lucey, "BARF: Bundle-adjusting neural radiance fields," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Lin_BARF_Bundle-Adjusting_Neural_Radiance_Fields_ICCV_2021_paper.html)
+42. S. M. Seitz, B. Curless, J. Diebel, D. Scharstein and R. Szeliski, "A comparison and evaluation of multi-view stereo reconstruction algorithms," in *Proc. IEEE CVPR*, vol. 1, pp. 519–528, 2006. [doi](https://doi.org/10.1109/CVPR.2006.19)
+43. Y. Furukawa and C. Hernández, "Multi-view stereo: A tutorial," *Foundations and Trends in Computer Graphics and Vision*, vol. 9, no. 1–2, pp. 1–148, 2015. [doi](https://doi.org/10.1561/0600000052)
+44. A. Tewari, J. Thies, B. Mildenhall, P. Srinivasan, E. Tretschk, W. Yifan, C. Lassner, V. Sitzmann et al., "Advances in neural rendering," *Computer Graphics Forum*, vol. 41, no. 2, pp. 703–735, 2022. [doi](https://doi.org/10.1111/cgf.14507) · [arXiv](https://arxiv.org/abs/2111.05849)
+45. G. Chen and W. Wang, "A survey on 3D Gaussian splatting," *ACM Computing Surveys*, vol. 58, no. 12, 2026. [doi](https://doi.org/10.1145/3807511) · [arXiv](https://arxiv.org/abs/2401.03890)
+46. scikit-image contributors, "skimage.measure.marching_cubes," *scikit-image documentation (API reference)*. [docs](https://scikit-image.org/docs/stable/api/skimage.measure.html#skimage.measure.marching_cubes)
+47. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai et al., "An image is worth 16x16 words: Transformers for image recognition at scale," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+48. A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser and I. Polosukhin, "Attention is all you need," in *Proc. NeurIPS*, 2017. [proceedings](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html)
+49. D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1412.6980)

@@ -1,0 +1,835 @@
+---
+title: "DLCV 03A · Real-Time Detection: The YOLO Family and RT-DETR"
+description: "How detectors fast enough for live video are built, trained and measured: latency budgets, the backbone–neck–head design, the YOLO line from YOLO v1 to YOLO26, real-time DETRs, and the move from NMS to one-to-one label assignment."
+track: deep-learning
+order: 35
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection]
+tags: [object-detection, real-time, yolo, rt-detr, label-assignment, nms]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figNms from '../../../../assets/deep-learning/dl-03a-real-time-detection/nms-cost.png';
+import figAnatomy from '../../../../assets/deep-learning/dl-03a-real-time-detection/anatomy.png';
+import figTimeline from '../../../../assets/deep-learning/dl-03a-real-time-detection/yolo-timeline.png';
+import figAssign from '../../../../assets/deep-learning/dl-03a-real-time-detection/assignment.png';
+import figDfl from '../../../../assets/deep-learning/dl-03a-real-time-detection/dfl.png';
+
+## What you'll learn
+
+- What "real-time" means in numbers: latency versus throughput, frames per second, and which parts of the pipeline (pre-processing, the network, NMS) a speed figure does or does not include.
+- The anatomy shared by modern one-stage detectors: a backbone, a neck (FPN and PAN), and a decoupled head that predicts boxes on several grids, with or without anchors.
+- The YOLO lineage from YOLO v1 (2015) to YOLO26 (2026): which versions have peer-reviewed papers, which are software releases, and the handful of ideas that actually changed the field.
+- How real-time DETRs (RT-DETR and its successors) made transformer detectors fast, and why the YOLO and DETR lines now meet at one idea: **one-to-one label assignment**, which removes NMS.
+- The training recipe that every modern real-time detector shares (mosaic and mixup, weight averaging, IoU and distribution losses), and how to measure, export and choose a model without being fooled by speed numbers.
+
+## The big picture
+
+A detector is "real-time" when it keeps up with its camera. That sounds like a property of the network, but it is really a property of the whole system: the image has to be resized, the network has to run, duplicate boxes have to be removed, and all of that has to finish before the next frame arrives. This chapter is about the family of detectors designed around that deadline.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a guard at a gate who must write down every car that passes. If cars come every two seconds, the guard has two seconds per car, no matter how good the handwriting is. A slow guard who writes beautifully is useless, because cars pile up. Real-time detectors are guards trained to be quick: they look at the whole scene once, write a short list, and cross out the lines that say the same car twice. The newest guards are trained so well that they never write a car twice, so they can skip the crossing-out step altogether.
+</Callout>
+
+Why this matters: most detectors that run in products (cameras, robots, phones, cars, factory lines) are real-time detectors, and most come from two lines of work. The **YOLO** line ("You Only Look Once") started in 2015 and has more than a dozen versions from several teams. The **real-time DETR** line started in 2023 and brought transformer detectors to the same speed. Both now converge on one idea: train the network so that each object gets exactly one prediction, so that no step is needed to remove duplicates.
+
+This chapter assumes [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/). Its [Core building blocks](/en/learn/deep-learning/dl-03-object-detection/#core-building-blocks) section defines box regression targets, IoU and its variants (GIoU, DIoU, CIoU), anchors and label assignment, non-maximum suppression (NMS), feature pyramids and the focal loss; its sections on [one-stage detectors](/en/learn/deep-learning/dl-03-object-detection/#one-stage-detectors-yolo-ssd-and-retinanet), [anchor-free detectors](/en/learn/deep-learning/dl-03-object-detection/#anchor-free-detectors-points-instead-of-boxes) and [DETR](/en/learn/deep-learning/dl-03-object-detection/#set-prediction-with-transformers-detr-and-its-descendants) introduce the families we build on. We do not repeat that material; we use it.
+
+## What "real-time" means
+
+**Plain version.** A detector is real-time when the time it needs per frame is shorter than the time between frames. Everything else in this section is about measuring that time honestly.
+
+### Latency, throughput and frames per second
+
+**Latency** is the time from receiving one frame to having its final list of boxes. **Throughput** is how many frames are finished per second when many frames are processed together. They are different numbers, and real-time systems care about latency.
+
+For a single frame, the end-to-end latency is a sum of stages:
+
+$$
+T_{\text{e2e}} = T_{\text{pre}} + T_{\text{net}} + T_{\text{post}},
+$$
+
+where $T_{\text{pre}}$ is pre-processing (decoding, resizing and normalizing the image, copying it to the accelerator), $T_{\text{net}}$ is the forward pass of the network, and $T_{\text{post}}$ is post-processing (decoding boxes, the confidence threshold, NMS, copying results back). A camera running at $f$ frames per second leaves a budget of $1/f$ seconds per frame: about 33.3 ms at 30 FPS and 16.7 ms at 60 FPS. The system keeps up only if $T_{\text{e2e}} \le 1/f$; in practice it must also leave time for whatever uses the boxes (tracking, control, display).
+
+Throughput with batches of size $B$ is
+
+$$
+\text{throughput} = \frac{B}{T_{\text{batch}}(B)},
+$$
+
+where $T_{\text{batch}}(B)$ is the time to process one batch of $B$ frames. Accelerators work best on large batches, so throughput grows with $B$, but every frame waits for its whole batch, so latency grows too. A live camera delivers one frame at a time, which is why real-time papers usually report latency at **batch size 1**; the YOLOX report, for example, measures in FP16 with batch 1 on one GPU [10]. Converting latency to FPS as $1000 / T$ (with $T$ in milliseconds) is only meaningful at batch 1.
+
+### What is counted, and what is not
+
+Two papers can both say "5 ms" and mean different things. A speed number depends on:
+
+- **Hardware and software stack.** GPU or CPU model, the inference engine (for example, TensorRT on NVIDIA GPUs [45] or a runtime that executes ONNX models [44]), its version, and the numeric precision (FP32, FP16 or INT8).
+- **Input size.** Most COCO results for real-time detectors use 640 × 640 inputs. Compute in the convolutional layers grows roughly with the number of pixels, so doubling the side length roughly quadruples it.
+- **Batch size**, as above.
+- **Which stages are timed.** Many YOLO papers historically reported only the forward pass. The YOLOX report states that its latencies are "measured without post-processing" [10]. The RT-DETR paper points out that YOLO detectors typically report model speed and exclude NMS time, and builds an **end-to-end speed benchmark** that adds the NMS step back in [23].
+
+The rule for this chapter: **never compare two speed numbers unless they were measured on the same hardware, at the same precision, input size and batch size, over the same stages.** A table that mixes numbers from different papers violates this rule more often than not.
+
+### Why NMS time is not a constant
+
+**Plain version.** The network's forward pass takes about the same time for every image. NMS does not: its cost depends on how many boxes survive the confidence threshold, and that depends on the image.
+
+Greedy NMS (defined in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#core-building-blocks)) takes the highest-scoring box, computes its IoU with every remaining box, deletes those above the IoU threshold, and repeats. If $n$ boxes enter and few are deleted, the number of IoU computations approaches
+
+$$
+\sum_{k=1}^{n-1} k = \frac{n(n-1)}{2},
+$$
+
+where $k$ counts the boxes still remaining after each kept box. If most boxes are duplicates of a few objects, they are deleted early and the work is much smaller. So NMS time depends on the number of candidate boxes, on the confidence threshold that decides how many enter, and on the scene. The RT-DETR paper measured this directly: it counted how many boxes survive confidence thresholds from 0.001 to 0.25, and found that with a confidence threshold of 0.001 and an IoU threshold of 0.7, YOLOv8 reached its best AP but its NMS time was also at a higher level [23]. It also found that the anchor-based detectors it tested produced about three times as many boxes as the anchor-free ones, and correspondingly needed more NMS time [23].
+
+The snippet times a NumPy greedy NMS on synthetic candidates. Each scene has either 5 or 500 objects, and the candidates are jittered copies of them; counts of IoU computations are deterministic, while the times depend on your machine.
+
+```python
+import time
+import numpy as np
+
+def nms_count(boxes, scores, thr=0.5):
+    """Greedy NMS that also counts how many box-pair IoUs it computes."""
+    order = np.argsort(-scores)
+    keep, n_iou = [], 0
+    while order.size:
+        i, rest = order[0], order[1:]
+        keep.append(i)
+        n_iou += rest.size
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0]); y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 2], boxes[rest, 2]); y2 = np.minimum(boxes[i, 3], boxes[rest, 3])
+        inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        area = lambda b: (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])
+        iou = inter / (area(boxes[i]) + area(boxes[rest]) - inter)
+        order = rest[iou <= thr]
+    return len(keep), n_iou
+
+def random_boxes(n, n_objects, rng, size=640):
+    """n candidate boxes jittered around n_objects true objects."""
+    centres = rng.uniform(40, size - 40, (n_objects, 2))
+    owner = rng.integers(0, n_objects, n)
+    c = centres[owner] + rng.normal(0, 6, (n, 2))
+    wh = rng.uniform(30, 60, (n, 2))
+    return np.hstack([c - wh / 2, c + wh / 2]), rng.random(n)
+
+rng = np.random.default_rng(0)
+for n_objects in (5, 500):                       # few objects vs a crowded scene
+    for n in (100, 1000, 8400):
+        b, s = random_boxes(n, n_objects, rng)
+        t0 = time.perf_counter()
+        kept, n_iou = nms_count(b, s)
+        ms = (time.perf_counter() - t0) * 1e3
+        print(f"objects {n_objects:3d} | boxes {n:4d} | kept {kept:4d} | IoUs {n_iou:9,d} | {ms:6.1f} ms")
+```
+
+```text
+objects   5 | boxes  100 | kept   21 | IoUs       770 |    0.8 ms
+objects   5 | boxes 1000 | kept   43 | IoUs     7,809 |    1.4 ms
+objects   5 | boxes 8400 | kept   86 | IoUs    90,699 |    6.8 ms
+objects 500 | boxes  100 | kept   94 | IoUs     4,621 |    2.2 ms
+objects 500 | boxes 1000 | kept  513 | IoUs   209,490 |   22.1 ms
+objects 500 | boxes 8400 | kept 1259 | IoUs 3,039,292 |  154.7 ms
+```
+
+(One run on one CPU core; your times will differ, the IoU counts will not.) With the same 8,400 candidates, the crowded scene needs about 34 times as many IoU computations as the sparse one. Real implementations run on the GPU and cap the number of boxes, so absolute times are much smaller, but the shape of the effect is the same: post-processing time grows with the number of candidates and with crowding. That is the work an NMS-free detector avoids. Figure 1 repeats the experiment over a range of candidate counts.
+
+<Figure src={figNms} alt="Two log-log plots against the number of boxes entering NMS, for scenes with 5, 50 and 500 objects. Left: NMS time in milliseconds rises with the number of boxes, and is higher for more crowded scenes. Right: the number of IoU computations rises the same way and approaches the dashed worst-case curve n(n-1)/2 for the most crowded scene." caption="Figure 1 — Cost of greedy NMS on synthetic candidates (toy run in NumPy). (a) Wall-clock time on one CPU core, which depends on the machine. (b) Number of IoU computations, which is deterministic; the dashed line is the worst case n(n−1)/2." />
+
+## Anatomy of a modern one-stage detector
+
+**Plain version.** Almost every real-time detector has three parts. A **backbone** turns the image into feature maps at several resolutions. A **neck** mixes information between those resolutions. A **head** looks at every cell of every map and predicts "is there an object here, of which class, and where are its edges?"
+
+### Backbone, neck and head
+
+The **backbone** is a convolutional network (or, increasingly, a network with some attention layers) that downsamples the image in stages. The last three stages, usually called $C_3, C_4, C_5$, have **strides** 8, 16 and 32: one cell of $C_5$ summarizes a $32 \times 32$ pixel patch. Deep stages see more context but have coarse resolution; shallow stages are sharp but semantically weak.
+
+The **neck** fixes that mismatch. A Feature Pyramid Network (FPN) [30] adds a top-down path, so that coarse, semantic features are upsampled and added to finer levels. A Path Aggregation Network (PAN) [31] then adds a bottom-up path, so that precise, high-resolution information flows back up to the coarse levels. The outputs $P_3, P_4, P_5$ keep the strides 8, 16 and 32. YOLOv4 lists PAN among its path-aggregation choices [8], and most later YOLO versions use an FPN-plus-PAN neck in some form.
+
+The **head** runs a few small convolutions on every pyramid level. Early YOLO heads were *coupled*: one set of convolutions produced the class scores and the box together. YOLOX showed that a **decoupled head**, with separate branches for classification and regression, converges faster and improves accuracy [10]; nearly every later version uses one. Figure 2 summarizes the design.
+
+<Figure src={figAnatomy} alt="Block diagram. A 640 by 640 input feeds a backbone with stages C3, C4 and C5 at strides 8, 16 and 32. A neck turns them into P3, P4 and P5 with orange top-down arrows (FPN) and pink bottom-up arrows (PAN). Each level feeds a decoupled head with a class branch and a box branch, producing 80 by 80, 40 by 40 and 20 by 20 grids, which together give 8,400 candidates. A note says a one-to-many head needs threshold plus NMS, while a one-to-one head uses top-k without NMS." caption="Figure 2 — The backbone–neck–head design shared by modern one-stage detectors, for a 640 × 640 input. Each cell of each grid makes one prediction (anchor-free case), giving 8,400 candidates per image." />
+
+For a $640 \times 640$ input and strides 8, 16 and 32, the three grids have $80^2 + 40^2 + 20^2 = 8{,}400$ cells. An anchor-free head makes one prediction per cell; an anchor-based head with $A$ anchors per cell makes $8{,}400\,A$. Each prediction is a vector of $4 + K$ numbers (box and $K$ class scores), plus an objectness score in some designs. That output tensor is what post-processing has to turn into a short list of boxes.
+
+### Anchor-based and anchor-free prediction
+
+**Plain version.** An anchor-based head says "start from this template box and adjust it". An anchor-free head says "from this cell centre, the object's left edge is this far, its top edge is that far", and so on.
+
+**Anchor-based (YOLOv2 to YOLOv5, YOLOv7).** YOLOv2 replaced hand-picked anchors with shapes found by k-means clustering of the training boxes (it chose $k = 5$) [6]. For a cell with top-left corner $(c_x, c_y)$ (in grid units) and an anchor of width $p_w$ and height $p_h$, the network outputs $(t_x, t_y, t_w, t_h, t_o)$ and the box is decoded as
+
+$$
+b_x = \sigma(t_x) + c_x, \qquad b_y = \sigma(t_y) + c_y, \qquad b_w = p_w\, e^{t_w}, \qquad b_h = p_h\, e^{t_h},
+$$
+
+where $\sigma$ is the logistic sigmoid, $(b_x, b_y)$ is the box centre and $(b_w, b_h)$ its size, all in grid units (multiply by the stride for pixels), and $\sigma(t_o)$ is the predicted objectness, trained toward $\Pr(\text{object}) \cdot \text{IoU}$ [6]. The sigmoid keeps the centre inside its own cell, which the YOLOv2 paper introduced to make early training stable [6]. YOLOv3 kept this scheme, predicted 3 boxes per cell at 3 scales, and replaced the softmax over classes by independent logistic classifiers [7].
+
+**Anchor-free (YOLOX, YOLOv6, YOLOv8 and later).** YOLOX reduced the predictions per location from 3 to 1 and predicted box offsets directly, without anchors [10]. The common form today predicts, at a cell centre $(x, y)$ on a level with stride $s$, four non-negative distances to the box sides, in units of the stride:
+
+$$
+x_1 = x - s\,\hat{l}, \qquad y_1 = y - s\,\hat{t}, \qquad x_2 = x + s\,\hat{r}, \qquad y_2 = y + s\,\hat{b},
+$$
+
+where $(\hat{l}, \hat{t}, \hat{r}, \hat{b})$ are the predicted left, top, right and bottom distances and $(x_1, y_1, x_2, y_2)$ the decoded box corners. This is the same parameterization as the anchor-free detectors of [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#anchor-free-detectors-points-instead-of-boxes). The Ultralytics documentation describes YOLOv8 as using an "anchor-free split" head [13]. Dropping anchors removes anchor hyperparameters, makes the head simpler, and produces fewer candidates, which also means less NMS work [23].
+
+### Decoding the output tensor
+
+The snippet builds the 8,400 cell centres, plants one confident prediction in random background noise, and decodes it with the anchor-free formula.
+
+```python
+import numpy as np
+
+def make_grid(img_size=640, strides=(8, 16, 32)):
+    """Centre (x, y) in pixels and stride of every prediction, level by level."""
+    centres, st = [], []
+    for s in strides:
+        n = img_size // s
+        ys, xs = np.mgrid[0:n, 0:n]
+        centres.append(np.stack([(xs.ravel() + 0.5) * s, (ys.ravel() + 0.5) * s], axis=1))
+        st.append(np.full(n * n, s))
+    return np.concatenate(centres).astype(float), np.concatenate(st).astype(float)
+
+def decode(raw, centres, strides, conf=0.25):
+    """raw: (N, 4 + K) = distances (l, t, r, b) in stride units, then K class logits."""
+    ltrb = raw[:, :4] * strides[:, None]                     # back to pixels
+    boxes = np.concatenate([centres - ltrb[:, :2], centres + ltrb[:, 2:]], axis=1)
+    scores = 1 / (1 + np.exp(-raw[:, 4:]))                   # one sigmoid per class
+    cls, best = scores.argmax(axis=1), scores.max(axis=1)
+    keep = best > conf                                       # confidence threshold
+    return boxes[keep], cls[keep], best[keep]
+
+centres, strides = make_grid()
+print("predictions per 640x640 image:", len(centres))
+
+rng = np.random.default_rng(0)
+K = 3                                                        # three classes
+raw = np.concatenate([rng.uniform(0, 4, (len(centres), 4)),  # random distances
+                      rng.normal(-6, 1, (len(centres), K))], axis=1)  # background logits
+# plant one confident object (class 1) at the stride-16 cell centred on (296, 200)
+i = np.flatnonzero((strides == 16) & (centres[:, 0] == 296) & (centres[:, 1] == 200))[0]
+raw[i, :4] = [5.0, 3.0, 4.0, 2.5]
+raw[i, 4 + 1] = 4.0
+boxes, cls, score = decode(raw, centres, strides)
+print("kept:", len(boxes), "| box:", boxes[0], "| class:", cls[0], "| score:", round(float(score[0]), 3))
+```
+
+```text
+predictions per 640x640 image: 8400
+kept: 1 | box: [216. 152. 360. 240.] | class: 1 | score: 0.982
+```
+
+The planted distances $(5, 3, 4, 2.5)$ at stride 16 become $(80, 48, 64, 40)$ pixels, giving the box from $(216, 152)$ to $(360, 240)$. In a trained detector many neighbouring cells would fire on the same object; what happens to those duplicates is the subject of the label-assignment section below.
+
+## The YOLO lineage
+
+**Plain version.** "YOLO" is not one model but a name used by many teams over a decade. The useful way to read the history is to ignore the version numbers and follow a few ideas: grids, then anchors, then multi-scale heads, then better training recipes, then anchor-free heads with learned assignment, and most recently attention and NMS-free heads.
+
+### A timeline
+
+Figure 3 places the versions on a timeline by the year they first appeared in public, grouped by who released them, and marks whether each has a peer-reviewed paper. Three facts are easy to miss. First, **version numbers do not form one lineage**: after YOLOv3, its original authors stopped, and later numbers were taken by different groups, sometimes within weeks of each other. Second, several of the most widely used versions (YOLOv5, YOLOv8, YOLO11) were released as **software without a paper**; their official documentation says so [9], [13], [16]. Third, the name is unregulated: in August 2026 a preprint titled "YOLOv14" was posted to arXiv and withdrawn by its authors about two weeks later [52], so a new number by itself says nothing about quality.
+
+<Figure src={figTimeline} alt="Timeline from 2015 to 2026 with five lanes. Redmon and Farhadi: YOLO v1 2015, YOLOv2 2016, YOLOv3 2018. Bochkovskiy, Wang and Liao: YOLOv4 2020, YOLOv7 2022, YOLOv9 2024. Ultralytics releases: YOLOv5 2020, YOLOv8 2023, YOLO11 2024, YOLO26 2026 and YOLO27 announced. Other research groups: YOLOX 2021, YOLOv6 2022, YOLOv10 2024, YOLOv12 and YOLOv13 2025. Real-time DETRs: RT-DETR 2023, RT-DETRv2, D-FINE and DEIM 2024, RF-DETR and DEIMv2 2025. Markers distinguish peer-reviewed papers, arXiv-only reports, software releases and announced models." caption="Figure 3 — The YOLO family and real-time DETRs by year of first public release. Filled circles have a peer-reviewed paper (often published a year after the preprint), open squares are arXiv preprints or technical reports only, filled diamonds are software releases without a paper at release time, and the open diamond is announced but not released." />
+
+The table lists each version's primary source and the idea worth remembering. "Paper" means the version was introduced by a paper; the venue column says whether that paper was peer reviewed.
+
+| Version | First public | Primary source | Peer reviewed? | The idea to remember |
+| --- | --- | --- | --- | --- |
+| YOLO v1 [5] | 2015 | Paper (CVPR 2016) | Yes | One network predicts all boxes from an $S \times S$ grid in one pass |
+| YOLOv2 [6] | 2016 | Paper (CVPR 2017) | Yes | Anchors from k-means "dimension clusters"; sigmoid-bounded centres |
+| YOLOv3 [7] | 2018 | Tech report (arXiv) | No | Predictions at 3 scales; independent logistic class scores |
+| YOLOv4 [8] | 2020 | arXiv | No | A systematic "bag of freebies" (training tricks) and "bag of specials" (cheap modules); mosaic augmentation |
+| YOLOv5 [9] | 2020 | Software (Ultralytics) | No paper | A widely used PyTorch implementation and training pipeline |
+| YOLOX [10] | 2021 | arXiv | No | Anchor-free, decoupled head, SimOTA dynamic label assignment |
+| YOLOv6 [11] | 2022 | Tech report (arXiv) | No | Re-parameterizable backbone and neck; task-aligned assignment; quantization-aware design |
+| YOLOv7 [12] | 2022 | Paper (CVPR 2023) | Yes | E-ELAN aggregation; planned re-parameterization; lead-guided assignment |
+| YOLOv8 [13] | 2023 | Software (Ultralytics) | No paper | Anchor-free split head in a multi-task package |
+| YOLOv9 [14] | 2024 | Paper (ECCV 2024) | Yes | Programmable gradient information (PGI); GELAN |
+| YOLOv10 [15] | 2024 | Paper (NeurIPS 2024) | Yes | NMS-free training with consistent dual assignments |
+| YOLO11 [16] | 2024 | Software (Ultralytics) | No paper | Refined backbone and neck; same package and tasks |
+| YOLOv12 [17] | 2025 | Paper (NeurIPS 2025) | Yes | Attention-centric design (area attention) at real-time speed |
+| YOLOv13 [18] | 2025 | arXiv | No | Hypergraph-based correlation module (HyperACE) |
+| YOLO26 [19] | 2026 | Software (Jan 2026); arXiv paper (Jun 2026) | No | NMS-free by default; DFL removed; new optimizer and assignment for small objects |
+| YOLO27 [20] | — | Announced only | — | Not released as of October 2026; no weights or code |
+
+*Optional: [The YOLO family, version by version](#the-yolo-family-version-by-version) (in the Supplementary notes). Two or three paragraphs per version: what changed, what the paper or documentation says about it, and its limits.*
+
+### Five ideas to remember
+
+You do not need to remember sixteen versions. Five ideas carry most of the progress.
+
+1. **One pass over a grid.** YOLO v1 made detection a single regression from the image to a fixed-size tensor: a $7 \times 7$ grid with 2 boxes per cell and 20 class scores, a $7 \times 7 \times 30$ tensor for PASCAL VOC [5]. Every later version keeps this "look once, predict densely" structure.
+2. **Several scales, joined by a neck.** From YOLOv3 on, predictions come from several strides [7], and from YOLOv4 on the levels are fused by FPN/PAN-style necks [8]. Small objects are found on the stride-8 grid, large ones on the stride-32 grid.
+3. **The training recipe is half the model.** YOLOv4's main contribution was to test many training-time tricks ("bag of freebies", which cost nothing at inference) and cheap modules ("bag of specials") systematically [8]. Later versions differ as much in augmentation, assignment and losses as in architecture.
+4. **Learned label assignment.** Deciding which predictions are trained as positives for which object is a design choice, not a detail. YOLOX's SimOTA picks a dynamic number of lowest-cost predictions per object [10]; YOLOv6 and YOLOv8-era models use task-aligned assignment, which ranks predictions by a mix of class score and IoU [11], [34].
+5. **Removing NMS.** YOLOv10 trains a second, one-to-one head alongside the usual one-to-many head and uses only the one-to-one head at inference, so no NMS is needed [15]. YOLO26 makes this the default deployment path [19]. This is the same idea DETR introduced (see below), now inside a YOLO.
+
+Two further threads matter for deployment: **re-parameterization** (train a multi-branch block, then fold it into a single convolution for inference; RepVGG [32], used in YOLOv6 [11] and YOLOv7 [12]) and **attention at real-time cost** (YOLOv12's area attention [17], YOLOv13's hypergraph module [18]).
+
+*Optional: [Folding a re-parameterized block into one convolution](#folding-a-re-parameterized-block-into-one-convolution) (in the Supplementary notes). The batch-norm folding formula and a NumPy check that three branches become one convolution with the same output.*
+
+## Real-time DETRs
+
+**Plain version.** DETR showed that a transformer can output the final set of boxes directly, with no anchors and no NMS, but it was slow to train and slow to run. Real-time DETRs keep the "direct set" idea and redesign the expensive parts.
+
+### Why the original DETR was slow
+
+DETR [21] (introduced in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#set-prediction-with-transformers-detr-and-its-descendants)) had two separate speed problems.
+
+- **Slow training.** With one-to-one Hungarian matching [40], each object supervises exactly one of the object queries, so each image provides few positive training signals, and the queries start from learned embeddings that carry no information about the image. DETR therefore needed very long training schedules.
+- **Expensive encoder.** Self-attention over all feature-map positions costs time quadratic in the number of positions. DETR used only one coarse feature map to stay affordable, which hurt small objects. Deformable DETR [22] made multi-scale features affordable by letting each query attend to a few sampled points, but RT-DETR's analysis found that the multi-scale encoder then became the computational bottleneck, because concatenating all levels makes the token sequence very long [23].
+
+### RT-DETR
+
+RT-DETR (Zhao et al., CVPR 2024; the arXiv title is "DETRs beat YOLOs on real-time object detection") [23] was the first DETR designed for real-time use. It feeds the last three backbone stages $\{S_3, S_4, S_5\}$ into an encoder and changes three things:
+
+1. **Efficient hybrid encoder.** Attention is applied only *within* the coarsest level (a module the paper calls AIFI, attention-based intra-scale feature interaction), where tokens are few and semantics are rich. The levels are then fused across scales with convolutions (CCFF, CNN-based cross-scale feature fusion), as in a YOLO neck. The paper argues that attention over all levels together is redundant, since high-level features are computed from low-level ones [23].
+2. **Uncertainty-minimal query selection.** Instead of learned queries that ignore the image, a fixed number of encoder features are selected as initial object queries. The paper defines a feature's uncertainty as the disagreement between its predicted localization quality and its classification score, $U(\hat{X}) = \lVert P(\hat{X}) - C(\hat{X}) \rVert$, where $\hat{X}$ is an encoder feature and $P$ and $C$ are its localization and classification predictions, and adds it to the classification loss so that selected queries are both confident and well localized [23].
+3. **Adjustable decoder depth.** Because the decoder refines boxes layer by layer and every layer has a prediction head, layers can be removed at inference to trade accuracy for speed **without retraining**; the paper observes that removing a few final decoder layers costs little accuracy [23].
+
+Like DETR, RT-DETR is trained with one-to-one matching and needs **no NMS**. The paper reports 53.1% and 54.3% AP on COCO at 108 and 74 FPS on an NVIDIA T4 GPU for its ResNet-50 and ResNet-101 versions [23]; those FPS values come from its own end-to-end benchmark (TensorRT, FP16), which also times the NMS of the YOLO models it compares against.
+
+*Optional: [Reading the RT-DETR paper](#reading-the-rt-detr-paper) (in the Paper guides). Its NMS analysis, its end-to-end speed benchmark, and what to check in its comparison tables.*
+
+### After RT-DETR
+
+Real-time DETRs moved quickly between 2024 and 2026. The successors below are the ones whose primary sources we verified; each keeps one-to-one matching at inference.
+
+| Model | Source | Main idea |
+| --- | --- | --- |
+| RT-DETRv2 [24] | arXiv, 2024 | "Bag of freebies" for RT-DETR: different numbers of sampling points per scale; an optional discrete sampling operator that is easier to deploy; dynamic augmentation and scale-adaptive hyperparameters |
+| D-FINE [25] | ICLR 2025 | Boxes as probability distributions refined layer by layer (fine-grained distribution refinement), plus self-distillation from the last decoder layer to earlier ones |
+| DEIM [26] | CVPR 2025 | Faster convergence: more positives per image through "dense one-to-one" matching (more objects per image via mosaic and mixup) and a matchability-aware loss |
+| RF-DETR [27] | ICLR 2026 | A pretrained vision-transformer backbone (DINOv2 [47]) and weight-sharing neural architecture search that finds many accuracy–latency trade-offs without retraining |
+| DEIMv2 [28] | arXiv, 2025 | DEIM with DINOv3 [48] features adapted to multi-scale detection for the larger models, and pruned convolutional backbones for the smallest ones |
+
+*Optional: [Real-time DETRs after RT-DETR, in detail](#real-time-detrs-after-rt-detr-in-detail) (in the Supplementary notes). What each successor changes, how distribution refinement decodes a box, and what dense one-to-one matching does to the number of positives.*
+
+## Label assignment and the NMS-free trend
+
+**Plain version.** During training, every object must be "given" to some predictions, which are then taught to fire on it. If an object is given to many predictions (one-to-many), training is rich and fast, but at test time several predictions fire on the same object and NMS must clean up. If each object is given to exactly one prediction (one-to-one), duplicates are trained away and NMS is unnecessary, but each object provides less training signal. Modern detectors use both: one-to-many to train, one-to-one to predict.
+
+### One-to-many versus one-to-one
+
+Let $\mathcal{P}$ be the set of predictions (one per cell for an anchor-free YOLO, one per query for a DETR) and $\mathcal{G}$ the ground-truth objects. Both styles start from a **matching score** between a prediction $i$ and an object $j$. The task-aligned score introduced by TOOD [34], in the form written in the YOLOv10 paper [15], is
+
+$$
+m_{ij} = s_{ij} \cdot p_{ij}^{\,\alpha} \cdot \text{IoU}(\hat{b}_i, b_j)^{\beta},
+$$
+
+where $p_{ij}$ is the predicted score of prediction $i$ for the class of object $j$, $\hat{b}_i$ and $b_j$ are the predicted and true boxes, $s_{ij} \in \{0, 1\}$ is a **spatial prior** that is 1 only if the prediction's anchor point lies inside the object, and $\alpha, \beta \ge 0$ balance classification against localization. The YOLOv10 paper quotes $\alpha = 0.5$ and $\beta = 6$ as YOLOv8's defaults [15]. Because $m$ uses the network's own current predictions, the assignment changes during training; this is what "dynamic" or "prediction-aware" assignment means.
+
+- **One-to-many (o2m).** For each object $j$, the top-$k$ predictions by $m_{ij}$ become positives. TOOD uses the top 13 [34]; YOLOX's SimOTA uses a cost instead of a score and chooses $k$ separately for each object [10], following OTA's optimal-transport view of assignment [33].
+- **One-to-one (o2o).** Each object gets exactly one prediction, and each prediction at most one object. Solving this optimally is a bipartite matching problem, solved by the Hungarian algorithm [40] as in DETR [21]:
+
+$$
+\hat{\pi} = \arg\max_{\pi} \sum_{j \in \mathcal{G}} m_{\pi(j)\, j},
+$$
+
+where $\pi$ ranges over injective maps from objects to predictions (no prediction is used twice). DETR-style detectors write the same problem as a minimum-cost matching with cost $-m$ or a combination of class, L1 and GIoU terms.
+
+Why does one-to-one remove NMS? In one-to-many training, the second- and third-best predictions for an object are *taught to fire* on it, so at test time they do, and NMS is needed. In one-to-one training, every prediction other than the matched one is a negative, so the network is *taught not to produce duplicates*. Why not use one-to-one only? Because it provides far fewer positives, which slows convergence and weakens the features, the same problem that made DETR slow.
+
+### Dual assignment, hybrid matching and dense one-to-one
+
+The solutions from both lines are variations of "use one-to-many for training signal, one-to-one for the output":
+
+- **YOLOv10: consistent dual assignments** [15]. A second head with the same structure as the usual one is trained with one-to-one assignment, while the original head keeps one-to-many assignment; both share the backbone and neck, which therefore receive the rich one-to-many signal. At inference only the one-to-one head is used. The paper picks the one-to-one match by "top one selection", which it reports performs as well as Hungarian matching with less training time, and sets the same $\alpha$ and $\beta$ for both heads ("consistent matching metric") so that the one-to-one head's best prediction is also highly ranked by the one-to-many head. In its ablation on the small model, measured end to end on a T4 GPU with TensorRT FP16 at batch 1 including NMS where it is used, the one-to-many head alone reached 44.9 AP at 7.07 ms, the one-to-one head alone 43.4 AP at 2.44 ms, and the dual-trained one-to-one head 44.3 AP at 2.44 ms [15]. The latency difference is NMS.
+- **H-DETR: hybrid matching** [29]. A DETR is given an extra group of queries trained with one-to-many matching during training only, to add positives; inference uses only the one-to-one queries.
+- **DEIM: dense one-to-one** [26]. Keep one-to-one matching, but increase the number of objects per training image (with mosaic and mixup) so that one-to-one matching produces more positives.
+- **YOLO26: progressive loss** [19]. The total loss is a weighted sum of the one-to-many and one-to-one losses, $\mathcal{L} = \alpha(t)\,\mathcal{L}_{\text{o2m}} + (1 - \alpha(t))\,\mathcal{L}_{\text{o2o}}$, where $\alpha(t)$ decreases linearly over the training epochs $t$, so supervision shifts gradually toward the head that is used at inference.
+
+*Optional: [Reading the YOLOv10 paper](#reading-the-yolov10-paper) (in the Paper guides). The supervision-gap argument behind the consistent matching metric, and how to read its ablation tables.*
+
+### A toy comparison
+
+The snippet places an $8 \times 8$ grid of anchor points on a $100 \times 100$ image with three objects, gives every point a noisy predicted box and a score, computes $m_{ij}$, and compares top-4 one-to-many assignment with Hungarian one-to-one assignment.
+
+```python
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+def iou_matrix(a, b):
+    x1 = np.maximum(a[:, None, 0], b[None, :, 0]); y1 = np.maximum(a[:, None, 1], b[None, :, 1])
+    x2 = np.minimum(a[:, None, 2], b[None, :, 2]); y2 = np.minimum(a[:, None, 3], b[None, :, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    area = lambda b: (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    return inter / (area(a)[:, None] + area(b)[None, :] - inter)
+
+rng = np.random.default_rng(3)
+gt = np.array([[20, 20, 60, 70], [55, 30, 95, 80], [10, 80, 40, 100]], float)
+# 8 x 8 grid of anchor points (stride 12.5 on a 100 x 100 image), each with a predicted box
+ys, xs = np.mgrid[0:8, 0:8]
+pts = np.stack([(xs.ravel() + 0.5) * 12.5, (ys.ravel() + 0.5) * 12.5], axis=1)
+inside = ((pts[:, None, 0] > gt[None, :, 0]) & (pts[:, None, 0] < gt[None, :, 2]) &
+          (pts[:, None, 1] > gt[None, :, 1]) & (pts[:, None, 1] < gt[None, :, 3]))      # spatial prior s
+near = inside.argmax(axis=1)                       # the object each point "looks at"
+pred = gt[near] + rng.normal(0, 5, (len(pts), 4))  # noisy box predictions
+p = np.where(inside.any(axis=1), rng.uniform(0.3, 0.9, len(pts)), rng.uniform(0, 0.2, len(pts)))
+
+alpha, beta = 0.5, 6.0                             # the defaults quoted in the YOLOv10 paper
+m = inside * p[:, None] ** alpha * iou_matrix(pred, gt) ** beta   # (points, objects)
+
+# one-to-many: the top-k points by m for every object become positives
+k = 4
+o2m = {}
+for j in range(len(gt)):
+    best = np.argsort(-m[:, j])[:k]
+    o2m[j] = best[m[best, j] > 0].tolist()
+# one-to-one: Hungarian matching on cost -m (each object gets exactly one point)
+rows, cols = linear_sum_assignment(-m)
+o2o = {int(c): [int(r)] for r, c in zip(rows, cols)}
+print("one-to-many positives:", o2m)
+print("one-to-one positives: ", dict(sorted(o2o.items())))
+print("positives per image: o2m", sum(map(len, o2m.values())), "| o2o", len(o2o))
+top1 = m.argmax(axis=0)                            # YOLOv10's cheaper top-1 choice
+print("top-1 equals Hungarian here:", all(top1[j] == o2o[j][0] for j in o2o))
+```
+
+```text
+one-to-many positives: {0: [26, 34, 42, 43], 1: [37, 46, 38, 30], 2: [58, 50, 49, 57]}
+one-to-one positives:  {0: [26], 1: [37], 2: [58]}
+positives per image: o2m 12 | o2o 3
+top-1 equals Hungarian here: True
+```
+
+One-to-many gives four times as many positives, and Figure 4 shows their cost: four overlapping boxes per object, all taught to fire. One-to-one keeps the single best point per object, which is also the top-ranked point under one-to-many, the property YOLOv10's consistent matching metric is designed to encourage. Here the cheap per-object top-1 choice agrees with Hungarian matching because no two objects compete for the same point; when they do, top-1 can assign one point to two objects and Hungarian matching cannot.
+
+<Figure src={figAssign} alt="Two panels of the same toy scene with three ground-truth boxes (blue, orange, green) on a grid of gray points. Left: four colored positive points per object, each with a dashed predicted box, so every object is covered by four overlapping boxes. Right: one positive point and one dashed box per object." caption="Figure 4 — Label assignment on a toy scene. (a) One-to-many: the top-4 points per object by the task-aligned score are positives, so four overlapping predictions per object are trained to fire. (b) One-to-one (Hungarian): exactly one positive per object; every other point is trained as background." />
+
+## Training recipe essentials
+
+**Plain version.** Real-time detectors are small, so they depend more than large models on how they are trained. The recipe has three parts: augmentations that make every image harder and more varied, a smoothed copy of the weights for evaluation, and losses that match the evaluation metric.
+
+### Data augmentation: mosaic and mixup
+
+**Mosaic**, introduced in YOLOv4, combines 4 training images into one, so each training image shows objects in 4 different contexts and at reduced scale [8]. **Mixup** forms a convex combination of two training examples,
+
+$$
+\tilde{x} = \lambda\, x_a + (1 - \lambda)\, x_b, \qquad \lambda \sim \text{Beta}(a, a),
+$$
+
+where $x_a, x_b$ are two images, $\lambda \in [0, 1]$ the mixing weight and $a \gt 0$ a hyperparameter [38]; it was designed for classification and later adapted to detection, as the YOLOX report notes [10]. YOLOX turns both augmentations off for the last 15 epochs, so that training ends on images that look like test images, and found that with this strong augmentation ImageNet pre-training was no longer beneficial [10]. DEIM uses mosaic and mixup on purpose to put more objects in each image, which gives one-to-one matching more positives [26].
+
+### Weight averaging (EMA)
+
+The YOLOX baseline adds "EMA weights updating" to its training [10]. The model used for evaluation is an exponential moving average of the training weights,
+
+$$
+\bar{\theta}_t = d\, \bar{\theta}_{t-1} + (1 - d)\, \theta_t,
+$$
+
+where $\theta_t$ are the weights after training step $t$, $\bar{\theta}_t$ the averaged weights, and $d$ a decay close to 1. The average smooths out the noise of the last optimization steps, at no inference cost: only $\bar{\theta}$ is exported.
+
+### Loss components
+
+A modern real-time detector's loss has a classification term, one or more box terms, and, for NMS-free models, a one-to-one counterpart of each.
+
+- **Classification with quality-aware targets.** Instead of training the class score toward 1 for positives, several losses train it toward the positive's IoU, so that the score also ranks localization quality. The quality focal loss of GFL [35] and the varifocal loss of VarifocalNet [36] are the two standard forms. The varifocal loss is
+
+$$
+\text{VFL}(p, q) = \begin{cases} -q\big(q \log p + (1 - q)\log(1 - p)\big) & q \gt 0, \\ -\alpha\, p^{\gamma} \log(1 - p) & q = 0, \end{cases}
+$$
+
+where $p$ is the predicted score, $q$ the target (the IoU between the predicted box and its ground truth for a positive, 0 for a negative), and $\alpha, \gamma$ down-weight easy negatives as in the focal loss [39]. YOLOv6 selected VFL as its classification loss [11].
+
+- **IoU-type box losses.** CIoU (defined in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#core-building-blocks) and introduced with DIoU [37]) is part of YOLOv4's bag of freebies [8]; YOLOv6 chose among SIoU and GIoU losses [11].
+- **Distribution focal loss (DFL)** [35]. Instead of predicting one number per box side, the head predicts a discrete probability distribution over $n + 1$ values $y_0 \lt y_1 \lt \dots \lt y_n$ (spaced $\Delta$ apart; GFL uses $\Delta = 1$ in stride units) and decodes the side as its expected value,
+
+$$
+\hat{y} = \sum_{i=0}^{n} S_i\, y_i, \qquad \text{DFL}(S_i, S_{i+1}) = -\big((y_{i+1} - y)\log S_i + (y - y_i)\log S_{i+1}\big),
+$$
+
+where $S_i$ is the softmax probability of value $y_i$, $y$ is the true distance and $y_i \le y \le y_{i+1}$ are its two neighbouring values. DFL pushes probability onto the two values that bracket the target; its minimum is at $S_i = (y_{i+1} - y)/(y_{i+1} - y_i)$ and $S_{i+1} = (y - y_i)/(y_{i+1} - y_i)$, where the expected value equals $y$ exactly [35]. A broad distribution signals an uncertain edge, for example an occluded one. The GFL paper found results insensitive to $n$ (it tested 12 to 18) and suggests a small $\Delta$ such as 1 [35]; the YOLO26 paper describes DFL as adopted in Ultralytics models since YOLOv8, with 16 bins per side [19].
+
+```python
+import numpy as np
+
+K, stride = 16, 8                        # 16 bins per box side, a stride-8 level
+bins = np.arange(K)                      # support y_0 = 0, ..., y_15 = 15 (in stride units)
+
+def softmax(z):
+    e = np.exp(z - z.max())
+    return e / e.sum()
+
+def dfl(logits, y):
+    """Distribution focal loss for one box side with continuous target y (stride units)."""
+    S = softmax(logits)
+    i = int(np.floor(y))                 # neighbours y_i <= y <= y_i + 1
+    return -((i + 1 - y) * np.log(S[i]) + (y - i) * np.log(S[i + 1]))
+
+y = 5.3                                  # true distance: 5.3 cells = 42.4 pixels
+flat = np.zeros(K)                       # untrained head: uniform distribution
+sharp = np.full(K, -10.0); sharp[5], sharp[6] = np.log(0.7), np.log(0.3)   # the ideal shape
+for name, z in [("uniform", flat), ("ideal", sharp)]:
+    S = softmax(z)
+    print(f"{name:7s} expected distance {S @ bins:5.2f} cells = {S @ bins * stride:6.1f} px | DFL {dfl(z, y):.3f}")
+print("largest distance this head can output:", (K - 1) * stride, "px")
+```
+
+```text
+uniform expected distance  7.50 cells =   60.0 px | DFL 2.773
+ideal   expected distance  5.30 cells =   42.4 px | DFL 0.611
+largest distance this head can output: 120 px
+```
+
+Two lessons. The ideal distribution decodes to exactly 5.3 cells, but its loss is not zero (0.611 is the entropy of the split 0.7 / 0.3), so DFL values are not "errors in pixels". And the support is finite: with 16 bins a side can be at most $15$ strides long. The YOLO26 paper gives this range limit and the extra head parameters as its reasons for removing DFL [19]. Figure 5 shows the three cases.
+
+<Figure src={figDfl} alt="Three bar charts over 16 bins. Left: a flat distribution whose expected value is 7.50, far from the true distance 5.3. Middle: probability 0.7 at bin 5 and 0.3 at bin 6, whose expected value is exactly 5.30. Right: a broad bell-shaped distribution centred near bin 6 with expected value 6.01." caption="Figure 5 — How a distribution-based box side is decoded. The dashed line is the expected value (the predicted distance); the yellow line is the true distance 5.3. DFL trains the head toward the middle panel; a broad distribution, as on the right, expresses uncertainty about the edge." />
+
+## Evaluation and deployment
+
+**Plain version.** Accuracy is measured the same way for every detector; speed is not. Most mistakes in comparing real-time detectors come from speed numbers measured under different conditions.
+
+### Accuracy: COCO mAP
+
+Real-time detectors are compared on COCO [41] with the COCO protocol [42] described in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#evaluating-detectors): AP averaged over 10 IoU thresholds from 0.50 to 0.95 and over the 80 categories, written AP or mAP@[.5:.95], with at most 100 detections per image. Three cautions apply specifically to this family:
+
+- **Split.** Most papers report on val2017; some also report test-dev. Do not mix them.
+- **Extra data.** Some results use pre-training on Objects365 [43] (RT-DETR reports both [23]); such numbers belong in a separate column.
+- **Confidence threshold.** AP is computed from a ranked list, so evaluation uses a very low confidence threshold (the RT-DETR analysis cites 0.001 for YOLOv8's best AP [23]). A deployed system uses a much higher one. The speed of an NMS-based detector at the evaluation threshold is therefore not its speed in deployment, and vice versa.
+
+### Speed: a measurement checklist
+
+When you measure, or read, a latency number, check:
+
+1. **Hardware, engine and precision** are stated (for example, T4 GPU, TensorRT, FP16), and the same for every model being compared.
+2. **Batch size 1** for latency; throughput numbers with large batches do not transfer to a live camera.
+3. **End to end**: pre-processing, the network and post-processing including NMS, or a clear statement of what is excluded. YOLOv10 and RT-DETR time NMS with the TensorRT efficient-NMS plugin and average over the COCO val images, because NMS time depends on the image [15], [23].
+4. **Warm-up and averaging**: the first iterations of any engine are slow (memory allocation, kernel selection), so discard them and average over many images.
+5. **Input size and the confidence threshold** used during timing.
+
+### Export, reduced precision and re-parameterization
+
+Training frameworks are not deployment engines. A trained detector is usually **exported** to an exchange format such as ONNX [44] and compiled by an inference engine for the target device, for example TensorRT for NVIDIA GPUs [45]. Three things change on the way:
+
+- **Precision.** FP16 halves memory traffic with little accuracy change on modern GPUs. INT8 quantization stores weights and activations as 8-bit integers with a scale per tensor or channel, using integer arithmetic at inference [46]. It needs calibration data, and the box and score outputs are the most sensitive parts, so check AP at strict IoU thresholds after quantizing, not only AP50. YOLOv6 reports that re-parameterized models are harder to quantize and changed its training to fix this [11].
+- **Graph simplification.** Re-parameterized blocks are folded into single convolutions, and batch normalization is folded into the preceding convolution (see the Supplementary notes).
+- **Unsupported operators.** Every operator must exist in the target engine. RT-DETRv2 added a discrete sampling operator for this reason [24], and YOLO26 cites simpler export as one reason for removing DFL [19]. NMS-free models export more simply, because the output already is the final list.
+
+## Failure modes and how to choose a model
+
+**Plain version.** A real-time detector fails where any detector fails (small, crowded, unusual objects), and a few places of its own: low resolution, quantization, and speed numbers that do not hold on your device.
+
+**Failure modes to test for.**
+
+- **Small objects.** At 640 × 640 input, an object of $16 \times 16$ pixels covers $2 \times 2$ cells of the finest (stride 8) grid. YOLO26 addresses one version of this problem explicitly: with center-based assignment, a tiny box may contain no cell centre at all and get no positive sample, so its small-target-aware assignment enlarges tiny boxes for candidate selection only [19].
+- **Crowds.** NMS-based models delete true neighbours at strict IoU thresholds or keep duplicates at loose ones ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#core-building-blocks) discusses Soft-NMS); one-to-one models avoid the threshold but must have learned to separate neighbours.
+- **Domain shift.** COCO-trained weights know everyday photographs; aerial, medical, industrial and night images need fine-tuning. RF-DETR was designed for fine-tuning on new target datasets [27].
+- **Large objects at high resolution** for distribution-based heads, because of the finite range discussed above [19].
+- **Deployment drift.** Re-measure accuracy after INT8 export, a new input size or a new confidence threshold; the paper's number does not cover them.
+
+**How to choose.**
+
+1. Fix the **latency budget** on the *target device*, end to end, at batch 1.
+2. Take two or three candidate families (for example, one recent YOLO and one real-time DETR) and, for each, the largest size that fits the budget **on your device**.
+3. Evaluate them on **your data** (after fine-tuning), with AP and with the error types that matter for the application (misses of small objects, false alarms).
+4. Prefer NMS-free models when post-processing is a large part of the budget, when the scene is crowded, or when the deployment engine handles NMS poorly.
+5. Check the **license and maintenance** of the code. The Ultralytics releases, for example, are distributed under the AGPL-3.0 license according to their citation entries [13], [16], which matters for commercial products.
+
+If the class list is open-ended ("find any forklift"), a closed-set detector is the wrong tool; see the [open-vocabulary detectors of DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#open-vocabulary-and-grounding-detectors).
+
+## Modern view
+
+### What the surveys say
+
+**A Comprehensive Review of YOLO Architectures in Computer Vision: From YOLOv1 to YOLOv8 and YOLO-NAS** (Terven, Córdova-Esparza and Romero-González, *Machine Learning and Knowledge Extraction*, 2023) [1] walks through 16 versions in order, starting from the metrics and post-processing, then the architecture and training tricks of each. Its discussion organizes the history by four axes: anchors (absent in YOLO v1, added in YOLOv2, removed again from YOLOX on), framework (Darknet, then PyTorch), backbone (Darknet, then cross-stage partial connections, re-parameterization and architecture search), and the constant speed–accuracy trade-off. It expects COCO to be replaced by harder benchmarks and YOLO models to expand into tracking and multimodal tasks.
+
+**YOLO Evolution: A Comprehensive Benchmark and Architectural Review of YOLOv12, YOLO11, and Their Previous Versions** (Jegham, Koh, Abdelatti and Hendawi, arXiv, 2024, revised 2025) [2] is an experimental comparison rather than a history: it evaluates versions from YOLOv3 to YOLOv12 on datasets chosen for varying object sizes, aspect ratios and small single-class objects, and reports precision, recall, mAP, processing time, GFLOPs and model size. Its takeaway is that no version wins everywhere: in its experiments YOLO11 gave the best overall balance, YOLOv10 was fast but weaker on overlapping objects, and YOLOv12's added complexity did not pay off. Treat these as one group's results on its datasets, not general rankings.
+
+**Ultralytics YOLO Evolution: An Overview of YOLO27, YOLO26, YOLO11, YOLOv8, and YOLOv5** (Sapkota and Karkee, arXiv, 2025, revised 2026) [3] reviews only the Ultralytics releases, covering architecture, benchmarking, deployment (export and quantization) and applications, and lists open challenges: dense scenes, combining CNNs with transformers, open-vocabulary perception, domain generalization and hardware-aware optimization. It is a third-party review, not an Ultralytics publication.
+
+**Object Detection with Transformers: A Review** (Shehzadi et al., *Sensors*, 2025) [4] covers the DETR side: improvements to DETR grouped by backbone, query design and attention mechanism, which is the context for the real-time DETRs above.
+
+### The state of the art, 2023–2026
+
+- **NMS-free is becoming the default.** YOLOv10 [15] introduced it to YOLOs in 2024; YOLO26 [19] ships it as the default deployment path; every real-time DETR [23]–[28] is NMS-free by construction. The announced YOLO27 describes query-based decoding without NMS for its larger models [20].
+- **Attention is affordable.** YOLOv12 [17] and YOLOv13 [18] put attention-like modules inside YOLOs; RT-DETR [23] and its successors restrict attention to where it is cheap.
+- **Pretrained vision transformers as backbones.** RF-DETR [27] and DEIMv2 [28] start from self-supervised backbones (DINOv2 [47], DINOv3 [48]), which mainly helps transfer to new datasets.
+- **Training efficiency.** DEIM [26] and YOLO26 [19] (with a new optimizer and progressive loss) target shorter training rather than only higher AP.
+
+### Open problems
+
+1. **Fair speed comparison.** There is no shared, maintained end-to-end benchmark across devices; most tables still mix conditions.
+2. **Small and crowded objects** remain the main accuracy gap at real-time input sizes.
+3. **Quantization-friendly heads.** Score and box outputs lose accuracy at INT8, and attention layers complicate low-precision deployment.
+4. **Peer review and reproducibility.** Several widely deployed versions have no peer-reviewed paper, and version numbers are claimed freely; claims need independent checks.
+5. **Beyond closed sets.** Bringing open-vocabulary detection to the same latency as closed-set YOLOs without losing accuracy.
+
+## Key takeaways
+
+- "Real-time" is a latency budget for the whole pipeline at batch size 1 on a stated device; a speed number without hardware, precision, input size and timed stages is not comparable.
+- NMS cost depends on the number of candidates and on the scene, which is why end-to-end benchmarks include it and why NMS-free detectors are attractive.
+- Modern one-stage detectors share a backbone, an FPN/PAN neck and a decoupled head on stride 8/16/32 grids; anchor-free heads predict four distances per cell.
+- The YOLO name covers many teams; YOLO v1, v2, v7, v9, v10 and v12 have peer-reviewed papers, while YOLOv5, YOLOv8 and YOLO11 are software releases, and YOLO26's paper appeared on arXiv after its release.
+- The ideas that matter are single-pass grid prediction, multi-scale necks, systematic training recipes, learned label assignment, re-parameterization and, now, NMS-free one-to-one heads.
+- One-to-many assignment gives rich training signal but duplicates; one-to-one assignment removes duplicates but gives few positives; dual heads, hybrid matching and dense one-to-one combine the two.
+- RT-DETR made DETRs real-time with a hybrid encoder, uncertainty-minimal query selection and adjustable decoder depth; its successors improve box representation, convergence and backbones.
+
+## Exercises
+
+1. **Budget arithmetic.** A camera runs at 25 FPS. Pre-processing takes 3 ms, the network 18 ms, and NMS between 1 ms (empty street) and 9 ms (crowd). Does the system keep up in both cases, and how much time is left for tracking? Which single change would help most in crowds?
+
+<details>
+<summary>Hint</summary>
+
+The budget is 40 ms. The total is 22 ms in the empty street and 30 ms in the crowd, leaving 18 ms and 10 ms. The NMS term is the only one that depends on the scene, so an NMS-free head (or a higher confidence threshold, at a cost in recall) helps most in crowds.
+
+</details>
+
+2. **Count the candidates.** For a $1280 \times 1280$ input with strides 8, 16, 32 and 64, how many predictions does an anchor-free head make? How many does an anchor-based head with 3 anchors per cell make at strides 8, 16 and 32 for a $640 \times 640$ input? Use the NMS snippet to compare the cost of the two candidate counts in a crowded scene.
+
+<details>
+<summary>Hint</summary>
+
+$160^2 + 80^2 + 40^2 + 20^2 = 34{,}000$. The anchor-based head makes $3 \times 8{,}400 = 25{,}200$. With the snippet's crowded scene, both are far beyond 8,400 candidates, and the IoU count grows faster than linearly, so a confidence threshold before NMS matters even more.
+
+</details>
+
+3. **When top-1 is not a matching.** Modify the toy assignment so that two objects overlap strongly and the same grid point has the highest score for both. Compare per-object top-1 with Hungarian matching. What goes wrong with top-1, and how often would you expect this in real images?
+
+<details>
+<summary>Hint</summary>
+
+Top-1 assigns the same point to both objects, so that point gets two conflicting targets and one object effectively has no positive. Hungarian matching gives the second object its second-best point. It happens when object centres are closer than about one stride, which is common for small objects in crowds and rare otherwise.
+
+</details>
+
+4. **The range of DFL.** With 16 bins and $\Delta = 1$, what is the largest box a stride-32 cell can describe if the cell centre is at the box centre? What happens to a $1200$-pixel-wide object in a $1280 \times 1280$ image? Name two ways to extend the range.
+
+<details>
+<summary>Hint</summary>
+
+Each side can reach at most $15 \times 32 = 480$ pixels, so the widest box is 960 pixels. A 1200-pixel-wide object is truncated (the predicted box is too small). You can use more bins, larger $\Delta$ (coarser bins), a coarser extra level (stride 64), or a head that regresses the distance directly, as YOLO26 does.
+
+</details>
+
+5. **Two speed tables.** Paper A reports 4.1 ms on an A100 GPU, FP16, batch 32, forward pass only. Paper B reports 6.3 ms on a T4 GPU, FP16, batch 1, end to end with NMS. List every reason why you cannot conclude that A is faster, and design the experiment that would let you compare them.
+
+<details>
+<summary>Hint</summary>
+
+Different GPUs, different batch sizes (A's per-image time at batch 32 hides latency), different timed stages (A excludes pre- and post-processing). Run both exported models on one device with one engine and precision, at batch 1, at the same input size, timing end to end over the same images after warm-up, with the confidence threshold you will deploy.
+
+</details>
+
+6. **Design a training schedule.** You train an NMS-free detector with a one-to-many and a one-to-one head. Write a schedule for the loss weight $\alpha(t)$ of the one-to-many loss and for mosaic augmentation over 300 epochs, and justify each choice from the sections above.
+
+<details>
+<summary>Hint</summary>
+
+For example: $\alpha$ decreases linearly from a large value to a small one, as in YOLO26's progressive loss, so the backbone first learns from many positives and the inference head gets most of the weight at the end; mosaic and mixup stay on until the last 15 epochs, as in YOLOX, so the final epochs match the test distribution. Keep the one-to-one head's matching score consistent with the one-to-many one, as in YOLOv10.
+
+</details>
+
+Detections from a real-time detector are the input to tracking, covered in [DLCV 06 · Object Tracking](/en/learn/deep-learning/dl-06-object-tracking/).
+
+## Supplementary notes
+
+These notes are optional background: version-by-version details and one derivation that the main text summarizes. Nothing in the main text or the exercises depends on them.
+
+### The YOLO family, version by version
+
+**Plain version.** Each version below changed one or two things. The notes say what, according to the version's own paper or documentation, and what to keep in mind.
+
+**YOLO v1** [5]. The image is divided into an $S \times S$ grid ($S = 7$); each cell predicts $B = 2$ boxes with confidences and one set of $C$ class probabilities, an $S \times S \times (5B + C)$ tensor. The cell containing an object's centre is responsible for it. Because each cell predicts only two boxes and one class, nearby small objects compete for the same cell, the main weakness that later versions address.
+
+**YOLOv2 / YOLO9000** [6]. Adds batch normalization [49], anchors with shapes from k-means on the training boxes using a $1 - \text{IoU}$ distance (5 clusters), sigmoid-bounded centre offsets (the equation in the main text), a passthrough layer that brings finer features to the output, and multi-scale training (the input size changes during training so one model works at several resolutions).
+
+**YOLOv3** [7]. A deeper residual backbone the report calls Darknet-53, predictions at 3 scales with 3 anchors each, and independent logistic classifiers with binary cross-entropy instead of a softmax, so that a box can carry overlapping labels. It was written as a short technical report.
+
+**YOLOv4** [8]. A systematic study: a CSPDarknet53 backbone (cross-stage partial connections [50]), a PAN neck [31], and a long list of tested tricks. The "bag of freebies" (training-only changes) includes mosaic augmentation and the CIoU loss [37]; the "bag of specials" (cheap inference-time modules) includes receptive-field and attention modules. The paper also stresses training on a single conventional GPU.
+
+**YOLOv5** [9]. Released by Ultralytics in June 2020 as a PyTorch code base, with five model sizes from nano to extra large. The documentation states that no paper was published "due to the rapidly evolving nature of the models". The original YOLOv5 is anchor-based (the RT-DETR paper uses it as its anchor-based example [23]); the current Ultralytics package loads an anchor-free variant called YOLOv5u.
+
+**YOLOX** [10]. Returns to anchor-free prediction (one prediction per location instead of three), adds the decoupled head, strong augmentation (mosaic and mixup, switched off for the last 15 epochs) and SimOTA. SimOTA computes a cost $c_{ij} = L^{\text{cls}}_{ij} + \lambda L^{\text{reg}}_{ij}$ for each object–prediction pair, where $L^{\text{cls}}$ and $L^{\text{reg}}$ are the classification and regression losses and $\lambda$ a weight, and makes the $k$ lowest-cost predictions inside a centre region positive, with $k$ chosen per object; it simplifies OTA [33], which solves the assignment as optimal transport. YOLOX also tried an NMS-free one-to-one variant and found it slightly less accurate and slower, so left it optional, two years before YOLOv10.
+
+**YOLOv6** [11]. An industrial design report: a re-parameterizable backbone (EfficientRep) and neck (Rep-PAN) built from RepVGG-style blocks [32], an efficient decoupled head, task-aligned assignment [34], VFL for classification [36], self-distillation, and a quantization scheme for re-parameterized models.
+
+**YOLOv7** [12]. "Trainable bag of freebies": E-ELAN (an extended efficient layer aggregation block), a scaling rule for concatenation-based models, *planned* re-parameterized convolution (the paper shows that some branch combinations hurt when re-parameterized and plans where to use them), and coarse-to-fine lead-guided label assignment: the predictions of the final (lead) head and the ground truth generate soft labels for both the lead head and an auxiliary training head, with coarser labels (more positive cells) for the auxiliary head to favour recall.
+
+**YOLOv8** [13]. Released by Ultralytics on 10 January 2023 in the `ultralytics` Python package. The documentation lists an anchor-free split head and improved backbone and neck, and states that no paper was published. The YOLO26 paper describes DFL as part of the Ultralytics head since YOLOv8 [19].
+
+**YOLOv9** [14]. Targets the *information bottleneck*: as data passes through many layers, information needed for the loss can be lost, and gradients become unreliable. Programmable gradient information (PGI) adds an auxiliary reversible branch during training that supplies complete input information to the loss, and is removed at inference, so it costs nothing at test time. GELAN (generalized ELAN) is the accompanying backbone design.
+
+**YOLOv10** [15]. Consistent dual assignments for NMS-free training (main text and Paper guides), plus an efficiency-driven design (a lighter classification head, decoupled spatial and channel downsampling, a rank-guided block allocation) and an accuracy-driven one (large-kernel convolutions and a partial self-attention module).
+
+**YOLO11** [16]. Released by Ultralytics on 27 September 2024. The documentation describes improved backbone and neck design and refined training, across detection, segmentation, classification, pose and oriented boxes; no paper.
+
+**YOLOv12** [17]. Argues that attention had been too slow for real-time detectors because of its quadratic cost and memory access, and makes it fast with *area attention*: the feature map is split into $l$ equal areas (default $l = 4$) and attention runs within each, which reduces cost while keeping a large receptive field. R-ELAN (a residual aggregation block) stabilizes training of the larger models. Peer reviewed at NeurIPS 2025.
+
+**YOLOv13** [18]. Models higher-order correlations among positions with a hypergraph: HyperACE treats pixels of multi-scale features as vertices and learns the hyperedges, and FullPAD distributes the enhanced features to the backbone, neck and head; depthwise-separable blocks keep the model light. arXiv only at the time of writing.
+
+**YOLO26** [19]. Released by Ultralytics in January 2026, with an arXiv paper in June 2026. The dual-head design gives NMS-free inference by default (an NMS path remains optional). DFL is removed: the paper gives two reasons, the head size (it reports that removing DFL reduces YOLO11n from 2.6M to 2.3M parameters) and the finite range of $(K - 1)$ strides per side with $K = 16$ bins. Training adds MuSGD, a hybrid of SGD and the Muon optimizer [51]; progressive loss (main text); and STAL, which enlarges boxes smaller than the finest stride to a reference size *for candidate selection only*, so that tiny objects always get positive samples.
+
+**YOLO27** [20]. Announced on the Ultralytics documentation, which states that the models are in final development, not yet available, with no launch date. The announced design uses CNN heads predicting on fewer scales for the smallest models and query-based decoding without NMS for the larger ones. Treat it as an announcement until weights and a paper exist.
+
+### Real-time DETRs after RT-DETR, in detail
+
+**Plain version.** The successors attack three remaining weaknesses: boxes predicted as four plain numbers, slow convergence from few positives, and backbones that transfer poorly to new data.
+
+**RT-DETRv2** [24] keeps the RT-DETR architecture and adds training and deployment improvements: a different number of deformable-attention sampling points for each feature scale, so the decoder extracts multi-scale features selectively; an optional discrete sampling operator that replaces the `grid_sample` operator, which removes a deployment obstacle; and dynamic data augmentation and hyperparameters adapted to the model scale.
+
+**D-FINE** [25] redefines box regression in a DETR as **fine-grained distribution refinement (FDR)**: each decoder layer predicts probability distributions over offsets for the four edges and refines the previous layer's distributions in a residual way, so boxes are corrected step by step, with uncertainty, rather than regressed as fixed coordinates. **Global optimal localization self-distillation (GO-LSD)** then distills the refined distributions of the final layer into the earlier layers. This connects the DETR line to the distribution idea of DFL in the main text.
+
+**DEIM** [26] addresses the shortage of positives under one-to-one matching without adding extra decoders. **Dense one-to-one** matching keeps the one-to-one rule but increases the number of targets per image, which mosaic and mixup achieve easily. The **matchability-aware loss (MAL)** then adjusts the classification penalty by the quality of each match, so that low-IoU matches with high confidence are handled better. The paper applies DEIM to RT-DETRv2 and D-FINE and reports that, with half the training epochs, it slightly exceeds their accuracy.
+
+**RF-DETR** [27] starts from a DETR with a DINOv2-pretrained vision-transformer backbone [47] and uses **weight-sharing neural architecture search**: one network is fine-tuned on the target dataset while varying parameters such as input resolution and patch size during training, and thousands of sub-configurations with different accuracy–latency trade-offs can then be evaluated without retraining. Its focus is transfer to arbitrary target datasets rather than COCO alone.
+
+**DEIMv2** [28] extends DEIM with DINOv3 features [48]: for the larger models it uses DINOv3-pretrained or distilled backbones and a Spatial Tuning Adapter that converts the single-scale transformer output into the multi-scale features a detector needs; for the smallest models it uses depth- and width-pruned convolutional backbones.
+
+### Folding a re-parameterized block into one convolution
+
+**Plain version.** A block with three parallel branches (a $3 \times 3$ convolution, a $1 \times 1$ convolution and a shortcut) trains well but runs slowly. Because every branch is linear until the activation, the three can be added into a single $3 \times 3$ convolution after training, and the network computes exactly the same function, faster.
+
+At inference, batch normalization [49] is an affine map per channel. For a bias-free convolution with kernel $W$ followed by batch normalization with learned scale $\gamma$, shift $\beta$, and running mean $\mu$ and variance $\sigma^2$,
+
+$$
+\text{BN}(W * x) = \gamma\,\frac{W * x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta = W' * x + b', \qquad W' = \frac{\gamma}{\sqrt{\sigma^2 + \epsilon}}\,W, \quad b' = \beta - \frac{\gamma\,\mu}{\sqrt{\sigma^2 + \epsilon}},
+$$
+
+where $*$ is convolution, $\epsilon$ a small constant, and all operations are per output channel. A $1 \times 1$ kernel is a $3 \times 3$ kernel that is zero except at its centre, and the identity is a $1 \times 1$ kernel equal to the identity matrix across channels. Once each branch is written as a $3 \times 3$ kernel with a bias, the sum of branches is one convolution with the summed kernel and summed bias. This is the structural re-parameterization of RepVGG [32].
+
+```python
+import numpy as np
+
+def conv(x, w, b):
+    """'Same' convolution (cross-correlation). x: (C, H, W), w: (O, C, k, k), b: (O,)."""
+    k = w.shape[-1]; p = k // 2
+    xp = np.pad(x, ((0, 0), (p, p), (p, p)))
+    H, W = x.shape[1:]
+    out = sum(np.einsum("oc,chw->ohw", w[:, :, i, j], xp[:, i:i + H, j:j + W])
+              for i in range(k) for j in range(k))
+    return out + b[:, None, None]
+
+def fold_bn(w, gamma, beta, mu, var, eps=1e-5):
+    """A bias-free conv followed by inference-mode batch norm -> one conv with a bias."""
+    scale = gamma / np.sqrt(var + eps)
+    return w * scale[:, None, None, None], beta - mu * scale
+
+rng = np.random.default_rng(0)
+C = 4                                                   # channels in = channels out
+x = rng.normal(size=(C, 10, 10))
+bn = lambda: (rng.uniform(0.5, 1.5, C), rng.normal(size=C), rng.normal(size=C), rng.uniform(0.5, 2, C))
+w3, w1 = rng.normal(size=(C, C, 3, 3)), rng.normal(size=(C, C, 1, 1))
+bn3, bn1, bn_id = bn(), bn(), bn()
+
+def bn_apply(z, g, b, mu, var, eps=1e-5):
+    return g[:, None, None] * (z - mu[:, None, None]) / np.sqrt(var[:, None, None] + eps) + b[:, None, None]
+
+# training-time block: 3x3 branch + 1x1 branch + identity branch, each with its own batch norm
+y_train = (bn_apply(conv(x, w3, np.zeros(C)), *bn3) + bn_apply(conv(x, w1, np.zeros(C)), *bn1)
+           + bn_apply(x, *bn_id))
+
+# deployment: express every branch as a 3x3 kernel, fold its batch norm, then add the kernels
+w1_as3 = np.pad(w1, ((0, 0), (0, 0), (1, 1), (1, 1)))  # 1x1 kernel in the centre of a 3x3 one
+w_id = np.zeros((C, C, 3, 3)); w_id[np.arange(C), np.arange(C), 1, 1] = 1.0
+folded = [fold_bn(w, *p) for w, p in [(w3, bn3), (w1_as3, bn1), (w_id, bn_id)]]
+w_dep, b_dep = sum(f[0] for f in folded), sum(f[1] for f in folded)
+y_dep = conv(x, w_dep, b_dep)
+print("same output:", np.allclose(y_train, y_dep))
+print("branches at training: 3 | convolutions at inference: 1")
+```
+
+```text
+same output: True
+branches at training: 3 | convolutions at inference: 1
+```
+
+The folding is exact only for inference-mode batch normalization (fixed running statistics) and only before the nonlinearity. The YOLOv7 paper's "planned" re-parameterization exists because some combinations, such as an identity branch inside a block that already has a residual connection, hurt accuracy [12], and YOLOv6 reports that folded models can be harder to quantize [11].
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Reading the YOLOv10 paper
+
+**The paper.** A. Wang, H. Chen, L. Liu, K. Chen, Z. Lin, J. Han and G. Ding, "YOLOv10: Real-time end-to-end object detection," NeurIPS 2024 [15].
+
+**The problem it poses.** YOLOs are trained with one-to-many assignment and therefore need NMS, which adds latency and a threshold to tune. DETR-style one-to-one assignment removes NMS but gives weak supervision. Separately, the authors argue that the YOLO architecture had never been designed as a whole for efficiency and accuracy.
+
+**The idea.** Two heads with the same structure share the backbone and neck. One is trained one-to-many, the other one-to-one; only the one-to-one head is used at inference. The key analysis is the **supervision gap**: if the two heads used different matching parameters, the prediction chosen by the one-to-one head need not be among the best of the one-to-many head, so the two heads would pull the shared features in different directions. The appendix derives that the gap is smallest when the one-to-one head's $\alpha$ and $\beta$ are proportional to the one-to-many head's ($\alpha_{\text{o2o}} = r\,\alpha_{\text{o2m}}$, $\beta_{\text{o2o}} = r\,\beta_{\text{o2m}}$), and the paper takes $r = 1$. Figure 2(b) of the paper supports this by counting how often the one-to-one match falls in the one-to-many top-1, top-5 and top-10.
+
+**What it showed.** Table 3 isolates the assignment on the small model: one-to-many only, 44.9 AP at 7.07 ms; one-to-one only, 43.4 AP at 2.44 ms; both heads, 44.3 AP at 2.44 ms. Table 4 shows that the consistent setting is as good as or better than the alternatives tried. Table 2 adds the efficiency and accuracy design changes step by step.
+
+**What to check when you read it.**
+
+- **What the latency includes.** End-to-end latency is measured on a T4 GPU with TensorRT FP16, at batch 1, averaged over COCO val images, with the TensorRT efficient-NMS plugin for models that need NMS and I/O excluded (appendix). The paper also reports a forward-only latency for comparisons with YOLOs trained the usual way; do not mix the two columns.
+- **The price of NMS-free.** In Table 3 the one-to-one head is 0.6 AP below the one-to-many head with NMS. The gain is latency and simplicity, not accuracy.
+- **Single runs.** The ablations report single numbers; differences of a few tenths of AP may be within run-to-run variation.
+- **Baselines.** Comparisons with other detectors use their official weights and the paper's own benchmark, which is the right way to compare speed, but the training recipes differ between models.
+
+**Why it matters here.** It is the clearest demonstration that the YOLO and DETR lines differ in assignment more than in architecture, and it set the pattern (train with both, infer with one-to-one) that YOLO26 adopted.
+
+### Reading the RT-DETR paper
+
+**The paper.** Y. Zhao, W. Lv, S. Xu, J. Wei, G. Wang, Q. Dang, Y. Liu and J. Chen, "DETRs beat YOLOs on real-time object detection," CVPR 2024 [23].
+
+**The problem it poses.** DETRs need no NMS but were too slow for real time; YOLOs are fast but their reported speeds usually leave NMS out. The paper asks both "how much does NMS really cost?" and "can a DETR be fast?".
+
+**The idea.** First, measure. Section 3 analyses NMS: the number of boxes that survive the confidence threshold, the NMS execution time under different thresholds (using the TensorRT efficient-NMS kernel on a T4 GPU in FP16), and the resulting AP. It then defines an end-to-end benchmark on COCO val2017 that appends NMS to YOLO detectors with the thresholds each uses for its reported accuracy. Second, build. The hybrid encoder (AIFI + CCFF), uncertainty-minimal query selection and adjustable decoder depth described in the main text.
+
+**What it showed.** Under its benchmark, anchor-free YOLOs were faster end to end than anchor-based ones at equal accuracy, because they produce fewer boxes. RT-DETR with ResNet-50 and ResNet-101 backbones reports 53.1% and 54.3% AP at 108 and 74 FPS on a T4 GPU, and the ablations compare encoder variants and query-selection schemes.
+
+**What to check when you read it.**
+
+- **Which NMS time is reported.** The NMS analysis times only the main NMS kernel of a multi-kernel plugin; the end-to-end benchmark excludes I/O and memory copies. Both are stated in the text.
+- **Which numbers use extra data.** Results with Objects365 pre-training are reported separately; keep them apart from COCO-only results.
+- **Version differences.** The first arXiv version called the query selection "IoU-aware"; the final version calls it "uncertainty-minimal" and defines it with the uncertainty $U$ in the main text. Cite the final version.
+- **What "beats" means.** The comparison is at matched accuracy and on one GPU type and engine. The ranking can change on CPUs or edge accelerators, where attention and deformable sampling may be slower relative to convolutions.
+
+**Why it matters here.** It made end-to-end speed (with NMS) the expected way to report real-time detectors, and its successors (RT-DETRv2, D-FINE, DEIM, RF-DETR, DEIMv2) all build on its design.
+
+## References
+
+1. J. Terven, D.-M. Córdova-Esparza and J.-A. Romero-González, "A comprehensive review of YOLO architectures in computer vision: From YOLOv1 to YOLOv8 and YOLO-NAS," *Machine Learning and Knowledge Extraction*, vol. 5, no. 4, pp. 1680–1716, 2023. [doi](https://doi.org/10.3390/make5040083) · [arXiv](https://arxiv.org/abs/2304.00501)
+2. N. Jegham, C. Y. Koh, M. Abdelatti and A. Hendawi, "YOLO evolution: A comprehensive benchmark and architectural review of YOLOv12, YOLO11, and their previous versions," arXiv:2411.00201, 2024 (revised 2025). [arXiv](https://arxiv.org/abs/2411.00201)
+3. R. Sapkota and M. Karkee, "Ultralytics YOLO evolution: An overview of YOLO27, YOLO26, YOLO11, YOLOv8, and YOLOv5 object detectors for computer vision and pattern recognition," arXiv:2510.09653, 2025 (revised 2026). [arXiv](https://arxiv.org/abs/2510.09653)
+4. T. Shehzadi, K. A. Hashmi, M. Liwicki, D. Stricker and M. Z. Afzal, "Object detection with transformers: A review," *Sensors*, vol. 25, no. 19, 2025. [doi](https://doi.org/10.3390/s25196025)
+5. J. Redmon, S. Divvala, R. Girshick and A. Farhadi, "You only look once: Unified, real-time object detection," in *Proc. IEEE CVPR*, pp. 779–788, 2016. [doi](https://doi.org/10.1109/CVPR.2016.91) · [arXiv](https://arxiv.org/abs/1506.02640)
+6. J. Redmon and A. Farhadi, "YOLO9000: Better, faster, stronger," in *Proc. IEEE CVPR*, pp. 6517–6525, 2017. [doi](https://doi.org/10.1109/CVPR.2017.690) · [arXiv](https://arxiv.org/abs/1612.08242)
+7. J. Redmon and A. Farhadi, "YOLOv3: An incremental improvement," tech. report, arXiv:1804.02767, 2018. [arXiv](https://arxiv.org/abs/1804.02767)
+8. A. Bochkovskiy, C.-Y. Wang and H.-Y. M. Liao, "YOLOv4: Optimal speed and accuracy of object detection," arXiv:2004.10934, 2020. [arXiv](https://arxiv.org/abs/2004.10934)
+9. G. Jocher, "Ultralytics YOLOv5," software, version 7.0, 2020 (no paper). [code](https://github.com/ultralytics/yolov5) · [docs](https://docs.ultralytics.com/models/yolov5/)
+10. Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun, "YOLOX: Exceeding YOLO series in 2021," arXiv:2107.08430, 2021. [arXiv](https://arxiv.org/abs/2107.08430)
+11. C. Li, L. Li, H. Jiang, K. Weng, Y. Geng et al., "YOLOv6: A single-stage object detection framework for industrial applications," tech. report, arXiv:2209.02976, 2022. [arXiv](https://arxiv.org/abs/2209.02976)
+12. C.-Y. Wang, A. Bochkovskiy and H.-Y. M. Liao, "YOLOv7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors," in *Proc. IEEE/CVF CVPR*, pp. 7464–7475, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.00721)
+13. G. Jocher, A. Chaurasia and J. Qiu, "Ultralytics YOLOv8," software, version 8.0.0, 2023 (no paper). [docs](https://docs.ultralytics.com/models/yolov8/) · [code](https://github.com/ultralytics/ultralytics)
+14. C.-Y. Wang, I-H. Yeh and H.-Y. M. Liao, "YOLOv9: Learning what you want to learn using programmable gradient information," in *Proc. ECCV*, 2024. [doi](https://doi.org/10.1007/978-3-031-72751-1_1)
+15. A. Wang, H. Chen, L. Liu, K. Chen, Z. Lin, J. Han and G. Ding, "YOLOv10: Real-time end-to-end object detection," in *Proc. NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2405.14458)
+16. G. Jocher and J. Qiu, "Ultralytics YOLO11," software, version 11.0.0, 2024 (no paper). [docs](https://docs.ultralytics.com/models/yolo11/) · [code](https://github.com/ultralytics/ultralytics)
+17. Y. Tian, Q. Ye and D. Doermann, "YOLOv12: Attention-centric real-time object detectors," in *Advances in Neural Information Processing Systems 38 (NeurIPS)*, 2025. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2025/hash/7103444259031cc58051f8c9a4868533-Abstract-Conference.html) · [arXiv](https://arxiv.org/abs/2502.12524)
+18. M. Lei, S. Li, Y. Wu, H. Hu, Y. Zhou et al., "YOLOv13: Real-time object detection with hypergraph-enhanced adaptive visual perception," arXiv:2506.17733, 2025. [arXiv](https://arxiv.org/abs/2506.17733)
+19. G. Jocher, J. Qiu, M. Liu, S. Lyu, F. C. Akyon and M. E. Kalfaoglu, "Ultralytics YOLO26: Unified real-time end-to-end vision models," arXiv:2606.03748, 2026 (software released January 2026). [arXiv](https://arxiv.org/abs/2606.03748) · [docs](https://docs.ultralytics.com/models/yolo26/)
+20. Ultralytics, "YOLO27 (coming soon)," official documentation page, accessed 31 October 2026. [docs](https://docs.ultralytics.com/models/yolo27/)
+21. N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov and S. Zagoruyko, "End-to-end object detection with transformers," in *Proc. ECCV*, 2020. [doi](https://doi.org/10.1007/978-3-030-58452-8_13)
+22. X. Zhu, W. Su, L. Lu, B. Li, X. Wang and J. Dai, "Deformable DETR: Deformable transformers for end-to-end object detection," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.04159)
+23. Y. Zhao, W. Lv, S. Xu, J. Wei, G. Wang, Q. Dang, Y. Liu and J. Chen, "DETRs beat YOLOs on real-time object detection," in *Proc. IEEE/CVF CVPR*, pp. 16965–16974, 2024. [doi](https://doi.org/10.1109/CVPR52733.2024.01605) · [arXiv](https://arxiv.org/abs/2304.08069)
+24. W. Lv, Y. Zhao, Q. Chang, K. Huang, G. Wang and Y. Liu, "RT-DETRv2: Improved baseline with bag-of-freebies for real-time detection transformer," arXiv:2407.17140, 2024. [arXiv](https://arxiv.org/abs/2407.17140)
+25. Y. Peng, H. Li, P. Wu, Y. Zhang, X. Sun and F. Wu, "D-FINE: Redefine regression task in DETRs as fine-grained distribution refinement," in *Proc. ICLR*, 2025. [arXiv](https://arxiv.org/abs/2410.13842) · [code](https://github.com/Peterande/D-FINE)
+26. S. Huang, Z. Lu, X. Cun, Y. Yu, X. Zhou and X. Shen, "DEIM: DETR with improved matching for fast convergence," in *Proc. IEEE/CVF CVPR*, pp. 15162–15171, 2025. [doi](https://doi.org/10.1109/CVPR52734.2025.01412) · [arXiv](https://arxiv.org/abs/2412.04234)
+27. I. Robinson, P. Robicheaux, M. Popov, D. Ramanan and N. Peri, "RF-DETR: Neural architecture search for real-time detection transformers," in *Proc. ICLR*, 2026. [arXiv](https://arxiv.org/abs/2511.09554)
+28. S. Huang, Y. Hou, L. Liu, X. Yu and X. Shen, "Real-time object detection meets DINOv3," arXiv:2509.20787, 2025. [arXiv](https://arxiv.org/abs/2509.20787)
+29. D. Jia, Y. Yuan, H. He, X. Wu, H. Yu, W. Lin, L. Sun, C. Zhang and H. Hu, "DETRs with hybrid matching," in *Proc. IEEE/CVF CVPR*, pp. 19702–19712, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.01887) · [arXiv](https://arxiv.org/abs/2207.13080)
+30. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature pyramid networks for object detection," in *Proc. IEEE CVPR*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.106)
+31. S. Liu, L. Qi, H. Qin, J. Shi and J. Jia, "Path aggregation network for instance segmentation," in *Proc. IEEE/CVF CVPR*, pp. 8759–8768, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00913)
+32. X. Ding, X. Zhang, N. Ma, J. Han, G. Ding and J. Sun, "RepVGG: Making VGG-style ConvNets great again," in *Proc. IEEE/CVF CVPR*, pp. 13728–13737, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.01352)
+33. Z. Ge, S. Liu, Z. Li, O. Yoshie and J. Sun, "OTA: Optimal transport assignment for object detection," in *Proc. IEEE/CVF CVPR*, pp. 303–312, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.00037)
+34. C. Feng, Y. Zhong, Y. Gao, M. R. Scott and W. Huang, "TOOD: Task-aligned one-stage object detection," in *Proc. IEEE/CVF ICCV*, pp. 3490–3499, 2021. [doi](https://doi.org/10.1109/ICCV48922.2021.00349)
+35. X. Li, W. Wang, L. Wu, S. Chen, X. Hu, J. Li, J. Tang and J. Yang, "Generalized focal loss: Learning qualified and distributed bounding boxes for dense object detection," in *Advances in Neural Information Processing Systems 33 (NeurIPS)*, 2020. [proceedings](https://papers.nips.cc/paper/2020/hash/f0bda020d2470f2e74990a07a607ebd9-Abstract.html)
+36. H. Zhang, Y. Wang, F. Dayoub and N. Sünderhauf, "VarifocalNet: An IoU-aware dense object detector," in *Proc. IEEE/CVF CVPR*, pp. 8510–8519, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.00841)
+37. Z. Zheng, P. Wang, W. Liu, J. Li, R. Ye and D. Ren, "Distance-IoU loss: Faster and better learning for bounding box regression," in *Proc. AAAI*, pp. 12993–13000, 2020. [doi](https://doi.org/10.1609/aaai.v34i07.6999)
+38. H. Zhang, M. Cisse, Y. N. Dauphin and D. Lopez-Paz, "mixup: Beyond empirical risk minimization," in *Proc. ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.09412)
+39. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE ICCV*, pp. 2999–3007, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+40. H. W. Kuhn, "The Hungarian method for the assignment problem," *Naval Research Logistics Quarterly*, vol. 2, pp. 83–97, 1955. [doi](https://doi.org/10.1002/nav.3800020109)
+41. T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan, P. Dollár and C. L. Zitnick, "Microsoft COCO: Common objects in context," in *Proc. ECCV*, pp. 740–755, 2014. [doi](https://doi.org/10.1007/978-3-319-10602-1_48)
+42. COCO Consortium, "COCO detection evaluation," official evaluation description. [link](https://cocodataset.org/#detection-eval)
+43. S. Shao, Z. Li, T. Zhang, C. Peng, G. Yu, X. Zhang, J. Li and J. Sun, "Objects365: A large-scale, high-quality dataset for object detection," in *Proc. IEEE/CVF ICCV*, pp. 8429–8438, 2019. [doi](https://doi.org/10.1109/ICCV.2019.00852)
+44. ONNX, "Open Neural Network Exchange," official project page. [link](https://onnx.ai/)
+45. NVIDIA, "TensorRT documentation," official documentation. [link](https://docs.nvidia.com/deeplearning/tensorrt/latest/index.html)
+46. B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam and D. Kalenichenko, "Quantization and training of neural networks for efficient integer-arithmetic-only inference," in *Proc. IEEE/CVF CVPR*, pp. 2704–2713, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00286)
+47. M. Oquab, T. Darcet, T. Moutakanni, H. Vo, M. Szafraniec et al., "DINOv2: Learning robust visual features without supervision," arXiv:2304.07193, 2023. [arXiv](https://arxiv.org/abs/2304.07193)
+48. O. Siméoni, H. V. Vo, M. Seitzer, F. Baldassarre, M. Oquab et al., "DINOv3," arXiv:2508.10104, 2025. [arXiv](https://arxiv.org/abs/2508.10104)
+49. S. Ioffe and C. Szegedy, "Batch normalization: Accelerating deep network training by reducing internal covariate shift," in *Proc. ICML*, PMLR vol. 37, pp. 448–456, 2015. [link](https://proceedings.mlr.press/v37/ioffe15.html)
+50. C.-Y. Wang, H.-Y. M. Liao, I-H. Yeh, Y.-H. Wu, P.-Y. Chen and J.-W. Hsieh, "CSPNet: A new backbone that can enhance learning capability of CNN," arXiv:1911.11929, 2019. [arXiv](https://arxiv.org/abs/1911.11929)
+51. K. Jordan, Y. Jin, V. Boza, J. You, F. Cesista, L. Newhouse and J. Bernstein, "Muon: An optimizer for hidden layers in neural networks," blog post, 2024. [link](https://kellerjordan.github.io/posts/muon/)
+52. J. Lu, J. Jia, J. Yawl and C. Zhang, "YOLOv14: Adaptive real-time object detection for diverse imaging conditions," arXiv:2608.04720, 2026 (withdrawn by the authors, 20 August 2026). [arXiv](https://arxiv.org/abs/2608.04720)

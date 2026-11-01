@@ -1,0 +1,922 @@
+---
+title: "DLCV 01B・網路的積木與組合：分類與影像復原網路"
+description: "深度視覺網路由哪些積木搭成、如何把它們組合成分類網路與影像復原網路、對照比較配對的模型，以及如何探索設計空間而不自欺。"
+track: deep-learning
+order: 17
+level: advanced
+prereqs: [deep-learning/dl-01-deep-learning-for-image-processing, ml/ml-04-vision-transformers]
+tags: [architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import macroFig from '../../../../assets/deep-learning/dl-01b-building-blocks/macro-architectures.png';
+import catalogueFig from '../../../../assets/deep-learning/dl-01b-building-blocks/block-catalogue.png';
+import normFig from '../../../../assets/deep-learning/dl-01b-building-blocks/normalization-range.png';
+import checkerFig from '../../../../assets/deep-learning/dl-01b-building-blocks/checkerboard.png';
+import rfFig from '../../../../assets/deep-learning/dl-01b-building-blocks/receptive-field-growth.png';
+
+## 你將學到
+
+- 網路的解剖學詞彙（stem、stage、區塊、下取樣層、neck、head），以及視覺網路常用積木的目錄；每個積木先用一句白話說明，必要時再給精確版本。
+- 同樣的積木如何組成不同的樣子：**分類**（縮小解析度、加寬特徵、池化、分類）與**影像復原**（保持解析度或再回到原解析度、學殘差、保住強度範圍）。
+- 為什麼有些對分類器有幫助的積木，反而傷害復原網路：批次正規化、轉置卷積與過早下取樣，每一項都用小型 NumPy 實驗示範。
+- 如何把三組配對模型（ResNet 對 EDSR 與 NAFNet、Swin 對 SwinIR、ViT 對 Restormer）讀成「一串改動，每項都有理由」的清單。
+- 如何誠實地探索設計空間：讀懂消融實驗、一次只改一件事，以及像 RegNet 那樣比較整個模型族群。
+- 最容易讓你損失準確率、記憶體或一週除錯時間的組合錯誤。
+
+## 先看全貌
+
+在論文的圖裡，視覺網路看起來很複雜，但它其實只由少數幾種積木重複、連接而成。兩個用了相同積木的網路，行為可能差很多，因為它們的**組合**方式不同：解析度在哪裡改變、跳接接到哪裡、正規化放在哪裡、輸出怎麼形成。本章談的就是這些組合上的決定。
+
+<Callout type="tip" title="用最簡單的話說">
+想像一個工具箱：鋸子、刷子、膠水。家具師傅用它們把一根大原木變成一隻小小的椅腳：削掉大部分的木頭，只留下重要的部分。修復畫作的人用同一批工具，做法卻完全不同：畫必須維持原來的大小，每一筆都留在原位，只是變得更乾淨。分類器就是家具師傅：它不斷丟掉像素，直到只剩下答案（「貓」）。影像復原網路則是修復師：它必須把每一個像素都還給你。工具相同，計畫相反。
+</Callout>
+
+**為什麼重要。** 實務上很少需要發明新的積木，更常見的是挑選骨幹網路、把它改到新任務上，或判斷一篇論文的十項改動裡哪幾項真的有用。把分類骨幹原封不動拿去做去雜訊，會丟掉細節；而某個在別篇論文有效的積木，放進你的設計空間未必有效。
+
+**基礎在哪裡。** 這些積木本身在站內別處已經教過，本章只連結過去、不重複：卷積、感受野與殘差區塊見 [ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#感受野) 與 [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#resnet2015以及殘差連接為什麼有效)；Transformer 區塊、Swin 與高效率注意力見 [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#transformer-區塊)；分類骨幹網路見 [DLCV 02](/zh-tw/learn/deep-learning/dl-02-image-classification/#resnet學習殘差)；編碼器–解碼器與 ASPP 見 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/#編碼器解碼器與跳接)；復原的骨幹網路與上取樣見 [DLCV 04](/zh-tw/learn/deep-learning/dl-04-image-restoration/#通用骨幹網路) 與 [DLCV 04A](/zh-tw/learn/deep-learning/dl-04a-super-resolution/#後上取樣與子像素卷積)。本章所有程式碼只用 NumPy 與 SciPy，在 CPU 上幾秒就能跑完，資料是合成資料或 `skimage.data`。
+
+## 網路的解剖
+
+**白話版。** 幾乎所有視覺網路都有三個部分：把像素變成特徵的 **stem**、由重複區塊組成的**主體（body）**，以及把特徵變成答案的 **head**。不同任務的差別，主要在於影像大小在途中怎麼變化。
+
+**精確版。** 把特徵圖寫成形狀為 $C \times H \times W$ 的張量，其中 $C$ 是通道數（**寬度**），$H \times W$ 是空間大小。常見的組成如下：
+
+- **Stem**：最前面的一兩層。ResNet 用步幅 2 的 $7 \times 7$ 卷積，加上步幅 2 的 $3 \times 3$ 最大池化，所以主體是從輸入解析度的 $1/4$ 開始 [1]。ConvNeXt 改成「patchify」：步幅 4 的 $4 \times 4$ 卷積 [2]；ViT 則把影像切成 $16 \times 16$ 的 patch [3]。復原網路只用一個全解析度的 $3 \times 3$ 卷積，SwinIR 稱它為**淺層特徵擷取（shallow feature extraction）** [4]。
+- **Stage**：一串共用同一解析度與同一寬度的區塊。**區塊（block）**是重複的單位（殘差區塊、Transformer 區塊）。
+- **下取樣層（downsampling layer，也叫轉換層）**：把 $H$ 與 $W$ 減半，通常同時把 $C$ 加倍。它可以是 stage 第一個區塊裡的步幅卷積（ResNet）、獨立的步幅 2 的 $2 \times 2$ 卷積（ConvNeXt、NAFNet）、patch merging（Swin），或 pixel unshuffle（Restormer）。
+- **Neck**：選用的模組，用來混合多個 stage 的特徵，例如偵測器使用的特徵金字塔網路（Feature Pyramid Network，FPN）[5]。
+- **Head**：分類用的是全域平均池化加一個線性層；復原用的是最後一個卷積，超解析度還要再加上取樣器。
+
+一個 stage 的**輸出步幅（output stride）**，是輸入大小與該 stage 特徵圖大小的比值。ResNet 的四個 stage，輸出步幅依序是 4、8、16、32 [1]；Swin 也一樣 [6]。整個網路都維持同一解析度與同一寬度的（如 ViT）稱為**等向（isotropic）**；stage 解析度逐步下降的稱為**階層式（hierarchical）**。
+
+ResNet 也提出了被抄得最多的整體設計規則：特徵圖縮小一半時，濾波器數量加倍，「好讓每一層的時間複雜度維持不變」[1]。一個輸入與輸出都是 $C$ 個通道的 $3 \times 3$ 卷積，作用在 $H \times W$ 的特徵圖上，要花 $9 H W C^2$ 次乘加（multiply-accumulate，MAC）；特徵圖縮小一半、寬度加倍後，成本是 $9 \cdot \tfrac{H}{2} \cdot \tfrac{W}{2} \cdot (2C)^2 = 9 H W C^2$，完全相同。圖 1 畫出本章要比較的三種整體架構。
+
+<Figure src={macroFig} alt="三張方塊圖。(a) 分類：一個影像方塊、一個把大小除以 4 的 stem、四個 stage（方塊越來越矮，H/4 到 H/32，通道數從 C 增加到 8C）、全域平均池化、線性層與類別分數。(b) 一般復原：輸入、淺層卷積、K 個等高的殘差群組（全解析度）、一個卷積、一個由淺層特徵經長跳接送來的加法、超解析度才有的選用取樣器，最後是一個由輸入經虛線全域殘差送來的加法。(c) U 形復原：三層編碼器往下到 H/8 的瓶頸，再三層解碼器往上回來；每個編碼器層級都有實線跳接箭頭連到相同大小的解碼器層級；最後是一個卷積，以及一條從輸入到輸出的虛線全域殘差。" caption="圖 1 — 三種整體架構。(a) 分類器像漏斗：解析度下降、寬度增加，全域池化去掉空間格點。(b) 一般復原網路維持全解析度，並加上長跳接與全域跳接。(c) U 形復原網路往下取得脈絡、再往上找回細節。" />
+
+## 積木目錄
+
+**白話版。** 一個區塊有兩項工作：在**空間**上混合資訊（相鄰的像素或 token），以及在**通道**上混合資訊（同一位置的各個特徵）。目錄裡的每個區塊兩件事都做，只是比例和成本不同。它們周圍還有三種幫手：跳接、正規化與非線性函數。
+
+MetaFormer 論文把這個分工講得很明確：Transformer 區塊是一個 **token 混合器（token mixer）**（注意力）加一個**通道混合器（channel mixer）**（MLP），各自放在帶有正規化的殘差分支裡；把注意力換成簡單的空間池化運算，在 ImageNet 上仍有具競爭力的準確率 [7]，這暗示整體結構本身就貢獻了大部分的效能 [8]。圖 2 用這個共同格式畫出本章的各個區塊。
+
+<Figure src={catalogueFig} alt="八張垂直方塊圖，有彩色方塊與橘色跳接箭頭。(a) 基本殘差：3x3 卷積、BN、ReLU、3x3 卷積、BN、加法、ReLU。(b) 瓶頸：1x1 卷積降到 C/4、BN ReLU、3x3 卷積、BN ReLU、1x1 卷積回到 C、BN、加法、ReLU。(c) 反向殘差：1x1 卷積擴張到 tC、BN ReLU6、3x3 深度卷積、BN ReLU6、1x1 卷積到 C、BN（沒有活化函數）、加法。(d) ConvNeXt：7x7 深度卷積、LayerNorm、1x1 卷積到 4C、GELU、1x1 卷積到 C、layer scale、加法。(e) SE 與 CBAM 閘：卷積層、由池化加 MLP 與 sigmoid 得到的通道閘、由 7x7 卷積加 sigmoid 得到的空間閘、加法。(f) Pre-norm Transformer：LayerNorm、自注意力、加法、LayerNorm、MLP、加法。(g) NAFNet：LayerNorm、1x1 卷積到 2C、3x3 深度卷積、SimpleGate、簡化通道注意力、1x1 卷積、乘以 beta、加法，接著 LayerNorm、1x1 卷積到 2C、SimpleGate、1x1 卷積、乘以 gamma、加法。(h) Restormer：LayerNorm、由 1x1 與 3x3 深度卷積得到 Q K V、C 乘 C 的通道注意力、1x1 卷積、加法，接著 LayerNorm、兩條 1x1 加 3x3 深度卷積的路徑、第 1 條路徑的 GELU 乘上第 2 條路徑、1x1 卷積、加法。" caption="圖 2 — 以同一格式畫出的積木目錄。顏色代表運算的種類；橘色箭頭是恆等跳接。(a)–(d) 是分類用的區塊，(e) 是注意力附加模組，(f) 是 Transformer 區塊，(g)–(h) 是復原用的區塊。" />
+
+下表為每個區塊配一句白話說明，並標出它的基礎在哪裡教。
+
+| 區塊 | 一句白話 | 用在 | 基礎 |
+|---|---|---|---|
+| 殘差（基本） | 學一個修正量 $F(x)$，加回輸入 | ResNet-18/34、EDSR | [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#resnet2015以及殘差連接為什麼有效) |
+| 瓶頸 | 用 $1 \times 1$ 壓縮通道，濾波，再擴張回來 | ResNet-50 與更深的網路 | [DLCV 02](/zh-tw/learn/deep-learning/dl-02-image-classification/#resnet學習殘差) |
+| 深度可分離 | 每個通道各自濾波，再用 $1 \times 1$ 混合通道 | MobileNet [9] | [DLCV 02](/zh-tw/learn/deep-learning/dl-02-image-classification/#mobilenet把卷積拆開) |
+| 反向殘差 | 先擴張、做深度濾波、再線性投影回來；跳接接在細的兩端 | MobileNetV2 [10] | [ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#高效率-cnn把空間濾波與通道混合分開) |
+| ConvNeXt 區塊 | 大的深度卷積核，加上 Transformer 風格的 MLP | ConvNeXt | [DLCV 02](/zh-tw/learn/deep-learning/dl-02-image-classification/#convnext一步一步現代化的-cnn) |
+| SE / CBAM | 依據池化統計算出的閘，重新調整通道（以及位置）的權重 | SENet、RCAN、NAFNet | [DLCV 02 補充資料](/zh-tw/learn/deep-learning/dl-02-image-classification/notes/#squeeze-and-excitationcnn-裡的注意力) |
+| 自注意力 | 每個 token 都看所有其他 token | ViT | [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#自注意力querykey-與-value) |
+| 視窗注意力 | 在局部視窗內做注意力，視窗在層與層之間位移 | Swin、SwinIR | [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#swin-與階層式-transformer) |
+| 通道（轉置）注意力 | 在通道之間做注意力，成本隨像素數線性增加 | Restormer | 本章 |
+| 閘控區塊 | 把兩半特徵相乘，取代活化函數 | NAFNet、Restormer 的 GDFN | 本章 |
+
+### 殘差連接與殘差縮放
+
+**白話版。** 殘差區塊把輸入加回輸出，所以區塊只需要學一個修正量，而恆等路徑讓訊號與梯度可以穿過任意深度。還沒定論的問題是：正規化與活化函數該放在加法的哪一側，以及一開始修正量該多大。
+
+**精確版。** 一般形式是
+
+$$
+y = x + \alpha \, F(x),
+$$
+
+其中 $x$ 是區塊輸入，$F$ 是殘差分支（卷積、注意力、正規化），$y$ 是輸出，$\alpha$ 是分支的縮放係數。非線性函數常見的放法有三種：
+
+- **後活化（post-activation）**（原始 ResNet）：$y = \mathrm{ReLU}(x + F(x))$，BN 在 $F$ 裡面 [1]。
+- **前活化（pre-activation）**：BN 與 ReLU 移進分支裡、放在每個卷積之前，使捷徑成為純粹的恆等映射；He 等人發現這樣在非常深時比較容易訓練 [11]。Pre-norm 的 Transformer 區塊 $y = x + \mathrm{MHA}(\mathrm{LN}(x))$ 是同一個想法（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#transformer-區塊)）。
+- **加法之後沒有活化函數**：EDSR、MobileNetV2、ConvNeXt、NAFNet 與 Restormer 的區塊都以加法收尾。
+
+有幾種設計會明確控制 $\alpha$。EDSR 發現特徵圖數量變大後訓練在數值上不穩定，於是在其 32 個區塊、256 個通道的最終模型中，固定使用 0.1 的殘差縮放 [12]。ConvNeXt 使用 Layer Scale [13]，也就是每個通道各自可學習的 $\alpha$，初始值為 $10^{-6}$ [2]。NAFNet 的程式碼把每個分支乘上初始值為零的可學習逐通道參數，使每個區塊一開始都是恆等映射 [14]；把 ResNet 分支最後一個 BN 的縮放係數初始化為零，效果相同（[DLCV 01A](/zh-tw/learn/deep-learning/dl-01a-training-practice/#實務上的初始化與正規化)）。共同的理由是：一疊恆等區塊很容易最佳化，之後每個區塊再慢慢長出自己的修正量。
+
+跳接也有兩種尺度。**短跳接**包住一個區塊；**長跳接**包住一組區塊或整個主體。RCAN 的「residual in residual」結構兩種都用：殘差群組帶有長跳接，每個群組裡的區塊再帶有短跳接 [15]。
+
+### 瓶頸、反向殘差與深度可分離卷積
+
+**白話版。** 空間濾波與通道混合不必擠在同一個昂貴的層裡完成。瓶頸讓昂貴的 $3 \times 3$ 在較少的通道上執行；深度卷積讓每個通道各自濾波，把混合通道的工作留給便宜的 $1 \times 1$ 層。這些區塊的成本會差上很多倍，所以值得算清楚。
+
+**精確版。** 一個從 $a$ 個通道到 $b$ 個通道的稠密 $k \times k$ 卷積，有 $k^2 a b$ 個權重；在步幅為 1 時，每個輸出像素要花 $k^2 a b$ 次 MAC。作用在 $a$ 個通道上的深度 $k \times k$ 卷積，兩者都是 $k^2 a$。ResNet 的瓶頸把 $C$ 降到 $C/4$、濾波，再擴張回來 [1]。MobileNetV2 的**反向殘差（inverted residual）**則相反：先用 $1 \times 1$ 卷積把 $C$ 擴張到 $tC$（論文主要實驗的擴張倍率是 $t = 6$），用 $3 \times 3$ 深度卷積濾波，再用**線性**的 $1 \times 1$ 卷積投影回來，而且不接活化函數，因為作者主張在窄的層裡接 ReLU 會破壞資訊 [10]。論文給出的成本是：對 $h \times w$ 的輸入、$d'$ 個輸入通道與 $d''$ 個輸出通道，共 $h \cdot w \cdot d' \cdot t\,(d' + k^2 + d'')$ 次乘加 [10]。下面的程式碼在 $C = 64$、特徵圖 $128 \times 128$ 的條件下，數出圖 2 各區塊每個輸出像素的權重與 MAC，並用這個公式檢驗反向殘差。
+
+```python
+# Weights (no biases or norm parameters) and MACs per output pixel of common blocks,
+# all with C input and C output channels at stride 1. A dense k x k conv from a to b
+# channels has k*k*a*b weights and costs k*k*a*b MACs per pixel; a depthwise one k*k*a.
+def blocks(C, n_tokens):
+    g = int(2.66 * C)                                  # Restormer GDFN hidden width
+    return {                                           # name: (weights, MACs per pixel)
+        'basic residual (2 x 3x3)':     (18 * C * C, 18 * C * C),
+        'bottleneck (1x1, 3x3, 1x1)':   (2 * C * C // 4 + 9 * (C // 4) ** 2,) * 2,
+        'depthwise separable 3x3':      (9 * C + C * C,) * 2,
+        'inverted residual, t = 6':     (12 * C * C + 54 * C,) * 2,
+        'ConvNeXt (7x7 dw, 4x MLP)':    (49 * C + 8 * C * C,) * 2,
+        'NAFNet block':                 (7 * C * C + 18 * C, 6 * C * C + 18 * C),  # SCA acts on a pooled vector
+        'SE add-on, r = 16':            (2 * C * C // 16, C),                       # one multiply per pixel
+        'ViT block, global attention':  (12 * C * C, 12 * C * C + 2 * n_tokens * C),
+        'Swin block, 8 x 8 windows':    (12 * C * C, 12 * C * C + 2 * 64 * C),
+        'Restormer block (MDTA+GDFN)':  (4 * C * C + 27 * C + 3 * g * C + 18 * g,
+                                         4 * C * C + 27 * C + 2 * C * C // 4 + 3 * g * C + 18 * g),  # 4 heads
+    }
+
+C, side = 64, 128
+for name, (p, m) in blocks(C, side * side).items():
+    print(f"{name:30s} {p:7d} weights  {m:8d} MACs/pixel")
+
+# Check the inverted residual against MobileNetV2's formula h*w*d'*t*(d' + k^2 + d'') per pixel.
+t, k = 6, 3
+assert blocks(C, 1)['inverted residual, t = 6'][1] == C * t * (C + k * k + C)
+```
+
+```text
+basic residual (2 x 3x3)         73728 weights     73728 MACs/pixel
+bottleneck (1x1, 3x3, 1x1)        4352 weights      4352 MACs/pixel
+depthwise separable 3x3           4672 weights      4672 MACs/pixel
+inverted residual, t = 6         52608 weights     52608 MACs/pixel
+ConvNeXt (7x7 dw, 4x MLP)        35904 weights     35904 MACs/pixel
+NAFNet block                     29824 weights     25728 MACs/pixel
+SE add-on, r = 16                  512 weights        64 MACs/pixel
+ViT block, global attention      49152 weights   2146304 MACs/pixel
+Swin block, 8 x 8 windows        49152 weights     57344 MACs/pixel
+Restormer block (MDTA+GDFN)      53812 weights     55860 MACs/pixel
+```
+
+這些數字帶出四個教訓。
+
+1. **寬度相同時，區塊的成本差了 10 倍以上。** 瓶頸與可分離區塊比基本區塊便宜約 16 到 17 倍。所以真實的網路從來不在相同寬度下比較區塊：MobileNetV2 把反向殘差用在細的張量上，ResNet-50 把瓶頸用在寬的張量上。比較區塊要在相同成本下比，而不是在相同的 $C$ 下比。
+2. **在像素上做全域注意力，對復原來說負擔不起。** 把 $128 \times 128$ 特徵圖的每個像素都當成一個 token，ViT 區塊每個像素的成本約是 $8 \times 8$ 視窗 Swin 區塊的 37 倍，而且影像越大差距越大。這就是復原用的 Transformer 要用視窗（SwinIR）或跨通道的注意力（Restormer）的原因；一般的成本論證見 [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#成本與高效率注意力)。
+3. **注意力附加模組在 MAC 上很便宜。** SE 閘只增加 $C^2/8$ 個權重，以及每個通道每個像素一次乘法；它的代價在記憶體搬運，不在算術。
+4. **MAC 不等於延遲。** 深度層每搬動一個位元組只做很少的運算，所以實際可能比 MAC 數字顯示的慢；[ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#高效率-cnn把空間濾波與通道混合分開) 與 [DLCV 02 的效率一節](/zh-tw/learn/deep-learning/dl-02-image-classification/#效率)都談過。請在目標硬體上實測。
+
+便宜的區塊是不是也比較好，要看設計空間。RegNet 的族群研究發現，它最好的模型既不用瓶頸，也不用反向瓶頸，而且在它的設定下深度卷積比反向瓶頸更差 [16]；ConvNeXt 卻發現在它自己那串改動裡，反向瓶頸略好一些 [2]。兩者可以同時成立：比較的結果取決於固定不動的其他選擇。
+
+### CNN 內的注意力：SE 與 CBAM
+
+**白話版。** 閘會看整張特徵圖的摘要，決定這張特定影像要把哪些通道（或位置）調大或調小。這是讓卷積網路擁有一點「依內容而定、看全影像」行為的便宜方法。
+
+**精確版。** Squeeze-and-excitation（SE）根據各通道平均值組成的向量 $\bar u$，算出通道閘 $s = \sigma(W_2\,\delta(W_1\,\bar u))$，其中 $W_1$ 與 $W_2$ 是兩層 MLP 的權重（先以比例 $r$ 縮減維度、再還原），$\delta$ 是 ReLU，$\sigma$ 是 sigmoid；然後把特徵圖的每個通道 $u_c$ 乘上 $s_c$。公式與程式碼見 [DLCV 02 補充資料](/zh-tw/learn/deep-learning/dl-02-image-classification/notes/#squeeze-and-excitationcnn-裡的注意力) [17]。CBAM 從兩方面擴充它 [18]：它的通道閘同時用平均與最大值池化每個通道，並讓兩個向量通過同一個共用的 MLP；另外還有第二個**空間**閘，沿通道方向池化後套用 $7 \times 7$ 卷積，讓區塊也能把整個區域調大或調小。CBAM 的消融實驗發現，先通道後空間的順序，比兩個閘平行執行更好 [18]。
+
+*選讀：[CBAM 的通道閘與空間閘](#cbam-的通道閘與空間閘)（見「補充資料」頁）。寫出兩個公式並定義每個符號，說明它們與 SE 以及 NAFNet 的簡化通道注意力有何關係。*
+
+**放在哪裡。** SE 和 CBAM 都放在殘差分支上、加法之前：SE 把閘作用在非恆等分支，「在與恆等分支相加之前」[17]；CBAM 則把模組套在每個 ResNet 區塊的卷積輸出上 [18]。RCAN 把通道注意力帶進超解析度 [15]；NAFNet 後來把它簡化成 $X \cdot W\,\mathrm{pool}(X)$，也就是對池化向量做一次線性映射，沒有 ReLU 也沒有 sigmoid，而它的消融實驗中沒有損失任何效果 [19]。「現代觀點」中的注意力綜述，把 SE 歸入「通道注意力」一族，把 CBAM 歸入「通道加空間」[20]。
+
+### Token 混合器：自注意力、視窗注意力與通道注意力
+
+**白話版。** 注意力是依內容算出權重，在 token 之間混合資訊；卷積用的則是固定權重。設計上的問題是**哪些 token 彼此交談**：全部的 token（全域）、同一個局部視窗內的 token，或是 Restormer 的新招：讓通道之間交談，而不是像素之間。
+
+**精確版。** 對 $N$ 個寬度為 $C$ 的 token 做全域多頭自注意力，分數與加權和約需 $2N^2C$ 次 MAC，另外投影還要 $4NC^2$；視窗注意力把範圍限制在 $M \times M$ 視窗內，成本是 $2M^2NC$（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#swin-與階層式-transformer)）[6]。Restormer 的**多頭深度卷積轉置注意力（multi-Dconv head transposed attention，MDTA）**則是在通道之間計算注意力 [21]：
+
+$$
+\hat X = W_p\,\mathrm{Attention}(\hat Q, \hat K, \hat V) + X, \qquad
+\mathrm{Attention}(\hat Q, \hat K, \hat V) = \hat V \cdot \mathrm{Softmax}\big(\hat K \cdot \hat Q / \alpha\big),
+$$
+
+其中 $X$ 是輸入特徵圖，$\hat X$ 是輸出，$Q = W_d^Q W_p^Q Y$（$K$、$V$ 同理）由經過 layer normalization 的輸入 $Y$ 算出：先做 $1 \times 1$ 卷積 $W_p^Q$，再做 $3 \times 3$ 深度卷積 $W_d^Q$；帽子符號表示重新整形的矩陣 $\hat Q \in \mathbb{R}^{HW \times C}$、$\hat K \in \mathbb{R}^{C \times HW}$、$\hat V \in \mathbb{R}^{HW \times C}$；$\alpha$ 是可學習的溫度參數；沒有上標的 $W_p$ 是輸出的 $1 \times 1$ 卷積。注意力圖 $\hat K \hat Q$ 的大小是 $C \times C$，而不是 $HW \times HW$，所以成本隨像素數線性增加，而每個輸出像素仍透過通道統計量依賴整張影像。深度卷積把局部脈絡補了回來。和一般多頭注意力一樣，通道會分成幾個頭，各有各的注意力圖。
+
+Restormer 的前饋部分（GDFN）和下面的閘一起介紹。這些混合器之間的取捨，會在復原的各節再次出現：視窗注意力在空間上混合得強、但只在局部；通道注意力以低成本達到全域；而一項比較研究主張，在超解析度上 Restormer 的空間映射能力比 SwinIR 弱 [22]。
+
+### 正規化：BN、LN、GN，以及何時不用
+
+**白話版。** 正規化層把特徵調整到標準大小，再讓網路學出它偏好的尺度。各層的差別在於**哪些數字共用統計量**。在分類中，這個選擇多半只影響訓練穩定度；在復原中，選錯可能改變輸出的亮度與對比。
+
+**精確版。** 所有常見的層都在某個數值集合上計算 $y = \gamma (x - \mu)/\sqrt{\sigma^2 + \epsilon} + \beta$（範本見 [ML 02](/zh-tw/learn/ml/ml-02-neural-networks/#正規化層)）。對形狀為 $N \times C \times H \times W$ 的 mini-batch：
+
+| 層 | 統計量計算的範圍 | 是否依賴批次？ |
+|---|---|---|
+| BatchNorm（BN）[23] | 每個通道在 $N, H, W$ 上 | 是；測試時用移動平均 |
+| LayerNorm（LN）[24] | 單一樣本的特徵（用在影像時，實作不同：整個 $C, H, W$，或每個位置的 $C$） | 否 |
+| InstanceNorm（IN）[25] | 每個樣本、每個通道在 $H, W$ 上 | 否 |
+| GroupNorm（GN）[26] | 每個樣本在 $H, W$ 與一組通道上 | 否；$G = 1$ 等於 LN，$G = C$ 等於 IN |
+
+BN 是分類 CNN 的預設選擇，在大批次下表現很好。它已知的失敗情況是小批次：GN 的作者報告，在批次大小為 2 時，ImageNet 上的 ResNet-50 搭配 GN，錯誤率比搭配 BN 的版本低 10.6% [26]。BN 計算了什麼、為什麼訓練與推論的行為不同，見 [DLCV 01 補充資料](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/notes/#批次正規化在網路內部做標準化)。
+
+**為什麼復原網路拿掉 BN。** EDSR 把 BN 從殘差區塊中移除，理由是 BN 把特徵正規化之後，會讓網路失去「範圍彈性（range flexibility）」；這項改動提升了準確率，並且比 SRResNet（SRGAN 論文的殘差 SR 網路 [27]）少用了約 40% 的訓練記憶體 [12]。ESRGAN 補充說，當訓練與測試的統計量不同時，BN 容易產生偽影，在以 GAN 損失訓練的較深網路中尤其明顯，所以也把它拿掉 [28]。這並不是定律：DnCNN 把殘差學習和 BN 結合起來做高斯去雜訊，並報告兩者互相幫助 [29]。下面的程式碼用一個固定、未訓練的殘差分支 $r(x)$（卷積、正規化、ReLU、$1 \times 1$ 卷積）與全域殘差 $y = x + r(x)$ 來示範這個機制。同一張中灰度影像 $A$，被放在兩個不同的批次裡復原。
+
+```python
+import numpy as np
+from scipy.ndimage import gaussian_filter, correlate
+
+rng = np.random.default_rng(0)
+
+def image(level, size=32):
+    """A smooth synthetic image with mean brightness `level` (values roughly in [0, 1])."""
+    t = gaussian_filter(rng.standard_normal((size, size)), 2)
+    return level + 0.15 * t / t.std()
+
+C = 4
+W1 = rng.normal(0.1, 0.2, (C, 3, 3))           # 3x3 conv, 1 -> C channels (fixed random weights)
+w2 = rng.normal(0.0, 0.05, C)                  # 1x1 conv, C -> 1 channel
+
+def features(batch):                           # (N, H, W) -> (N, C, H, W)
+    return np.stack([[correlate(x, W1[c], mode='nearest') for c in range(C)] for x in batch])
+
+def branch(batch, norm, running=None):
+    """Residual branch: conv -> normalize -> ReLU -> 1x1 conv."""
+    f = features(batch)
+    if norm == 'bn-train':                     # per channel, over the whole batch
+        mu, var = f.mean((0, 2, 3), keepdims=True), f.var((0, 2, 3), keepdims=True)
+    elif norm == 'bn-eval':                    # per channel, stored training statistics
+        mu, var = running
+    else:                                      # 'instance': per sample and channel
+        mu, var = f.mean((2, 3), keepdims=True), f.var((2, 3), keepdims=True)
+    h = np.maximum((f - mu) / np.sqrt(var + 1e-5), 0)
+    return np.tensordot(w2, h, axes=(0, 1))    # (N, H, W)
+
+train = np.stack([image(rng.uniform(0.3, 0.7)) for _ in range(64)])
+f = features(train)
+running = (f.mean((0, 2, 3), keepdims=True), f.var((0, 2, 3), keepdims=True))
+
+A = image(0.5)
+dark = np.stack([image(0.15) for _ in range(7)])
+bright = np.stack([image(0.85) for _ in range(7)])
+for norm in ['bn-train', 'bn-eval', 'instance']:
+    for name, others in [('dark', dark), ('bright', bright)]:
+        batch = np.concatenate([A[None], others])
+        out = A + branch(batch, norm, running)[0]          # global residual: y = x + r(x)
+        print(f"{norm:8s}  A with 7 {name:6s} images: output mean {out.mean():.3f}")
+
+# Per-sample normalization forgets each image's level and contrast:
+B = 0.5 * A + 0.3
+r_A, r_B = branch(A[None], 'instance')[0], branch(B[None], 'instance')[0]
+print("instance-norm branch, A vs 0.5*A + 0.3: max |r_A - r_B| =", np.abs(r_A - r_B).max().round(4))
+print("outputs with the global residual: means", (A + r_A).mean().round(3), (B + r_B).mean().round(3))
+```
+
+```text
+bn-train  A with 7 dark   images: output mean 0.629
+bn-train  A with 7 bright images: output mean 0.482
+bn-eval   A with 7 dark   images: output mean 0.509
+bn-eval   A with 7 bright images: output mean 0.509
+instance  A with 7 dark   images: output mean 0.521
+instance  A with 7 bright images: output mean 0.521
+instance-norm branch, A vs 0.5*A + 0.3: max |r_A - r_B| = 0.0005
+outputs with the global residual: means 0.521 0.575
+```
+
+在訓練模式下，BN 讓同一張影像（輸入平均值 0.492）的輸出亮度變成 0.629 或 0.482，只取決於同批次的其他影像（圖 3）。在評估模式下，批次不再有影響，但儲存的統計量來自其他影像，所以網路在測試時的行為和訓練時不同：這就是 EDSR 與 ESRGAN 描述的不一致。逐樣本的正規化不依賴批次，卻在另一個方向上「看不見」：分支對 $A$ 和對 $0.5A + 0.3$ 給出相同的輸出（差距只在 $\epsilon$ 的量級），所以只有恆等路徑承載了影像本身的亮度與對比。這就是為什麼有做正規化的復原網路（NAFNet、Restormer 與 SwinIR 都用 LayerNorm）要把它放在殘差分支**裡面**，並搭配全域殘差 [19]、[21]、[4]。這裡的權重是隨機且未訓練的；訓練可以部分補償，但對批次的依賴是結構性的。
+
+<Figure src={normFig} alt="四張灰階影像，內容是同一個平滑斑駁的圖樣。輸入 A，平均值 0.492。BN 訓練模式搭配七張暗影像：明顯變亮，平均值 0.629。BN 訓練模式搭配七張亮影像：平均值 0.482。實例正規化在任何批次中：平均值 0.521。" caption="圖 3 — 同一張影像通過同一個未訓練的殘差分支。使用訓練模式的批次正規化時，輸出亮度取決於同批次的其他影像；使用逐樣本正規化則不會。" />
+
+NAFNet 的消融實驗顯示了另一面：在它的基本區塊加上 LayerNorm，使它能以大 10 倍的學習率訓練，並在 SIDD 去雜訊基準 [31] 上讓 PSNR [30] 提高 0.44 dB，在 GoPro 去模糊基準 [32] 上提高 3.39 dB [19]。正規化對復原網路也有幫助，只要它沒有拿走輸出所需要的資訊。
+
+### 活化函數與閘
+
+**白話版。** 非線性函數讓堆疊的層能做的事不只是一個線性映射。傳統的選擇是對每個數字套用固定的函數（ReLU、GELU）。閘則是把兩個學出來的特徵**相乘**，讓其中一個決定另一個能通過多少。現代的復原區塊使用閘，而 NAFNet 更是什麼都不用，只用閘。
+
+**精確版。** ReLU、GELU 與 SwiGLU 前饋區塊 [33] 的定義見 [ML 02](/zh-tw/learn/ml/ml-02-neural-networks/#swiglu帶門控的前饋區塊)。Dauphin 等人的閘控線性單元（gated linear unit，GLU）計算 $f(X) \odot \sigma(g(X))$，其中 $f$、$g$ 是兩個線性映射，$\sigma$ 是 sigmoid [34]。NAFNet 的 **SimpleGate** 拿掉了 sigmoid 與第二個映射 [19]：
+
+$$
+\mathrm{SimpleGate}(X) = X_1 \odot X_2, \qquad X = [X_1;\, X_2],
+$$
+
+其中 $X$ 是有 $2C$ 個通道的特徵圖，$X_1$ 與 $X_2$ 分別是它的前 $C$ 個與後 $C$ 個通道，$\odot$ 是逐元素相乘。輸入的兩個線性函數相乘後是二次的，所以區塊不需要任何活化函數也是非線性的；作者指出，GELU 本身 $x\,\Phi(x)$（$\Phi$ 是標準常態分布的累積分布函數 [35]）就是閘的一個特例。Restormer 的 GDFN 使用 $\phi(W_d^1 W_p^1\,\mathrm{LN}(X)) \odot W_d^2 W_p^2\,\mathrm{LN}(X)$，其中 $\phi$ 是 GELU，兩條路徑各由 $1 \times 1$ 與 $3 \times 3$ 深度卷積組成，通道擴張係數為 $\gamma = 2.66$ [21]。在 NAFNet 的消融實驗中，把 GELU 換成 SimpleGate，在 SIDD 上多了 +0.08 dB，在 GoPro 上多了 +0.41 dB [19]。
+
+### 上取樣：轉置卷積、pixel shuffle 與 resize-convolution
+
+**白話版。** 上取樣讓特徵圖變大。常見的做法有三種：讓每個輸入像素把一塊學出來的圖樣「畫」到輸出上（轉置卷積）；每個輸入像素算出幾個值再重新排列（pixel shuffle）；或是先放大、再做卷積（resize-convolution）。前兩種很容易畫出規則的棋盤格圖樣，第三種不會。
+
+**精確版。** 這三種方法與 pixel shuffle 的確切索引規則，見 [DLCV 04](/zh-tw/learn/deep-learning/dl-04-image-restoration/#網路怎麼變大三種上採樣策略) 與 [DLCV 04A](/zh-tw/learn/deep-learning/dl-04a-super-resolution/#後上取樣與子像素卷積) [36]。對組合來說，重要的是一個計數論證。步幅為 $s$ 時，輸出像素分成 $s^2$ 種**相位（phase）**（它們的列與行位置除以 $s$ 的餘數）。在轉置卷積中，某個相位的輸出只會接收到卷積核的一部分權重。平坦輸入在這個相位上的值，等於這些權重的總和，也就是**相位和（phase sum）**。若各相位和不相等，平坦的輸入就會變成週期性的圖樣。其中一個成因，Odena 等人稱為**不均勻重疊（uneven overlap）**：卷積核大小不能被步幅整除時，各相位接收到的權重數量不同 [37]。即使大小可以整除，隨機權重也會讓各相位和不相等，所以剛初始化的層仍然會產生圖樣；Aitken 等人把這兩項，加上損失函數中的步幅運算，列為棋盤格偽影的三個來源 [38]。子像素卷積有同樣的自由度，因為每個相位都有自己的濾波器。Resize-convolution（先用最近鄰上取樣，再做普通卷積）在每個輸出像素都套用同一個完整的卷積核，所以所有相位看到的總和相同。下面的程式碼把一個平坦的 $16 \times 16$ 輸入上取樣 2 倍。
+
+```python
+import numpy as np
+from scipy.ndimage import correlate
+
+rng = np.random.default_rng(0)
+
+def transposed_conv(x, w, s):
+    """Each input pixel 'paints' a scaled copy of the k x k kernel w; copies are s pixels apart."""
+    k, (H, W) = w.shape[0], x.shape
+    out = np.zeros((s * (H - 1) + k, s * (W - 1) + k))
+    for i in range(H):
+        for j in range(W):
+            out[s * i:s * i + k, s * j:s * j + k] += x[i, j] * w
+    return out
+
+def resize_conv(x, w, s):
+    """Nearest-neighbour upsampling by s, then an ordinary 'same' convolution with w."""
+    return correlate(np.kron(x, np.ones((s, s))), w, mode='nearest')
+
+def subpixel_conv(x, ws, s):
+    """s*s ordinary convolutions whose outputs are interleaved (pixel shuffle)."""
+    out = np.zeros((s * x.shape[0], s * x.shape[1]))
+    for n, w in enumerate(ws):
+        out[n // s::s, n % s::s] = correlate(x, w, mode='nearest')
+    return out
+
+x = np.ones((16, 16))                          # flat input: a good upsampler returns a flat image
+cases = {
+    'transposed k=3, s=2, uniform w': transposed_conv(x, np.ones((3, 3)), 2)[4:-4, 4:-4],
+    'transposed k=4, s=2, uniform w': transposed_conv(x, np.ones((4, 4)), 2)[4:-4, 4:-4],
+    'transposed k=4, s=2, random w ': transposed_conv(x, rng.uniform(0.5, 1.5, (4, 4)), 2)[4:-4, 4:-4],
+    'sub-pixel, 4 random 3x3 kernels': subpixel_conv(x, rng.uniform(0.5, 1.5, (4, 3, 3)), 2)[4:-4, 4:-4],
+    'resize + conv, random 3x3 w   ': resize_conv(x, rng.uniform(0.5, 1.5, (3, 3)), 2)[4:-4, 4:-4],
+}
+for name, y in cases.items():
+    phases = [y[a::2, b::2].mean() for a in (0, 1) for b in (0, 1)]     # the four 2x2 sub-pixel phases
+    print(f"{name}: phase means {np.round(phases, 2)}  relative spread {np.ptp(y) / y.mean():.2f}")
+```
+
+```text
+transposed k=3, s=2, uniform w: phase means [4. 2. 2. 1.]  relative spread 1.30
+transposed k=4, s=2, uniform w: phase means [4. 4. 4. 4.]  relative spread 0.00
+transposed k=4, s=2, random w : phase means [4.04 3.22 5.01 3.85]  relative spread 0.44
+sub-pixel, 4 random 3x3 kernels: phase means [ 8.71 10.13  9.49  8.91]  relative spread 0.15
+resize + conv, random 3x3 w   : phase means [7.86 7.86 7.86 7.86]  relative spread 0.00
+```
+
+$k = 3$、$s = 2$ 時，就算權重一致，也是一個相位接收 4 個權重、兩個接收 2 個、一個接收 1 個：4 : 2 : 2 : 1 的圖樣是由形狀本身決定的。$k = 4$ 時每個相位都接收 4 個權重，所以一致的權重會得到平坦的輸出，隨機權重則否。只有 resize-convolution 在任何權重下都是平坦的。圖 4 把同樣四種上取樣器用在平坦輸入與一張照片上。訓練可以把各相位和拉近，Odena 等人報告他們最好的結果來自最近鄰 resize-convolution [37]；對 pixel shuffle 來說，讓所有相位都從同一個卷積核初始化，可以在一開始就消除圖樣 [38]，如 [DLCV 04A](/zh-tw/learn/deep-learning/dl-04a-super-resolution/#後上取樣與子像素卷積) 所述。
+
+<Figure src={checkerFig} alt="兩列四欄的網格。上列：平坦輸入經四種方法上取樣。卷積核 3、步幅 2 的轉置卷積出現強烈的黑白格（差距 1.30）；卷積核 4、隨機權重的轉置卷積出現較輕的格紋（0.44）；四個隨機卷積核的子像素卷積出現淡淡的棋盤格（0.15）；最近鄰放大加卷積則是均勻的灰色（0.00）。下列：camera 影像的 64 乘 64 裁切區塊，用同樣四種方法上取樣；前三種在臉部與背景上出現格紋，最後一種平滑。" caption="圖 4 — 未訓練的上取樣器產生的棋盤格偽影。上：平坦輸入（相對差距印在下方）。下：用同樣的卷積核把 camera 影像的裁切區塊上取樣 2 倍，並重新縮放成單位平均增益。只有 resize-convolution 由構造本身就沒有這種圖樣。" />
+
+*選讀：[一維轉置卷積的相位和](#一維轉置卷積的相位和)（見「補充資料」頁）。任意卷積核大小與步幅下，每個輸出相位接收到幾個權重，以及為什麼可整除是必要但不充分的條件。*
+
+下取樣也有對應的選擇：步幅卷積（ResNet）、池化、獨立的步幅 2 的 $2 \times 2$ 卷積（ConvNeXt、NAFNet [14]）、patch merging（Swin）與 pixel unshuffle（Restormer [21]）。ConvNeXt 報告說，它獨立的 $2 \times 2$ 下取樣層一開始會讓訓練發散，直到它在每個空間解析度改變的地方加上正規化層為止 [2]。
+
+### 跳接：相加或串接
+
+**白話版。** 跳接把較早的特徵圖帶到較後面的層。它可以**相加**（兩張圖形狀必須相同，結果維持原來的寬度），也可以**串接**（把兩張圖沿通道疊起來，由下一層決定怎麼組合）。串接比較有彈性，也比較貴。
+
+**精確版。** 串接後再接一個 $1 \times 1$ 卷積，已經把相加包含為特例：設編碼器特徵圖為 $e$、解碼器特徵圖為 $d$，各有 $C$ 個通道，那麼權重矩陣為 $[I \;\; I]$（兩個 $C \times C$ 的單位矩陣並排）的 $1 \times 1$ 卷積，會把 $[e; d]$ 映射成 $e + d$。所以串接能學到相加能學到的一切，還能學更多，代價是更寬的層，以及必須儲存兩張圖。下面的程式碼檢驗這個等式，並在 $256 \times 256$ 輸入、寬度由 32 到 256 的 4 層 U-Net 解碼器中，數出每種合併方式之後第一個卷積的成本。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# 1) Concatenation followed by a 1x1 convolution contains addition as a special case.
+C, H, W = 8, 5, 5
+enc, dec = rng.standard_normal((C, H, W)), rng.standard_normal((C, H, W))
+cat = np.concatenate([enc, dec])                       # (2C, H, W)
+W_fuse = np.hstack([np.eye(C), np.eye(C)])             # a 1x1 conv is a (C_out x C_in) matrix
+print("concat + 1x1 conv [I I] == add:", np.allclose(np.tensordot(W_fuse, cat, 1), enc + dec))
+
+# 2) What each choice costs in the decoder of a 4-level U-Net on a 256 x 256 input.
+widths, size = [32, 64, 128, 256], 256
+totals = {'add': [0, 0], 'concat': [0, 0], 'concat + 1x1': [0, 0]}
+for level, c in enumerate(widths):
+    hw = (size // 2 ** level) ** 2                     # pixels at this level
+    first = {'add': 9 * c * c,                         # first 3x3 conv after the merge
+             'concat': 9 * 2 * c * c,
+             'concat + 1x1': 2 * c * c + 9 * c * c}    # 1x1 halves channels, then 3x3
+    for k, p in first.items():
+        totals[k][0] += p
+        totals[k][1] += p * hw
+for k, (p, m) in totals.items():
+    print(f"{k:13s} merge-layer weights {p:7d}   MACs {m / 1e9:.2f} G")
+```
+
+```text
+concat + 1x1 conv [I I] == add: True
+add           merge-layer weights  783360   MACs 2.42 G
+concat        merge-layer weights 1566720   MACs 4.83 G
+concat + 1x1  merge-layer weights  957440   MACs 2.95 G
+```
+
+串接會讓合併層的權重與 MAC 加倍；像 Restormer 那樣先做一次 $1 \times 1$ 融合，可以拿回大部分省下的成本。著名設計之間的選擇並不一致：
+
+- **U-Net** 在把通道減半的 $2 \times 2$ 上卷積之後，將（裁切過的）編碼器特徵圖與解碼器特徵圖串接 [39]。
+- **FPN** 用相加：較粗的特徵圖以最近鄰內插上取樣 2 倍，加上經 $1 \times 1$ 投影的骨幹特徵圖，再對每個合併後的特徵圖做 $3 \times 3$ 卷積，以減少上取樣造成的混疊 [5]（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#特徵金字塔fpn)）。
+- **Restormer** 串接之後，在除了最上層以外的所有層級，用 $1 \times 1$ 卷積把通道減半 [21]。
+- **NAFNet** 的程式碼把編碼器特徵圖加到上取樣後的解碼器特徵圖上 [14]。
+- **DenseNet** 把一個區塊內所有先前各層的輸出串接起來 [40]（[DLCV 02 補充資料](/zh-tw/learn/deep-learning/dl-02-image-classification/notes/#另外兩種-cnn-設計densenet-與-regnet)）。
+
+### 多尺度模組：FPN、ASPP 與 U-Net
+
+**白話版。** 物體和退化都有大有小。多尺度模組讓一個網路同時看好幾種尺度：建立特徵圖金字塔（FPN）、用好幾種大小的濾波器探測同一張特徵圖（ASPP），或先往下再往上走（U-Net）。
+
+這些與其說是積木，不如說是組合模式，每一個都在用到它的地方教過：FPN 在 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#特徵金字塔fpn) [5]；空洞空間金字塔池化（atrous spatial pyramid pooling，ASPP），也就是以多種擴張率平行進行的空洞卷積，在 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/#多尺度脈絡aspp-與金字塔池化) [41]；U-Net 在 [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#用於密集預測的編碼器解碼器) 與 [IP 10 論文導讀](/zh-tw/learn/image-processing/dip-10-segmentation/papers/#u-net論文導讀) [39]。有一條規則把它們串在一起：**脈絡來自往粗的方向走，細節來自一直保持細緻的路徑**。FPN 的橫向連接、U-Net 的跳接，以及 DLCV 03B 中分割解碼器的低階跳接，都是那第二條路徑。
+
+## 為分類而組合
+
+**白話版。** 分類器要回答的是關於整張影像的一個問題。所以它很快地縮小影像，把運算花在小而寬的特徵圖上（那裡每個位置已經看得到很大的區域），最後把空間格點整個丟掉。
+
+原則，以及各自的理由：
+
+1. **用 stem 提早下取樣。** 最前面的層要處理最多的像素，所以 stem 在主體開始之前就把解析度降到 1/4（ResNet 的步幅 2 的 $7 \times 7$ 卷積加最大池化 [1]；ConvNeXt 的步幅 4 的 $4 \times 4$ patchify 層，在它的路線圖中沒有損失準確率 [2]）。
+2. **每個 stage 解析度減半、寬度加倍。** 這讓每層的成本大致維持不變（見解剖一節），並讓感受野以等比方式成長。
+3. **把大多數區塊放在第三個 stage。** ResNet-50 每個 stage 的區塊數是 (3, 4, 6, 3)；ConvNeXt 依循 Swin 的 1:1:3:1 比例，改成 (3, 3, 9, 3)，準確率因此提高 [2]。第三個 stage 的輸出步幅是 16，感受野夠大，位置的數量也還夠。
+4. **全域池化，再做線性分類。** 全域平均池化讓輸出不受物體位置影響，也讓網路能接受任意大小的輸入。ViT 論文發現 class token 與全域平均池化的效果相近，但需要不同的學習率 [3]。
+5. **把昂貴的全域混合放在 token 少的地方。** 全域注意力在後面的 stage 才負擔得起；混合型設計把卷積放前面、注意力放後面（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#cnntransformer-混合模型)）。像 SE 這種便宜的閘可以放進每個區塊。
+6. **批次大的時候，用批次正規化沒問題**；批次小時改用 GN 或 LN。
+
+**感受野長得多快？** [ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#感受野) 的遞迴式涵蓋了步幅堆疊的情況；下面的程式碼也處理上取樣：從一個輸出單元往回走，追蹤能影響它的輸入區間。它在 $256 \times 256$ 的輸入上比較 ResNet-50 與兩種復原網路：EDSR-baseline 形狀的一般全解析度主體（16 個殘差區塊，每個有兩個 $3 \times 3$ 卷積、64 個通道，再加頭尾），以及寬度從 32 到 512 的 4 層 U-Net。
+
+```python
+def analyze(layers, H=256):
+    """Exact 1-D receptive field of one output unit, plus the multiply-accumulates (MACs)
+    of a square H x H input. A layer is ('conv', k, stride, c_in, c_out) or ('up', f),
+    where 'up' is nearest-neighbour upsampling by f (the convolution after it pays the cost)."""
+    macs, size = 0, H
+    for layer in layers:                              # forward: track the map size and cost
+        if layer[0] == 'conv':
+            _, k, s, cin, cout = layer
+            size //= s
+            macs += size * size * k * k * cin * cout
+        else:
+            size *= layer[1]
+    rf = 0
+    for p0 in range(16):                              # a few output positions (alignment matters)
+        lo = hi = p0
+        for layer in reversed(layers):                # backward: which inputs reach unit p0?
+            if layer[0] == 'conv':
+                _, k, s, _, _ = layer
+                pad = (k - 1) // 2
+                lo, hi = s * lo - pad, s * hi - pad + k - 1
+            else:
+                lo, hi = lo // layer[1], hi // layer[1]
+        rf = max(rf, hi - lo + 1)
+    return rf, macs, size
+
+# Classification: ResNet-50 (stride on the 3x3 conv of each first block, max-pool as a k=3, s=2 layer).
+resnet = [('conv', 7, 2, 3, 64), ('conv', 3, 2, 64, 0)]        # stem conv, then max-pool (no MACs)
+cin = 64
+for width, blocks, stride in [(64, 3, 1), (128, 4, 2), (256, 6, 2), (512, 3, 2)]:
+    for b in range(blocks):
+        s = stride if b == 0 else 1
+        resnet += [('conv', 1, 1, cin, width), ('conv', 3, s, width, width),
+                   ('conv', 1, 1, width, 4 * width)]
+        if b == 0:
+            resnet += [('conv', 1, 1, cin, 4 * width)]          # projection shortcut (cost only)
+        cin = 4 * width
+
+# Restoration A: plain full-resolution body, 64 channels, 32 convs of 3x3 (EDSR-baseline-like).
+plain = [('conv', 3, 1, 3, 64)] + [('conv', 3, 1, 64, 64)] * 32 + [('conv', 3, 1, 64, 3)]
+
+# Restoration B: 4-level U-Net, 2 convs per level, widths double as resolution halves.
+w = [32, 64, 128, 256, 512]
+unet = [('conv', 3, 1, 3, w[0])]
+for i in range(4):
+    unet += [('conv', 3, 1, w[i], w[i])] * 2 + [('conv', 2, 2, w[i], w[i + 1])]
+unet += [('conv', 3, 1, w[4], w[4])] * 2
+for i in reversed(range(4)):
+    unet += [('up', 2), ('conv', 1, 1, w[i + 1], w[i]),
+             ('conv', 3, 1, 2 * w[i], w[i]), ('conv', 3, 1, w[i], w[i])]   # concat skip doubles c_in
+unet += [('conv', 3, 1, w[0], 3)]
+
+for name, net in [('ResNet-50', resnet), ('plain 64ch x 34', plain), ('U-Net 4 levels', unet)]:
+    rf, macs, size = analyze(net)
+    print(f"{name:16s} RF {rf:4d} px   output {size:3d}x{size:<3d}   {macs / 1e9:6.2f} GMACs")
+```
+
+```text
+ResNet-50        RF  427 px   output   8x8       5.34 GMACs
+plain 64ch x 34  RF   69 px   output 256x256    77.54 GMACs
+U-Net 4 levels   RF  206 px   output 256x256    14.47 GMACs
+```
+
+U-Net 的跳接在計算中省略了，因為最深的那條路徑決定了感受野（對所有路徑暴力檢查，得到的同樣是 206）。圖 5 畫出成長的過程。ResNet-50 用 5.3 GMAC 達到 427 像素，但回傳的是 $8 \times 8$ 的特徵圖；一般的復原網路每層只多 2 個像素，用 77.5 GMAC 才有 69 像素；U-Net 在全輸出解析度下達到 206 像素，運算量不到前者的五分之一。這些是理論上的感受野；用梯度量得的有效感受野較小，而且集中在中央 [42]（[DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#感受野)）。
+
+<Figure src={rfFig} alt="兩張縱軸為對數刻度的折線圖。左：感受野對卷積層數。ResNet-50 以階梯狀上升，在約 53 層時達到 427 像素；U-Net 上升得最快，在第 20 層左右達到約 200 像素，之後在解碼器中保持平坦；一般網路緩慢成長，34 層時達到 69 像素。右：感受野對累積 GMAC（輸入 256 乘 256）：ResNet-50 用 5.3 GMAC 達到 427 像素，U-Net 用 14.5 GMAC 達到 206 像素，一般網路用 77.5 GMAC 達到 69 像素。" caption="圖 5 — 程式碼中三個網路的感受野（單邊、理論值）隨深度與運算量變化的情形。下取樣便宜地買到感受野；全解析度的主體則要為每個像素付費。" />
+
+*選讀：[經過上取樣與跳接的感受野](#經過上取樣與跳接的感受野)（見「補充資料」頁）。逐步說明往回推的區間方法、上取樣之後為什麼對齊很重要，以及為什麼最深的路徑決定結果。*
+
+## 為復原而組合
+
+**白話版。** 復原網路要回傳一張大小相同（超解析度則是更大）、而且幾乎就是輸入的影像。所以它保持解析度，或藉由跳接回到原解析度；它只預測修正量；它避免會改變強度範圍的層；它取得脈絡，卻不必在每一層都為全解析度付費。
+
+原則：
+
+1. **保持解析度，或回到原解析度。** X-Restormer 背後的比較研究把復原網路分成三種架構：U 形編碼器–解碼器（如 Restormer 與 NAFNet）、保持原始大小的一般 residual-in-residual 網路（RCAN、SwinIR），以及多階段漸進式網路（用好幾個子網路依序處理影像）[22]。它形容一般設計有利於重建高頻細節但很昂貴，U 形設計則因為下取樣而讓感受野快速成長，能處理大的輸入 [22]。圖 1(b) 與 (c) 畫出兩種主要的形狀。
+2. **學殘差。** 輸出是輸入加上預測的修正量，$\hat x = y + R(y)$，其中 $y$ 是退化的輸入，$R$ 是網路。VDSR 預測的是高解析度影像與其內插後輸入之間的殘差 [43]；DnCNN 預測雜訊 [29]；SwinIR 對不需要上取樣的任務使用 $I_{\text{HQ}} = H(I_{\text{LQ}}) + I_{\text{LQ}}$ [4]；Restormer 輸出殘差影像 $R$ 並回傳 $\hat I = I + R$ [21]；NAFNet 的程式碼把輸入加到最後一個卷積的輸出上 [14]。修正量很小、以零為中心，所以不必把容量浪費在複製影像上。
+3. **為低頻加一條長跳接。** SwinIR 把淺層特徵直接送到重建模組，$H_{\text{REC}}(F_0 + F_{\text{DF}})$，因為淺層特徵主要含有低頻，深層特徵就能專心處理遺失的高頻 [4]。EDSR 與 RCAN 在主體或群組外圍使用長跳接 [12]、[15]。
+4. **保住強度範圍。** 主體不用 BN（EDSR、ESRGAN），正規化只放在殘差分支內（NAFNet、Restormer、SwinIR），如正規化一節所示 [12]、[28]。
+5. **讓感受野配合退化，並且花得聰明。** X-Restormer 的研究主張，超解析度主要依賴局部資訊與強的空間映射，U 形的下取樣與上取樣對去雜訊有幫助，而動態去模糊與去霧需要大範圍或全域的資訊 [22]。感受野的程式碼顯示了代價：全解析度的主體每層只多幾個像素的感受野，卻要付全額成本；下取樣讓感受野快速且便宜地成長；通道注意力或狀態空間掃描則以線性成本涵蓋整張影像 [21]、[44]。
+6. **依目標設計輸出層。** 最後一層是普通卷積（SwinIR 在去雜訊時的重建、Restormer 的最後一個卷積、NAFNet 的結尾層 [4]、[21]、[14]）；在那裡接 ReLU 或 sigmoid 會截掉修正量。超解析度則把上取樣器放在最後，讓主體在低解析度下執行（[DLCV 04A](/zh-tw/learn/deep-learning/dl-04a-super-resolution/#後上取樣與子像素卷積)）。
+7. **為完整大小的測試影像做準備。** 復原網路用裁切區塊訓練，卻在整張影像上測試。U-Net 需要大小能被 $2^{\text{levels}}$ 整除，NAFNet 的程式碼用補邊處理這件事 [14]。全域統計量（例如通道注意力的池化）在訓練時涵蓋的是一個裁切區塊，測試時涵蓋的卻是整張影像；NAFNet 指出這會降低效能，並採用先前研究的補救辦法 [19]，Restormer 則以逐步加大的 patch 訓練 [21]。
+
+*選讀：[A Comparative Study of Image Restoration Networks for General Backbone Network Design（X-Restormer）](#chen-等人a-comparative-study-of-image-restoration-networks-for-general-backbone-network-designx-restormereccv-2024)（見「論文導讀」頁）。哪種骨幹網路在哪種退化上勝出，以及為什麼。*
+
+## 並排比較：改了什麼、為什麼
+
+**白話版。** 看出組合如何運作最快的方法，是把一個分類模型和由它衍生的復原模型並排放，列出差異。每項差異都有上面兩份清單中的理由。
+
+### ResNet 對 EDSR 與 NAFNet
+
+| 元件 | ResNet [1] | EDSR [12] | NAFNet [19]、[14] | 為什麼改 |
+|---|---|---|---|---|
+| Stem | 步幅 2 的 $7 \times 7$ + 最大池化 | 一個 $3 \times 3$ 卷積 | 一個 $3 \times 3$ 卷積 | 保留每個像素 |
+| 解析度 | 4 個 stage，輸出步幅 32 | 固定（低解析度輸入的大小） | U 形，下取樣用步幅 2 的 2×2 卷積，上取樣用 $1 \times 1$ 卷積 + pixel shuffle | 細節與脈絡的取捨 |
+| 區塊 | conv-BN-ReLU-conv-BN，相加，ReLU | conv-ReLU-conv，×0.1（大模型），相加 | LN、$1 \times 1$、$3 \times 3$ dw、SimpleGate、SCA、$1 \times 1$、×β、相加；然後是閘控 MLP、×γ、相加 | 保住範圍；便宜的閘控 |
+| 正規化 | BN | 無 | 分支內使用 LayerNorm | 見正規化一節 |
+| 跳接 | 只有短跳接 | 短跳接 + 繞過主體的長跳接 | 短跳接 + 層級之間的相加跳接 + 全域殘差 | 低頻繞過主體 |
+| Head | 全域平均池化 + FC | 取樣器（卷積 + pixel shuffle）+ 卷積 | $3 \times 3$ 卷積 + 輸入 | 輸出是影像 |
+| 損失 | 交叉熵 | L1 | 消融實驗中用 PSNR 損失 | 迴歸目標 |
+
+EDSR 自己的表列出了從 SRResNet 出發的步驟：兩個基準模型都是 16 個區塊、每個 64 個濾波器，移除 BN，用 L1 取代 L2，完整模型則是 32 個區塊、每個 256 個濾波器，加上 0.1 的殘差縮放，參數量從 1.5M 增加到 43M [12]。
+
+### Swin 對 SwinIR
+
+| 元件 | Swin [6] | SwinIR [4] | 為什麼改 |
+|---|---|---|---|
+| 輸入 | $4 \times 4$ patch 切分與線性嵌入 | 全解析度的 $3 \times 3$ 卷積（淺層特徵） | 每個像素一個 token |
+| 階層 | 4 個 stage 之間做 patch merging | 沒有：6 個殘差 Swin Transformer 區塊（RSTB），解析度固定 | 復原需要每個像素 |
+| 視窗 | $M = 7$ | $M = 8$（JPEG 偽影移除用 7） | JPEG [45] 以 8 × 8 為單位編碼；作者觀察到用 8 時表現下降 |
+| 區塊群組 | Swin 層 | 每個 RSTB 含 6 個 Swin 層 + 一個 $3 \times 3$ 卷積 + 一條殘差連接 | 卷積帶來平移等變性；殘差有助於聚合 |
+| Head | 全域平均池化 + 線性層 | 作用在 $F_0 + F_{\text{DF}}$ 上的卷積（SR 另加 pixel shuffle） | 低頻繞過主體 |
+| 寬度 | 96 個通道以上 | 180 個通道，6 個頭 | 在準確率與大小之間取得平衡 |
+
+SwinIR 的消融實驗報告，每個 RSTB 內的殘差連接使 PSNR [30] 提高 0.16 dB，而在那裡改用 $1 \times 1$ 卷積幾乎沒有進步，可能是因為它不像 $3 \times 3$ 卷積那樣能擷取局部相鄰的資訊 [4]。JPEG 視窗大小是一個很好的例子，說明組合上的選擇會與資料互相影響：作者推測 $M = 8$ 時的下降，可能來自 JPEG 的 $8 \times 8$ 區塊切分。
+
+### ViT 對 Restormer
+
+| 元件 | ViT [3] | Restormer [21] | 為什麼改 |
+|---|---|---|---|
+| Token | $16 \times 16$ 的 patch | 每個像素（經卷積嵌入） | 不丟掉任何資訊 |
+| Token 混合器 | 對 patch 的全域自注意力，$N \times N$ 的圖 | MDTA：通道注意力，$C \times C$ 的圖，搭配深度卷積 | 成本隨像素線性增加，仍有全域涵蓋 |
+| 通道混合器 | MLP，4 倍擴張，GELU | GDFN：閘控、深度卷積、擴張 2.66 | 閘控與局部脈絡 |
+| 形狀 | 等向，單一解析度 | 4 層 U 形，pixel-unshuffle 下取樣，pixel-shuffle 上取樣，串接 + $1 \times 1$ 的跳接，加上精修 stage | 以可負擔的成本做多尺度 |
+| Head | class token + MLP | 卷積成殘差影像，加到輸入上 | 輸出是影像 |
+| 訓練 | 固定解析度 | 逐步加大的 patch，從 $128 \times 128$ 開始 | 從更大的區域學習 |
+
+Restormer 的設定從第 1 層到第 4 層使用 [4, 6, 6, 8] 個區塊、[1, 2, 4, 8] 個頭與 [48, 96, 192, 384] 個通道，另外精修 stage 有 4 個區塊 [21]。兩欄都在 pre-norm 的殘差分支裡使用 LayerNorm：Transformer 區塊本身保留了下來；改變的是 token 混合器，以及它周圍的整體架構。
+
+## 探索設計空間
+
+**白話版。** 設計上的問題（「區塊 X 有幫助嗎？」）沒有一般性的答案；它只在一組特定的其他選擇、資料與預算下才有答案。所以一次只改一件事，固定預算，看不只一個任務或隨機種子，而且可以的話，比較整個模型族群，而不是只看單一優勝者。
+
+### 讀一份消融實驗
+
+NAFNet 的論文是可讀性很高的消融實驗範本。它從 U-Net 中由卷積、ReLU 與捷徑組成的基本區塊出發，在 16 GMAC 的固定預算下，一次加入一項改動，並報告在 SIDD [31]（真實相機去雜訊）與 GoPro [32]（動態去模糊）上的 PSNR [19]：
+
+| 步驟 | SIDD (dB) | GoPro (dB) |
+|---|---|---|
+| PlainNet | 39.29 | 28.51 |
+| + LayerNorm（以及大 10 倍的學習率） | 39.73 | 31.90 |
+| ReLU → GELU | 39.71 | 32.11 |
+| + 通道注意力 | 39.85 | 32.35 |
+| GELU → SimpleGate | 39.93 | 32.76 |
+| CA → 簡化 CA | 39.96 | 32.85 |
+
+讀這類表格時要檢查：
+
+- **預算固定嗎？** 這裡是固定的（16 GMAC），所以進步不只是「多用了運算」。
+- **步驟是累積的嗎？** 是的：每一列都包含前面所有的改動，所以這張表衡量的是每項改動在**前面改動已經存在的前提下**的效果，而不是單獨的效果。換個順序，增量可能不同。
+- **各任務一致嗎？** 不一定：GELU 在 SIDD 上沒有差別，在 GoPro 上卻有幫助。對某種退化重要的改動，對另一種不一定重要。
+- **訓練配方與區塊混在一起了嗎？** LayerNorm 那一列同時改了學習率，因為 LayerNorm 讓較大的學習率變得穩定。作者明確說出了這一點；許多論文沒有。
+- **雜訊有多大？** 每列只跑一次，就沒有誤差線。差幾百分之一 dB 的差異，應該讀成「沒有損失」，論文對最後一列就是這樣解讀的。
+
+*選讀：[Simple Baselines for Image Restoration（NAFNet）](#chen-等人simple-baselines-for-image-restorationnafneteccv-2022)（見「論文導讀」頁）。論文提出的問題、它如何建立再簡化它的區塊，以及它的主張代表什麼、不代表什麼。*
+
+ConvNeXt 的路線圖對分類也是同樣的讀法：ResNet-50 光靠現代訓練配方，ImageNet top-1 就從 76.1% 提高到 78.8%，再經過一連串架構改動提高到 82.0%，其中最大的單項改動所增加的，還不到配方的貢獻 [2]。這就是為什麼用不同配方訓練的架構不能直接比較（[DLCV 01A](/zh-tw/learn/deep-learning/dl-01a-training-practice/#基準消融實驗與預算)）。
+
+*選讀：[ConvNeXt 路線圖，一步一步](#convnext-路線圖一步一步)（見「補充資料」頁）。每一步與它的準確率，以及運算量在過程中怎麼變。*
+
+### 比較族群：設計空間
+
+RegNet 把「哪個單一模型最好？」換成「哪個**設計空間**更常產生好模型？」[16]。設計空間是由幾個參數（每個 stage 的區塊數、寬度、瓶頸比例、群組寬度）定義的一組模型。使用的工具是**誤差經驗分布函數（error empirical distribution function）**：
+
+$$
+F(e) = \frac{1}{n} \sum_{i=1}^{n} \mathbf{1}[e_i \lt e],
+$$
+
+其中 $e_i$ 是從該空間取樣並訓練的 $n$ 個模型中第 $i$ 個的誤差，$\mathbf{1}[\cdot]$ 在其引數為真時等於 1、否則為 0，$F(e)$ 是誤差低於 $e$ 的模型所占的比例。曲線位置較高的空間，整體而言比較好，這比比較兩個手工調整的模型穩健得多。RegNet 取樣了 $n = 500$ 個模型，運算量為 3.6 億到 4 億 FLOPs，每個訓練 10 個 epoch，並保留不會損害曲線（共用的瓶頸比例與群組寬度）或能改善曲線（寬度與深度隨 stage 遞增）的限制 [16]。最好的模型在各種運算量級下都有約 20 個區塊，不用瓶頸，而且受益於 SE [16]。
+
+*選讀：[Designing Network Design Spaces（RegNet）](#radosavovic-等人designing-network-design-spacesregnetcvpr-2020)（見「論文導讀」頁）。這項研究如何一步步精修設計空間，以及如何讀它的分布圖。*
+
+*選讀：[RegNet 的量化線性寬度](#regnet-的量化線性寬度)（見「補充資料」頁）。把一條直線變成各 stage 寬度與深度的三個式子，附有已測試的程式碼。*
+
+### 實用流程
+
+1. 在比較區塊之前，先固定預算（MAC、參數量、記憶體或實測延遲）與訓練配方。
+2. 一次只改一件事，並記錄每一次執行，包括沒有幫助的。
+3. 在不只一個任務、資料集或隨機種子上評估；報告變異範圍。
+4. 在目標模型大小上確認；對很小的模型有幫助的區塊，對大模型未必有幫助。
+5. 做架構搜尋時，用 NAS 綜述的三個維度來思考：搜尋空間、搜尋策略，以及如何估計效能 [46]。便宜的估計（如短時間訓練，RegNet 的 10 個 epoch）適合用來為族群排序，但應該用完整訓練加以確認。
+
+## 常見的組合錯誤
+
+**白話版。** 多數架構上的錯誤不是積木選錯，而是對的積木放在錯的地方。下面的清單列出症狀、原因與解法。
+
+- **在復原的主體使用 BN。** 症狀：亮度或顏色隨批次飄移，或測試時出現偽影。解法：拿掉 BN，或在殘差分支內做逐樣本的正規化，並搭配全域殘差。
+- **每個裝置的批次很小，卻用 BN**（偵測、分割、高解析度）。解法：GroupNorm，或凍結預訓練的 BN 統計量（[DLCV 01A](/zh-tw/learn/deep-learning/dl-01a-training-practice/#實務上的初始化與正規化)）。
+- **轉置卷積的卷積核大小不能被步幅整除。** 症狀：棋盤格紋理。解法：resize-convolution，或初始化一致的 pixel shuffle。
+- **復原網路沒有全域殘差。** 網路必須先學會複製影像，才能修正它。解法：預測修正量。
+- **輸出端接 ReLU 或 sigmoid。** 修正量不能是負的，或亮部飽和。解法：最後一層用線性層；只在顯示與評估時才截斷。
+- **感受野比退化還小。** 症狀：大範圍的模糊或霧仍然殘留。解法：加下取樣層級、空洞卷積或全域混合；先計算感受野。
+- **復原網路過早下取樣**，或直接沿用分類骨幹：細微的細節遺失。解法：保留一條全解析度路徑（跳接、精修 stage）。
+- **在全解析度上做全域注意力**，記憶體會爆掉。改用視窗、通道注意力或下取樣。
+- **U-Net 的輸入大小不能被 $2^{\text{levels}}$ 整除**，或搭配串接跳接時使用奇數大小。症狀：形狀錯誤或跳接錯位。解法：補邊再裁切，如 NAFNet 的程式碼所做 [14]。
+- **把參數量當成速度。** 深度卷積與大量串接的設計，即使參數或 MAC 很少，也可能很慢。請實測延遲與記憶體。
+- **比較用不同配方或預算訓練的設計**：配方本身的貢獻，可能超過任何單一區塊 [2]。
+- **忽略與資料的交互作用**，例如 SwinIR 的視窗大小與 JPEG 的區塊 [4]。
+
+## 現代觀點
+
+### 綜述怎麼說
+
+**Khan 等人** [47] 回顧 CNN 架構，把其中的創新分成七類：空間利用、深度、多路徑、寬度、特徵圖利用、通道增強與注意力。這套分類對本章很有用，因為大多數類別是組合上的選擇（深度、寬度、多路徑連接），而不是新的層類型。
+
+**Guo 等人** [20] 綜述電腦視覺中的注意力，依「選擇什麼」來分類：通道注意力（注意什麼，例如 SE）、空間注意力（注意哪裡，包含自注意力）、時間注意力（注意何時）、分支注意力（注意哪個分支），以及兩種混合：通道加空間（例如 CBAM）與空間加時間。他們把注意力視為依輸入而定的「動態權重調整」，與本章的閘觀點相符。
+
+**Khan 等人** [48] 回顧視覺中的 Transformer，從自注意力的基礎與大規模預訓練，談到辨識、偵測、分割、生成、影片與低階視覺的應用，比較常見設計的優缺點，最後提出尚待研究的方向。
+
+**Elsken、Metzen 與 Hutter** [46] 沿著三個維度整理神經架構搜尋：搜尋空間、搜尋策略與效能估計策略。這份綜述是本章手動探索設計空間之後，很自然的下一步。
+
+**Chen 等人** [22] 是比較研究而不是綜述：它在五項任務上對五種復原骨幹網路（包括 SwinIR、Restormer 與 NAFNet）做基準測試，依架構（U 形、一般 residual-in-residual、多階段）與核心運算（卷積、空間自注意力、轉置自注意力）分類，並發現在某項任務上很強的網路，常常在另一項任務上表現不足。
+
+### 2023–2026 年的最新進展
+
+- **卷積與注意力收斂到同一種區塊形狀。** ConvNeXt V2 在 ConvNeXt 上加了 Global Response Normalization 層與遮罩自編碼器預訓練 [49]；MetaFormer 的觀點把 token 混合器視為一個可互換的零件 [8]。
+- **預訓練和區塊一樣重要。** Battle of the Backbones 在超過 1,500 次訓練中比較了許多預訓練骨幹網路在各項任務上的表現，發現在它考慮的多數任務上，以大型資料集監督式預訓練的卷積網路仍然表現最好，而自監督骨幹網路在對照的比較中具有競爭力 [50]。
+- **復原網路混用運算。** HAT 把通道注意力與視窗自注意力結合，並加入視窗之間重疊的交叉注意力 [51]；X-Restormer 把 Restormer 一半的通道注意力區塊換成空間注意力區塊，以強化它的空間映射 [22]；MambaIR 與 MambaIRv2 用能以線性成本涵蓋整張影像的狀態空間掃描取代注意力，加入局部增強與通道注意力，v2 更加入非因果的「注意力式」建模 [44]、[52]。
+
+### 尚未解決的問題
+
+1. **通用的復原骨幹網路。** 沒有任何單一組合在所有退化上都最好；比較研究把「任務通用性」視為尚待達成的目標 [22]。
+2. **公平的比較。** 架構、訓練配方與預訓練糾纏在一起，而像 RegNet 這種族群層級的研究需要數百次訓練 [16]，對高解析度的復原模型來說太昂貴。
+3. **實際的感受野。** 理論感受野很容易算；訓練好的復原網路實際用了多少脈絡則難以測量，而歸因分析顯示它可能比設計所允許的少 [51]、[42]。
+4. **成本模型。** MAC、記憶體搬運與延遲彼此不一致，尤其是深度卷積、閘控與注意力；設計規則仍然取決於硬體。
+5. **架構內部的訓練–測試偏移。** 全域統計量（池化、正規化、注意力）在裁切區塊與完整影像上的行為不同，而目前採用的補救辦法改的是訓練或測試流程，而不是架構 [19]、[21]。
+
+## 重點整理
+
+- 網路是 stem、由重複區塊組成的 stage、下取樣層與 head；大多數設計決定在於解析度在哪裡改變、跳接接到哪裡，而不是發明新的區塊。
+- 每個區塊都以某種成本混合空間與通道；數出每個像素的權重與 MAC，在相同成本下比較區塊，並另外量測延遲。
+- 分類器提早縮小解析度，在特徵圖減半時把寬度加倍，把大多數區塊放在第三個 stage，並做全域池化；它們的感受野以等比方式、便宜地成長。
+- 復原網路保持或恢復全解析度、學殘差、讓低頻走長跳接、主體避免使用 BN，並以線性層收尾。
+- 批次正規化會讓復原後的影像依賴它所在的批次；逐樣本正規化去除了這種依賴，卻也藏起影像本身的亮度，所以它屬於殘差分支內部。
+- 轉置卷積與未訓練的子像素層在相位和不相等時會產生棋盤格；resize-convolution 不會。
+- 串接加上 $1 \times 1$ 卷積已經包含了相加；它在合併處的成本約為兩倍。
+- 讀消融實驗時要看固定的預算、累積的步驟、各任務是否一致，以及混在一起的訓練配方；可能的話，比較整個模型族群，而不是只看單一優勝者。
+
+## 練習
+
+1. **減半與加倍。** 一個 stage 在 $56 \times 56$ 的特徵圖上，執行 128 個通道的 $3 \times 3$ 卷積。(a) 這樣的一層要花多少 MAC？(b) 下一個 stage 把特徵圖減半、寬度加倍；現在一層要花多少？(c) 如果改成把寬度變成三倍，成本會怎麼變？
+
+<details>
+<summary>提示</summary>
+
+(a) $9 \cdot 56^2 \cdot 128^2 = 462{,}422{,}016$ 次 MAC。(b) $9 \cdot 28^2 \cdot 256^2$ 是同一個數字。(c) 通道數變成 $3 \cdot 128 = 384$ 時，成本是 $9 \cdot 28^2 \cdot 384^2$，也就是 (a) 的 $9/4$：寬度以平方進入，面積則是線性。
+
+</details>
+
+2. **區塊預算。** 使用 `blocks` 函數，在 $C = 64$ 時，找出擴張倍率 $t$ 為多少時，輸入與輸出都是 $C$ 個通道的反向殘差，成本會和基本殘差區塊相同。接著找出寬度 $C'$ 為多少時，$t = 6$ 的反向殘差成本會和 $C = 64$ 的基本區塊相同。這對「在相同寬度下比較區塊」說明了什麼？
+
+<details>
+<summary>提示</summary>
+
+令 $t(2C^2 + 9C) = 18C^2$；$C = 64$ 時得到 $t = 18 \cdot 64 / (2 \cdot 64 + 9) \approx 8.4$。第二個問題要解 $12C'^2 + 54C' = 73{,}728$，得到 $C' \approx 76$。反向殘差在相同寬度下並不「便宜」；它之所以便宜，是因為 MobileNet 把它用在細的張量上。
+
+</details>
+
+3. **批次大小為一的 BN。** 在正規化的程式碼中，用 `'bn-train'` 單獨復原 $A$（批次大小為 1）。把輸出平均值與 `'instance'` 的結果比較，並解釋批次大小為 1 的 BN 與實例正規化之間的關係。接著在批次中加入 32 張隨機的中灰度影像，看看訓練模式與評估模式能靠得多近。
+
+<details>
+<summary>提示</summary>
+
+$N = 1$ 時，BN 在 $(N, H, W)$ 上的統計量，正好就是逐樣本、逐通道的統計量，所以結果等於實例正規化（0.521）。當有許多來自訓練分布的影像時，批次統計量會趨近移動平均，輸出也趨近評估模式的值。
+
+</details>
+
+4. **讓轉置卷積變平坦。** 對 $k = 4$、$s = 2$，寫出 16 個卷積核權重要滿足什麼條件，平坦輸入才會得到平坦輸出（邊界以外）。用一個隨機的 $2 \times 2$ 卷積核構造出這樣的卷積核，用上取樣程式碼檢查，並把它和 resize-convolution 連起來看。
+
+<details>
+<summary>提示</summary>
+
+對 $a, b \in \{0, 1\}$，四個相位和 $\sum_{m,n} w[a + 2m, b + 2n]$ 必須相等。一種構造方式是對任意 $2 \times 2$ 卷積核 `v`，令 `w = np.kron(v, np.ones((2, 2)))`：這樣每個相位剛好接收 `v` 的每個元素一次，所以所有相位和都等於 `v` 的總和。Resize-convolution 對任何卷積核都有同樣的性質，這就是它平坦的原因。
+
+</details>
+
+5. **設計的感受野。** 把感受野程式碼中的 U-Net 改成三層而不是四層，以及四層但每層三個卷積。哪一種改動每 GMAC 換到更多的感受野？接著把一般網路中間的 32 層換成 16 層擴張率為 2 的層（在 `analyze` 中加入擴張率欄位）。新的感受野是多少？這種設計有 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/notes/#堆疊空洞卷積中的網格效應gridding) 中的哪個問題的風險？
+
+<details>
+<summary>提示</summary>
+
+卷積核為 $k$、擴張率為 $d$ 的層，涵蓋 $d(k - 1) + 1$ 個輸入，所以在往回推的步驟中，把 `k - 1` 換成 `d * (k - 1)`。拿掉一個層級，等於拿掉 U-Net 中最粗、最便宜、感受野最大的部分；每層多加卷積，則會在每個解析度都增加成本。堆疊擴張率相同的層，會讓感受野出現空洞（網格效應，gridding）。
+
+</details>
+
+## 補充資料
+
+這些補充資料是選讀的：每一項從正文取出一個要點，做更細的說明。正文、程式碼與練習都不依賴它們。
+
+### CBAM 的通道閘與空間閘
+
+這則補充寫出 CBAM 的兩個閘，並與本章其他通道閘做比較。
+
+對特徵圖 $F \in \mathbb{R}^{C \times H \times W}$，CBAM 計算 [18]
+
+$$
+M_c(F) = \sigma\big(\mathrm{MLP}(\mathrm{AvgPool}(F)) + \mathrm{MLP}(\mathrm{MaxPool}(F))\big), \qquad
+M_s(F') = \sigma\big(f^{7 \times 7}([\mathrm{AvgPool}_c(F');\, \mathrm{MaxPool}_c(F')])\big),
+$$
+
+其中 $M_c(F) \in \mathbb{R}^{C \times 1 \times 1}$ 是通道閘，$\mathrm{AvgPool}$ 與 $\mathrm{MaxPool}$ 把每個通道縮成一個數字，MLP 有一個含 $C/r$ 個單元與 ReLU 的隱藏層（縮減比例 $r$），並由兩個池化向量共用，$\sigma$ 是 sigmoid，$F' = M_c(F) \odot F$ 是經通道修正的特徵圖，$\mathrm{AvgPool}_c$ 與 $\mathrm{MaxPool}_c$ **沿通道軸**池化，得到兩張 $H \times W$ 的圖，$[\cdot\,;\cdot]$ 表示把它們串接，$f^{7 \times 7}$ 是輸出一個通道的 $7 \times 7$ 卷積，$M_s(F') \in \mathbb{R}^{1 \times H \times W}$ 是空間閘，輸出則是 $M_s(F') \odot F'$。乘積 $\odot$ 會把每個閘沿它所缺少的軸廣播：通道閘廣播到所有位置，空間閘廣播到所有通道。
+
+**與其他閘的關係。** SE 就是只用平均池化的通道閘 [17]。RCAN 的通道注意力，是把 SE 的形式用在超解析度網路的每個殘差區塊裡 [15]。NAFNet 的簡化通道注意力保留池化與單一線性映射，但去掉了 MLP 的 ReLU 與 sigmoid，$\mathrm{SCA}(X) = X * W\,\mathrm{pool}(X)$，其中 $*$ 是逐通道相乘 [19]。它們全都是由全域統計量算出來的乘法閘，這也是為什麼 NAFNet 把通道注意力視為閘控線性單元的特例 [19]。
+
+**陷阱。** 池化統計量是在整張特徵圖上算的，所以訓練用的裁切區塊與完整的測試影像會得到不同的值；這是復原原則中討論的訓練–測試偏移的一種形式。空間閘的 $7 \times 7$ 卷積核只看到池化後特徵圖的局部視窗，所以它是局部的、而非全域的空間注意力。
+
+### 一維轉置卷積的相位和
+
+這則補充推導轉置卷積的每個輸出位置接收到多少個卷積核權重，這是棋盤格程式碼背後的算術。
+
+**設定。** 步幅為 $s$、卷積核為 $w_0, \dots, w_{k-1}$ 的一維轉置卷積，把輸入 $x_i$ 映射成
+
+$$
+y_n = \sum_{i} x_i \, w_{n - s i}, \qquad 0 \le n - s i \lt k,
+$$
+
+其中 $n$ 是輸出位置，總和遍及所有卷積核副本涵蓋到 $n$ 的輸入 $i$。把 $n$ 寫成 $n = s m + p$，相位 $p \in \{0, \dots, s - 1\}$。卷積核索引 $n - s i = p + s(m - i)$ 會取到小於 $k$ 的 $p, p + s, p + 2s, \dots$ 這些值。
+
+**每個相位的權重數。** 所以相位 $p$ 接收到權重 $w_p, w_{p+s}, w_{p+2s}, \dots$，數量是
+
+$$
+T_p = \left\lceil \frac{k - p}{s} \right\rceil,
+$$
+
+其中 $0 \le p \lt s$，邊界以外成立。對 $k = 3$、$s = 2$：$T_0 = 2$，$T_1 = 1$。在二維中，數量相乘，就得到程式碼中的 $4 : 2 : 2 : 1$ 圖樣。所有 $T_p$ 相等，若且唯若 $s$ 整除 $k$；這就是 Odena 等人所說的均勻重疊條件 [37]。
+
+**相位和。** 對平坦輸入 $x_i = 1$，相位 $p$ 的輸出就是相位和 $S_p = \sum_{t \ge 0,\; p + s t \lt k} w_{p + s t}$。輸出要平坦，需要 $S_0 = S_1 = \dots = S_{s-1}$。權重數量相等讓這件事有可能，但不保證成立：隨機權重會打破它，這就是 Aitken 等人所描述的「隨機初始化」這個偽影來源 [38]。
+
+**Resize-convolution。** 最近鄰上取樣 $s$ 倍，再接長度為 $r$ 的卷積核 $v$ 的卷積，本身就是一個步幅為 $s$ 的轉置卷積，其卷積核是 $v$ 與 $s$ 個 1 組成的方波做卷積的結果。它的每個相位和都是 $\sum_t v_t$，所有相位相同，所以不論 $v$ 是什麼，平坦輸入永遠得到平坦輸出。這就是 resize-convolution「偏向不產生」棋盤格的精確意義。
+
+### 經過上取樣與跳接的感受野
+
+這則補充說明感受野程式碼所用的往回推區間法，以及它何時是精確的。
+
+**問題。** 對最後一層位置 $p$ 的一個輸出單元，哪些輸入位置可能改變它的值？對一串層的鏈，由後往前回答：在輸出端從區間 $[p, p]$ 開始，逐層從最後一層到第一層，把它對應到該層輸入中會餵給它的位置區間。
+
+**卷積。** 卷積核大小為 $k$、步幅為 $s$、補邊為 $q = \lfloor (k - 1)/2 \rfloor$ 的層，由輸入 $s u - q, \dots, s u - q + k - 1$ 算出輸出單元 $u$。所以輸出的區間 $[\ell, h]$ 依賴的輸入為
+
+$$
+[\,s\ell - q,\;\; s h - q + k - 1\,],
+$$
+
+其中 $\ell$ 與 $h$ 是輸出的第一個與最後一個位置，新的端點是單元 $\ell$ 的第一個輸入與單元 $h$ 的最後一個輸入。影像之外的位置代表補邊；它們不會限制區間，所以結果是遠離邊界處的理論感受野。
+
+**最近鄰上取樣 $f$ 倍。** 輸出單元 $u$ 複製輸入單元 $\lfloor u / f \rfloor$，所以 $[\ell, h]$ 對應到 $[\lfloor \ell / f \rfloor, \lfloor h / f \rfloor]$。由於取下整，結果的大小取決於 $\ell$ 落在 $f$ 個副本構成的區塊中的哪個位置：相鄰的兩個輸出單元，其感受野在該層可以相差至多一個輸入單元，而在網路深處這可能是很多像素。這就是為什麼程式碼取 16 個連續輸出位置的最大值，那是 4 層 U-Net 的一整個週期。
+
+**跳接。** 在合併處（相加或串接），輸入區間是兩條分支各自區間的聯集。在 U-Net 中，通過較深層級的分支，會先經過相同的編碼器輸出，再經過更多的層；使用最近鄰上取樣與步幅 2 的下取樣（其視窗包含自己的位置）時，較深分支的區間包含跳接分支的區間。所以聯集等於最深的路徑，程式碼只列出那條路徑即可。正文提到的暴力檢查，是以正權重在一維中建立 U-Net，從每個附近的輸入位置送入單位脈衝，記錄哪些脈衝能到達某個輸出；它得到同樣的 206 像素。
+
+**邊界情形。** 空洞卷積使依賴集合成為帶有洞的格點，而不是區間，所以區間法只報告範圍、不報告空隙（見 [DLCV 03B](/zh-tw/learn/deep-learning/dl-03b-image-segmentation/notes/#堆疊空洞卷積中的網格效應gridding) 中關於網格效應的補充）。具有全域涵蓋的注意力層，一層之後感受野就是整個輸入；視窗注意力讓每個 token 看到自己的 $M \times M$ 視窗，所以一層至多增加 $M - 1$ 個 token 的涵蓋範圍，下一層位移後的視窗再把它帶過視窗邊界。Araujo、Norris 與 Sim 給出一般網路中感受野大小、步幅與偏移的閉式表達，包括如何處理多條路徑 [53]。
+
+### ConvNeXt 路線圖，一步一步
+
+這則補充列出 ConvNeXt 將 ResNet-50「現代化」的各個步驟，以及論文在每一步之後報告的 ImageNet top-1 準確率 [2]。
+
+| 步驟 | 改動 | Top-1 (%) |
+|---|---|---|
+| 0 | 用原本訓練方式的 ResNet-50 | 76.1 |
+| 1 | 現代訓練配方（300 個 epoch、AdamW、強資料增強） | 78.8 |
+| 2 | stage 運算量比例 (3, 3, 9, 3) | 79.4 |
+| 3 | patchify stem，步幅 4 的 $4 \times 4$ | 79.5 |
+| 4 | 深度（分組）卷積，寬度提高到 96 | 80.5 |
+| 5 | 反向瓶頸 | 80.6 |
+| 6 | 深度卷積上移 | 79.9 |
+| 7 | 卷積核大小 $7 \times 7$ | 80.6 |
+| 8 | ReLU 換成 GELU | 80.6 |
+| 9 | 減少活化函數 | 81.3 |
+| 10 | 減少正規化層 | 81.4 |
+| 11 | 用 LayerNorm 取代 BatchNorm | 81.5 |
+| 12 | 獨立的步幅 2 的 $2 \times 2$ 下取樣層，在解析度改變處加正規化 | 82.0 |
+
+**怎麼讀。** 這些步驟是累積的，所以每個數字都以上面所有步驟為前提。第 6 步刻意降低了準確率：它是為第 7 步做準備，兩者必須一起評斷。第 8 步與第 11 步本身對準確率的改變很小；論文仍然採用它們，所以最終設計包含了當初做的時候是中性的選擇。有幾個步驟也改變了運算量：第 4 步提高運算量，第 5、6 步降低，所以論文在準確率旁邊也追蹤 FLOPs。這條路線圖只是大型設計空間中的一條路徑，作者對 stage 比例也承認這一點：更好的運算分配「很可能存在」[2]。
+
+### RegNet 的量化線性寬度
+
+這則補充寫出 RegNet 如何把三個數字變成網路的各 stage 寬度與深度。
+
+RegNet 先用一條直線描述各區塊的寬度 [16]：
+
+$$
+u_j = w_0 + w_a \cdot j, \qquad 0 \le j \lt d,
+$$
+
+其中 $d$ 是網路的深度（區塊數），$j$ 是區塊索引，$w_0 \gt 0$ 是初始寬度，$w_a \gt 0$ 是斜率，$u_j$ 是區塊 $j$ 的連續寬度。為了得到幾個寬度固定的 stage，它引入一個乘數 $w_m \gt 0$，把每個 $u_j$ 寫成它的冪：
+
+$$
+u_j = w_0 \cdot w_m^{s_j}, \qquad w_j = w_0 \cdot w_m^{\lfloor s_j \rceil},
+$$
+
+其中 $s_j$ 是實數指數，$\lfloor s_j \rceil$ 把它四捨五入到最近的整數，$w_j$ 是量化後的寬度。四捨五入後指數相同的區塊構成同一個 stage：stage $i$ 的寬度是 $w_0 \cdot w_m^{i}$，有 $d_i = \sum_j \mathbf{1}[\lfloor s_j \rceil = i]$ 個區塊。$w_m = 2$ 給出經典的 stage 間寬度加倍；RegNet 發現好的模型，其 $w_m$ 接近 2.5 [16]。在研究四個 stage 的網路時，論文會忽略那些得出不同 stage 數的參數組合 [16]；程式碼只示範這三個式子，用的是說明用的數值，並不是論文中的任何一個模型。
+
+```python
+import numpy as np
+
+def regnet_stages(d, w0, wa, wm):
+    u = w0 + wa * np.arange(d)                     # continuous widths, one per block
+    s = np.log(u / w0) / np.log(wm)                # exponents with u = w0 * wm**s
+    q = np.round(s).astype(int)                    # quantized exponents
+    widths = w0 * wm ** q
+    return [(int(w0 * wm ** i), int((q == i).sum())) for i in np.unique(q)], widths
+
+stages, widths = regnet_stages(d=16, w0=48, wa=36, wm=2.5)
+print("stage (width, blocks):", stages)
+print("block widths:", widths.astype(int).tolist())
+```
+
+```text
+stage (width, blocks): [(48, 1), (120, 3), (300, 8), (750, 4)]
+block widths: [48, 120, 120, 120, 300, 300, 300, 300, 300, 300, 300, 300, 750, 750, 750, 750]
+```
+
+有兩件事值得注意。每個 stage 的深度是從那條直線自然得出的，而不是另外的選擇：斜率越陡，越多區塊會被移到後面較寬的 stage。而且第一個 stage 可能只有一個區塊，這是實用的產生器會過濾或調整的參數組合之一。
+
+## 論文導讀
+
+這些導讀是選讀內容：每篇帶你讀一篇本章依據的論文——它要解決的問題、核心想法、它呈現了什麼，以及閱讀時該檢查什麼。
+
+### Chen 等人：Simple Baselines for Image Restoration（NAFNet，ECCV 2022）
+
+Chen、Chu、Zhang 與 Sun，ECCV 2022 [19]。
+
+**要解決的問題。** 最先進的復原網路在兩方面變得很複雜，作者稱為區塊間複雜度（多階段流程、多尺度融合）與區塊內複雜度（精心設計的注意力與前饋結構）。問題是：這些複雜度是否必要。
+
+**核心想法。** 固定一個簡單的單階段 U-Net，從頭建立區塊，在固定的運算預算下一次加入一個常見元件：LayerNorm、GELU、通道注意力。這樣得到一個「基準」。接著簡化：觀察到 GELU 與通道注意力都可以讀成閘，於是用 SimpleGate（把兩半通道相乘）取代 GELU，並用簡化通道注意力（對池化向量做線性映射）取代通道注意力。最後得到的網路完全沒有非線性活化函數，名字也由此而來：Nonlinear Activation Free Network。
+
+**它呈現了什麼。** 本章重現的消融表：每個步驟都在兩項任務上報告，而最後的簡化沒有損失任何效果。摘要中提到，完整模型以很小的一部分運算成本，超過了先前在 GoPro 與 SIDD 上的最佳結果（GoPro 上是 8.4%，SIDD 上不到一半）。
+
+**閱讀時要檢查什麼。** 消融是累積的，所以每個增量都以前面的步驟為前提；LayerNorm 那一步同時也改了學習率；兩項任務並不總是一致。「活化函數不是必要的」這項主張指的是逐點的活化函數；網路仍然透過乘法閘而具有非線性。
+
+**為什麼放在這裡。** 它是組合觀點最清楚的例子：整體架構固定而且刻意保持樸素，幾乎所有成果都來自幾個普通零件的排列方式。
+
+### Radosavovic 等人：Designing Network Design Spaces（RegNet，CVPR 2020）
+
+Radosavovic、Kosaraju、Girshick、He 與 Dollár，CVPR 2020 [16]。
+
+**要解決的問題。** 手工設計與神經架構搜尋產生的都是單一模型，這對它們為何有效說明很少，也不一定能轉移到其他設定。
+
+**核心想法。** 研究設計**空間**：從參數化的空間取樣數百個模型，各自簡短訓練，並用誤差經驗分布函數比較不同的空間。藉由測試簡單的限制（共用的瓶頸比例、共用的群組寬度、遞增的寬度與深度）逐步精修空間，保留那些維持或改善分布、同時縮小空間的限制。最後的空間 RegNet，由一條量化線性的寬度規則描述。
+
+**它呈現了什麼。** 簡單而規律的模型，表現與沒有限制的空間相當或更好。有幾項發現與常見做法相反：約 20 個區塊的深度在各種運算量級下都不錯、最好的模型不用瓶頸、反向瓶頸與深度卷積在這個空間中表現更差；SE 有幫助（RegNetY）。論文也在相近的訓練設定下，把 RegNet 模型與常見的既有網路做比較。
+
+**閱讀時要檢查什麼。** 誤差 EDF 圖是核心：看整條曲線，而不只是它最好的那一點。這些發現以該空間為前提（類 ResNet 的區塊、ImageNet、運算量範圍，以及取樣時使用的短訓練排程）；作者檢查過這些趨勢在更長的訓練與其他量級下仍然成立，但關於深度卷積這類區塊的結論，沒有經過測試就不應該轉移到差異很大的空間。
+
+**為什麼放在這裡。** 它把「探索設計空間」變成一種有統計量的方法，也是本章說「比較族群，而不是單一優勝者」的主要原因。
+
+### Chen 等人：A Comparative Study of Image Restoration Networks for General Backbone Network Design（X-Restormer，ECCV 2024）
+
+Chen、Li、Pu、Liu、Zhou、Qiao 與 Dong，ECCV 2024 [22]。
+
+**要解決的問題。** 復原的骨幹網路通常只針對一兩項任務設計與評估，在某項任務上很優秀的網路，在另一項上可能只是普通。
+
+**核心想法。** 在共同設定下，對五種具代表性的骨幹網路（包括 SwinIR、Restormer 與 NAFNet）在五項任務（超解析度、去雜訊、去模糊、去雨、去霧）上做基準測試，並透過每種退化與每種網路的特性來解釋差異：整體架構（U 形、一般 residual-in-residual、多階段）與核心運算（卷積、空間自注意力、轉置自注意力）。
+
+**它呈現了什麼。** 作者報告 SwinIR 在超解析度上很強，但在去模糊與去霧上表現不足；Restormer 在去霧與去雨上很強，但在超解析度上較弱；而 Restormer 在五項任務上都排在前兩名。他們把 Restormer 的弱點歸因於較弱的空間映射，並在它一半的區塊中加入空間注意力，得到 X-Restormer，且沒有增加參數。
+
+**閱讀時要檢查什麼。** 檢查每項任務中，所有網路是否用相同的資料與排程訓練；注意 U 形網路做超解析度時，需要先把低解析度輸入上取樣，這會改變它們在該任務上的成本與行為；並把功能上的解釋（局部與全域資訊的需求）當作有基準測試支持的假設，而不是量測出來的性質。
+
+**為什麼放在這裡。** 它是並排比較表在復原方面的對應：把每個組合上的選擇，連到它所服務的退化種類。
+
+## 參考文獻
+
+1. K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1512.03385)
+2. Z. Liu, H. Mao, C.-Y. Wu, C. Feichtenhofer, T. Darrell and S. Xie, "A ConvNet for the 2020s," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Liu_A_ConvNet_for_the_2020s_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2201.03545)
+3. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer et al., "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale," in *International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+4. J. Liang, J. Cao, G. Sun, K. Zhang, L. Van Gool and R. Timofte, "SwinIR: Image Restoration Using Swin Transformer," in *Proc. IEEE/CVF International Conference on Computer Vision Workshops (ICCVW)*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Liang_SwinIR_Image_Restoration_Using_Swin_Transformer_ICCVW_2021_paper.html) · [arXiv](https://arxiv.org/abs/2108.10257)
+5. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature Pyramid Networks for Object Detection," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Lin_Feature_Pyramid_Networks_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1612.03144)
+6. Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin and B. Guo, "Swin Transformer: Hierarchical Vision Transformer Using Shifted Windows," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Liu_Swin_Transformer_Hierarchical_Vision_Transformer_Using_Shifted_Windows_ICCV_2021_paper.html) · [arXiv](https://arxiv.org/abs/2103.14030)
+7. O. Russakovsky, J. Deng, H. Su, J. Krause, S. Satheesh, S. Ma, Z. Huang, A. Karpathy et al., "ImageNet Large Scale Visual Recognition Challenge," *International Journal of Computer Vision*, vol. 115, no. 3, pp. 211–252, 2015. [doi](https://doi.org/10.1007/s11263-015-0816-y)
+8. W. Yu, M. Luo, P. Zhou, C. Si, Y. Zhou, X. Wang, J. Feng and S. Yan, "MetaFormer Is Actually What You Need for Vision," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Yu_MetaFormer_Is_Actually_What_You_Need_for_Vision_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.11418)
+9. A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand, M. Andreetto and H. Adam, "MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications," arXiv:1704.04861, 2017. [arXiv](https://arxiv.org/abs/1704.04861)
+10. M. Sandler, A. Howard, M. Zhu, A. Zhmoginov and L.-C. Chen, "MobileNetV2: Inverted Residuals and Linear Bottlenecks," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Sandler_MobileNetV2_Inverted_Residuals_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1801.04381)
+11. K. He, X. Zhang, S. Ren and J. Sun, "Identity Mappings in Deep Residual Networks," in *Proc. European Conference on Computer Vision (ECCV)*, LNCS, Springer, 2016. [doi](https://doi.org/10.1007/978-3-319-46493-0_38) · [arXiv](https://arxiv.org/abs/1603.05027)
+12. B. Lim, S. Son, H. Kim, S. Nah and K. M. Lee, "Enhanced Deep Residual Networks for Single Image Super-Resolution," in *Proc. IEEE CVPR Workshops (CVPRW)*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Lim_Enhanced_Deep_Residual_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1707.02921)
+13. H. Touvron, M. Cord, A. Sablayrolles, G. Synnaeve and H. Jégou, "Going Deeper With Image Transformers," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Touvron_Going_Deeper_With_Image_Transformers_ICCV_2021_paper.html)
+14. L. Chen, X. Chu, X. Zhang and J. Sun, NAFNet official implementation, `basicsr/models/archs/NAFNet_arch.py`, GitHub (megvii-research/NAFNet), accessed 2026. [code](https://github.com/megvii-research/NAFNet/blob/main/basicsr/models/archs/NAFNet_arch.py)
+15. Y. Zhang, K. Li, K. Li, L. Wang, B. Zhong and Y. Fu, "Image Super-Resolution Using Very Deep Residual Channel Attention Networks," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yulun_Zhang_Image_Super-Resolution_Using_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1807.02758)
+16. I. Radosavovic, R. P. Kosaraju, R. Girshick, K. He and P. Dollár, "Designing Network Design Spaces," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Radosavovic_Designing_Network_Design_Spaces_CVPR_2020_paper.html) · [arXiv](https://arxiv.org/abs/2003.13678)
+17. J. Hu, L. Shen and G. Sun, "Squeeze-and-Excitation Networks," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Hu_Squeeze-and-Excitation_Networks_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1709.01507)
+18. S. Woo, J. Park, J.-Y. Lee and I. S. Kweon, "CBAM: Convolutional Block Attention Module," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Sanghyun_Woo_Convolutional_Block_Attention_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1807.06521)
+19. L. Chen, X. Chu, X. Zhang and J. Sun, "Simple Baselines for Image Restoration," in *Proc. ECCV*, LNCS, Springer, 2022. [doi](https://doi.org/10.1007/978-3-031-20071-7_2) · [arXiv](https://arxiv.org/abs/2204.04676)
+20. M.-H. Guo, T.-X. Xu, J.-J. Liu, Z.-N. Liu, P.-T. Jiang, T.-J. Mu, S.-H. Zhang, R. R. Martin, M.-M. Cheng and S.-M. Hu, "Attention Mechanisms in Computer Vision: A Survey," *Computational Visual Media*, vol. 8, no. 3, pp. 331–368, 2022. [doi](https://doi.org/10.1007/s41095-022-0271-y) · [arXiv](https://arxiv.org/abs/2111.07624)
+21. S. W. Zamir, A. Arora, S. Khan, M. Hayat, F. S. Khan and M.-H. Yang, "Restormer: Efficient Transformer for High-Resolution Image Restoration," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Zamir_Restormer_Efficient_Transformer_for_High-Resolution_Image_Restoration_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.09881)
+22. X. Chen, Z. Li, Y. Pu, Y. Liu, J. Zhou, Y. Qiao and C. Dong, "A Comparative Study of Image Restoration Networks for General Backbone Network Design," in *Proc. ECCV 2024*, LNCS, Springer, 2025. [doi](https://doi.org/10.1007/978-3-031-73209-6_5) · [arXiv](https://arxiv.org/abs/2310.11881)
+23. S. Ioffe and C. Szegedy, "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift," in *Proc. International Conference on Machine Learning (ICML)*, PMLR 37, 2015. [PMLR](https://proceedings.mlr.press/v37/ioffe15.html)
+24. J. L. Ba, J. R. Kiros and G. E. Hinton, "Layer Normalization," arXiv:1607.06450, 2016. [arXiv](https://arxiv.org/abs/1607.06450)
+25. D. Ulyanov, A. Vedaldi and V. Lempitsky, "Instance Normalization: The Missing Ingredient for Fast Stylization," arXiv:1607.08022, 2016. [arXiv](https://arxiv.org/abs/1607.08022)
+26. Y. Wu and K. He, "Group Normalization," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yuxin_Wu_Group_Normalization_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1803.08494)
+27. C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Ledig_Photo-Realistic_Single_Image_CVPR_2017_paper.html)
+28. X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018. [CVF](https://openaccess.thecvf.com/content_eccv_2018_workshops/w25/html/Wang_ESRGAN_Enhanced_Super-Resolution_Generative_Adversarial_Networks_ECCVW_2018_paper.html) · [arXiv](https://arxiv.org/abs/1809.00219)
+29. K. Zhang, W. Zuo, Y. Chen, D. Meng and L. Zhang, "Beyond a Gaussian Denoiser: Residual Learning of Deep CNN for Image Denoising," *IEEE Transactions on Image Processing*, vol. 26, no. 7, pp. 3142–3155, 2017. [doi](https://doi.org/10.1109/TIP.2017.2662206) · [arXiv](https://arxiv.org/abs/1608.03981)
+30. Q. Huynh-Thu and M. Ghanbari, "Scope of Validity of PSNR in Image/Video Quality Assessment," *Electronics Letters*, vol. 44, no. 13, pp. 800–801, 2008. [doi](https://doi.org/10.1049/el:20080522)
+31. A. Abdelhamed, S. Lin and M. S. Brown, "A High-Quality Denoising Dataset for Smartphone Cameras," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Abdelhamed_A_High-Quality_Denoising_CVPR_2018_paper.html)
+32. S. Nah, T. H. Kim and K. M. Lee, "Deep Multi-Scale Convolutional Neural Network for Dynamic Scene Deblurring," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Nah_Deep_Multi-Scale_Convolutional_CVPR_2017_paper.html)
+33. N. Shazeer, "GLU Variants Improve Transformer," arXiv:2002.05202, 2020. [arXiv](https://arxiv.org/abs/2002.05202)
+34. Y. N. Dauphin, A. Fan, M. Auli and D. Grangier, "Language Modeling with Gated Convolutional Networks," in *Proc. ICML*, PMLR 70, 2017. [PMLR](https://proceedings.mlr.press/v70/dauphin17a.html)
+35. D. Hendrycks and K. Gimpel, "Gaussian Error Linear Units (GELUs)," arXiv:1606.08415, 2016. [arXiv](https://arxiv.org/abs/1606.08415)
+36. W. Shi, J. Caballero, F. Huszár, J. Totz, A. P. Aitken, R. Bishop, D. Rueckert and Z. Wang, "Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Shi_Real-Time_Single_Image_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1609.05158)
+37. A. Odena, V. Dumoulin and C. Olah, "Deconvolution and Checkerboard Artifacts," *Distill*, vol. 1, no. 10, 2016. [Distill](https://distill.pub/2016/deconv-checkerboard/) · [doi](https://doi.org/10.23915/distill.00003)
+38. A. Aitken, C. Ledig, L. Theis, J. Caballero, Z. Wang and W. Shi, "Checkerboard Artifact Free Sub-Pixel Convolution: A Note on Sub-Pixel Convolution, Resize Convolution and Convolution Resize," arXiv:1707.02937, 2017. [arXiv](https://arxiv.org/abs/1707.02937)
+39. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," in *Proc. Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, LNCS, Springer, pp. 234–241, 2015. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) · [arXiv](https://arxiv.org/abs/1505.04597)
+40. G. Huang, Z. Liu, L. van der Maaten and K. Q. Weinberger, "Densely Connected Convolutional Networks," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Huang_Densely_Connected_Convolutional_CVPR_2017_paper.html)
+41. L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy and A. L. Yuille, "DeepLab: Semantic Image Segmentation with Deep Convolutional Nets, Atrous Convolution, and Fully Connected CRFs," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 40, no. 4, pp. 834–848, 2018. [doi](https://doi.org/10.1109/TPAMI.2017.2699184) · [arXiv](https://arxiv.org/abs/1606.00915)
+42. W. Luo, Y. Li, R. Urtasun and R. Zemel, "Understanding the Effective Receptive Field in Deep Convolutional Neural Networks," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2016. [NeurIPS](https://proceedings.neurips.cc/paper/2016/hash/c8067ad1937f728f51288b3eb986afaa-Abstract.html) · [arXiv](https://arxiv.org/abs/1701.04128)
+43. J. Kim, J. K. Lee and K. M. Lee, "Accurate Image Super-Resolution Using Very Deep Convolutional Networks," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Kim_Accurate_Image_Super-Resolution_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1511.04587)
+44. H. Guo, J. Li, T. Dai, Z. Ouyang, X. Ren and S.-T. Xia, "MambaIR: A Simple Baseline for Image Restoration with State-Space Model," in *Proc. ECCV 2024*, LNCS, Springer, 2025. [doi](https://doi.org/10.1007/978-3-031-72649-1_13) · [arXiv](https://arxiv.org/abs/2402.15648)
+45. ITU-T, "Recommendation T.81: Information technology – Digital compression and coding of continuous-tone still images – Requirements and guidelines" (the JPEG standard), 1992. [ITU](https://www.itu.int/rec/T-REC-T.81)
+46. T. Elsken, J. H. Metzen and F. Hutter, "Neural Architecture Search: A Survey," *Journal of Machine Learning Research*, vol. 20, 2019. [JMLR](https://jmlr.org/papers/v20/18-598.html) · [arXiv](https://arxiv.org/abs/1808.05377)
+47. A. Khan, A. Sohail, U. Zahoora and A. S. Qureshi, "A Survey of the Recent Architectures of Deep Convolutional Neural Networks," *Artificial Intelligence Review*, vol. 53, no. 8, pp. 5455–5516, 2020. [doi](https://doi.org/10.1007/s10462-020-09825-6) · [arXiv](https://arxiv.org/abs/1901.06032)
+48. S. Khan, M. Naseer, M. Hayat, S. W. Zamir, F. S. Khan and M. Shah, "Transformers in Vision: A Survey," *ACM Computing Surveys*, vol. 54, no. 10s, 2022. [doi](https://doi.org/10.1145/3505244) · [arXiv](https://arxiv.org/abs/2101.01169)
+49. S. Woo, S. Debnath, R. Hu, X. Chen, Z. Liu, I. S. Kweon and S. Xie, "ConvNeXt V2: Co-Designing and Scaling ConvNets With Masked Autoencoders," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Woo_ConvNeXt_V2_Co-Designing_and_Scaling_ConvNets_With_Masked_Autoencoders_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2301.00808)
+50. M. Goldblum, H. Souri, R. Ni, M. Shu, V. Prabhu, G. Somepalli, P. Chattopadhyay, M. Ibrahim et al., "Battle of the Backbones: A Large-Scale Comparison of Pretrained Models across Computer Vision Tasks," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2023. [arXiv](https://arxiv.org/abs/2310.19909)
+51. X. Chen, X. Wang, J. Zhou, Y. Qiao and C. Dong, "Activating More Pixels in Image Super-Resolution Transformer," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Chen_Activating_More_Pixels_in_Image_Super-Resolution_Transformer_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2205.04437)
+52. H. Guo, Y. Guo, Y. Zha, Y. Zhang, W. Li, T. Dai, S.-T. Xia and Y. Li, "MambaIRv2: Attentive State Space Restoration," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Guo_MambaIRv2_Attentive_State_Space_Restoration_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2411.15269)
+53. A. Araujo, W. Norris and J. Sim, "Computing Receptive Fields of Convolutional Neural Networks," *Distill*, vol. 4, no. 11, 2019. [Distill](https://distill.pub/2019/computing-receptive-fields/) · [doi](https://doi.org/10.23915/distill.00021)
+

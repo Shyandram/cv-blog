@@ -1,0 +1,829 @@
+---
+title: "DLCV 04B · Video Super-Resolution: Using Time to Recover Detail"
+description: "How video super-resolution uses several misaligned low-resolution frames to recover detail one frame cannot hold: the video degradation model, optical flow and warping, flow, deformable and attention alignment, sliding-window, recurrent and transformer designs, real-world and diffusion VSR, and how results are measured."
+track: deep-learning
+order: 46
+level: advanced
+prereqs: [deep-learning/dl-04-image-restoration, deep-learning/dl-04a-super-resolution]
+tags: [video-super-resolution, optical-flow, deformable-convolution, temporal-consistency, recurrent-networks, low-level-vision]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import ImageCompare from '../../../../components/ImageCompare.astro';
+import figSubpixel from '../../../../assets/deep-learning/dl-04b-video-super-resolution/subpixel-sampling.png';
+import figPipeline from '../../../../assets/deep-learning/dl-04b-video-super-resolution/vsr-pipeline.png';
+import figToy from '../../../../assets/deep-learning/dl-04b-video-super-resolution/multiframe-toy.png';
+import cmpSingle from '../../../../assets/deep-learning/dl-04b-video-super-resolution/compare-single.png';
+import cmpMulti from '../../../../assets/deep-learning/dl-04b-video-super-resolution/compare-multi.png';
+import figWarp from '../../../../assets/deep-learning/dl-04b-video-super-resolution/warping-occlusion.png';
+import figDesigns from '../../../../assets/deep-learning/dl-04b-video-super-resolution/temporal-designs.png';
+import figProfiles from '../../../../assets/deep-learning/dl-04b-video-super-resolution/temporal-profiles.png';
+
+## What you'll learn
+
+- Why video super-resolution (VSR) is more than running an image model on every frame: neighboring frames see the scene at slightly different positions, so together they hold detail that no single frame holds, and the output must also be stable over time.
+- The video degradation model (motion, blur, downsampling, noise and compression per frame), and a tested multi-frame reconstruction that beats single-frame interpolation by several dB once the motion is known.
+- Optical flow and backward warping with bilinear sampling, and the three ways networks align frames: explicit flow warping, deformable convolution and attention.
+- The main temporal designs, with representative methods: sliding-window (VESPCN, DUF, EDVR, TDAN), recurrent (FRVSR, RBPN), bidirectional recurrent (BasicVSR, IconVSR), grid propagation (BasicVSR++) and transformers (VRT, RVRT).
+- Real-world and compressed video (COMISR, RealBasicVSR) and diffusion-based VSR (Upscale-A-Video and later models), and how VSR is evaluated: Y-channel PSNR/SSIM per frame, BI and BD settings, temporal-consistency measures, Vid4, REDS4, Vimeo-90K-T and UDM10.
+
+## The big picture
+
+A video is a stack of photos taken a fraction of a second apart. Each photo is small and a bit blurry, but the camera or the objects move a little between shots. Video super-resolution turns such a clip into a sharper, larger clip by combining what all the nearby frames saw.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine looking at a painting through a window screen. The wires hide some of the painting, so one look gives you only bits of it. Now move your head a tiny bit and look again: the wires hide *different* bits. After a few small head movements you have seen almost the whole painting, as long as you remember how far you moved each time. A VSR model does exactly this: it works out how far everything moved between frames (that is the "remember how far you moved" part) and fills in the hidden bits from the other frames. If it forgets the movement, the bits land in the wrong places and the picture gets smeared.
+</Callout>
+
+Why it matters: most of the pixels people look at are video. Streams drop to low resolution when bandwidth is short, old films and home videos were recorded at low resolution, and phones, surveillance cameras, satellites and microscopes record small, noisy image sequences. A good VSR model makes these sharper without the frame-to-frame shimmering of a frame-by-frame image model. VSR is also where ideas now common in video models were developed: flow-based feature alignment, deformable alignment, long-range recurrent propagation and video transformers.
+
+This chapter builds on [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/), which covers the degradation model, training on synthetic pairs, losses and the generic image metrics; we link to it instead of repeating it. Single-image super-resolution, the setting of one frame in and one frame out, is covered in [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/). Here we focus on what time adds.
+
+## Why video is not just many images
+
+**Plain version.** If you upscale each frame on its own, you throw away two things: the extra information in the other frames, and the requirement that the output should not change from frame to frame unless the scene changes.
+
+### Sub-pixel motion gives new information
+
+Suppose a camera samples a scene on a coarse grid of pixels. In one frame, details that fall between the sampling points are lost (or worse, folded into wrong, low-frequency patterns, which is called **aliasing**). If the scene shifts by a quarter of a pixel in the next frame, the same grid now samples the scene at different places. Four frames shifted by $0, \tfrac14, \tfrac12, \tfrac34$ of a pixel together sample the scene four times more densely than any one of them (Figure 1, in one dimension; in two dimensions, a factor $s$ needs $s^2$ distinct shifts). This is the basic reason multi-frame super-resolution can beat single-image super-resolution: the extra frames are new measurements, not copies [1].
+
+<Figure src={figSubpixel} alt="Left: a wiggly gray curve sampled by four sets of markers, each set spaced four units apart and offset by one unit from the previous set. Right: the curve (gray), a smooth dashed blue curve interpolated from one set of samples that misses the fast wiggles, and a red curve interpolated from all four sets that follows the gray curve closely." caption="Figure 1 — One-dimensional illustration. (a) Four frames sample the same scene at positions shifted by quarter-pixel steps. (b) Interpolating one frame misses the fine detail; merging the four aligned sample sets recovers it. Synthetic signal." />
+
+Two conditions must hold. First, the motion must be **sub-pixel**: a shift by a whole number of low-resolution pixels samples the same places again and adds only noise averaging. Second, we must **know the motion** accurately enough to put each sample in the right place. Real motion is not a global shift: objects move differently, rotate, deform, appear and disappear. Estimating and compensating that motion is the core problem of VSR, and most of this chapter is about it.
+
+### Temporal redundancy
+
+Consecutive frames are also highly redundant: most of the scene is seen again. Independent noise averages out over repeated views, and a model can reuse work done for earlier frames. Video codecs exploit the same redundancy by predicting each frame from the previous one with motion vectors (see the motion-compensated prediction in [IP 08](/en/learn/image-processing/dip-08-compression-watermarking/#predictive-coding)).
+
+### Temporal consistency and flicker
+
+A single-image model, applied frame by frame, makes small independent decisions in every frame. Where it invents texture (grass, hair, water, noise-like detail), the invented texture differs from frame to frame, and the video **flickers** or "boils". Such temporal artifacts are visible even when each frame looks fine on its own. VESPCN [2] and FRVSR [3] both list temporal consistency as a main motivation for processing frames jointly instead of independently. So a VSR model has two goals: each frame should be faithful and sharp, and consecutive frames should change only as the scene changes.
+
+## The video degradation model
+
+**Plain version.** Each low-resolution frame is the high-resolution frame at that moment, blurred, shrunk, made noisy and usually compressed. The frames differ because the scene moved.
+
+### One equation per frame
+
+Extending the super-resolution model of [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#one-problem-many-faces-the-degradation-model) to a clip $\{x_t\}_{t=1}^{T}$ of $T$ high-resolution (HR) frames gives
+
+$$
+y_t = \mathcal C\bigl( (x_t * k)\downarrow_s + n_t \bigr), \qquad t = 1, \dots, T,
+$$
+
+where $y_t$ is the low-resolution (LR) frame at time $t$, $k$ a blur kernel (camera optics, sensor integration, anti-aliasing filter), $*$ 2-D convolution, $\downarrow_s$ keeps every $s$-th pixel in each direction ($s$ is the scale factor, usually 4 in benchmarks), $n_t$ noise that is new in every frame, and $\mathcal C$ lossy video compression (the identity in clean benchmarks). Motion enters because each $x_t$ is a moved version of its neighbors. Near frame $t$ we can write
+
+$$
+x_{t+j} \approx \mathcal W_{t \to t+j}(x_t),
+$$
+
+where $\mathcal W_{t \to t+j}$ is the motion (warping) from frame $t$ to frame $t + j$, $j$ is a small frame offset, and $\approx$ hides what motion cannot explain: occluded regions, objects entering the frame, lighting changes. Combining the two equations,
+
+$$
+y_{t+j} \approx \mathcal C\bigl( (\mathcal W_{t \to t+j}(x_t) * k)\downarrow_s + n_{t+j} \bigr),
+$$
+
+so every neighboring LR frame is a *different* measurement of the same unknown $x_t$. VSR estimates $x_t$ from $y_{t-K}, \dots, y_{t+K}$ (a window of $2K+1$ frames) or from the whole clip.
+
+### Multi-frame reconstruction as an inverse problem
+
+If the motions, blur and scale were all known and there were no compression, $x_t$ could be found by least squares:
+
+$$
+\hat x_t = \arg\min_x \; \frac{1}{2K+1} \sum_{j=-K}^{K} \bigl\| D B \, \mathcal W_{t \to t+j}(x) - y_{t+j} \bigr\|_2^2 ,
+$$
+
+where $B$ is blurring with $k$, $D$ is the downsampling $\downarrow_s$, and the sum runs over the frames in the window. With one frame this problem is badly underdetermined ($s^2 = 16$ unknown HR pixels per LR pixel for $s = 4$). With many frames at different sub-pixel positions it becomes much better determined. Gradient descent on this objective repeatedly simulates the LR frames from the current estimate, compares them with the observed frames and spreads the error back onto the HR grid; this is the classical **iterative back-projection** idea introduced by Irani and Peleg [4], [1], which also inspired the RBPN architecture discussed later [5].
+
+*Optional: [Classical multi-frame super-resolution](#classical-multi-frame-super-resolution) (in the Supplementary notes). Fusing registered samples on the fine grid, robust (median) fusion, and when the multi-frame problem is well posed.*
+
+### A toy experiment: what alignment buys
+
+The snippet builds a 16-frame LR video from one `skimage` photo by random sub-pixel camera shifts, Gaussian blur, $\times 4$ subsampling and noise. It then compares four reconstructions of the first frame: cubic interpolation of that frame alone; the average of all upsampled frames *without* alignment; the least-squares solver above using only the first frame; and the same solver using all 16 frames with the true shifts and with shifts **estimated from the LR frames** by sub-pixel phase correlation [6]. It runs in about ten seconds on a laptop CPU.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, color
+from skimage.registration import phase_cross_correlation
+
+rng = np.random.default_rng(0)
+s, T, blur, noise = 4, 16, 1.2, 0.01                       # scale, frames, blur sigma (HR px), noise std
+hr = color.rgb2gray(data.astronaut())[64:320, 128:384]     # 256 x 256 ground-truth frame, values in [0, 1]
+shifts = rng.uniform(0, s, size=(T, 2)); shifts[0] = 0     # sub-pixel camera motion of each frame (HR px)
+
+def degrade(x, d):                                         # y_t = D B W_t x : shift, blur, keep every s-th pixel
+    return ndi.gaussian_filter(ndi.shift(x, d, order=3, mode="reflect"), blur)[::s, ::s]
+def degrade_T(r, d):                                       # adjoint: zero-fill, blur, shift back
+    z = np.zeros((r.shape[0] * s, r.shape[1] * s)); z[::s, ::s] = r
+    return ndi.shift(ndi.gaussian_filter(z, blur), -d, order=3, mode="reflect")
+def upsample(y):                                           # cubic-spline interpolation on the HR grid
+    u, v = np.mgrid[0:y.shape[0] * s, 0:y.shape[1] * s] / s
+    return ndi.map_coordinates(y, [u, v], order=3, mode="nearest")
+def psnr(x):
+    c = (slice(8, -8), slice(8, -8))                       # skip a border, as benchmarks do
+    return 10 * np.log10(1 / np.mean((np.clip(x, 0, 1)[c] - hr[c]) ** 2))
+
+lr = np.stack([degrade(hr, d) + noise * rng.standard_normal((64, 64)) for d in shifts])
+print("LR video:", lr.shape)
+
+def reconstruct(frames, ds, iters=20):
+    """Multi-frame least squares by gradient descent (iterative back-projection)."""
+    x = np.mean([ndi.shift(upsample(f), -d, order=3, mode="reflect") for f, d in zip(frames, ds)], 0)
+    for _ in range(iters):
+        grad = np.mean([degrade_T(degrade(x, d) - f, d) for f, d in zip(frames, ds)], 0)
+        x -= s * s * grad
+    return x
+
+# shifts estimated from the LR frames themselves (sub-pixel phase correlation), in HR pixels
+est = np.array([-s * phase_cross_correlation(lr[0], f, upsample_factor=100)[0] for f in lr])
+print(f"mean shift error: {np.abs(est - shifts).mean():.2f} HR px")
+
+print(f"single frame, cubic interpolation {psnr(upsample(lr[0])):.2f} dB")
+print(f"average of frames, no alignment   {psnr(np.mean([upsample(f) for f in lr], 0)):.2f} dB")
+print(f"single frame, same solver         {psnr(reconstruct(lr[:1], shifts[:1])):.2f} dB")
+print(f"{T} frames, true shifts            {psnr(reconstruct(lr, shifts)):.2f} dB")
+print(f"{T} frames, estimated shifts       {psnr(reconstruct(lr, est)):.2f} dB")
+# LR video: (16, 64, 64)
+# mean shift error: 0.13 HR px
+# single frame, cubic interpolation 25.50 dB
+# average of frames, no alignment   20.99 dB
+# single frame, same solver         25.81 dB
+# 16 frames, true shifts            30.30 dB
+# 16 frames, estimated shifts       29.33 dB
+```
+
+Three lessons from this toy run (all numbers are from our run, not from any paper). First, **averaging without alignment is worse than using one frame** (20.99 against 25.50 dB): misaligned frames smear the image, exactly the "forgot how far you moved" failure of the analogy. Second, the gain comes from the **frames, not the solver**: the same least-squares solver on one frame barely beats interpolation (25.81 dB), while 16 frames give 30.30 dB. Third, the motion can be **estimated from the LR frames themselves** with an average error of about an eighth of an HR pixel, which keeps most of the gain (29.33 dB). Figure 2 shows the crops and how PSNR grows with the number of frames.
+
+<Figure src={figToy} alt="Four grayscale crops of an astronaut's face: the sharp ground truth; a blurry single-frame cubic interpolation at 25.50 dB; a very blurry average of 16 unaligned frames at 20.99 dB; and a much sharper 16-frame reconstruction at 29.33 dB with slight ringing. A line plot shows PSNR rising from about 25.8 dB with 1 frame to about 31.1 dB with 32 frames, above a dashed line for single-frame cubic interpolation." caption="Figure 2 — The toy multi-frame experiment. Left: crops of the ground truth and of three reconstructions (PSNR on the 256 × 256 frame without an 8-pixel border). Right: PSNR of the multi-frame solver with true shifts as more LR frames are used. Values from our run of the figure script." />
+
+Drag the slider to compare single-frame interpolation with the 16-frame reconstruction on an enlarged crop.
+
+<ImageCompare before={cmpSingle} after={cmpMulti} beforeLabel="1 frame, cubic" afterLabel="16 frames, estimated shifts" alt="Slider comparing a blurry enlarged crop of the astronaut's smile from one frame with a sharper crop from sixteen aligned frames, where the teeth and the edge of the hair are clearer." />
+
+Real videos break the toy's assumptions (global shifts, known blur, no occlusion or compression). Deep VSR keeps the structure (estimate motion, align, fuse, reconstruct) and learns each part from data. Figure 3 shows the pipeline that almost every method follows in some form; BasicVSR [7] names its four components **propagation, alignment, aggregation and upsampling**.
+
+<Figure src={figPipeline} alt="Diagram: a stack of three small low-resolution frames feeds a blue box 'Alignment (flow warp, DCN, attention)', then an orange box 'Fusion / propagation', then a green box 'Reconstruction + upsampling (pixel shuffle)', ending in a sharper high-resolution frame." caption="Figure 3 — The generic VSR pipeline. Neighboring LR frames (or features) are aligned to the current frame, fused or propagated over time, and reconstructed at the higher resolution, usually as a residual added to an upsampled base image." />
+
+## Motion: optical flow and warping
+
+**Plain version.** Optical flow is a map that says, for every pixel, where that bit of the scene went in the next frame. Warping uses that map to move one frame onto another, so that the same object sits at the same pixel in both.
+
+### Optical flow
+
+The classical starting point is **brightness constancy**: a point keeps its brightness as it moves,
+
+$$
+I(u + \delta u,\, v + \delta v,\, t + 1) = I(u, v, t),
+$$
+
+where $I(u, v, t)$ is the intensity at column $u$, row $v$ and time $t$, and $(\delta u, \delta v)$ is the displacement of that point between frames $t$ and $t+1$. The field of displacements over all pixels is the **optical flow** $F(p) = (\delta u(p), \delta v(p))$ for each pixel $p$. One equation per pixel cannot determine two unknowns (the "aperture problem": along a straight edge only the motion across the edge is visible), so every method adds an assumption that neighboring pixels move similarly. Horn and Schunck [8] add a global smoothness penalty; Farnebäck's method [9], available in OpenCV, fits a quadratic polynomial to each neighborhood and estimates the displacement from how the polynomial moves.
+
+Deep flow estimators learn this mapping from data. SPyNet [10] estimates large motions coarse to fine: at each level of an image pyramid it warps one image by the current flow and a small network predicts the remaining, small update; it is compact and is the flow module of BasicVSR [7]. RAFT [11] builds correlation volumes between all pairs of pixels and refines a flow field iteratively with a recurrent unit. BasicVSR, for example, starts from a pretrained SPyNet and fine-tunes it together with the rest of the model [7].
+
+*Optional: [Brightness constancy and the classical flow solvers](#brightness-constancy-and-the-classical-flow-solvers) (in the Supplementary notes). The linearized flow equation, the aperture problem, and what global (Horn–Schunck), local-window and polynomial-expansion (Farnebäck) solvers add.*
+
+### Backward warping with bilinear sampling
+
+To align frame $t+1$ to frame $t$, we use the flow from $t$ to $t+1$ and **pull** values: for every pixel $p$ of the reference frame, look up where that point is in the other frame and read the value there,
+
+$$
+\hat I_{t+1 \to t}(p) = I_{t+1}\bigl(p + F_{t \to t+1}(p)\bigr),
+$$
+
+where $\hat I_{t+1 \to t}$ is frame $t+1$ warped into the coordinates of frame $t$ and $F_{t \to t+1}(p)$ is the displacement of pixel $p$. This is **backward warping**: every output pixel gets exactly one value, with no holes. (Forward warping, pushing each source pixel to its new place, leaves holes and collisions.) The position $q = p + F(p)$ is usually not on the pixel grid, so the value is interpolated **bilinearly** from the four surrounding pixels:
+
+$$
+I(q) = (1 - a)(1 - b)\, I_{00} + a(1 - b)\, I_{10} + (1 - a)\, b\, I_{01} + a\, b\, I_{11},
+$$
+
+where $q = (u_0 + a,\, v_0 + b)$ with integer $(u_0, v_0)$ and fractions $a, b \in [0, 1)$, and $I_{ij}$ is the value at $(u_0 + i,\, v_0 + j)$. Bilinear sampling is differentiable with respect to both the image values and the flow, so a network can learn the flow end to end through the warp; this "bilinear sampler" is the core of spatial transformer networks [12] and of every flow-based VSR model.
+
+The snippet below implements backward warping by hand, checks it against `cv2.remap`, builds two frames in which the background moves by $(1.5, -2)$ pixels and a textured square moves by $(6, 4)$ pixels, and warps the second frame onto the first with the true flow and with Farnebäck flow from OpenCV.
+
+```python
+import numpy as np, cv2
+from scipy import ndimage as ndi
+from skimage import data, transform
+
+def bilinear_warp(img, flow):
+    """Backward warping: out(p) = img(p + flow(p)), bilinear sampling. flow[..., 0] = dx, flow[..., 1] = dy."""
+    H, W = img.shape
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    x = np.clip(xx + flow[..., 0], 0, W - 1); y = np.clip(yy + flow[..., 1], 0, H - 1)
+    x0 = np.minimum(np.floor(x).astype(int), W - 2); y0 = np.minimum(np.floor(y).astype(int), H - 2)
+    ax, ay = x - x0, y - y0                                   # fractional parts = bilinear weights
+    return ((1 - ay) * ((1 - ax) * img[y0, x0] + ax * img[y0, x0 + 1])
+            + ay * ((1 - ax) * img[y0 + 1, x0] + ax * img[y0 + 1, x0 + 1]))
+
+# two frames: the background moves by (dx, dy) = (1.5, -2.0) px, a textured square moves by (6, 4) px
+bg = transform.resize(data.camera() / 255.0, (256, 256), anti_aliasing=True)
+obj = transform.resize(data.coins() / 255.0, (60, 60), anti_aliasing=True)
+def frame(t):
+    f = ndi.shift(bg, (-2.0 * t, 1.5 * t), order=3, mode="reflect")   # ndi.shift takes (rows, cols)
+    r, c = 90 + 4 * t, 100 + 6 * t
+    f[r:r + 60, c:c + 60] = obj
+    return f
+I0, I1 = frame(0).astype(np.float32), frame(1).astype(np.float32)
+
+# true backward flow from frame 0 to frame 1: where is pixel p of frame 0 found in frame 1?
+flow = np.zeros((256, 256, 2), np.float32); flow[..., 0], flow[..., 1] = 1.5, -2.0
+flow[90:150, 100:160] = (6.0, 4.0)
+mine = bilinear_warp(I1, flow)
+H, W = I0.shape; yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+ocv = cv2.remap(I1, xx + flow[..., 0], yy + flow[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+print(f"max |ours - cv2.remap| = {np.abs(mine - ocv)[5:-5, 5:-5].max():.4f}")
+
+u8 = lambda a: (np.clip(a, 0, 1) * 255).round().astype(np.uint8)        # Farneback expects 8-bit images
+est = cv2.calcOpticalFlowFarneback(u8(I0), u8(I1), None, pyr_scale=0.5, levels=4, winsize=21,
+                                   iterations=5, poly_n=7, poly_sigma=1.5, flags=0)
+m0 = np.zeros((H, W), np.float32); m0[90:150, 100:160] = 1          # square in frame 0
+m1 = np.zeros((H, W), np.float32); m1[94:154, 106:166] = 1          # square in frame 1
+occl = (bilinear_warp(m1, flow) > 0) & (m0 == 0)                  # background of frame 0 hidden in frame 1
+inner = (slice(8, -8), slice(8, -8))
+for name, img in [("no alignment", I1), ("warped, true flow", mine), ("warped, Farneback", bilinear_warp(I1, est))]:
+    e = np.abs(img - I0)
+    print(f"{name:18s} mean |error| {e[inner].mean():.4f}   on occluded pixels {e[occl].mean():.4f}")
+print("Farneback median flow (dx, dy): square", np.median(est[100:140, 110:150], axis=(0, 1)).round(2),
+      " background", np.median(est[200:240, 20:60], axis=(0, 1)).round(2))
+# max |ours - cv2.remap| = 0.0000
+# no alignment       mean |error| 0.0562   on occluded pixels 0.2367
+# warped, true flow  mean |error| 0.0089   on occluded pixels 0.2617
+# warped, Farneback  mean |error| 0.0133   on occluded pixels 0.1733
+# Farneback median flow (dx, dy): square [6. 4.]  background [ 1.42 -1.88]
+```
+
+Warping with the true flow cuts the mean difference between the frames by a factor of about six, and Farnebäck's estimate gets most of the way there (our run). But look at the **occluded pixels**: the strip of background that the square covers in frame $t+1$. There, even the *true* flow gives a large error, because the content simply is not in frame $t+1$; it is hidden behind the square. No flow can fix that. A VSR model must learn to trust the warped frame where it is consistent and to ignore it where it is not (Figure 4).
+
+<Figure src={figWarp} alt="Top row: the cameraman photo with a pasted square of coins (frame t), the same scene shifted with the square moved down and right (frame t+1), and red arrows of the estimated flow, long on the square and short on the background. Bottom row: error maps; the unaligned difference is bright on all edges; after warping with the true flow almost everything is dark except a bright strip along two sides of the square, marked by a dashed cyan box; after warping with Farneback flow the result is similar with extra errors around the square's border." caption="Figure 4 — Backward warping. Warping frame t+1 onto frame t removes most of the difference, but not in the occluded strip (dashed box) where background visible in frame t is hidden in frame t+1. In our run the Farneback errors concentrate at the motion boundary. Mean absolute errors from our run." />
+
+## Alignment strategies
+
+**Plain version.** Before frames can be combined, the model must line them up. There are three families: move the frames with a flow map (explicit), let the convolution itself learn where to look (deformable), or let every position search for related content (attention).
+
+### Explicit alignment: flow-based warping
+
+The direct approach estimates a flow from each neighbor to the reference frame and warps the neighbor with it.
+
+- **VESPCN** [2] (CVPR 2017) trains a fast multi-resolution spatial-transformer motion-compensation module end to end with a spatio-temporal version of the sub-pixel convolution (pixel shuffle) network ESPCN [13].
+- **TOFlow** [14] (IJCV 2019) trains the flow network jointly with the restoration network, so the flow is **task-oriented**: it moves whatever makes the output best, even where that differs from physical motion. The paper also introduced Vimeo-90K.
+- **Image versus feature warping.** Early methods warp the LR *images*. Inaccurate flow then produces blurry or wrong warped images, and the loss of detail cannot be undone later. Later methods compute flow on images but warp *feature maps*, so subsequent layers can correct small misalignments; the BasicVSR ablation found feature warping better than image warping [7].
+
+Flow-based alignment is interpretable and works well for moderate motion. Its weaknesses are the cost of the flow network, errors at occlusions and motion boundaries, and the fact that one flow vector per pixel can point to only one place.
+
+### Implicit alignment: deformable convolution
+
+A normal $3 \times 3$ convolution reads its input on a fixed grid around each pixel. A **deformable convolution** [15] adds a learned offset to each of the sampling positions:
+
+$$
+y(p) = \sum_{i=1}^{K} w_i \; x\bigl(p + p_i + \Delta p_i(p)\bigr),
+$$
+
+where $y(p)$ is the output at pixel $p$, $K$ the number of kernel taps (9 for $3 \times 3$), $w_i$ the weight of tap $i$, $p_i$ its fixed grid position (for example $(-1, -1)$), $\Delta p_i(p)$ a learned, real-valued offset predicted by a small network for every pixel and tap, and $x(\cdot)$ is read with bilinear sampling. DCNv2 [16] also multiplies each tap by a learned modulation weight in $[0, 1]$, which lets the layer down-weight unreliable positions.
+
+For alignment, the offsets are predicted from the features of the reference frame and a neighbor, and the deformable convolution is applied to the neighbor's features. **TDAN** [17] aligns each supporting frame to the reference this way at the feature level without computing optical flow. **EDVR** [18] applies deformable alignment in a **Pyramid, Cascading and Deformable (PCD)** module, coarse to fine over a feature pyramid to handle large motions, and fuses the aligned features with **temporal and spatial attention (TSA)**; it won all four tracks of the NTIRE 2019 video restoration challenges.
+
+Chan et al. [19] showed that a deformable convolution can be decomposed into several spatial warps (one per kernel tap, each with its own offset field) followed by a convolution. So deformable alignment is a generalization of flow warping with several flow fields instead of one; this **offset diversity** is why it aligns better. The same work, and BasicVSR++ [20], report that deformable alignment is unstable to train: offsets can grow very large ("offset overflow"). BasicVSR++ therefore predicts the deformable offsets as a **residual on top of optical flow** (flow-guided deformable alignment), combining the stability of flow with the diversity of deformable sampling.
+
+*Optional: [Deformable convolution as warping plus convolution](#deformable-convolution-as-warping-plus-convolution) (in the Supplementary notes). The decomposition in two lines, a tested example, and why several offset fields help at occlusions.*
+
+### Alignment without an explicit motion step
+
+Some models skip motion estimation altogether and let the network absorb motion. **DUF** [21] predicts, for every output pixel, a dynamic upsampling filter and a residual from a spatio-temporal neighborhood of the input frames, so motion is handled implicitly by the content-dependent filters. **PFNL** [22] fuses frames progressively and uses a non-local operation, which compares every position with every other, instead of motion estimation and compensation. 3-D convolutions over (time, height, width) are a third option. These methods avoid flow errors, but their effective search range is bounded by the receptive field, so large motions are harder.
+
+### Attention and transformers
+
+Attention lets each position compare itself with many candidate positions in other frames and take a weighted average of the best matches, which is a soft, learned version of motion search. **VRT** [23] divides the video into short clips and uses **temporal mutual self-attention (TMSA)**: mutual attention between two frames performs joint motion estimation, alignment and fusion, while self-attention extracts features; the clip partition shifts in alternate layers so information crosses clip borders, and a **parallel warping** module adds flow-based warping of neighboring features. VRT is applied to video SR, deblurring, denoising, frame interpolation and space-time SR. **RVRT** [24] uses **guided deformable attention**: starting from optical flow, it predicts several relevant locations in the previous clip and aggregates their features with attention weights.
+
+## Architectures by temporal design
+
+**Plain version.** Once frames can be aligned, the question is which frames each output gets to see, and how information travels along the video. There are four main answers, shown in Figure 5.
+
+<Figure src={figDesigns} alt="Four schematic panels with five input frames y1 to y5 at the bottom and five outputs at the top. (a) Sliding window: frames y2, y3, y4 in a dashed box feed one network that produces output 3. (b) Unidirectional recurrent: a hidden state box above each frame passes an orange arrow to the right. (c) Bidirectional: a forward state row with arrows to the right and a backward state row with arrows to the left. (d) Grid propagation: three rows of states with alternating directions, plus red dashed arcs that skip one frame in the middle row." caption="Figure 5 — Temporal designs. (a) Sliding window: each output is computed from a fixed window of 2K + 1 frames. (b) Unidirectional recurrent: a hidden state carries information forward. (c) Bidirectional recurrent: separate forward and backward states; each output combines both at its time step. (d) Grid propagation with second-order connections (BasicVSR++): repeated backward and forward passes, with links that also skip one frame." />
+
+### Sliding window
+
+A **sliding-window** model takes $2K + 1$ consecutive LR frames and produces one HR frame, the center one, then moves the window by one frame. VESPCN, DUF, TDAN and EDVR are sliding-window models. It is simple and parallel, and errors cannot accumulate over time. FRVSR [3] points out two weaknesses: each input frame is processed and warped $2K + 1$ times, and each output is estimated independently, which limits temporal consistency. A fixed window also cannot use information from farther away; the BasicVSR authors measured that cutting the test sequences into shorter independent segments lowers PSNR, most strongly at segment ends [7].
+
+### Recurrent
+
+A **recurrent** model keeps a hidden state $h_t$ that summarizes the past and updates it frame by frame:
+
+$$
+h_t = F\bigl(y_t,\; \mathcal W(h_{t-1}, F_{t \to t-1})\bigr), \qquad \hat x_t = U(h_t),
+$$
+
+where $F$ is a network that combines the current LR frame $y_t$ with the previous state warped to frame $t$ by the flow $F_{t \to t-1}$ (the warp $\mathcal W$ is the backward warping of the previous section), and $U$ is the reconstruction and upsampling head. Because the state is aligned before reuse, information can travel over many frames at a fixed cost per frame. (For recurrent networks in general, see [ML 03a](/en/learn/ml/ml-03a-recurrent-recursive-networks/).) **FRVSR** [3] feeds the *previous HR output*, warped by flow and rearranged to LR size, into the network for the next frame, which encourages temporally consistent results and needs only one warp per step. **RBPN** [5] is a hybrid: within a window it integrates the neighboring frames one at a time with a recurrent encoder–decoder inspired by back-projection, feeding the estimated motion as an input instead of warping the frames.
+
+A unidirectional recurrent model sees only the past. Early frames receive little information, and errors in the state (from a bad flow, an occlusion or a scene cut) are carried into later frames: **error accumulation**.
+
+### Bidirectional recurrent
+
+**BasicVSR** [7] runs two recurrent branches, one forward and one backward in time:
+
+$$
+h^b_t = F_b\bigl(y_t,\, y_{t+1},\, h^b_{t+1}\bigr), \qquad h^f_t = F_f\bigl(y_t,\, y_{t-1},\, h^f_{t-1}\bigr), \qquad \hat x_t = U\bigl(h^f_t,\, h^b_t\bigr),
+$$
+
+where $h^b_t$ and $h^f_t$ are the backward and forward features at frame $t$, $F_b$ and $F_f$ the two branches (each estimates flow with SPyNet between its two input frames, warps the propagated feature with it and refines it with residual blocks), and $U$ concatenates both features and upsamples them with pixel shuffle. Every output now sees the whole clip, past and future. The paper's ablations found a clear PSNR drop for a unidirectional variant at early frames and a larger drop without alignment, which supports its recipe: bidirectional propagation plus flow-based feature alignment is enough to be a strong baseline. Its extension **IconVSR** adds an *information-refill* module that re-extracts features from sparse keyframes to limit error accumulation at occlusions and boundaries, and *coupled propagation* that feeds the backward branch's output into the forward branch.
+
+The price is latency: the backward branch needs the *future* frames, so the whole clip (or a long chunk) must be available before the first output. That suits offline processing and streaming with a buffer, not live video.
+
+*Optional: [BasicVSR and IconVSR](#basicvsr-and-iconvsr) (in the Paper guides). What the four-component analysis showed, the ablations to look at and the limits of the setup.*
+
+### Grid and second-order propagation
+
+**BasicVSR++** [20] makes propagation richer in two ways. **Grid propagation** passes features backward and forward several times in alternation, so each frame's features are refined repeatedly with information from the whole sequence. **Second-order connections** let the state at frame $t$ use frames $t-1$ *and* $t-2$ (a second-order Markov chain instead of first-order), so information can bypass one bad frame, which helps at occlusions and fine structures. With the flow-guided deformable alignment described above, BasicVSR++ reports a 0.82 dB PSNR gain over BasicVSR at a similar parameter count, and it won three tracks and placed second in a fourth in the NTIRE 2021 video super-resolution and compressed video enhancement challenges [20].
+
+### Transformers and recurrent–transformer hybrids
+
+VRT [23] processes all frames **in parallel** with long-range temporal attention at several scales, which is powerful but heavy. RVRT [24] describes the trade-off directly: parallel models fuse temporal information well but have a large model size and high memory use, while recurrent models share parameters across frames and are compact but are weaker at long-range modeling and harder to parallelize. RVRT processes neighboring frames as a clip in parallel *inside* a globally recurrent framework, using the inferred previous clip to estimate the next, with guided deformable attention for clip-to-clip alignment.
+
+The table summarizes the representative methods of this chapter.
+
+| Method | Venue | Temporal design | Alignment |
+|---|---|---|---|
+| VESPCN [2] | CVPR 2017 | sliding window | flow (spatial transformer), image level |
+| FRVSR [3] | CVPR 2018 | recurrent (previous HR output) | flow, image level |
+| DUF [21] | CVPR 2018 | sliding window | none (dynamic filters) |
+| TOFlow [14] | IJCV 2019 | sliding window | task-oriented flow |
+| EDVR [18] | CVPRW 2019 | sliding window | deformable (PCD) + attention fusion |
+| RBPN [5] | CVPR 2019 | recurrent over a window | motion as input, back-projection |
+| PFNL [22] | ICCV 2019 | sliding window (progressive fusion) | none (non-local) |
+| TDAN [17] | CVPR 2020 | sliding window | deformable, feature level |
+| BasicVSR / IconVSR [7] | CVPR 2021 | bidirectional recurrent | flow, feature level |
+| BasicVSR++ [20] | CVPR 2022 | grid, second-order | flow-guided deformable |
+| RVRT [24] | NeurIPS 2022 | clip-recurrent transformer | guided deformable attention |
+| VRT [23] | TIP 2024 | parallel transformer | mutual attention + parallel warping |
+
+## Real-world video and compression
+
+**Plain version.** Benchmark LR videos are made by one clean, known recipe. Real videos are noisy, blurred in unknown ways and, above all, compressed. A model trained on the clean recipe often sharpens the compression artifacts instead of the scene.
+
+### Compression is the main real-world degradation
+
+Most video is stored and streamed with block-based codecs such as H.264/AVC [25], which predict each block from earlier frames with motion vectors and quantize the residual. The resulting artifacts (blocking, ringing, smeared texture, mosquito noise around edges) differ from frame to frame: frames coded without reference to others (intra frames) look different from predicted frames, and the quality changes with the bitrate. These artifacts are not independent noise and they move with the content, so a VSR model can mistake them for real detail and propagate them. **COMISR** [26] designs VSR for compressed input, with bidirectional recurrent warping, detail-preserving flow estimation and a Laplacian enhancement module that take compression properties such as the position of intra frames into account, and evaluates over a range of compression rates.
+
+### Real-world VSR: RealBasicVSR
+
+**RealBasicVSR** [27] (CVPR 2022) found that long-term propagation, which helps for mild degradations, can **exaggerate severe artifacts**: noise and compression artifacts are propagated and amplified along with the useful information. Its fix is an image **pre-cleaning** module applied to each frame before a BasicVSR network. It also introduced **VideoLQ**, a set of real low-quality videos without ground truth, evaluated with no-reference metrics and visual comparison.
+
+*Optional: [RealBasicVSR](#realbasicvsr) (in the Paper guides). The three trade-offs it identifies and how to read its experiments.*
+
+The degradation pipelines are the video versions of the blind pipelines in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#the-deep-learning-formulation): random blur, resizing, noise and compression, with the extra choice of applying the same or different parameters to all frames of a clip.
+
+### Diffusion-based VSR
+
+Pretrained text-to-image diffusion models produce very realistic textures for real-world image SR (see [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#super-resolution)). In video, their randomness is a problem: independent sampling per frame produces different textures in every frame, which is flicker at its worst. Recent methods therefore add temporal machinery to a pretrained generative model: temporal layers plus flow-guided propagation of latents across the sequence (Upscale-A-Video [28], CVPR 2024), a motion-guided loss that steers the sampling path (MGLD-VSR [29], ECCV 2024), a text-to-*video* model that already models motion (STAR [30], ICCV 2025), a diffusion transformer for videos of arbitrary length and resolution (SeedVR [31], CVPR 2025), and one-step distillation to cut the cost (DLoRAL [32], NeurIPS 2025).
+
+*Optional: [Diffusion-based VSR models](#diffusion-based-vsr-models) (in the Supplementary notes). What each of these five models adds to a pretrained diffusion model to keep the video consistent.*
+
+These models give the most convincing textures on real videos, but they inherit the image-level risk of **hallucinated detail** (plausible content that was never in the scene) and add a video-level risk: detail that is plausible in each frame but not consistent across frames. They are also far more expensive than CNN or transformer VSR.
+
+## Training a VSR model
+
+**Plain version.** Training is the same as for image restoration, except that each training example is a short clip, not a single image.
+
+Pairs are made by degrading HR clips with the model above: the bicubic (BI) or blur-downsampling (BD) recipe for benchmarks (see Evaluation), or a randomized real-world pipeline. Each step samples a short clip and random crops at the same location in all frames; flips and rotations are applied identically to all frames, and the frame order can be reversed as temporal augmentation (BasicVSR reverses Vimeo-90K's 7-frame sequences this way [7]). Recurrent models are trained on longer clips (BasicVSR's REDS setting uses 15-frame inputs) so that propagation is exercised; RealBasicVSR's finding that longer sequences beat larger batches points the same way [27]. In BasicVSR the pretrained flow network and feature extractor are frozen for the first 5,000 iterations, and the flow network is then trained with a smaller learning rate than the rest [7].
+
+The loss is usually an L1-type pixel loss on every output frame (BasicVSR uses the smooth version $\rho(z) = \sqrt{z^2 + \varepsilon^2}$ with a small constant $\varepsilon$, where $z$ is the difference between an output and a ground-truth pixel [7]), with perceptual and adversarial terms for real-world models; [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#loss-functions) covers these. Some methods add a **temporal loss** that penalizes differences between consecutive outputs after motion compensation, such as the short-term warping loss of Lai et al. [33], which compares each output frame with the previous output warped by optical flow, masked where the warp is unreliable.
+
+## Evaluation
+
+**Plain version.** Score every frame against the ground truth, average the scores, and say exactly how the LR frames were made. Then check the video in motion, because per-frame scores cannot see flicker.
+
+### Per-frame fidelity: Y-channel PSNR and SSIM
+
+Most VSR papers report PSNR and SSIM [34] (defined in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#evaluation-metrics)) on the **luminance (Y) channel**, computed for every frame and averaged over the frames of a clip and then over clips. The Y channel follows ITU-R BT.601 [35]: luma $E_Y = 0.299 E_R + 0.587 E_G + 0.114 E_B$ from gamma-corrected RGB in $[0, 1]$, quantized on the 8-bit "studio" scale as $Y = 219 E_Y + 16$. The convention is not universal: in the BasicVSR and BasicVSR++ comparison tables, all results are computed on Y except REDS4, which is computed on RGB [7], [20]. Mixing conventions changes numbers by several dB, as the snippet shows.
+
+```python
+import numpy as np
+from skimage import data, color
+
+def rgb_to_y(rgb):
+    """BT.601 luma on the 8-bit studio scale: Y = 16 + 219 * (0.299 R + 0.587 G + 0.114 B), RGB in [0, 1]."""
+    return 16 + 65.481 * rgb[..., 0] + 128.553 * rgb[..., 1] + 24.966 * rgb[..., 2]
+
+def psnr(a, b, peak=255.0):
+    return 10 * np.log10(peak ** 2 / np.mean((a.astype(np.float64) - b) ** 2))
+
+rng = np.random.default_rng(0)
+gt = np.stack([np.roll(data.astronaut(), 2 * t, axis=1) for t in range(5)]) / 255.0   # 5 ground-truth frames
+out = np.clip(gt + rng.normal(0, 0.02, gt.shape) * np.array([1.0, 0.3, 1.5]), 0, 1)  # unequal error per channel
+
+y_scores = [psnr(rgb_to_y(o), rgb_to_y(g)) for o, g in zip(out, gt)]
+rgb_scores = [psnr(255 * o, 255 * g) for o, g in zip(out, gt)]
+print("matches skimage rgb2ycbcr:", np.allclose(rgb_to_y(gt[0]), color.rgb2ycbcr(gt[0])[..., 0]))
+print(f"Y-channel PSNR, mean of frames: {np.mean(y_scores):.2f} dB")
+print(f"RGB PSNR,       mean of frames: {np.mean(rgb_scores):.2f} dB")
+# matches skimage rgb2ycbcr: True
+# Y-channel PSNR, mean of frames: 43.74 dB
+# RGB PSNR,       mean of frames: 33.94 dB
+```
+
+The same output scores about 10 dB higher on Y than on RGB here (our run), partly because Y is a weighted average of the three channels, so independent channel errors partly cancel, and partly because Y spans only 219 of the 255 levels while the peak in the formula stays 255. Always state the channel, the border crop and whether the frames were rounded to 8 bits.
+
+### Degradation settings: BI and BD
+
+Two LR recipes dominate the clean benchmarks, and results under them are not comparable:
+
+- **BI (bicubic):** downsample each HR frame by $\times 4$ with MATLAB's `imresize`, which blurs with a cubic filter and subsamples. The Vimeo-90K SR benchmark was built this way [14].
+- **BD (blur-downsampling):** blur each HR frame with a Gaussian of standard deviation $\sigma = 1.6$, then keep every fourth pixel, as specified in BasicVSR [7].
+
+BD includes a stronger, known blur, so a model must deblur as well as upsample. The BasicVSR tables report REDS4 under BI only, UDM10 under BD only, and Vimeo-90K-T and Vid4 under both [7]. When you read a comparison table, check the setting of each column first.
+
+### Temporal consistency
+
+Per-frame PSNR is blind to flicker: errors that change randomly from frame to frame can give the same average PSNR as stable errors. Three kinds of measures are used:
+
+- **Warping error** [33]: warp output frame $t+1$ onto frame $t$ with optical flow and measure the masked difference,
+
+$$
+E_{\text{warp}}(V_t, V_{t+1}) = \frac{1}{\sum_i M_t^{(i)}} \sum_{i=1}^{N} M_t^{(i)} \bigl\| V_t^{(i)} - \hat V_{t+1}^{(i)} \bigr\|_2^2 ,
+$$
+
+where $V_t^{(i)}$ is pixel $i$ of output frame $t$, $\hat V_{t+1}$ is frame $t+1$ warped to frame $t$, $N$ the number of pixels and $M_t^{(i)} \in \{0, 1\}$ a non-occlusion mask; the video score averages over all consecutive pairs. Its weakness: a blurry, detail-free video is very stable and scores well.
+- **tOF and tLP** (TecoGAN [36]) compare the temporal behavior of the output with that of the ground truth instead of demanding zero change:
+
+$$
+\mathrm{tOF} = \bigl\| \mathrm{OF}(b_{t-1}, b_t) - \mathrm{OF}(g_{t-1}, g_t) \bigr\|_1 , \qquad \mathrm{tLP} = \bigl| \mathrm{LP}(b_{t-1}, b_t) - \mathrm{LP}(g_{t-1}, g_t) \bigr| ,
+$$
+
+where $b_t$ and $g_t$ are the output and ground-truth frames, $\mathrm{OF}$ is optical flow estimated with Farnebäck's method and $\mathrm{LP}$ is the LPIPS perceptual distance [37]. The TecoGAN authors introduced them because a plain warped-difference measure "can be easily deceived" by blurry results such as bicubic interpolation.
+- **Temporal profiles**: one row of pixels followed through time and stacked into an image; speckle and streaks reveal flicker. VESPCN used them for qualitative comparison [2].
+
+The snippet builds a toy scene with known motion and four "outputs": independent per-frame invented texture, the same outputs smoothed recursively along the motion, the same smoothing with the motion ignored, and a blurry output. Flicker is measured in the spirit of tOF: the temporal change of the output after motion compensation, minus that of the ground truth.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, transform
+
+rng = np.random.default_rng(0)
+T, v = 12, (1, 2)                                         # 12 frames, the scene moves 1 px down and 2 px right per frame
+base = transform.resize(data.camera() / 255.0, (256, 256), anti_aliasing=True)
+gt = np.stack([np.roll(base, (v[0] * t, v[1] * t), axis=(0, 1)) for t in range(T)])
+warp_prev = lambda f: np.roll(f, v, axis=(0, 1))          # exact motion compensation for this toy scene
+
+def fake_detail():                                        # zero-mean "hallucinated texture", new every frame
+    n = ndi.gaussian_filter(rng.standard_normal(base.shape), 0.8)
+    return 0.03 * n / n.std()
+
+per_frame = gt + np.stack([fake_detail() for _ in range(T)])  # each frame restored independently
+smoothed, unaligned, blurry = per_frame.copy(), per_frame.copy(), np.stack([ndi.gaussian_filter(g, 1.5) for g in gt])
+for t in range(1, T):
+    smoothed[t] = 0.3 * per_frame[t] + 0.7 * warp_prev(smoothed[t - 1])   # recursive filter along the motion
+    unaligned[t] = 0.3 * per_frame[t] + 0.7 * unaligned[t - 1]           # same filter, motion ignored
+
+c = (slice(None), slice(16, -16), slice(16, -16))          # ignore borders (np.roll wraps around)
+def psnr(out):
+    return np.mean([10 * np.log10(1 / np.mean((o - g) ** 2)) for o, g in zip(out[c], gt[c])])
+def flicker(out):
+    """Mean |temporal change of output - temporal change of ground truth| after motion compensation."""
+    d_out = out[1:] - np.stack([warp_prev(f) for f in out[:-1]])
+    d_gt = gt[1:] - np.stack([warp_prev(f) for f in gt[:-1]])
+    return np.abs(d_out - d_gt)[c].mean()
+
+for name, out in [("per-frame", per_frame), ("aligned smoothing", smoothed),
+                  ("unaligned smoothing", unaligned), ("blurry output", blurry)]:
+    print(f"{name:20s} PSNR {psnr(out):5.2f} dB   flicker {flicker(out):.4f}")
+# per-frame            PSNR 30.50 dB   flicker 0.0338
+# aligned smoothing    PSNR 36.40 dB   flicker 0.0082
+# unaligned smoothing  PSNR 21.74 dB   flicker 0.0223
+# blurry output        PSNR 25.99 dB   flicker 0.0000
+```
+
+Read the four lines together (all from our toy run). Propagating information **along the motion** reduces flicker and, in this toy, also improves PSNR, because the invented texture is zero-mean noise that averages out; real hallucinated texture is not, so do not expect PSNR gains of this size. Propagating **without alignment** ghosts the moving scene: PSNR collapses and flicker stays high. And the **blurry output** has zero flicker but poor PSNR, which is the TecoGAN warning in miniature: always report a temporal measure *together with* a fidelity or perceptual measure. Figure 6 shows the same effects as motion-compensated temporal profiles.
+
+<Figure src={figProfiles} alt="Four temporal-profile images, each a horizontal strip of pixels stacked over twelve time steps. Ground truth shows clean vertical stripes. Per-frame output shows the same stripes with speckle that changes from row to row. Smoothing along the motion is nearly as clean as the ground truth. Smoothing with motion ignored shows smeared, drifting stripes." caption="Figure 6 — Motion-compensated temporal profiles of the toy scene: one scene row followed over 12 frames (time runs downward). Flicker appears as row-to-row speckle; unaligned smoothing smears the structure." />
+
+### Datasets and test sets
+
+| Dataset | What it is | Typical use |
+|---|---|---|
+| **Vimeo-90K** [14] | 89,800 video clips (720p or higher) from Vimeo; the SR benchmark uses 7-frame sequences at 448 × 256, with ×4 LR inputs of 112 × 64 made by MATLAB `imresize` | training; test split **Vimeo-90K-T** |
+| **REDS** [38] | 300 sequences of 100 frames at 720 × 1280 (240 training, 30 validation, 30 test), captured for the NTIRE 2019 video challenges, with large and complex motion | training; **REDS4** test set |
+| **REDS4** | four REDS training clips (000, 011, 015, 020) held out for testing, following EDVR [7] | test under BI |
+| **Vid4** [39] | four short sequences from Liu and Sun's Bayesian adaptive VSR work | test under BI and BD |
+| **UDM10** | ten test sequences released with PFNL [22] | test under BD |
+| **VideoLQ** [27] | real-world low-quality videos without ground truth | real-world evaluation (no-reference metrics, visual) |
+
+The Liu et al. survey notes that test videos evolved from Vid4 toward REDS as methods aimed at more complex motion and scene changes [40]; BasicVSR describes REDS4 as containing large and complicated motions [7]. Because Vimeo-90K-T sequences have only seven frames, long-range propagation has little to work with there: BasicVSR reports slightly lower scores on Vimeo-90K-T than sliding-window methods such as EDVR and attributes this to the short sequences [7].
+
+### Challenges
+
+Challenges at the NTIRE (CVPR) and AIM (ECCV) workshops created datasets and track the state of the art. **NTIRE 2019** introduced REDS [38]; its video SR challenge [41] had a bicubic track and a track with realistic motion blur, and EDVR won all four video restoration tracks that year [18]. **NTIRE 2021** video SR [42] had a restoration-quality track and a lower-frame-rate track, which turns the problem into space-time SR (raising resolution and frame rate together); BasicVSR++ reports three first places and one second place across that challenge and the compressed video enhancement challenge [20]. **Efficiency challenges** judge quality per unit of compute: the Mobile AI & AIM 2022 report [43] asked for real-time ×4 VSR on a phone's neural processing unit, trained on REDS and judged on runtime and power, and the AIM 2024 challenge on efficient VSR for compressed content [44] targets streaming with ×4 upscaling from 540p to 4K and ×3 from 360p to 1080p.
+
+## Efficiency and streaming
+
+**Plain version.** A video model must run on every frame, often in real time, and often before the future frames exist. Those constraints shape the architecture as much as accuracy does.
+
+- **Cost per frame.** A sliding window processes each input frame $2K + 1$ times unless features are cached; a recurrent model processes each frame once and carries a state, so its cost per frame does not grow with the length of the video [3].
+- **Latency and causality.** Bidirectional and grid propagation need future frames, so the first output waits for the end of the chunk. Live video (calls, game streaming) allows only causal designs or short look-ahead buffers, at some cost in quality (the unidirectional ablation of BasicVSR [7]). Long videos are processed in chunks, and quality dips at chunk ends, as BasicVSR's segment experiment shows.
+- **Memory.** Parallel transformers such as VRT attend across many frames at several scales; their model size and memory use are the drawback RVRT addresses with clip-level recurrence [24]. Diffusion VSR is costlier still, which motivates one-step models [32].
+- **Deployment.** The efficiency challenges set the target for phones and streaming: few parameters and operations, real-time frame rates and low power, with quality judged against interpolation baselines rather than against the largest models [43], [44].
+
+## Failure modes
+
+**Plain version.** VSR fails where its main assumption fails: that neighboring frames show the same content, slightly moved.
+
+- **Occlusion and disocclusion.** Content hidden in the neighbors (Figure 4) has no extra measurements; a model that trusts the warped features there produces ghosts or doubled edges. Modulation masks and attention weights let a model down-weight such regions [20].
+- **Large and complex motion.** Fast, non-rigid motion and motion blur make alignment inaccurate; coarse-to-fine alignment (PCD in EDVR, the pyramid in SPyNet) helps but does not remove the problem. REDS was used to stress exactly this [18].
+- **Error accumulation.** In recurrent models a wrong state is carried forward, especially after occlusions or scene cuts; IconVSR's keyframe refill and BasicVSR++'s second-order links are direct countermeasures [7], [20]. Long propagation can also amplify severe input artifacts, which RealBasicVSR counters with pre-cleaning [27].
+- **Flicker.** Independent per-frame decisions, in single-image models or in diffusion sampling, cause temporal instability that per-frame metrics cannot see.
+- **Hallucinated detail.** GAN and diffusion VSR can create plausible texture, text or faces that were never there, and in video the invented content may also drift. For surveillance, forensic, medical or scientific video, prefer fidelity-oriented models and state which kind of model produced an output.
+- **Domain gap.** Models trained on BI or BD degradations do not account for compression and real noise [26], [27].
+
+## Modern view
+
+### Survey papers
+
+- **Liu et al., "Video Super-Resolution Based on Deep Learning: A Comprehensive Survey" (Artificial Intelligence Review, 2022)** [40]. Reviews 37 deep VSR methods in seven sub-categories by **how they use inter-frame information**: *with alignment* (motion estimation and compensation, deformable convolution) or *without alignment* (2-D and 3-D convolution, recurrent CNNs, non-local operations, others), and compares them on benchmarks. Takeaway: the field moved from aligned short windows toward a mix of designs and long sequences, with REDS replacing Vid4 as the demanding test set.
+- **Tu et al., "Optical Flow for Video Super-Resolution: A Survey" (Artificial Intelligence Review, 2022)** [45]. Covers metrics and classical and deep flow-based VSR, with an analysis of representative deep methods. Takeaway: dense, sub-pixel flow is among the most common tools for motion compensation, so understanding flow is a large part of understanding VSR alignment.
+- **Baniya et al., "A Survey of Deep Learning Video Super-Resolution" (IEEE Transactions on Emerging Topics in Computational Intelligence, 2024)** [46]. A component taxonomy (inputs, alignment, fusion, refinement and reconstruction, upsampling), plus losses, quality and efficiency evaluation, applications and trends such as online, real-world, resource-constrained and space-time VSR. Takeaway: design choices are often driven by benchmark gains rather than explained, and practical settings deserve more attention.
+
+### State of the art, 2023–2026
+
+1. **Propagation plus alignment is the core of fidelity-oriented VSR.** Bidirectional or grid recurrent propagation with flow-guided deformable alignment (BasicVSR++) and parallel or clip-recurrent transformers (VRT, RVRT) are the reference designs of this chapter, trading accuracy against memory and latency.
+2. **Real-world VSR moved to generative priors.** After CNN-based real-world models such as RealBasicVSR, diffusion-based VSR built on image diffusion models (Upscale-A-Video, MGLD-VSR), then on video diffusion models and diffusion transformers (STAR, SeedVR), with temporal consistency as the central technical problem.
+3. **Cost reduction of generative VSR.** One-step diffusion (DLoRAL) follows the same path as one-step image SR.
+4. **Efficiency and compression as first-class targets**, with challenge tracks for mobile hardware and compressed streaming content [43], [44].
+
+### Open problems
+
+- **Faithful versus plausible.** Measuring and controlling hallucination in video, where invented detail may also be temporally unstable, is unsolved.
+- **Temporal evaluation.** Warping error can be gamed by blur, tOF and tLP depend on flow and feature estimates, there is no agreed perceptual measure of temporal quality, and user studies are costly.
+- **Real degradations and codecs.** Synthetic pipelines still miss real camera processing and codec behavior; ground truth for real videos is rarely available.
+- **Long videos, online processing and scene cuts.** Combining the quality of bidirectional and global models with causal, constant-memory processing remains difficult.
+- **Occlusions and large motion.** Alignment is still the weak point under fast, non-rigid motion and disocclusion.
+- **Cost of generative VSR**, which is still far above that of CNN and transformer VSR for long, high-resolution video.
+
+## Key takeaways
+
+- Video SR differs from image SR because neighboring frames, shifted by sub-pixel motion, are **new measurements** of the same scene, and because the output must be **temporally consistent**.
+- The video degradation model applies blur, downsampling, noise and compression to every frame, and links frames through motion; without knowing the motion, frames cannot be combined (unaligned averaging is worse than one frame).
+- Optical flow plus **backward warping with bilinear sampling** is the basic alignment tool; it fails at occlusions even with perfect flow.
+- Alignment comes in three families: explicit flow warping (VESPCN, TOFlow, BasicVSR), deformable convolution (TDAN, EDVR; a generalization of warping with diverse offsets, stabilized by flow guidance in BasicVSR++) and attention (VRT, RVRT).
+- Temporal designs trade accuracy, latency and cost: sliding windows are local and parallel, recurrent models are compact but accumulate errors, bidirectional and grid propagation see the whole clip but need future frames, and transformers model long range at high memory cost.
+- Real-world VSR is dominated by compression artifacts; propagation can amplify them (RealBasicVSR), and diffusion-based VSR gives realistic texture at the risk of hallucination and flicker.
+- Report Y-channel (or RGB) PSNR/SSIM per frame with the exact BI or BD setting, add a temporal-consistency measure, and remember that a blurry video scores well on stability alone.
+
+## Exercises
+
+1. **Integer versus sub-pixel motion.** In the multi-frame snippet, replace the random shifts by integer shifts (`rng.integers(0, s, size=(T, 2)).astype(float)`, keeping `shifts[0] = 0`) and rerun. Then try all shifts equal to zero. Explain the PSNR you get in each case using the sampling argument of Figure 1.
+
+<details>
+<summary>Hint</summary>
+
+Integer shifts in HR pixels still land the LR samples on different HR phases (an HR shift of 1 is a quarter LR pixel), so they still help; what matters is the shift *modulo* $s$ HR pixels. With all shifts zero every frame samples the same HR positions, so only the noise averages out and the result stays close to the single-frame solver. Try shifts that are multiples of 4 HR pixels to see the "no new information" case directly.
+
+</details>
+
+2. **Registration error budget.** Add Gaussian noise with standard deviation 0.25, 0.5 and 1.0 HR pixels to the true shifts before calling `reconstruct`, and plot PSNR against the shift error. Compare with the 0.13-pixel error of phase correlation. What does this suggest about how accurate alignment must be for super-resolution, compared with denoising?
+
+<details>
+<summary>Hint</summary>
+
+PSNR should fall quickly once the shift error approaches the size of the detail being recovered (a fraction of an HR pixel), because samples land in the wrong places and the reconstruction blurs or rings. Denoising by averaging tolerates larger errors, since it only needs the same content, not its exact sub-pixel position. This is why VSR needs sub-pixel accurate flow, while many video denoisers can work with coarser alignment.
+
+</details>
+
+3. **Forward versus backward warping.** Write a forward-warping function that pushes each pixel of frame $t+1$ to $p - F(p)$ (rounded to the nearest pixel) and compare its output with `bilinear_warp` on the two-frame example. Count holes (pixels that receive no value) and collisions (pixels that receive several).
+
+<details>
+<summary>Hint</summary>
+
+Holes appear where the scene expands or is disoccluded (behind the moving square), and collisions where it contracts or is occluded. Backward warping has neither, because every output pixel reads exactly one (interpolated) value, which is why networks use it; the price is that it needs the flow defined on the *reference* frame.
+
+</details>
+
+4. **Sliding window versus recurrent cost.** A sliding-window model with a 7-frame window runs a feature extractor on every input frame of the window and one flow network per neighbor. A bidirectional recurrent model runs one feature extractor per frame and two flow estimations per frame (one per direction). Count feature extractions and flow estimations per output frame for each design, with and without caching features between windows. Which design has lower latency for the first output of a 100-frame clip?
+
+<details>
+<summary>Hint</summary>
+
+Without caching the window model does 7 feature extractions and 6 flow estimations per output; with caching, 1 new extraction per output but still 6 flows (each neighbor must be aligned to a new center). The bidirectional model does 1 extraction and 2 flows per frame. But its first output needs the backward pass over all 100 frames, while the window model needs only frames 1 to 4. Cost per frame favors recurrence; latency favors the window.
+
+</details>
+
+5. **Flicker metric pitfalls.** In the flicker snippet, replace the zero-mean fake detail by a *fixed* texture pattern that moves with the scene (generate it once and roll it with the scene). Rerun and explain why the flicker measure changes while PSNR does not change much. What does this say about what tOF/tLP-style measures can and cannot detect?
+
+<details>
+<summary>Hint</summary>
+
+A texture that moves consistently with the scene has the same temporal change as the ground truth, so the motion-compensated flicker drops to about zero, while PSNR stays roughly as low as before because the texture is still wrong. Temporal measures detect *inconsistency*, not *incorrectness*: a consistently hallucinated texture passes them. Fidelity (or perceptual) metrics and temporal metrics answer different questions.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional background that the main text does not depend on.
+
+### Classical multi-frame super-resolution
+
+**Plain version.** Before deep learning, multi-frame super-resolution was solved as an estimation problem: register the frames, put their samples on a fine grid, and solve for the HR image that explains all of them, with a prior for what is still missing.
+
+**Precise version.** With global translations $d_j$, a known blur $B$ and downsampling $D$, the observation model is $y_j = D B S_{d_j} x + n_j$ for frames $j = 1, \dots, M$, where $S_{d}$ shifts the image by $d$. Farsiu et al. [1] observe that for pure translations and a space-invariant blur the blur and shift operators commute, $B S_{d_j} = S_{d_j} B$, so the problem splits into two steps: (1) estimate the blurred HR image $z = Bx$ from the LR frames, by copying every registered LR sample to its position on the HR grid and combining the samples that land on the same HR pixel; (2) deblur $z$ to get $x$. With an L2 data term, step 1 averages the samples at each HR pixel; Farsiu et al. instead minimize an L1 data term, $\min_x \sum_j \| D B S_{d_j} x - y_j \|_1 + \lambda\, \Phi_{\text{BTV}}(x)$, where $\Phi_{\text{BTV}}$ is their edge-preserving "bilateral TV" regularizer and $\lambda > 0$ its weight. The L1 version turns step 1 into a **pixel-wise median**, which is robust to outlier frames and to errors in motion and blur estimation. Iterative back-projection, introduced by Irani and Peleg [4], is steepest descent on the data term, as in the main-text snippet.
+
+**When it is well posed.** Counting unknowns, $\times s$ SR needs at least $s^2$ frames with distinct sub-pixel phases; random shifts need more, because some phases repeat and others are missing. The blur sets a second limit: frequencies that $B$ suppresses to near zero cannot be recovered by any number of frames, only by a prior. That is one reason the toy gains in Figure 2 grow more slowly as frames are added.
+
+**Code.** Step 1 with the shifts rounded to the HR grid shows two effects: with few frames many HR pixels receive no sample at all, and the fused image is close to the *blurred* image $Bx$, not to $x$, so step 2 is still needed.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, color
+
+rng = np.random.default_rng(0)
+s, blur = 4, 1.2
+hr = color.rgb2gray(data.astronaut())[64:320, 128:384]
+def fuse(T):
+    shifts = rng.uniform(0, s, size=(T, 2)); shifts[0] = 0
+    acc, cnt = np.zeros_like(hr), np.zeros_like(hr)
+    i, j = np.mgrid[0:64, 0:64]
+    for d in shifts:
+        y = ndi.gaussian_filter(ndi.shift(hr, d, order=3, mode="reflect"), blur)[::s, ::s]
+        u, v = np.rint(s * i - d[0]).astype(int), np.rint(s * j - d[1]).astype(int)
+        ok = (u >= 0) & (u < 256) & (v >= 0) & (v < 256)
+        np.add.at(acc, (u[ok], v[ok]), y[ok]); np.add.at(cnt, (u[ok], v[ok]), 1)
+    z = acc / np.maximum(cnt, 1)
+    err = np.abs(z - ndi.gaussian_filter(hr, blur))[cnt > 0].mean()
+    return (cnt > 0).mean(), err
+for T in (4, 16, 64):
+    cov, err = fuse(T)
+    print(f"{T:3d} frames: {100 * cov:5.1f}% of HR pixels filled, mean |z - Bx| on filled pixels {err:.4f}")
+#   4 frames:  18.4% of HR pixels filled, mean |z - Bx| on filled pixels 0.0052
+#  16 frames:  66.9% of HR pixels filled, mean |z - Bx| on filled pixels 0.0061
+#  64 frames:  97.7% of HR pixels filled, mean |z - Bx| on filled pixels 0.0030
+```
+
+With $s = 4$ there are 16 sub-pixel phases, so even 16 random shifts fill only about two thirds of the HR grid in our run, and 64 are needed to fill almost all of it. The small remaining error comes from rounding the shifts to whole HR pixels.
+
+**Limits.** These methods depend on accurate registration with a simple motion model and on a known blur; local, non-rigid motion and occlusion break the commuting-operator argument, which is where learned alignment took over. A modern descendant is burst photography: Wronski et al. [47] use natural hand tremor to obtain a burst of raw frames with small offsets, then align and merge them into a full-color image without a separate demosaicing step, with robustness to local motion, occlusion and scene changes.
+
+### Brightness constancy and the classical flow solvers
+
+**Plain version.** Flow solvers assume that a point keeps its brightness as it moves, and that neighbors move together. The first assumption gives one equation per pixel; the second supplies the missing equations.
+
+**Precise version.** Linearizing brightness constancy $I(u + \delta u, v + \delta v, t + 1) = I(u, v, t)$ with a first-order Taylor expansion gives the **optical flow constraint**
+
+$$
+I_u\, \delta u + I_v\, \delta v + I_t = 0,
+$$
+
+where $I_u, I_v$ are the spatial derivatives and $I_t$ the temporal derivative of the intensity at the pixel. It is one equation in two unknowns: only the component of motion along the gradient $(I_u, I_v)$ is determined (the aperture problem), and the linearization is valid only for small displacements, which is why practical solvers work coarse to fine on image pyramids. Horn and Schunck [8] minimize, over the whole image,
+
+$$
+\iint \bigl(I_u\, \delta u + I_v\, \delta v + I_t\bigr)^2 + \alpha^2 \bigl( \|\nabla \delta u\|^2 + \|\nabla \delta v\|^2 \bigr)\, du\, dv,
+$$
+
+where $\alpha > 0$ weights a smoothness penalty on the flow field; the result is dense but blurred across motion boundaries. Local methods instead assume constant flow in a small window and solve the constraint for all window pixels by least squares. Farnebäck [9] approximates each neighborhood by a quadratic polynomial, $I(\mathbf z) \approx \mathbf z^\top A \mathbf z + \mathbf b^\top \mathbf z + c$ with $\mathbf z$ the local coordinates, $A$ a symmetric matrix, $\mathbf b$ a vector and $c$ a scalar fitted to the data; a pure shift by $\mathbf d$ keeps $A$ and changes $\mathbf b$ to $\mathbf b - 2A\mathbf d$, so $\mathbf d$ follows from the change in $\mathbf b$, averaged over a neighborhood and refined over a pyramid. This is the solver used in the main-text snippet, and the flow estimator in the TecoGAN tOF metric [36].
+
+**Why learned flow replaced them in VSR.** Classical solvers break under brightness change, large motion, occlusion and textureless regions, and they are not optimized for the downstream task. Learned estimators (SPyNet [10], RAFT [11]) are more accurate and can be fine-tuned end to end, and TOFlow [14] showed that the flow that helps restoration most need not be the physically correct one.
+
+### Deformable convolution as warping plus convolution
+
+**Plain version.** A deformable convolution with $K$ taps behaves like $K$ ordinary warps, each with its own small flow field, followed by a $1 \times 1$-style weighted sum. So it can "look" in several places at once, while flow warping looks in one.
+
+**Precise version.** Rewrite the deformable convolution of the main text, for a single input channel, as
+
+$$
+y(p) = \sum_{i=1}^{K} w_i\, \tilde x_i(p), \qquad \tilde x_i(p) = x\bigl(p + p_i + \Delta p_i(p)\bigr),
+$$
+
+where $\tilde x_i$ is the input backward-warped by the flow field $p_i + \Delta p_i(\cdot)$, one field per tap $i$. Each $\tilde x_i$ is a flow-warped copy of $x$, and $y$ is a learned weighted sum of the $K$ warped copies. Chan et al. [19] use this decomposition to show that flow-based alignment is the special case in which all offset fields are equal to one flow (up to the fixed tap positions), and that the extra **offset diversity** of deformable alignment is what improves results. At an occlusion, for example, some taps can sample the background on one side of the occluder while others sample it on the other side.
+
+**Code.** The decomposition can be checked numerically with the `bilinear_warp` function of the main text:
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, transform
+
+def bilinear_warp(img, flow):
+    H, W = img.shape
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    x = np.clip(xx + flow[..., 0], 0, W - 1); y = np.clip(yy + flow[..., 1], 0, H - 1)
+    x0 = np.minimum(np.floor(x).astype(int), W - 2); y0 = np.minimum(np.floor(y).astype(int), H - 2)
+    ax, ay = x - x0, y - y0
+    return ((1 - ay) * ((1 - ax) * img[y0, x0] + ax * img[y0, x0 + 1])
+            + ay * ((1 - ax) * img[y0 + 1, x0] + ax * img[y0 + 1, x0 + 1]))
+
+rng = np.random.default_rng(0)
+x = transform.resize(data.camera() / 255.0, (128, 128), anti_aliasing=True)
+w = rng.normal(size=9)                                            # 3x3 kernel weights
+taps = [(dx, dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
+# (a) all offsets zero: deformable conv = ordinary (correlation-style) convolution
+zero = np.zeros((128, 128, 2))
+y_def = sum(wi * bilinear_warp(x, zero + np.array(t)) for wi, t in zip(w, taps))
+y_conv = ndi.correlate(x, w.reshape(3, 3), mode="nearest")
+print("zero offsets match ndi.correlate:", np.allclose(y_def[2:-2, 2:-2], y_conv[2:-2, 2:-2]))
+# (b) every tap shares one flow f: deformable conv = warp by f, then ordinary convolution
+f = np.zeros((128, 128, 2)); f[..., 0], f[..., 1] = 3.0, -2.0     # integer flow keeps the check exact
+y_shared = sum(wi * bilinear_warp(x, f + np.array(t)) for wi, t in zip(w, taps))
+y_warp_conv = ndi.correlate(bilinear_warp(x, f), w.reshape(3, 3), mode="nearest")
+print("shared offsets = warp then conv:", np.allclose(y_shared[6:-6, 6:-6], y_warp_conv[6:-6, 6:-6]))
+# zero offsets match ndi.correlate: True
+# shared offsets = warp then conv: True
+```
+
+Case (a) is an ordinary convolution and case (b) is flow warping followed by an ordinary convolution; a general deformable convolution gives each of the nine taps its own offset field.
+
+**Why training is unstable.** The offsets $\Delta p_i$ are unconstrained regression outputs. Early in training they can drift to very large values, pointing far outside the relevant region ("offset overflow") and producing useless features. Chan et al. add an offset-fidelity loss that keeps offsets close to optical flow [19]; BasicVSR++ instead predicts offsets as residuals on top of the flow and multiplies each tap by a sigmoid modulation mask, which also acts as an attention map over the warped copies [20].
+
+### Diffusion-based VSR models
+
+**Plain version.** All diffusion VSR models start from a generator that already knows what natural images (or videos) look like, condition it on the LR video, and add something that keeps the generated detail the same from frame to frame. They differ in what they add.
+
+**Precise version.**
+
+- **Upscale-A-Video** [28] is a text-guided latent diffusion model. Locally, it inserts temporal layers into the U-Net and the VAE decoder for consistency within short sequences; globally, a training-free **flow-guided recurrent latent propagation** module propagates and fuses latents across the whole sequence. Text prompts can guide texture creation, and an adjustable noise level trades restoration against generation.
+- **MGLD-VSR** [29] guides the latent sampling path of a pretrained latent diffusion model with a **motion-guided loss** computed from the temporal dynamics of the LR video, and fine-tunes a temporal module inserted in the decoder with a sequence-oriented loss.
+- **STAR** [30] starts from a text-to-video diffusion model, which already models motion, and adds a local information enhancement module before the global attention blocks (to enrich local detail and suppress degradation artifacts) and a dynamic frequency loss that emphasizes different frequency components at different diffusion steps (to keep fidelity).
+- **SeedVR** [31] is a diffusion transformer for generic video restoration of arbitrary length and resolution, built on shifted window attention with variable-sized windows at the spatial and temporal borders, a causal video autoencoder, and mixed image and video training.
+- **DLoRAL** [32] trains a one-step model with two LoRA branches: a consistency branch, learned with a cross-frame retrieval module from degraded inputs, and a detail branch trained afterwards to add spatial detail while staying within the consistency branch's temporal representation. Both are merged into the diffusion model for single-step inference.
+
+**How to compare them.** Check whether the comparison uses synthetic data with ground truth (fidelity metrics), real videos (no-reference metrics, user studies), or AI-generated videos, and whether a temporal-consistency measure is reported next to per-frame quality; generative models can trade one for the other.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### BasicVSR and IconVSR
+
+**The problem.** By 2020 VSR methods had become complex and dissimilar (multi-scale deformable alignment with attention in EDVR, several projection modules in RBPN), which made them slow, hard to reimplement and hard to compare fairly. BasicVSR [7] asks which components actually matter.
+
+**The idea.** Decompose VSR methods into four functions, **propagation, alignment, aggregation and upsampling**, and test the options for each with minimal designs. The paper's Table 1 classifies existing methods this way (local, unidirectional or bidirectional propagation; no alignment, flow or deformable alignment; concatenation-based aggregation; pixel-shuffle upsampling). BasicVSR itself is the simplest combination that worked best: bidirectional propagation, flow-based (SPyNet) alignment of *features*, concatenation and pixel shuffle.
+
+**What it showed.** The ablations are the core of the paper, and the numbers here are the paper's own. Splitting test sequences into independent segments lowers PSNR, most at segment ends, which argues for long-range propagation (its Fig. 3). A unidirectional variant is markedly worse at early frames and, overall, about 0.5 dB worse than the bidirectional model (Fig. 4). Removing alignment costs 1.19 dB, and warping images instead of features costs 0.17 dB. The extension IconVSR adds keyframe information-refill and coupled propagation to reduce error accumulation, reporting up to 0.31 dB over BasicVSR.
+
+**How to read it.** Start with Table 1 and Section 3.1, which together are a compact map of the field. In the main comparison table, check: (a) the degradation of each column (REDS4 under BI only, UDM10 under BD only, Vimeo-90K-T and Vid4 under both); (b) the channel (Y everywhere except REDS4, which is RGB); (c) the training set behind each column (REDS for REDS4, Vimeo-90K for the rest); (d) runtimes, which depend on hardware and LR size. In the ablations, note that each one modifies a variant of BasicVSR, so the drops measure the component's value inside this design, not in general.
+
+**Limits.** Bidirectional propagation needs the whole sequence, so BasicVSR is an offline method. Flow-based alignment inherits flow errors under large motion and occlusion, which BasicVSR++ addresses with flow-guided deformable alignment [20]. The study is on clean BI/BD degradations; RealBasicVSR [27] shows that the same long-range propagation can amplify severe real-world artifacts.
+
+**Why it matters here.** It gives the vocabulary used throughout this chapter, and it is the baseline from which BasicVSR++, RealBasicVSR and several diffusion VSR models were built.
+
+### RealBasicVSR
+
+**The problem.** Models trained on BI or BD degradations fail on real videos, and simply training BasicVSR-style models on random real-world degradations raises new trade-offs that earlier work ignored [27].
+
+**The idea.** The paper identifies three trade-offs and proposes a simple fix for each. (1) *Detail synthesis versus artifact suppression*: long-term propagation spreads noise and artifacts along with detail, so an **image pre-cleaning module** (a stack of residual blocks) cleans each LR frame independently before a BasicVSR network propagates them. It is trained with an extra *cleaning loss* that compares its output with a downsampled ground truth, and at test time a *dynamic refinement* scheme applies it repeatedly until the change falls below a threshold. The paper shows that a recurrent cleaning module, or no cleaning loss, fails to remove the artifacts. (2) *Speed versus performance in training*: loading many long, degraded clips makes training slow, so a **stochastic degradation scheme** loads half of each sequence and flips it in time, and lets the degradation parameters change from frame to frame as a random walk to keep the data diverse; this reduces training time by up to 40% without loss of quality. (3) *Batch versus length*: under a fixed memory budget, longer sequences use temporal information more effectively than larger batches and make inference more stable.
+
+**What it showed.** RealBasicVSR, a BasicVSR with the cleaning module, fine-tuned with perceptual and adversarial losses (with the cleaning module detached from those two losses), compares favorably in quality and efficiency with real-world image and video SR models on real videos. The paper also releases the **VideoLQ** dataset of real low-quality videos as a common benchmark.
+
+**How to read it.** Begin with the analysis of the cleaning module (what happens when propagation is applied to uncleaned inputs) and the batch-versus-length experiments, since they explain the design. For VideoLQ, check that the comparison uses no-reference metrics and visual results because there is no ground truth, and read the visual comparisons for the trade-off between sharper texture and invented artifacts.
+
+**Limits.** No-reference metrics on VideoLQ are only weakly tied to human judgment, so the comparison relies partly on visual examples. The degradation model is synthetic, so codecs and camera pipelines outside it can still break the model. A cleaning module that removes too much also removes real detail.
+
+**Why it matters here.** It explains why real-world VSR cannot just reuse the clean-benchmark recipe, and it is the standard non-diffusion baseline that diffusion VSR papers such as Upscale-A-Video compare with [28].
+
+## References
+
+1. S. Farsiu, M. D. Robinson, M. Elad and P. Milanfar, "Fast and Robust Multiframe Super Resolution," *IEEE Transactions on Image Processing*, vol. 13, no. 10, pp. 1327–1344, 2004. [doi](https://doi.org/10.1109/TIP.2004.834669)
+2. J. Caballero, C. Ledig, A. Aitken, A. Acosta, J. Totz, Z. Wang and W. Shi, "Real-Time Video Super-Resolution with Spatio-Temporal Networks and Motion Compensation," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Caballero_Real-Time_Video_Super-Resolution_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1611.05250)
+3. M. S. M. Sajjadi, R. Vemulapalli and M. Brown, "Frame-Recurrent Video Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Sajjadi_Frame-Recurrent_Video_Super-Resolution_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1801.04590)
+4. M. Irani and S. Peleg, "Improving Resolution by Image Registration," *CVGIP: Graphical Models and Image Processing*, vol. 53, no. 3, pp. 231–239, 1991. [doi](https://doi.org/10.1016/1049-9652(91)90045-L)
+5. M. Haris, G. Shakhnarovich and N. Ukita, "Recurrent Back-Projection Network for Video Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Haris_Recurrent_Back-Projection_Network_for_Video_Super-Resolution_CVPR_2019_paper.html) · [arXiv](https://arxiv.org/abs/1903.10128)
+6. M. Guizar-Sicairos, S. T. Thurman and J. R. Fienup, "Efficient Subpixel Image Registration Algorithms," *Optics Letters*, vol. 33, no. 2, p. 156, 2008. [doi](https://doi.org/10.1364/OL.33.000156)
+7. K. C. K. Chan, X. Wang, K. Yu, C. Dong and C. C. Loy, "BasicVSR: The Search for Essential Components in Video Super-Resolution and Beyond," in *Proc. IEEE/CVF CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Chan_BasicVSR_The_Search_for_Essential_Components_in_Video_Super-Resolution_and_CVPR_2021_paper.html) · [arXiv](https://arxiv.org/abs/2012.02181)
+8. B. K. P. Horn and B. G. Schunck, "Determining Optical Flow," *Artificial Intelligence*, vol. 17, no. 1–3, pp. 185–203, 1981. [doi](https://doi.org/10.1016/0004-3702(81)90024-2)
+9. G. Farnebäck, "Two-Frame Motion Estimation Based on Polynomial Expansion," in *Image Analysis* (Lecture Notes in Computer Science), pp. 363–370, Springer, 2003. [doi](https://doi.org/10.1007/3-540-45103-X_50)
+10. A. Ranjan and M. J. Black, "Optical Flow Estimation Using a Spatial Pyramid Network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Ranjan_Optical_Flow_Estimation_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1611.00850)
+11. Z. Teed and J. Deng, "RAFT: Recurrent All-Pairs Field Transforms for Optical Flow," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 402–419, 2020. [doi](https://doi.org/10.1007/978-3-030-58536-5_24) · [arXiv](https://arxiv.org/abs/2003.12039)
+12. M. Jaderberg, K. Simonyan, A. Zisserman and K. Kavukcuoglu, "Spatial Transformer Networks," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2015. [proceedings](https://proceedings.neurips.cc/paper/2015/hash/33ceb07bf4eeb3da587e268d663aba1a-Abstract.html) · [arXiv](https://arxiv.org/abs/1506.02025)
+13. W. Shi, J. Caballero, F. Huszár, J. Totz, A. P. Aitken, R. Bishop, D. Rueckert and Z. Wang, "Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network," in *Proc. IEEE CVPR*, 2016. [arXiv](https://arxiv.org/abs/1609.05158)
+14. T. Xue, B. Chen, J. Wu, D. Wei and W. T. Freeman, "Video Enhancement with Task-Oriented Flow," *International Journal of Computer Vision*, vol. 127, no. 8, pp. 1106–1125, 2019. [doi](https://doi.org/10.1007/s11263-018-01144-2) · [arXiv](https://arxiv.org/abs/1711.09078)
+15. J. Dai, H. Qi, Y. Xiong, Y. Li, G. Zhang, H. Hu and Y. Wei, "Deformable Convolutional Networks," in *Proc. IEEE ICCV*, 2017. [CVF](https://openaccess.thecvf.com/content_iccv_2017/html/Dai_Deformable_Convolutional_Networks_ICCV_2017_paper.html) · [arXiv](https://arxiv.org/abs/1703.06211)
+16. X. Zhu, H. Hu, S. Lin and J. Dai, "Deformable ConvNets V2: More Deformable, Better Results," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Zhu_Deformable_ConvNets_V2_More_Deformable_Better_Results_CVPR_2019_paper.html) · [arXiv](https://arxiv.org/abs/1811.11168)
+17. Y. Tian, Y. Zhang, Y. Fu and C. Xu, "TDAN: Temporally-Deformable Alignment Network for Video Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Tian_TDAN_Temporally-Deformable_Alignment_Network_for_Video_Super-Resolution_CVPR_2020_paper.html) · [arXiv](https://arxiv.org/abs/1812.02898)
+18. X. Wang, K. C. K. Chan, K. Yu, C. Dong and C. C. Loy, "EDVR: Video Restoration with Enhanced Deformable Convolutional Networks," in *Proc. IEEE/CVF CVPR Workshops*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPRW_2019/html/NTIRE/Wang_EDVR_Video_Restoration_With_Enhanced_Deformable_Convolutional_Networks_CVPRW_2019_paper.html) · [arXiv](https://arxiv.org/abs/1905.02716)
+19. K. C. K. Chan, X. Wang, K. Yu, C. Dong and C. C. Loy, "Understanding Deformable Alignment in Video Super-Resolution," in *Proc. AAAI Conference on Artificial Intelligence*, vol. 35, no. 2, pp. 973–981, 2021. [doi](https://doi.org/10.1609/aaai.v35i2.16181) · [arXiv](https://arxiv.org/abs/2009.07265)
+20. K. C. K. Chan, S. Zhou, X. Xu and C. C. Loy, "BasicVSR++: Improving Video Super-Resolution with Enhanced Propagation and Alignment," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Chan_BasicVSR_Improving_Video_Super-Resolution_With_Enhanced_Propagation_and_Alignment_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2104.13371)
+21. Y. Jo, S. W. Oh, J. Kang and S. J. Kim, "Deep Video Super-Resolution Network Using Dynamic Upsampling Filters Without Explicit Motion Compensation," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Jo_Deep_Video_Super-Resolution_CVPR_2018_paper.html)
+22. P. Yi, Z. Wang, K. Jiang, J. Jiang and J. Ma, "Progressive Fusion Video Super-Resolution Network via Exploiting Non-Local Spatio-Temporal Correlations," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Yi_Progressive_Fusion_Video_Super-Resolution_Network_via_Exploiting_Non-Local_Spatio-Temporal_Correlations_ICCV_2019_paper.html) · [code and test data (Vid4, UDM10)](https://github.com/psychopa4/PFNL)
+23. J. Liang, J. Cao, Y. Fan, K. Zhang, R. Ranjan, Y. Li, R. Timofte and L. Van Gool, "VRT: A Video Restoration Transformer," *IEEE Transactions on Image Processing*, vol. 33, pp. 2171–2182, 2024. [doi](https://doi.org/10.1109/TIP.2024.3372454) · [arXiv](https://arxiv.org/abs/2201.12288)
+24. J. Liang, Y. Fan, X. Xiang, R. Ranjan, E. Ilg, S. Green, J. Cao, K. Zhang, R. Timofte and L. Van Gool, "Recurrent Video Restoration Transformer with Guided Deformable Attention," in *Advances in Neural Information Processing Systems (NeurIPS)*, vol. 35, pp. 378–393, 2022. [arXiv](https://arxiv.org/abs/2206.02146)
+25. T. Wiegand, G. J. Sullivan, G. Bjøntegaard and A. Luthra, "Overview of the H.264/AVC Video Coding Standard," *IEEE Transactions on Circuits and Systems for Video Technology*, vol. 13, no. 7, pp. 560–576, 2003. [doi](https://doi.org/10.1109/TCSVT.2003.815165)
+26. Y. Li, P. Jin, F. Yang, C. Liu, M.-H. Yang and P. Milanfar, "COMISR: Compression-Informed Video Super-Resolution," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Li_COMISR_Compression-Informed_Video_Super-Resolution_ICCV_2021_paper.html) · [arXiv](https://arxiv.org/abs/2105.01237)
+27. K. C. K. Chan, S. Zhou, X. Xu and C. C. Loy, "Investigating Tradeoffs in Real-World Video Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Chan_Investigating_Tradeoffs_in_Real-World_Video_Super-Resolution_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2111.12704)
+28. S. Zhou, P. Yang, J. Wang, Y. Luo and C. C. Loy, "Upscale-A-Video: Temporal-Consistent Diffusion Model for Real-World Video Super-Resolution," in *Proc. IEEE/CVF CVPR*, pp. 2535–2545, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Zhou_Upscale-A-Video_Temporal-Consistent_Diffusion_Model_for_Real-World_Video_Super-Resolution_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2312.06640)
+29. X. Yang, C. He, J. Ma and L. Zhang, "Motion-Guided Latent Diffusion for Temporally Consistent Real-World Video Super-Resolution," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 224–242, 2024. [doi](https://doi.org/10.1007/978-3-031-72784-9_13) · [arXiv](https://arxiv.org/abs/2312.00853)
+30. R. Xie, Y. Liu, P. Zhou, C. Zhao, J. Zhou, K. Zhang, Z. Zhang, J. Yang, Z. Yang and Y. Tai, "STAR: Spatial-Temporal Augmentation with Text-to-Video Models for Real-World Video Super-Resolution," in *Proc. IEEE/CVF ICCV*, 2025. [CVF](https://openaccess.thecvf.com/content/ICCV2025/html/Xie_STAR_Spatial-Temporal_Augmentation_with_Text-to-Video_Models_for_Real-World_Video_Super-Resolution_ICCV_2025_paper.html) · [arXiv](https://arxiv.org/abs/2501.02976)
+31. J. Wang, Z. Lin, M. Wei, Y. Zhao, C. Yang, C. C. Loy and L. Jiang, "SeedVR: Seeding Infinity in Diffusion Transformer Towards Generic Video Restoration," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wang_SeedVR_Seeding_Infinity_in_Diffusion_Transformer_Towards_Generic_Video_Restoration_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2501.01320)
+32. Y. Sun, L. Sun, S. Liu, R. Wu, Z. Zhang and L. Zhang, "One-Step Diffusion for Detail-Rich and Temporally Consistent Video Super-Resolution," in *Advances in Neural Information Processing Systems (NeurIPS)*, vol. 38, 2025. [arXiv](https://arxiv.org/abs/2506.15591)
+33. W.-S. Lai, J.-B. Huang, O. Wang, E. Shechtman, E. Yumer and M.-H. Yang, "Learning Blind Video Temporal Consistency," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Wei-Sheng_Lai_Real-Time_Blind_Video_ECCV_2018_paper.html) · [arXiv](https://arxiv.org/abs/1808.00449)
+34. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+35. ITU-R, "Recommendation ITU-R BT.601-7: Studio Encoding Parameters of Digital Television for Standard 4:3 and Wide-Screen 16:9 Aspect Ratios," International Telecommunication Union, 2011. [ITU](https://www.itu.int/rec/R-REC-BT.601)
+36. M. Chu, Y. Xie, J. Mayer, L. Leal-Taixé and N. Thuerey, "Learning Temporal Coherence via Self-Supervision for GAN-based Video Generation," *ACM Transactions on Graphics*, vol. 39, no. 4, article 75, 2020. [doi](https://doi.org/10.1145/3386569.3392457) · [arXiv](https://arxiv.org/abs/1811.09393)
+37. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Zhang_The_Unreasonable_Effectiveness_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1801.03924)
+38. S. Nah, S. Baik, S. Hong, G. Moon, S. Son, R. Timofte and K. M. Lee, "NTIRE 2019 Challenge on Video Deblurring and Super-Resolution: Dataset and Study," in *Proc. IEEE/CVF CVPR Workshops*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPRW_2019/html/NTIRE/Nah_NTIRE_2019_Challenge_on_Video_Deblurring_and_Super-Resolution_Dataset_and_CVPRW_2019_paper.html)
+39. C. Liu and D. Sun, "On Bayesian Adaptive Video Super Resolution," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 36, no. 2, pp. 346–360, 2014. [doi](https://doi.org/10.1109/TPAMI.2013.127)
+40. H. Liu, Z. Ruan, P. Zhao, C. Dong, F. Shang, Y. Liu, L. Yang and R. Timofte, "Video Super-Resolution Based on Deep Learning: A Comprehensive Survey," *Artificial Intelligence Review*, vol. 55, no. 8, pp. 5981–6035, 2022. [doi](https://doi.org/10.1007/s10462-022-10147-y) · [arXiv](https://arxiv.org/abs/2007.12928)
+41. S. Nah, R. Timofte, S. Gu, S. Baik, S. Hong, G. Moon, S. Son and K. M. Lee, "NTIRE 2019 Challenge on Video Super-Resolution: Methods and Results," in *Proc. IEEE/CVF CVPR Workshops*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPRW_2019/html/NTIRE/Nah_NTIRE_2019_Challenge_on_Video_Super-Resolution_Methods_and_Results_CVPRW_2019_paper.html)
+42. S. Son, S. Lee, S. Nah, R. Timofte and K. M. Lee, "NTIRE 2021 Challenge on Video Super-Resolution," in *Proc. IEEE/CVF CVPR Workshops*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021W/NTIRE/html/Son_NTIRE_2021_Challenge_on_Video_Super-Resolution_CVPRW_2021_paper.html) · [arXiv](https://arxiv.org/abs/2104.14852)
+43. A. Ignatov, R. Timofte et al., "Power Efficient Video Super-Resolution on Mobile NPUs with Deep Learning, Mobile AI & AIM 2022 Challenge: Report," arXiv:2211.05256, 2022. [arXiv](https://arxiv.org/abs/2211.05256)
+44. M. V. Conde, Z. Lei, W. Li, C. Bampis, I. Katsavounidis, R. Timofte et al., "AIM 2024 Challenge on Efficient Video Super-Resolution for AV1 Compressed Content," in *Proc. ECCV Workshops* (Lecture Notes in Computer Science), pp. 304–325, 2025. [doi](https://doi.org/10.1007/978-3-031-91856-8_18) · [arXiv](https://arxiv.org/abs/2409.17256)
+45. Z. Tu, H. Li, W. Xie, Y. Liu, S. Zhang, B. Li and J. Yuan, "Optical Flow for Video Super-Resolution: A Survey," *Artificial Intelligence Review*, vol. 55, no. 8, pp. 6505–6546, 2022. [doi](https://doi.org/10.1007/s10462-022-10159-8) · [arXiv](https://arxiv.org/abs/2203.10462)
+46. A. A. Baniya, T.-K. Lee, P. W. Eklund and S. Aryal, "A Survey of Deep Learning Video Super-Resolution," *IEEE Transactions on Emerging Topics in Computational Intelligence*, vol. 8, no. 4, pp. 2655–2676, 2024. [doi](https://doi.org/10.1109/TETCI.2024.3398015) · [arXiv](https://arxiv.org/abs/2506.03216)
+47. B. Wronski, I. Garcia-Dorado, M. Ernst, D. Kelly, M. Krainin, C.-K. Liang, M. Levoy and P. Milanfar, "Handheld Multi-Frame Super-Resolution," *ACM Transactions on Graphics*, vol. 38, no. 4, 2019. [doi](https://doi.org/10.1145/3306346.3323024) · [arXiv](https://arxiv.org/abs/1905.03277)

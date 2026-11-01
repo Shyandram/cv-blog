@@ -1,0 +1,968 @@
+---
+title: "DLCV 03B・影像分割：語意、實例與全景分割"
+description: "深度網路如何替每個像素貼標籤：三種分割任務、全卷積與編碼器–解碼器網路、空洞卷積與多尺度脈絡、損失函數與評估指標（mIoU、mask AP、全景品質），以及 MaskFormer 與 Mask2Former 的遮罩分類，還有可提示與開放詞彙分割。"
+track: deep-learning
+order: 38
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection, image-processing/dip-10-segmentation]
+tags: [semantic-segmentation, instance-segmentation, panoptic-segmentation, deeplab, mask2former, mean-iou, panoptic-quality]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figTasks from '../../../../assets/deep-learning/dl-03b-image-segmentation/tasks.png';
+import figArch from '../../../../assets/deep-learning/dl-03b-image-segmentation/architectures.png';
+import figUp from '../../../../assets/deep-learning/dl-03b-image-segmentation/upsampling.png';
+import figDil from '../../../../assets/deep-learning/dl-03b-image-segmentation/dilation.png';
+import figPq from '../../../../assets/deep-learning/dl-03b-image-segmentation/pq-toy.png';
+
+## 你將學到
+
+- 三種分割任務的精確定義：語意分割（semantic segmentation，每個像素一個類別）、實例分割（instance segmentation，每個物體一個遮罩）與全景分割（panoptic segmentation，每個像素同時有類別與物體身分），以及背後「stuff」與「things」的區分。
+- 分類網路如何變成逐像素的預測器：全卷積網路、輸出步幅（output stride）、分數的上取樣、帶跳接的編碼器–解碼器、空洞（atrous，亦稱 dilated）卷積，以及多尺度脈絡模組（ASPP、金字塔池化）。
+- 哪些損失函數用來訓練分割模型（逐像素交叉熵、Dice、focal），以及為什麼類別不平衡讓這個選擇變得重要，並附一個 NumPy 實驗。
+- 每種任務怎麼用程式碼衡量：像素準確率與 mean IoU、mask AP，以及全景品質 $\text{PQ} = \text{SQ} \times \text{RQ}$。
+- 遮罩分類（mask classification；MaskFormer、Mask2Former）如何用同一個架構解決三種任務，以及可提示（SAM 系列）與開放詞彙模型各自的位置。
+
+## 先看全貌
+
+偵測器為每個物體畫一個方框（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/)）。方框只是粗略的答案：它包含背景像素，也沒有說出物體的精確輪廓。**分割**（segmentation）給出精確的答案：它替每個像素決定「這個像素屬於什麼」。
+
+<Callout type="tip" title="用最簡單的話說">
+給小朋友一頁街景的著色本和一盒蠟筆。**語意分割**是依「種類」上色：每輛車都塗藍色，每個人都塗橘色，馬路塗灰色，天空塗淺藍色。兩輛貼在一起的車會變成一整塊藍色。**實例分割**是在每輛車、每個人身上貼一張編號貼紙，並且只在該物體的輪廓裡面上色；馬路和天空留白。**全景分割**兩件事都做：頁面上每一小塊都有顏色，而且每輛車、每個人還各有自己的編號。
+</Callout>
+
+為什麼重要：自駕車需要知道哪些像素是可行駛的路面，而不只是「這個框裡某處有一條路」。放射科醫師量測腫瘤，需要它的精確面積。要把一個人從照片中移除的修圖軟體，需要這個人的輪廓。抓取物體的機器人、拍到農田與森林的衛星影像、醫學掃描，都需要逐像素的答案。
+
+本篇是兩篇經典章節的深度學習續篇。[IP 10](/zh-tw/learn/image-processing/dip-10-segmentation/) 與 [IP 11](/zh-tw/learn/image-processing/dip-11-active-contours/) 用門檻、區域生長、圖切割（graph cut）、分水嶺與主動輪廓來分割影像，完全不需要訓練資料；本篇則是從有標註的範例中學出分割。[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/) 介紹過方框、IoU、錨框、特徵金字塔、focal loss 與 Mask R-CNN；這些想法我們直接沿用並連結回去，不重複說明。可提示的 Segment Anything 模型在 [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#可提示的分割samsam-2sam-3) 與 [ML 09](/zh-tw/learn/ml/ml-09-foundation-models/#提示式分割segment-anything-系列) 介紹過，這裡只說明它們在各種任務中的位置。三篇綜述勾勒出這個領域：Minaee 等人談 CNN 時代 [1]，Li 等人談以 Transformer 為基礎的分割 [2]，Zhou 等人談結合基礎模型的分割 [3]。我們會在「現代觀點」回頭討論。
+
+## 三個任務，一張標籤圖
+
+**白話版。** 三種任務都是把標籤寫在像素格點上，差別在於寫的是*哪一種*標籤：只寫類別名稱（語意）、只替可數物體寫物體身分（實例），或是每個像素兩者都寫（全景）。
+
+**精確版。** 設 $\Omega = \{1, \dots, H\} \times \{1, \dots, W\}$ 為 $H \times W$ 影像的像素位置集合，$\{1, \dots, K\}$ 為類別標籤。
+
+- **語意分割**預測一張標籤圖 $y : \Omega \to \{1, \dots, K\}$，每個像素 $\mathbf{x}$ 有一個類別 $y(\mathbf{x})$。它不區分同一類別的兩個物體。
+- **實例分割**預測一個集合 $\{(m_j, c_j, s_j)\}_{j=1}^{N}$，其中 $m_j \in \{0, 1\}^{H \times W}$ 是二值遮罩，$c_j$ 是它的類別，$s_j \in [0, 1]$ 是信心分數，$N$ 隨影像而變。遮罩之間可以重疊，而且只會分割可數的物體類別。它就是「輸出遮罩而不是方框」的偵測。
+- **全景分割** [4] 把每個像素 $i$ 對應到一個數對 $(l_i, z_i)$，其中 $l_i$ 是類別，$z_i$ 是實例編號（instance id）。具有相同數對的像素組成一個**區段**（segment）。由於每個像素只帶一個數對，區段不能重疊，也不需要信心分數。
+
+全景分割的論文沿用視覺領域的一個舊區分，替兩種類別命名。**Things** 是形狀明確、可以數的物體，例如人、車與動物。**Stuff** 是質地或材質相近的無定形區域，例如天空、馬路與草地 [4]。對 stuff 類別而言，實例編號會被忽略：一張影像裡所有的天空是同一個區段。哪些類別算 stuff、哪些算 things，由各資料集自行設計。含糊不清或不屬於任何類別的像素會得到特殊的 **void** 標籤，並且不參與評估。
+
+<Figure src={figTasks} alt="一個合成街景的四個面板，場景中有天空、一棟建築、草地、馬路、三輛車與兩個人。面板 b 依類別為像素上色，因此兩輛貼在一起的車合併成一塊藍色區域。面板 c 在空白背景上為每輛車與每個人顯示各自顏色的遮罩。面板 d 結合了天空、建築、草地與馬路的類別顏色，以及每輛車與每個人各自的顏色，並以白色輪廓線分開。" caption="圖 1 — 同一個合成場景上的三種任務。(b) 語意：兩輛貼在一起的車變成一個區域。(c) 實例：每個物體一個遮罩，stuff 不標註。(d) 全景：每個像素都有類別，而每個 thing 還有自己的身分。" />
+
+| | 語意 | 實例 | 全景 |
+| --- | --- | --- | --- |
+| 標籤 | 每個像素一個類別 | 每個物體一個遮罩＋類別＋分數 | 每個像素一個（類別，實例編號） |
+| 涵蓋的類別 | stuff 與 things | 僅 things | stuff 與 things |
+| 允許重疊 | 否 | 是 | 否 |
+| 信心分數 | 無 | 有 | 無 |
+| 標準指標 | mean IoU | mask AP | 全景品質（PQ） |
+
+這張表說明了為什麼這三種任務長期各有各的方法：它們的輸出形狀不同，每個指標獎勵的東西也不同。本篇大致依這段歷史展開：先是語意分割的逐像素分類器，接著是以偵測器為基礎的實例分割，然後是迫使兩者會合的全景任務，最後是能處理三種任務的單一架構。
+
+## 從分類器到逐像素分類器
+
+**白話版。** 拿一個影像分類器，拿掉那個把「位置」丟掉的部分，它輸出的就不是一個分數向量，而是一個小小的類別分數格點。再把這個格點放大回影像大小，就得到一個分割模型。
+
+### 全卷積網路
+
+Long、Shelhamer 與 Darrell 的**全卷積網路**（fully convolutional network, FCN）[5] 把分類網路的全連接層換成卷積。卷積可以處理任意大小的輸入，所以網路現在把 $H \times W$ 的影像對應成一張分數圖
+
+$$
+Z \in \mathbb{R}^{K \times \frac{H}{s} \times \frac{W}{s}},
+$$
+
+其中 $K$ 是類別數，$s$ 是**輸出步幅**（output stride），也就是輸入解析度與分數圖解析度的比值。分類骨幹網路會反覆地池化並加大步幅；對 FCN 當初採用的那些網路而言 $s = 32$，所以一張 $512 \times 512$ 的影像只會得到 $16 \times 16$ 的類別分數格點。每個分數向量 $Z[:, u, v]$ 概括了影像中很大的一塊視窗，這對辨認「是什麼」很好；但一格就涵蓋 $32 \times 32$ 個像素，對於說出邊界「確切落在哪裡」就很差。
+
+FCN 把分數 $Z$ 上取樣到輸入大小後，用逐像素交叉熵損失端到端地訓練整個網路，起點是為分類預訓練好的權重。為了找回細節，它融合更精細層的預測：步幅 32 的分數先上取樣 2 倍，再加上由步幅 16 那一層算出的分數圖，然後對步幅 8 再做一次。論文把三個版本稱為 FCN-32s、FCN-16s 與 FCN-8s，並顯示每多融合一個更精細的層，輪廓就更細緻 [5]。它的概念可以用一句話概括整個領域：把來自深而粗的層的「是什麼」，與來自淺而細的層的「在哪裡」結合起來。[DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#用於密集預測的編碼器解碼器) 在編碼器–解碼器那一節也介紹過同一個想法。
+
+### 上取樣分數，不是標籤
+
+**白話版。** 如果先在低解析度決定類別，再把決定放大，每條邊界都會變成由 $s \times s$ 方塊組成的階梯。如果先把*分數*平滑地放大，再逐像素決定，邊界就會落在格點之間。
+
+雙線性內插（bilinear interpolation）用最近的四個粗格點算出細位置的分數。對於位在粗座標 $(u + a, v + b)$ 的細像素，其中 $u, v$ 是整數、$a, b \in [0, 1)$，
+
+$$
+\tilde{Z}_k = (1 - a)(1 - b)\, Z_k[u, v] + a(1 - b)\, Z_k[u + 1, v] + (1 - a)\, b\, Z_k[u, v + 1] + a\, b\, Z_k[u + 1, v + 1],
+$$
+
+其中 $Z_k$ 是類別 $k$ 的分數圖，$\tilde{Z}_k$ 是內插後的分數。預測的標籤是 $\hat{y} = \arg\max_k \tilde{Z}_k$。FCN 把上取樣實作成以雙線性內插初始化的步幅轉置卷積，並讓網路自己學習它 [5]；轉置卷積在 [ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#填補步幅與膨脹) 說明過。後來的多數模型在最後一步直接使用固定的雙線性上取樣。
+
+下面的實驗單獨觀察輸出步幅的影響。它建立一張**理想的**粗分數圖：每個 $s \times s$ 格子裡各類別所占的比例，也就是步幅為 $s$ 的輸出頭（head）的理想輸出；然後比較「放大」與「決定」兩種先後順序。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+# Synthetic ground truth: 0 background, 1 large disk, 2 thin bar, 3 small square
+H = W = 256
+yy, xx = np.mgrid[0:H, 0:W]
+gt = np.zeros((H, W), int)
+gt[(yy - 120) ** 2 + (xx - 90) ** 2 < 60 ** 2] = 1
+gt[40:216, 178:184] = 2                        # 6 pixels wide
+gt[196:216, 60:80] = 3                         # 20 x 20 pixels
+K = 4
+
+def iou_per_class(gt, pred, K):
+    return np.array([((gt == k) & (pred == k)).sum() / ((gt == k) | (pred == k)).sum()
+                     for k in range(K)])
+
+onehot = np.stack([(gt == k).astype(float) for k in range(K)])
+print("stride | nearest labels: mIoU (per class) | bilinear scores: mIoU (per class)")
+for s in [4, 8, 16, 32]:
+    # ideal stride-s scores: the class fractions inside each s x s cell
+    coarse = onehot.reshape(K, H // s, s, W // s, s).mean(axis=(2, 4))
+    # (a) decide at low resolution, then enlarge the label map
+    lab_nn = np.kron(coarse.argmax(0), np.ones((s, s), int))
+    # (b) enlarge the scores with bilinear interpolation, then decide per pixel
+    up = np.stack([ndi.zoom(c, s, order=1, mode="nearest", grid_mode=True) for c in coarse])
+    lab_bi = up.argmax(0)
+    a, b = iou_per_class(gt, lab_nn, K), iou_per_class(gt, lab_bi, K)
+    print(f"{s:6d} | {a.mean():.3f} {np.round(a, 2)} | {b.mean():.3f} {np.round(b, 2)}")
+```
+
+```text
+stride | nearest labels: mIoU (per class) | bilinear scores: mIoU (per class)
+     4 | 0.906 [0.99 0.97 0.67 1.  ] | 0.994 [1.   1.   0.99 0.99]
+     8 | 0.825 [0.98 0.93 0.75 0.64] | 0.883 [0.99 0.99 0.7  0.86]
+    16 | 0.565 [0.95 0.89 0.   0.41] | 0.578 [0.97 0.97 0.   0.37]
+    32 | 0.421 [0.92 0.76 0.   0.  ] | 0.473 [0.96 0.93 0.   0.  ]
+```
+
+這個小實驗有三個教訓（數字來自上面的程式，不是來自任何論文）。第一，對分數做雙線性上取樣幾乎不花成本，而且對大圓盤而言總是至少一樣好。第二，沒有任何上取樣能找回粗格點從來沒看見的東西：在步幅 16 時，6 像素寬的長條在每個格子裡都是少數而消失了；在步幅 32 時，20 像素的方塊也消失了。細小的結構需要小的輸出步幅，或是能把精細特徵帶回來的解碼器。第三，mean IoU 對這些損失的懲罰很重，因為長條與方塊和背景的權重一樣（圖 2）。
+
+<Figure src={figUp} alt="三張方形標籤圖與一張折線圖。真實標籤有一個藍色圓盤、一根橘色細長直條與一個綠色小方塊。在步幅 16 搭配最近鄰放大時，圓盤的輪廓呈方塊狀、長條消失、方塊部分錯誤；用雙線性分數上取樣時，圓盤輪廓平滑，但長條仍然消失。折線圖顯示輸出步幅從 4 增加到 32 時，雙線性分數的 mean IoU 從約 0.99 降到 0.47，最近鄰標籤則從 0.91 降到 0.42。" caption="圖 2 — 即使有理想的粗分數，輸出步幅仍限制了分割模型能還原的內容。(b, c) 步幅 16；深色覆蓋處標示錯誤的像素。(d) 兩種上取樣順序在這張玩具圖上的 mIoU。" />
+
+### 編碼器–解碼器與跳接
+
+**白話版。** 與其從粗到細一步跳到底，不如一階一階爬回解析度的階梯，並且在每一階，向編碼器在同樣大小時所擁有的細節特徵圖「借」資料。
+
+**U-Net** [6] 把這個做法對稱化：一個由卷積與降取樣組成的收縮**編碼器**、一個由上取樣與卷積組成的擴張**解碼器**，並且在每一層用跳接（skip connection）把編碼器的特徵圖串接到解碼器。編碼器提供「是什麼」，跳接提供「在哪裡」。論文的設計選擇（無填補的卷積、重疊圖塊策略、為貼在一起的細胞所加的加權損失，以及強烈的彈性增強）在 IP 10 的 U-Net 導讀中說明。
+
+*選讀：[U-Net：論文導讀](/zh-tw/learn/image-processing/dip-10-segmentation/papers/#u-net論文導讀)（見 IP 10 的「論文導讀」頁）。論文的主張、有效卷積（valid convolution）的輸出尺寸算術，以及怎麼讀它的表格。*
+
+相反的設計則讓解碼器保持輕量。**DeepLabv3+** [7] 讓編碼器跑到輸出步幅 16，把特徵上取樣 4 倍，串接骨幹網路在步幅 4 的低階特徵（先經過 $1 \times 1$ 卷積減少通道數），再用幾個 $3 \times 3$ 卷積精修，最後再上取樣 4 倍。論文提出解碼器的動機，是指出單純的 16 倍雙線性上取樣，也就是「簡單的解碼器」（naive decoder），可能無法還原物體的細節。圖 3 比較三種形狀：FCN 少數幾張融合的分數圖、U-Net 完整的階梯，以及 DeepLab 的脈絡模組加上單一一條跳接。
+
+<Figure src={figArch} alt="三張方塊圖。FCN：編碼器區塊從影像縮小到 1/32，在 1/32 的分數圖兩次上取樣 2 倍，並有虛線跳接箭頭從 1/16 與 1/8 的編碼器階段連來，最後上取樣 8 倍成為逐像素分數。U-Net 風格：編碼器縮小到 1/16、解碼器長回完整大小，綠色弧線連接大小相同的編碼器與解碼器區塊。DeepLab 風格：編碼器到達 1/16，其最後一個階段以空洞卷積維持 1/16，接著是 ASPP 方塊（一個 1x1 卷積、三個比率為 6、12、18 的 3x3 卷積，以及影像池化），然後上取樣 4 倍、與 1/4 特徵串接，再上取樣 4 倍。" caption="圖 3 — 從粗特徵回到像素的三種方法。(a) FCN 融合來自少數幾個較精細階段的分數圖。(b) U-Net 風格的編碼器–解碼器逐步上取樣，並串接大小相同的編碼器特徵圖。(c) DeepLabv3+ 用空洞卷積維持步幅 16，用 ASPP 加入多尺度脈絡，並使用一條低階跳接。" />
+
+## 不犧牲解析度的脈絡
+
+**白話版。** 要替一個像素貼標籤，需要兩樣方向相反的東西：寬廣的視野（這塊灰色是馬路還是牆？）和精細的解析度（馬路到底在哪裡結束？）。空洞卷積與池化金字塔能在不縮小特徵圖的情況下給你寬廣的視野。
+
+### 空洞（atrous）卷積
+
+降取樣是 CNN 擴大感受野（receptive field，一個輸出能看到的輸入區域）的慣用方法（[DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#感受野) 與 [ML 03](/zh-tw/learn/ml/ml-03-convolutional-networks/#感受野) 有推導）。**空洞**（atrous；法文 "à trous"，意思是「有洞的」）卷積則是改把小卷積核的取樣點拉開。在一維情況下，DeepLab [8] 把輸入 $x$ 與長度 $K$ 的濾波器 $w$ 做空洞卷積的輸出 $y$ 定義為
+
+$$
+y[i] = \sum_{k=1}^{K} x[i + r \cdot k]\, w[k],
+$$
+
+其中 $i$ 是輸出位置的索引，$r$ 是**比率**（rate）：輸入每隔 $r$ 個位置取樣一次。比率 $r = 1$ 就是一般的卷積。比率為 $r$ 的 $k \times k$ 卷積核每邊涵蓋 $k_e = k + (k - 1)(r - 1)$ 個像素，而權重一樣是 $k^2$ 個、計算量也一樣 [8]。Yu 與 Koltun [9] 把同一個運算稱為膨脹卷積（dilated convolution），並證明堆疊膨脹率逐層加倍的卷積，能讓感受野呈指數成長而不損失解析度。
+
+DeepLab 的做法，是把最後一個降取樣層的步幅設為 1，並把其後的卷積換成比率為 2 的空洞卷積，使它們用同樣的預訓練權重仍然看到同樣的影像區域；再多重複一個階段，密度又加倍 [8]。典型的模型輸出步幅是 8 或 16，而不是 32 [10]。代價是計算量與記憶體：在最後幾個階段，步幅 8 的位置數是步幅 16 的四倍。
+
+```python
+import numpy as np
+
+def atrous_1d(x, w, r):
+    """y[i] = sum_k x[i + r*k] w[k] (DeepLab's Eq. 1), taps centred, zero padding."""
+    K = len(w); c = K // 2
+    xp = np.pad(x, r * c)
+    return np.array([sum(xp[i + r * (k)] * w[k] for k in range(K)) for i in range(len(x))])
+
+x = np.zeros(21); x[10] = 1.0                   # an impulse in the middle
+w = np.array([1.0, 1.0, 1.0])
+for r in [1, 2, 4]:
+    print(f"rate {r}: taps at offsets {[(k - 1) * r for k in range(3)]},",
+          "response", atrous_1d(x, w, r).astype(int))
+
+def receptive_field(kernels, rates, strides):
+    """Receptive field (in input pixels) of a stack of conv layers."""
+    rf, jump = 1, 1                              # jump = distance between neighbouring outputs, in input pixels
+    for k, r, s in zip(kernels, rates, strides):
+        rf += (r * (k - 1)) * jump
+        jump *= s
+    return rf, jump
+
+print("three 3x3, rates 1,1,1:", receptive_field([3, 3, 3], [1, 1, 1], [1, 1, 1]))
+print("three 3x3, rates 1,2,4:", receptive_field([3, 3, 3], [1, 2, 4], [1, 1, 1]))
+print("three 3x3, stride 2   :", receptive_field([3, 3, 3], [1, 1, 1], [2, 2, 2]))
+```
+
+```text
+rate 1: taps at offsets [-1, 0, 1], response [0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 0 0 0]
+rate 2: taps at offsets [-2, 0, 2], response [0 0 0 0 0 0 0 0 1 0 1 0 1 0 0 0 0 0 0 0 0]
+rate 4: taps at offsets [-4, 0, 4], response [0 0 0 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 0 0 0]
+three 3x3, rates 1,1,1: (7, 1)
+three 3x3, rates 1,2,4: (15, 1)
+three 3x3, stride 2   : (15, 8)
+```
+
+最後兩行就是空洞卷積的全部道理。比率為 1、2、4 的三層，看到的輸入像素數是 15，和三個步幅為 2 的層一模一樣；但它們每個輸入像素仍保有一個輸出（間隔 1），而不是每 8 個像素才一個（圖 4）。
+
+<Figure src={figDil} alt="左：四排圓點，標示為輸入、第 1 層（比率 1）、第 2 層（比率 2）與第 3 層（比率 4），從最上面的一個輸出往下，每層經過三個取樣點的連線，最後到達 15 個連續的輸入圓點；一個箭頭標示感受野為 15 個輸入、沒有降取樣。右：三個 11 乘 11 的格點，顯示 3x3 卷積核的 9 個取樣點在比率 1（相鄰）、比率 2（散開成 5 乘 5）與比率 4（散開成 9 乘 9）的樣子。" caption="圖 4 — 空洞卷積。(a) 堆疊比率 1、2、4，在完整解析度下涵蓋 15 個輸入。(b–d) 比率 1、2、4 的 3×3 卷積核，權重都是 9 個，但分別涵蓋 3×3、5×5 與 9×9 個像素。" />
+
+膨脹有一個陷阱。單一膨脹層只讀取稀疏的輸入格點；而若堆疊的各層比率有共同因數，就會留下任何路徑都到不了的洞，形成棋盤格狀的瑕疵，Wang 等人稱之為**網格效應**（gridding）[11]。解法是選擇像 1、2、5 這樣能互相填補空隙的比率。
+
+*選讀：[堆疊空洞卷積中的網格效應](#堆疊空洞卷積中的網格效應gridding)（見「補充資料」頁）。哪些比率序列會留下洞、混合膨脹的規則，以及用程式碼檢查。*
+
+### 多尺度脈絡：ASPP 與金字塔池化
+
+**白話版。** 物體有各種大小，而一個像素是什麼，往往取決於它周圍是什麼。所以要同時透過好幾個大小不同的視窗看每個位置，其中包括一個看得到整張影像的視窗，再讓網路把這些答案結合起來。
+
+**空洞空間金字塔池化**（atrous spatial pyramid pooling, ASPP）[8] 對同一張特徵圖平行地套用數個比率不同的空洞卷積，再融合它們的輸出，等於用好幾種有效尺度去探測影像。DeepLabv3 [10] 在輸出步幅 16 時，使用一個 $1 \times 1$ 卷積和三個比率為 6、12、18 的 $3 \times 3$ 卷積（步幅 8 時比率加倍），再加上一個**影像層級特徵**（image-level feature）：對整張特徵圖做全域平均池化、經過 $1 \times 1$ 卷積，再用雙線性內插放大回來。加入影像層級分支的原因是論文指出的一種邊界效應：當比率接近特徵圖的大小時，$3 \times 3$ 的取樣點會有越來越多落在特徵圖之外，濾波器退化成只用中心權重的 $1 \times 1$ 濾波器。下面的程式在 $65 \times 65$ 的特徵圖上數出這個現象。
+
+```python
+import numpy as np
+
+n = 65                                           # feature map is n x n
+for r in [1, 6, 12, 18, 24, 36, 64]:
+    pos = np.arange(n)
+    inside_1d = np.array([[(0 <= p + r * d < n) for d in (-1, 0, 1)] for p in pos]).sum(1)
+    mean_taps = np.mean(np.outer(inside_1d, inside_1d))   # taps inside the map, averaged over positions
+    print(f"rate {r:2d}: mean valid taps {mean_taps:.2f} of 9")
+```
+
+```text
+rate  1: mean valid taps 8.82 of 9
+rate  6: mean valid taps 7.93 of 9
+rate 12: mean valid taps 6.92 of 9
+rate 18: mean valid taps 5.98 of 9
+rate 24: mean valid taps 5.11 of 9
+rate 36: mean valid taps 3.58 of 9
+rate 64: mean valid taps 1.06 of 9
+```
+
+在比率 64 時，一個「3×3」濾波器平均來說只剩下一個取樣點。全域池化是取得整張影像脈絡既便宜又可靠的方法。
+
+**金字塔場景解析網路**（Pyramid Scene Parsing Network, PSPNet）[12] 用池化而不是膨脹達成同樣的目標。它的金字塔池化模組把最後的特徵圖池化成 $1 \times 1$、$2 \times 2$、$3 \times 3$ 與 $6 \times 6$ 的格點，各自用 $1 \times 1$ 卷積降低通道數，全部上取樣回來，再與原本的特徵串接。論文的動機來自 FCN 基線模型在場景解析上的錯誤，例如「關係不符」（mismatched relationship）：把河上的船標成車，儘管車子很少出現在河面上 [12]。
+
+早期的 DeepLab 版本還會在網路之後，用全連接條件隨機場（conditional random field, CRF）來銳化邊界，它鼓勵顏色與位置相近的像素共用同一個標籤 [8]。DeepLabv3 不用它，也比先前的版本進步 [10]。
+
+*選讀：[密集 CRF 後處理](#密集-crf-後處理)（見「補充資料」頁）。它的能量函數、兩個高斯核，以及為什麼平均場（mean-field）推論讓它夠快。*
+
+### 把注意力當成脈絡
+
+Transformer 在每一層都讓每個 token 看得到所有其他 token，所以「脈絡」不再需要特別的模組（[ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#vision-transformervit) 說明了 Vision Transformer，即 ViT [13]）。問題出在解析度：一般的 ViT 只有一個粗糙的 token 格點，而對大量 token 做全域注意力的成本又很高。**SegFormer** [14] 是語意分割中被廣泛使用的解答。它的編碼器是階層式的，像 CNN 一樣產生多尺度特徵；使用縮減的注意力，縮短 key 與 value 的序列；而且不需要位置編碼，這樣在測試解析度與訓練時不同時，就不必內插位置編碼。它的解碼器只是幾層 MLP，用來融合多尺度特徵。階層式的視覺 Transformer 在 [ML 04](/zh-tw/learn/ml/ml-04-vision-transformers/#swin-與階層式-transformer) 說明。
+
+## 密集預測的損失函數
+
+**白話版。** 訓練分割模型的方法，是把它逐像素的機率與真實的標籤圖相比。把分類損失在像素上取平均是預設做法，但當某個類別占了影像的 99%，這個平均幾乎只是在衡量那個容易的類別。
+
+**逐像素交叉熵。** 設 $p_{\mathbf{x}}(k)$ 為像素 $\mathbf{x}$ 上類別 $k$ 的 softmax 機率，$y(\mathbf{x})$ 為真實類別，
+
+$$
+\mathcal{L}_{\text{CE}} = -\frac{1}{|\Omega'|} \sum_{\mathbf{x} \in \Omega'} w_{y(\mathbf{x})} \log p_{\mathbf{x}}\big(y(\mathbf{x})\big),
+$$
+
+其中 $\Omega'$ 是有標註（非 void）的像素集合，$w_k$ 是可選的類別權重，例如與類別出現頻率成反比。Void 像素直接不納入總和；多數框架用「ignore index」實作。
+
+**Dice 損失。** Milletari 等人 [15] 提出，與其重新加權樣本，不如直接最大化軟預測與二值真實標籤之間的 Dice 係數，因為感興趣的解剖結構常常只占醫學體積的一小部分，這時訓練很容易到處都預測成背景。對前景機率 $p_i$ 與標籤 $g_i \in \{0, 1\}$（共 $N$ 個像素），他們的形式是
+
+$$
+D = \frac{2 \sum_{i=1}^{N} p_i g_i}{\sum_{i=1}^{N} p_i^2 + \sum_{i=1}^{N} g_i^2}, \qquad \mathcal{L}_{\text{Dice}} = 1 - D.
+$$
+
+常見的變體在分母使用 $\sum p_i + \sum g_i$；當 $p$ 與 $g$ 都是二值時，兩者都等於重疊度量 $2|A \cap B| / (|A| + |B|)$，與 IoU 關係密切。對於多類別，Dice 損失逐類別計算再取平均。由於 $D$ 是整張影像上的比值，小物體和大背景的份量一樣重。
+
+**Focal 損失。** Focal 損失 [16] 把每個像素的交叉熵乘上 $(1 - p_t)^\gamma$，其中 $p_t$ 是真實類別的機率，讓容易的像素貢獻很少；它在 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#焦點損失與類別不平衡) 中有推導。組合很常見：後面會談到的 MaskFormer，就用 focal 損失與 Dice 損失的加權和訓練每個二值遮罩 [17]。
+
+下面的實驗在一張 64×64 的影像上比較這些損失，前景是一個 49 像素的圓盤，並對三個候選預測計算。「IoU@0.5」把機率以 0.5 為門檻二值化，再算出評估時會回報的 IoU。
+
+```python
+import numpy as np
+
+H = W = 64
+yy, xx = np.mgrid[0:H, 0:W]
+r2 = (yy - 32) ** 2 + (xx - 32) ** 2
+g = (r2 <= 4 ** 2).astype(float)                # small foreground disk
+print(f"foreground pixels: {int(g.sum())} of {g.size} ({100 * g.mean():.1f}%)")
+
+def bce(p, g):
+    return -np.mean(g * np.log(p) + (1 - g) * np.log(1 - p))
+
+def weighted_bce(p, g):                          # weight each class by inverse frequency
+    wf, wb = 0.5 / g.mean(), 0.5 / (1 - g.mean())
+    return -np.mean(wf * g * np.log(p) + wb * (1 - g) * np.log(1 - p))
+
+def focal(p, g, gamma=2.0):
+    pt = np.where(g == 1, p, 1 - p)
+    return -np.mean((1 - pt) ** gamma * np.log(pt))
+
+def soft_dice_loss(p, g, eps=1e-6):
+    return 1 - (2 * (p * g).sum() + eps) / (p.sum() + g.sum() + eps)
+
+def iou_at_half(p, g):                           # the metric we actually report
+    m = p > 0.5
+    return (m & (g == 1)).sum() / (m | (g == 1)).sum()
+
+preds = {
+    "all background (p=0.05)":  np.full((H, W), 0.05),
+    "right shape, timid (0.4)": np.where(g == 1, 0.4, 0.05),
+    "bloated, confident (0.9)": np.where(r2 <= 8 ** 2, 0.9, 0.05),
+}
+print(f"{'prediction':26s} {'BCE':>6s} {'wBCE':>6s} {'focal':>6s} {'Dice':>6s} {'IoU@0.5':>8s}")
+for name, p in preds.items():
+    print(f"{name:26s} {bce(p, g):6.3f} {weighted_bce(p, g):6.3f} "
+          f"{focal(p, g):6.3f} {soft_dice_loss(p, g):6.3f} {iou_at_half(p, g):8.3f}")
+
+# Where does the BCE gradient come from? dL/dz = p - g per pixel (z = logit)
+p = preds["all background (p=0.05)"]
+grad = np.abs(p - g)
+print(f"share of |BCE gradient| from background pixels: {grad[g == 0].sum() / grad.sum():.2f}")
+```
+
+```text
+foreground pixels: 49 of 4096 (1.2%)
+prediction                    BCE   wBCE  focal   Dice  IoU@0.5
+all background (p=0.05)     0.087  1.524  0.032  0.981    0.000
+right shape, timid (0.4)    0.062  0.484  0.004  0.855    0.000
+bloated, confident (0.9)    0.133  0.119  0.068  0.791    0.249
+share of |BCE gradient| from background pixels: 0.81
+```
+
+逐列讀這張表（所有數字都來自這個小實驗）。一般的二元交叉熵（binary cross-entropy, BCE）寧可選「全部是背景」，也不選那個膨脹的預測；但膨脹的預測是唯一在 0.5 門檻下找到物體的。原因是膨脹的遮罩在大約 150 個背景像素上錯了，而這些像素的數量比物體還多。沒有類別權重 $\alpha$ 的 focal 損失，也做出同樣的選擇。有類別加權的 BCE 與 Dice 都把膨脹的預測排最好、「全部是背景」排最差，順序與 IoU 相同。最後一行說明了一般 BCE 為什麼會這樣：它 81% 的梯度來自本來就幾乎正確的背景像素。另外也請注意軟 Dice 對那個畏縮的預測有多嚴苛：在 $p = 0.05$ 的 4,047 個背景像素，讓分母增加約 202，是物體面積的四倍多，所以軟預測在背景上也必須很有把握。
+
+實務上，交叉熵（常搭配類別權重或 focal 調變）是自然場景語意分割的預設；Dice 或 Dice＋交叉熵的和，常用於有小結構的醫學影像；以遮罩為基礎的模型則用 Dice＋focal 訓練每個遮罩。也有同時懲罰邊界或拓撲錯誤的損失；其中三種以主動輪廓能量建立的，在 [IP 11 的補充資料](/zh-tw/learn/image-processing/dip-11-active-contours/notes/#三種主動輪廓損失的細節)中有摘要。
+
+*選讀：[軟 Dice 損失的梯度](#軟-dice-損失的梯度)（見「補充資料」頁）。導數的閉式解、為什麼每個背景像素得到同樣大小的推力，以及空遮罩等邊界情況。*
+
+## 衡量語意分割
+
+**白話版。** 在整個測試集上，數一數每個真實類別的像素被判成每個預測類別的各有多少。常見的分數都是這張表的不同摘要。標準的 mean IoU，對每個類別問：「在所有屬於這個類別、或被判成這個類別的像素中，有多少比例判對了？」再對類別取平均。
+
+設 $n_{ij}$ 為真實類別 $i$ 被預測成類別 $j$ 的像素數（在所有測試影像上累計），$t_i = \sum_j n_{ij}$ 為類別 $i$ 的像素數。FCN [5] 定義了四個指標，類別數為 $K$：
+
+$$
+\begin{aligned}
+\text{pixel accuracy} &= \frac{\sum_i n_{ii}}{\sum_i t_i}, &\qquad
+\text{mean accuracy} &= \frac{1}{K} \sum_i \frac{n_{ii}}{t_i}, \\
+\text{mean IoU} &= \frac{1}{K} \sum_i \frac{n_{ii}}{t_i + \sum_j n_{ji} - n_{ii}}, &\qquad
+\text{frequency-weighted IoU} &= \frac{1}{\sum_k t_k} \sum_i t_i \frac{n_{ii}}{t_i + \sum_j n_{ji} - n_{ii}}.
+\end{aligned}
+$$
+
+在類別 $i$ 的 IoU 中，分子 $n_{ii}$ 數的是真陽性，分母數的是真實像素與預測像素的聯集：$t_i$（真陽性加上漏掉的）加上 $\sum_j n_{ji} - n_{ii}$（誤報）。**Mean IoU（mIoU）**是 PASCAL VOC、Cityscapes 與 ADE20K 的標準指標。
+
+```python
+import numpy as np
+
+def confusion(gt, pred, K, ignore=255):
+    """K x K matrix: rows = true class, columns = predicted class; 'ignore' pixels are skipped."""
+    keep = gt != ignore
+    return np.bincount(K * gt[keep] + pred[keep], minlength=K * K).reshape(K, K)
+
+def seg_metrics(C):
+    tp = np.diag(C).astype(float)
+    t = C.sum(1)                    # pixels of each true class
+    p = C.sum(0)                    # pixels predicted as each class
+    iou = tp / (t + p - tp)
+    return {"pixel acc": tp.sum() / C.sum(), "mean acc": np.mean(tp / t),
+            "mIoU": iou.mean(), "fwIoU": (t * iou).sum() / t.sum(), "IoU": np.round(iou, 3)}
+
+# Toy: road (0) covers most of the image, car (1) is medium, pole (2) is thin
+H, W = 120, 160
+gt = np.zeros((H, W), int)
+gt[60:100, 40:90] = 1
+gt[10:110, 130:133] = 2
+pred = gt.copy()
+pred[60:100, 86:90] = 0                         # car slightly too short
+pred[10:110, 130:133] = 0                       # the pole is missed entirely
+m = seg_metrics(confusion(gt, pred, 3))
+for k, v in m.items():
+    print(f"{k:9s}: {v:.3f}" if np.isscalar(v) else f"{k:9s}: {v}")
+```
+
+```text
+pixel acc: 0.976
+mean acc : 0.640
+mIoU     : 0.631
+fwIoU    : 0.953
+IoU      : [0.974 0.92  0.   ]
+```
+
+完全漏掉電線桿，讓像素準確率只掉 1.6%、在頻率加權 IoU 上幾乎沒有影響，卻讓 mean IoU 掉了三分之一。這就是為什麼對每個類別一視同仁的 mIoU 是主要數字。比較論文時有四個實務細節要注意：
+
+- 混淆矩陣是在**整個資料集**上累計的，然後才計算 IoU。對每張影像各算 IoU 再平均，會得到不同的數字。
+- Void 像素透過 ignore 標籤排除，如同上面的 `confusion`。
+- mIoU 仍然偏袒類別*內部*的大物體：一輛大車的份量超過十輛小車。因此 Cityscapes 還報告實例層級的 **iIoU**，其中每個像素的貢獻，是以該類別的平均實例大小與其真實實例大小的比值來加權 [18]。
+- 區域重疊對大物體的邊界品質不敏感，邊界上差幾個像素幾乎不會改變 IoU。**Boundary IoU** [19] 只在沿著輪廓的一條細帶中衡量重疊。
+
+*選讀：[Boundary IoU 詳解](#boundary-iou-詳解)（見「補充資料」頁）。它的定義、帶寬，以及用程式碼檢查它對小物體與大物體的相同邊界誤差給出相同的分數。*
+
+## 實例分割
+
+**白話版。** 實例分割就是「附輪廓的偵測」。主流做法是先像偵測器那樣找出每個物體，再分割它方框的內部。
+
+### 先偵測再分割：Mask R-CNN
+
+**Mask R-CNN** [20] 在兩階段偵測器 Faster R-CNN [21] 上加了一個小型的全卷積遮罩分支；[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#二階段偵測器r-cnn-家族)連同 RoIAlign 一起說明了 Faster R-CNN。對每個感興趣區域（region of interest），這個分支預測 $K$ 個大小為 $m \times m$ 的二值遮罩，每個類別一個（論文建立在特徵金字塔網路 FPN [22] 上的版本是 $28 \times 28$），損失使用逐像素 sigmoid，並且只對真實類別的遮罩計算平均二元交叉熵。因此遮罩預測與類別預測是**解耦**的：由方框分支選擇類別，不同類別的遮罩不互相競爭，這與 FCN 的逐像素 softmax 不同；論文的消融實驗發現，逐類別 sigmoid 比 softmax 帶來很大的提升 [20]。測試時，把預測類別的 $m \times m$ 遮罩縮放到方框大小，再以 0.5 為門檻二值化。
+
+*選讀：[RoI pooling 與 RoIAlign](/zh-tw/learn/deep-learning/dl-03-object-detection/notes/#roi-pooling-與-roialign不捨入的取樣方式)（見 DLCV 03 的「補充資料」頁）。為什麼把方框捨入到特徵格點會讓遮罩位移，以及修正它的雙線性取樣。*
+
+固定的 $28 \times 28$ 格點也是 Mask R-CNN 的弱點：大物體的輪廓只由幾百個格子畫出，因此過度平滑。**PointRend** [23] 把遮罩預測當成電腦圖學中的算繪（rendering）：它從粗遮罩開始，反覆以雙線性內插上取樣，並且只在較密格點中最不確定的點（對二值遮罩來說，就是機率最接近 0.5 的點）重新計算預測，這些點大多沿著邊界分布。
+
+另有其他路線。**由下而上**（bottom-up）的方法先預測逐像素的量，例如嵌入向量或到物體中心的距離，再把像素分組成實例；在預測的距離圖上做分水嶺，標記由網路找出，就是 [IP 10](/zh-tw/learn/image-processing/dip-10-segmentation/#使用標記) 中標記控制分水嶺的學習版。還有**以查詢為基礎**（query-based）的方法，直接預測一組遮罩，詳見下面的遮罩分類一節。
+
+### Mask AP
+
+實例分割的評分方式與偵測完全相同，都是 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#coco-協定) 的 COCO 平均精確度（average precision, AP），差別只在預測與真實物體之間的 IoU 是在遮罩上而不是方框上計算 [20]。這個指標每個遮罩都需要一個信心分數，因為 AP 要對預測排序；而且它允許遮罩重疊：偵測器可以輸出數個互相重疊的假設，只有不相符的那些會被扣分。這就是為什麼實例輸出若不經額外處理，就不能直接當作全景圖使用。
+
+## 全景分割
+
+**白話版。** 全景任務要求一幅一致的圖像：每個像素都有標籤，stuff 與 things 都一樣，沒有重疊，而且指標對天空區域和一輛車一視同仁。
+
+### 任務與指標
+
+Kirillov 等人 [4] 定義了這個任務（格式就是「三個任務，一張標籤圖」中給的那一種），並附上一個指標：**全景品質**（panoptic quality, PQ）。PQ 分兩步計算。
+
+**1. 配對。** 同一類別的預測區段 $p$ 與真實區段 $g$，只有在它們的 IoU 嚴格大於 0.5 時才算配對。由於全景圖的區段不能重疊，這個配對是**唯一的**：如果 $p_1$ 與 $p_2$ 是互不相交的預測，則 $\text{IoU}(p_1, g) + \text{IoU}(p_2, g) \le 1$，因為每一個 $|p_i \cap g| / |p_i \cup g| \le |p_i \cap g| / |g|$，而且兩個交集沒有共同像素。所以每個 $g$ 最多只有一個預測能超過 0.5，反過來也一樣 [4]。因此不需要最佳指派的步驟。
+
+**2. 評分。** 對每個類別，配對把區段分成真陽性 $\text{TP}$（配對成功的數對）、偽陽性 $\text{FP}$（未配對的預測）與偽陰性 $\text{FN}$（未配對的真實區段）。於是
+
+$$
+\text{PQ} = \frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}| + \tfrac{1}{2}|\text{FP}| + \tfrac{1}{2}|\text{FN}|}
+= \underbrace{\frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}|}}_{\text{segmentation quality (SQ)}} \times \underbrace{\frac{|\text{TP}|}{|\text{TP}| + \tfrac{1}{2}|\text{FP}| + \tfrac{1}{2}|\text{FN}|}}_{\text{recognition quality (RQ)}},
+$$
+
+其中總和跨過配對成功的數對，$|\cdot|$ 計算集合的元素個數。**SQ** 是配對成功區段的平均 IoU，**RQ** 則是偵測中大家熟悉的 F1 分數。PQ 對每個類別分別計算再對類別取平均，所以稀有類別和常見類別的份量一樣；每個區段的份量也相同，不論面積大小。$\text{PQ}^{\text{St}}$ 與 $\text{PQ}^{\text{Th}}$ 分別只對 stuff 與 thing 類別取平均。配對之前，void 像素會先從預測中移除，而主要由 void（或同類別的「crowd」區域）組成的未配對預測，不算偽陽性 [4]。這兩個因子並不獨立，因為 SQ 只在配對成功的區段上衡量，所以一定要把三個數字都報告出來。
+
+下面的程式在圖 5 的玩具場景上實作這個配對與評分（void 的處理簡化到最簡單的形式）。
+
+```python
+import numpy as np
+
+def panoptic_quality(gt_seg, gt_cls, pr_seg, pr_cls):
+    """gt_seg/pr_seg: integer segment-id maps (0 = void); *_cls: dict segment id -> class.
+    Matches segments of the same class with IoU > 0.5 and returns per-class (PQ, SQ, RQ, TP, FP, FN)."""
+    out = {}
+    for c in sorted(set(gt_cls.values()) | set(pr_cls.values())):
+        g_ids = [i for i, k in gt_cls.items() if k == c]
+        p_ids = [i for i, k in pr_cls.items() if k == c]
+        ious, matched_p = [], set()
+        for gi in g_ids:
+            G = gt_seg == gi
+            for pj in p_ids:
+                P = (pr_seg == pj) & (gt_seg != 0)          # ignore predicted pixels on void
+                iou = (G & P).sum() / (G | P).sum()
+                if iou > 0.5:                                # unique by the matching theorem
+                    ious.append(iou); matched_p.add(pj)
+        tp = len(ious); fn = len(g_ids) - tp; fp = len(p_ids) - len(matched_p)
+        sq = np.mean(ious) if tp else 0.0
+        rq = tp / (tp + 0.5 * fp + 0.5 * fn)
+        out[c] = (sq * rq, sq, rq, tp, fp, fn)
+    return out
+
+H, W = 100, 200
+SKY, ROAD, CAR, PERSON = 0, 1, 2, 3
+def scene(boxes, sky_rows):
+    seg = np.full((H, W), 2); seg[:sky_rows] = 1          # segment 1 = sky, 2 = road
+    cls = {1: SKY, 2: ROAD}
+    for sid, (c, r0, r1, c0, c1) in enumerate(boxes, start=3):
+        seg[r0:r1, c0:c1] = sid; cls[sid] = c
+    return seg, cls
+
+gt_seg, gt_cls = scene([(CAR, 50, 80, 10, 55), (CAR, 50, 80, 65, 110),
+                        (CAR, 38, 52, 125, 150), (PERSON, 30, 80, 165, 185)], sky_rows=30)
+pr_seg, pr_cls = scene([(CAR, 52, 80, 13, 55),             # car A, slightly off
+                        (CAR, 55, 80, 65, 96),             # car B, too small
+                        (CAR, 84, 97, 110, 150),           # a car that is not there
+                        (PERSON, 30, 52, 165, 185),        # the person, split in two
+                        (PERSON, 52, 80, 165, 185)], sky_rows=33)   # car C is missed
+names = ["sky", "road", "car", "person"]
+res = panoptic_quality(gt_seg, gt_cls, pr_seg, pr_cls)
+for c, (pq, sq, rq, tp, fp, fn) in res.items():
+    print(f"{names[c]:6s} PQ {pq:.3f} = SQ {sq:.3f} x RQ {rq:.3f}  (TP {tp}, FP {fp}, FN {fn})")
+pqs = np.array([v[0] for v in res.values()])
+print(f"PQ {pqs.mean():.3f} | PQ_stuff {pqs[:2].mean():.3f} | PQ_things {pqs[2:].mean():.3f}")
+```
+
+```text
+sky    PQ 0.917 = SQ 0.917 x RQ 1.000  (TP 1, FP 0, FN 0)
+road   PQ 0.805 = SQ 0.805 x RQ 1.000  (TP 1, FP 0, FN 0)
+car    PQ 0.482 = SQ 0.723 x RQ 0.667  (TP 2, FP 1, FN 1)
+person PQ 0.373 = SQ 0.560 x RQ 0.667  (TP 1, FP 1, FN 0)
+PQ 0.644 | PQ_stuff 0.861 | PQ_things 0.428
+```
+
+<Figure src={figPq} alt="左：一張真實全景圖，有天空、馬路、車 A、B、C 與一個高高的人。中：一個預測，車 A 標為 TP 0.87，較小的車 B 標為 TP 0.57，多出來的一輛車標為 FP 0.00，漏掉的車 C 標為 FN，而人被切成兩塊：上半標為 FP 0.44、下半標為 TP 0.56。右：一張表，列出每個類別的 SQ、RQ 與 PQ，以及平均 PQ 為 0.644。" caption="圖 5 — 玩具場景上的全景品質。每個預測區段都標上它與同類別真實區段的最佳 IoU；只有 IoU 大於 0.5 才算配對。" />
+
+這個小例子顯示 PQ 如何解讀錯誤（數字來自這次執行）。被切成兩塊的人仍然得到一個配對，因為下半塊涵蓋了他的 56%，但上半塊變成偽陽性：把一個物體切開，傷到的是辨識品質，而不只是分割品質。車 B 的 IoU 是 0.57，被算作完全辨識出來，但它偏低的 IoU 拉低了車子的 SQ。漏掉一輛車與憑空多出一輛車，各讓分母多半個區段。
+
+### 早期全景系統：合併兩個輸出
+
+**白話版。** 最早的全景系統，就是把語意分割模型與實例分割模型各跑一次，再把結果拼貼在一起。
+
+全景論文自己的基線 [4] 用一種類似非極大值抑制（non-maximum suppression）的做法來做。它依信心分數對實例遮罩排序，丟掉分數低的，然後沿著清單往下走：每個遮罩要扣掉前面遮罩已經占走的像素，只有剩下的部分夠多才保留。留下來的 thing 區段再與語意圖結合，同時被 thing 與 stuff 類別宣稱的像素歸給 thing。**Panoptic FPN** [24] 接著把兩個任務放進同一個網路：一個帶特徵金字塔網路的 Mask R-CNN（FPN [22]，見 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#特徵金字塔fpn)），加上一個輕量的語意分支，把所有金字塔層級上取樣到 1/4 尺度後相加。語意分支預測 stuff 類別，再加上一個代表所有 thing 像素的「other」類別，這樣兩個分支就不會為了物體互相爭奪。
+
+*選讀：[Panoptic Segmentation：論文導讀](#panoptic-segmentation論文導讀)（見「論文導讀」頁）。論文如何定義任務與指標、它的人類一致性研究呈現了什麼，以及怎麼讀它的表格。*
+
+## 遮罩分類：一個模型解決三種任務
+
+**白話版。** 與其問「這個像素是什麼類別？」，不如問「有哪些區域，而每個區域是什麼？」模型預測固定數量的候選遮罩，並替每個遮罩給出一個類別（或「什麼都不是」）。語意圖、一組實例與全景圖，就只是用不同方式讀同一份清單。
+
+### MaskFormer
+
+Cheng、Schwing 與 Kirillov [17] 把 FCN 的做法稱為**逐像素分類**（per-pixel classification），把 Mask R-CNN 與 DETR 的做法稱為**遮罩分類**（mask classification）。他們的觀察是：遮罩分類的通用性足以用在語意分割。**MaskFormer** 預測一組 $N$ 個機率–遮罩數對 $\{(p_i, m_i)\}_{i=1}^{N}$，其中 $p_i$ 是 $K$ 個類別加上一個「無物體」標籤 $\varnothing$ 上的分布，$m_i \in [0, 1]^{H \times W}$ 是軟遮罩。三個模組產生它們：
+
+1. 一個骨幹網路與一個**像素解碼器**（pixel decoder）產生逐像素嵌入 $\mathcal{E}_{\text{pixel}} \in \mathbb{R}^{C_E \times H \times W}$，其中 $C_E$ 是嵌入維度。
+2. 一個 **Transformer 解碼器**把 $N$ 個可學習的查詢（query）轉成 $N$ 個逐區段嵌入，方法是像 DETR [25] 那樣對影像特徵做注意力。
+3. 一個線性分類器給出 $p_i$，一個小型 MLP 給出遮罩嵌入 $\mathcal{E}_{\text{mask}}[:, i] \in \mathbb{R}^{C_E}$。遮罩是一個內積再經過 sigmoid，
+
+$$
+m_i[h, w] = \sigma\big(\mathcal{E}_{\text{mask}}[:, i]^\top \, \mathcal{E}_{\text{pixel}}[:, h, w]\big),
+$$
+
+其中 $\sigma$ 是 logistic sigmoid，$(h, w)$ 是像素位置。
+
+訓練時，預測與真實區段做一對一配對，如同 DETR 對方框做的那樣（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#以-transformer-做集合預測detr-及其後繼者)），只是配對成本由類別機率與遮罩損失構成，而不是方框。配對到的預測得到交叉熵類別損失與 focal＋Dice 遮罩損失；沒配對到的則被訓練去預測 $\varnothing$ [17]。
+
+推論時，兩條規則以不同方式讀同一份輸出 [17]。**語意推論**對查詢做邊際化（marginalize），$\hat{y}[h, w] = \arg\max_{c} \sum_i p_i(c)\, m_i[h, w]$，其中 $c$ 遍歷 $K$ 個真實類別。**全景推論**把每個像素指派給一個查詢，$\arg\max_{i:\, c_i \ne \varnothing} p_i(c_i)\, m_i[h, w]$，其中 $c_i$ 是查詢 $i$ 最可能的類別，因此同一類別的兩個查詢會給出兩個實例。下面的程式在一個小小的 $6 \times 10$ 例子上跑這兩條規則。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+# Ground-truth layout of a tiny 6 x 10 image: sky on top, road below, two cars on the road
+region = np.zeros((6, 10), int)               # 0 sky, 1 road, 2 car A, 3 car B
+region[2:] = 1
+region[3:5, 1:4] = 2
+region[3:5, 6:9] = 3
+
+# Pixel decoder output: a C_E = 4 dimensional embedding per pixel (here: noisy one-hot of the region)
+E_pixel = 6 * np.eye(4)[region].transpose(2, 0, 1) - 3 + 0.5 * rng.standard_normal((4, 6, 10))
+
+# Transformer decoder output for N = 5 queries: a mask embedding and class probabilities
+# over K = 3 classes (sky, road, car) plus "no object" (last column)
+E_mask = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [.2, .2, .2, .2]], float)
+p = np.array([[.90, .05, .03, .02],          # query 0: sky
+              [.05, .85, .05, .05],          # query 1: road
+              [.02, .08, .85, .05],          # query 2: a car
+              [.03, .07, .75, .15],          # query 3: another car
+              [.05, .05, .05, .85]])         # query 4: nothing
+
+m = 1 / (1 + np.exp(-np.einsum("nc,chw->nhw", E_mask, E_pixel)))   # N masks, sigmoid(dot product)
+
+# Semantic inference: sum over queries of p_i(c) * m_i, then argmax over the K real classes
+sem = np.einsum("nk,nhw->khw", p[:, :3], m).argmax(0)
+# Panoptic inference: each pixel goes to the query maximizing p_i(c_i) * m_i (no-object queries dropped)
+c_i = p.argmax(1)
+keep = c_i != 3
+score = p[np.arange(5), c_i][:, None, None] * m
+seg = np.where(keep[:, None, None], score, -1).argmax(0)
+print("semantic (0 sky, 1 road, 2 car):\n", sem)
+print("panoptic segment = query index:\n", seg)
+print("query classes:", c_i, "-> car segments:", [int(i) for i in np.unique(seg) if c_i[i] == 2])
+```
+
+```text
+semantic (0 sky, 1 road, 2 car):
+ [[0 0 0 0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0 0 0 0]
+ [1 1 1 1 1 1 1 1 1 1]
+ [1 2 2 2 1 1 2 2 2 1]
+ [1 2 2 2 1 1 2 2 2 1]
+ [1 1 1 1 1 1 1 1 1 1]]
+panoptic segment = query index:
+ [[0 0 0 0 0 0 0 0 0 0]
+ [0 0 0 0 0 0 0 0 0 0]
+ [1 1 1 1 1 1 1 1 1 1]
+ [1 2 2 2 1 1 3 3 3 1]
+ [1 2 2 2 1 1 3 3 3 1]
+ [1 1 1 1 1 1 1 1 1 1]]
+query classes: [0 1 2 2 3] -> car segments: [2, 3]
+```
+
+語意圖把兩輛車合併成類別 2；全景圖則把它們分開，成為區段 2 與 3，而兩者來自完全相同的網路輸出。論文報告 MaskFormer 在 Cityscapes（19 個類別）上與逐像素分類相當，在詞彙量較大的資料集上則更好 [17]。
+
+### Mask2Former 與其後繼者
+
+**Mask2Former** [26] 保留 MaskFormer 的整體架構（骨幹網路、像素解碼器、Transformer 解碼器），改動解碼器，使它訓練得更快，並且能把實例分割得很好。它的關鍵元件是**遮罩注意力**（masked attention）：每個查詢只對前一層所預測的遮罩內部的像素做注意力。在第 $l$ 層，查詢特徵為 $X_l \in \mathbb{R}^{N \times C}$，
+
+$$
+X_l = \text{softmax}\big(\mathcal{M}_{l-1} + Q_l K_l^\top\big) V_l + X_{l-1}, \qquad
+\mathcal{M}_{l-1}(x, y) = \begin{cases} 0 & \text{if } M_{l-1}(x, y) = 1, \\ -\infty & \text{otherwise,} \end{cases}
+$$
+
+其中 $Q_l$ 是 $X_{l-1}$ 的線性投影，$K_l$ 與 $V_l$ 是影像特徵的投影，$M_{l-1}$ 是前一層的遮罩預測，經縮放並以 0.5 為門檻二值化。在 softmax 之前加上 $-\infty$，會讓遮罩之外的注意力權重為零。作者的假設是：局部特徵就足以更新一個查詢，而先前模型收斂緩慢，是因為交叉注意力必須先學會把焦點放在物體上。另外兩項改動，一是在連續的解碼器層中輪流使用像素解碼器 1/32、1/16 與 1/8 的特徵圖，以利小物體；二是在取樣的點上而不是完整遮罩上計算遮罩損失，論文報告這讓訓練記憶體減少為三分之一 [26]。
+
+*選讀：[Mask2Former：論文導讀](#mask2former論文導讀)（見「論文導讀」頁）。論文中「通用」的意思、它的消融實驗、怎麼讀它的比較表，以及它自己提到的限制。*
+
+後來有兩個方向建立在這個設計上。**OneFormer** [27] 用*單一*模型訓練三種任務：它從全景標註推導出語意與實例標籤，每張訓練影像隨機抽一個任務，並以「任務 token」作為查詢的條件，讓同一組權重服務所有任務。**EoMT** [28] 則把任務專用的部分全部拿掉。作者主張，經過大量預訓練的大型一般 ViT，能自行學會轉接器（adapter）、像素解碼器與 Transformer 解碼器原本提供的東西；他們在最後幾個 ViT 區塊之前，把可學習的查詢串接到圖塊 token 上，讓這些區塊同時處理兩者，並報告了與較複雜模型相近的準確率，而且速度快很多（用 ViT-L 時最多快四倍）。
+
+## 可提示與開放詞彙分割
+
+**白話版。** 上面的模型只分割訓練時固定的類別清單。兩個較新的家族放寬了這份清單：可提示模型分割*你指到的任何東西*；開放詞彙模型分割*你叫得出名字的任何東西*。
+
+**可提示分割。** Segment Anything Model（SAM）[29] 針對點、方框或粗略遮罩的提示傳回一個遮罩；遇到含糊的點（是襯衫還是人？），它會傳回數個有效的遮罩及其信心分數。它在 SA-1B 上訓練，這是一個用模型參與迴圈（model-in-the-loop）的資料引擎建成的資料集，在 1,100 萬張影像上有超過 10 億個遮罩。SAM 2 [30] 用串流記憶（streaming memory）把它擴展到影片，SAM 3 [31] 則加入**可提示概念分割**（promptable concept segmentation）：給一個簡短的名詞片語或影像範例，它會傳回*所有*相符實例的遮罩與身分。這些模型在 [DLCV 01](/zh-tw/learn/deep-learning/dl-01-deep-learning-for-image-processing/#可提示的分割samsam-2sam-3) 與 [ML 09](/zh-tw/learn/ml/ml-09-foundation-models/#提示式分割segment-anything-系列) 有說明，SAM 2 當作追蹤器則在 [DLCV 06](/zh-tw/learn/deep-learning/dl-06-object-tracking/#用影片分割模型做追蹤)。以本篇的三種任務來看：SAM 的遮罩**沒有類別**，所以單獨來看，它既不是語意也不是全景的輸出；偵測器給的方框加上 SAM，可以得到實例遮罩；而 SAM 3 的概念提示則讓它成為開放詞彙的實例分割模型。閱讀這類模型的「零樣本」（zero-shot）結果時，要檢查提示是從哪裡來的：從真實方框推導出來的提示，給了模型很多資訊。
+
+**開放詞彙分割。** 關鍵成分是 CLIP [32] 這類視覺–語言模型，它的文字編碼器把任何類別名稱對應到與影像特徵相同的空間裡的嵌入（[ML 09](/zh-tw/learn/ml/ml-09-foundation-models/) 有介紹）。把分割模型固定的分類器權重換成類別名稱的文字嵌入，詞彙就變成測試時才輸入的清單。**LSeg** [33] 做的正是這件事：Transformer 影像編碼器產生逐像素嵌入，文字編碼器嵌入標籤名稱，訓練則讓每個像素的嵌入與其類別的文字嵌入對齊，所以測試時不必重新訓練就能使用沒見過的標籤。**CAT-Seg** [34] 則改為建立一個**代價體積**（cost volume），裡面是 CLIP 影像與文字嵌入之間的餘弦相似度，並加以聚合；作者發現這讓他們能微調 CLIP 的編碼器而不會過擬合到訓練類別，而這個問題曾使多數先前的方法選擇凍結 CLIP。Zhu 與 Chen 的綜述 [35] 提醒，評估「未見過」的類別很困難，因為影像–文字預訓練資料可能早已包含它們。
+
+## 資料集與基準
+
+**白話版。** 逐像素標註很昂貴，所以由少數幾個公開資料集撐起整個領域。每個資料集都固定了類別清單、stuff／thing 的劃分，以及評估方式。
+
+| 資料集 | 內容 | 規模與類別（來自論文） | 任務 |
+| --- | --- | --- | --- |
+| PASCAL VOC 2012 [36] | 日常物體 | 20 個物體類別＋背景（如 [8] 所述） | 語意 |
+| Cityscapes [18] | 來自 50 個城市的街景 | 5,000 張精細標註與 20,000 張粗略標註的影像；30 個類別，其中 19 個用於評估；8 個有實例標籤 [4] | 語意、實例、全景 |
+| ADE20K [37] | 多樣的場景、物體與部件 | 訓練／驗證／測試各 20,210 / 2,000 / 3,000 張影像；基準取前 150 個類別（SceneParse150）；全景用 100 個 things＋50 個 stuff [4] | 語意、全景 |
+| COCO [38] + COCO-Stuff [39] | 日常場景 | 80 個 thing 類別的實例遮罩 [24]；COCO-Stuff 為 COCO 2017 全部 164K 張影像加上 91 個 stuff 類別的逐像素標籤；COCO 全景有 80 個 things＋53 個 stuff [17] | 實例、語意、全景 |
+| Mapillary Vistas [40] | 世界各地的街道層級影像 | 25k 張影像；28 個 stuff＋37 個 thing 類別 [4] | 語意、實例、全景 |
+
+有三個事實影響每一項結果。第一，**標註昂貴且有雜訊**：全景論文的人類一致性研究，讓兩份對同一批影像的標註互相評分，在它檢視的三個資料集上 PQ 值都遠低於 100 [4]。第二，**類別清單很小**，與世界上的詞彙量相比，這正是上面開放詞彙模型的動機。第三，**領域不同**：Cityscapes 是在 50 個城市錄製的，主要在德國，而且刻意避開惡劣天氣 [18]，所以用它訓練的模型到了別處，會遇到不同的路面標線、天氣與相機。駕駛用的鳥瞰圖（bird's-eye-view）地圖分割，是在地平面格點而不是影像上預測標籤，在 [DLCV 09](/zh-tw/learn/deep-learning/dl-09-3d-object-detection/#把影像提升到鳥瞰視角) 說明。
+
+## 失效模式與實務建議
+
+**白話版。** 分割模型會在可預期的地方失敗：結構細小之處、邊界、稀有類別，以及與訓練集不同的影像。
+
+- **細小的結構**（電線桿、電線、遠處的行人）在大的輸出步幅下會消失，如第一個實驗所示。使用輸出步幅 8，或帶有高解析度跳接的解碼器，並且評估時看每個類別的 IoU，而不只是 mIoU。
+- **邊界**會變得平滑或呈方塊狀。對分數做雙線性上取樣、解碼器、PointRend [23] 這類以點為基礎的精修，以及對邊界敏感的指標 [19]，都能處理這個問題。
+- **類別不平衡**讓網路偏向頻繁的類別。加權交叉熵、focal 或 Dice 項，以及取樣含有稀有類別的影像，都有幫助（見損失函數的實驗）。
+- **脈絡錯誤**：某個區域被標成在周圍環境下說不通的類別（[12] 中被標成車的船）。全域脈絡模組與注意力能減少這類錯誤。
+- **破碎的遮罩與破洞**：逐像素分類器沒有形狀的概念。對預測遮罩做形態學清理（開運算、閉運算、填洞；見 [IP 09](/zh-tw/learn/image-processing/dip-09-morphology/)）是便宜而常見的後處理步驟。
+- **高解析度輸入**會超過 GPU 記憶體。在重疊的圖塊上執行再混合分數，與 U-Net 的重疊圖塊是同一個想法。
+- **領域偏移**：換到新的城市、天氣、感測器或醫學掃描儀，效能會下降。要用留出的領域來衡量，而不只是留出的資料切分。
+
+## 現代觀點
+
+### 綜述怎麼說
+
+**Minaee 等人** [1] 把語意與實例分割的 CNN 時代整理成十個家族：全卷積網路、搭配圖模型（如 CRF）的卷積模型、編碼器–解碼器、多尺度與金字塔網路、用於實例的 R-CNN 系模型、膨脹卷積與 DeepLab 家族、遞迴網路、注意力模型、生成式與對抗式模型，以及結合主動輪廓的卷積模型。他們也回顧了資料集與已發表的結果。大多數家族都出現在本篇各節，以 FCN、U-Net、PSPNet、DeepLab 與 Mask R-CNN 為例。
+
+**Li 等人** [2] 圍繞著一個**整體架構**（meta-architecture）來整理以 Transformer 為基礎的分割，這個架構有特徵擷取器、物體查詢與 Transformer 解碼器；他們依方法修改了哪個元件來分類：更好的骨幹網路、解碼器中的交叉注意力設計、最佳化查詢的方式，等等。他們也涵蓋影片與點雲分割、基礎模型的調校、效率與醫學分割，並在共同的基準上重新評估許多方法。
+
+**Zhou 等人** [3] 回顧基礎模型時代的 300 多種方法，把領域分成**通用**分割（語意、實例、全景）與**可提示**分割（互動式、指稱式與少樣本）。一個核心主題是：分割的知識會在沒有用遮罩訓練的模型中*自然浮現*，例如 CLIP、文字到影像的擴散模型與自監督 ViT，免訓練的方法就利用這一點。**Zhu 與 Chen** [35] 則聚焦於開放詞彙的偵測與分割，以及公平評估「新」類別有多困難。
+
+### 2023–2026 的最新技術
+
+- **通用的查詢式架構**是封閉詞彙基準上的預設：Mask2Former [26] 與它的後代如 OneFormer [27]，用一種設計處理語意、實例與全景分割；在速度或簡單性重要的地方，專門的逐像素模型仍然很常見（SegFormer [14]、DeepLab 風格的模型 [7]）。
+- **更簡單的模型搭配更大的預訓練**：EoMT [28] 主張，把算力花在擴大一般 ViT 編碼器上，比加上解碼器與轉接器更划算。
+- **可提示的基礎模型**（SAM [29]、SAM 2 [30]、SAM 3 [31]）把與類別無關的遮罩、影片傳播與概念提示變成可重複使用的元件，它們的資料引擎也改變了分割資料集的建造方式。
+- **開放詞彙分割**建立在視覺–語言模型上（LSeg [33]、CAT-Seg [34]）；在許多應用中，現在是用類別名稱來提示模型，而不是重新訓練。
+
+### 開放問題
+
+1. **邊界、小物體與細小結構。** Mask2Former 的作者承認它仍然不擅長小物體 [26]，而區域指標會掩蓋大物體上的邊界錯誤 [19]。
+2. **一個模型，只訓練一次。** 通用架構仍常常針對每個任務與資料集分別訓練；只用全景標籤訓練的 Mask2Former，在實例與語意指標上，略差於針對各任務分別訓練的版本 [26]。
+3. **開放詞彙的評估**取決於提示，以及預訓練資料包含了什麼 [35]。
+4. **資料。** 逐像素標註很昂貴；綜述指出可擴展的資料引擎、由生成式模型產生的合成影像–遮罩配對，以及弱監督或無監督，是可行的方向，但各有自己的領域差距 [3], [2]。
+5. **效率。** 基礎模型的分割器很笨重；蒸餾、壓縮與參數高效率的調校，是尚未解決的工程問題 [3]。
+6. **理解「自然浮現」。** 為什麼沒有用遮罩訓練的模型會學會分割，目前還沒有好的解釋 [3]。
+
+## 重點整理
+
+- 語意分割替每個像素標上類別；實例分割為每個 thing 輸出一個有分數、可能重疊的遮罩；全景分割給每個像素一個類別與一個實例編號，stuff 與 things 同等對待，且沒有重疊。
+- 全卷積網路輸出的是輸出步幅 $s$ 的分數圖；要上取樣（雙線性）分數，而不是標籤，並記得在大步幅下，小於約半個格子的東西都活不下來。
+- 細節靠帶跳接的解碼器找回來（U-Net、DeepLabv3+）；脈絡則來自空洞卷積、搭配影像池化的 ASPP、金字塔池化或注意力。
+- 逐像素交叉熵由頻繁的類別主導；類別權重、focal 損失或 Dice 類的損失能對抗不平衡，而且它們對預測的排名各不相同。
+- mIoU（來自整個資料集的混淆矩陣）讓類別平等；mask AP 為排序過、可重疊的實例遮罩評分；$\text{PQ} = \text{SQ} \times \text{RQ}$ 則為 IoU 大於 0.5 而配對的不重疊區段評分，這個配對是唯一的。
+- 遮罩分類（MaskFormer、Mask2Former）預測 $N$ 個遮罩–類別數對，再把它們讀成語意、實例或全景輸出；遮罩注意力讓它在三種任務上都具有競爭力。
+- 可提示模型（SAM 系列）分割你指到的東西，但沒有類別；開放詞彙模型（LSeg、CAT-Seg）分割你叫得出名字的東西，評估上有它自己的陷阱。
+
+## 練習
+
+1. **用手算輸出步幅。** 一張路景是 $1024 \times 2048$ 像素，電線桿寬 6 個像素。在理想的粗分數（各格的類別比例）與 argmax 決策下，電線桿在哪些輸出步幅還有機會存活？為什麼它相對於格點的位置很重要？把第一段程式中的長條移動一兩個像素來檢驗你的答案。
+
+<details>
+<summary>提示</summary>
+
+電線桿只有在涵蓋超過格子寬度一半時才贏得那一格，所以 $s \lt 12$；$s = 8$ 時，只有在它的 6 欄中至少有 5 欄落在同一個 8 像素格子裡的那些格子，它才存活。$s = 4$ 時，它至少總是涵蓋一整個格子。移動長條會改變它主導哪些格子，這就是為什麼程式最近鄰標籤那一欄中，長條在步幅 4 的 IoU 是 0.67 而不是 1（剛好各占一半的平手，歸給背景，也就是第一個類別）。
+
+</details>
+
+2. **空洞卷積的算術。** (a) 比率 12 的 $3 \times 3$ 卷積核，有效大小是多少？(b) 骨幹網路的一個階段常以步幅 2 開始，後面接 $3 \times 3$ 卷積。如果拿掉步幅，改用比率 2，輸出步幅、後續各層的感受野，以及那些層的計算成本，分別會怎麼變？
+
+<details>
+<summary>提示</summary>
+
+(a) $k_e = 3 + 2 \cdot 11 = 25$。(b) 輸出步幅減半（例如 32 變成 16），之後每一層涵蓋的影像區域與先前相同（比率補償了較密的格點），而且之後的各層現在要在四倍多的位置上運算，所以成本約增加為四倍。
+
+</details>
+
+3. **空遮罩下的損失。** 修改損失函數的程式，讓影像中*沒有*前景。對「all background (p=0.05)」這個預測，每個損失各傳回什麼？沒有 `eps` 項時，軟 Dice 損失會發生什麼事？實作上通常怎麼避免這個問題？
+
+<details>
+<summary>提示</summary>
+
+當 $g = 0$ 處處成立，Dice 的分子是 0（加上 `eps`），分母是 $\sum p_i = 204.8$，所以無論預測多好，損失都幾乎是 1；若處處 $p = 0$，沒有 `eps` 時是 $0/0$，有 `eps` 時變成 $1 - \text{eps}/\text{eps} = 0$。當兩個遮罩都沒有任何像素時，`iou_at_half` 也會 0 除以 0。常見的修正：在分子與分母加平滑常數、對整個批次而不是每張影像計算 Dice，或是把 Dice 與交叉熵結合。
+
+</details>
+
+4. **用手算 PQ。** 在 PQ 的程式中，把兩塊人的預測換成單一個涵蓋第 32 到 80 列的預測。在執行程式之前，先預測新的人的 SQ、RQ 與 PQ。然後讓車 B 變大，過度分割到它的 IoU 掉到 0.5 以下；車子的 TP、FP 與 FN 個數怎麼變？
+
+<details>
+<summary>提示</summary>
+
+單一的人預測，IoU 是 $48 \cdot 20 / (50 \cdot 20) = 0.96$，所以 $\text{SQ} = 0.96$、$\text{RQ} = 1$、$\text{PQ} = 0.96$。如果車 B 的 IoU 降到 0.5 或以下，這一對就不再算配對：車子的 TP 從 2 降到 1，FP 與 FN 各增加 1。
+
+</details>
+
+5. **語意與全景之間的互相轉換。** 用遮罩分類的程式：(a) 從全景區段圖推導出語意圖，並檢查它等於 `sem`；(b) 讓查詢 3 以 0.6 的機率預測「road」而不是「car」，並解釋兩個輸出。(c) 為什麼一般而言，語意圖不能轉回全景圖？
+
+<details>
+<summary>提示</summary>
+
+(a) 把每個區段編號對應到它的類別，`c_i[seg]`。(b) 查詢 3 的遮罩仍然涵蓋車 B，所以在全景圖中車 B 仍是區段 3，但這個區段現在被標成 road；由於 stuff 類別在一張影像中只有一個區段，最後的輸出會把它和馬路合併。在語意圖中，車 B 也變成 road。兩種輸出裡都只剩下一輛車。(c) 語意圖沒有實例編號：貼在一起的同類物體形成一個區域，要把它分開，需要圖裡沒有的資訊。
+
+</details>
+
+## 補充資料
+
+這些補充資料是選讀：每一則從正文取出一個重點，做更細的說明。正文、程式碼與練習都不依賴它們。
+
+### 堆疊空洞卷積中的網格效應（gridding）
+
+這則補充說明哪些膨脹率序列會在感受野中留下洞，以及一條選擇不會留洞的比率的簡單規則。
+
+**問題。** 取一個由 $n$ 層膨脹卷積堆疊而成的網路的某個輸出，卷積核大小為 $k$、比率為 $r_1, \dots, r_n$，問哪些輸入位置會影響它。在一維中，可到達的偏移集合是和集 $\{\sum_l r_l d_l : d_l \in \{-c, \dots, c\}\}$，其中 $c = (k - 1)/2$。如果每個 $r_l$ 都是某個整數 $q \gt 1$ 的倍數，那麼每個可到達的偏移也都是 $q$ 的倍數：輸出沿每個軸向，每 $q$ 個輸入只看到一個，形成帶洞的規則格點。相鄰的輸出於是讀取互不相交的格點，輸出圖就出現棋盤格狀的圖案。Wang 等人 [11] 把這稱為**網格效應**（gridding），並指出在高比率時更嚴重，這時稀疏的卷積核已經涵蓋不到任何局部鄰域。
+
+**規則。** 他們的混合膨脹卷積（hybrid dilated convolution, HDC）在連續各層使用不同的比率，排成鋸齒狀，選擇的目標是讓最終的感受野涵蓋一塊沒有洞的方形區域。把透過第 $i$ 層到第 $n$ 層所見的兩個非零取樣點之間的最大距離，遞迴地定義為
+
+$$
+M_i = \max\big[M_{i+1} - 2 r_i,\; M_{i+1} - 2(M_{i+1} - r_i),\; r_i\big], \qquad M_n = r_n,
+$$
+
+其中 $r_i$ 是第 $i$ 層的比率。設計目標是 $M_2 \le k$。當 $k = 3$ 時，比率 $(1, 2, 5)$ 給出 $M_2 = 2$，可行；而 $(1, 2, 9)$ 給出 $M_2 = 5$，不可行 [11]。他們也指出，同一組內的比率不應有 2、4、8 這類共同因數。
+
+**用程式碼檢查。** 數出從每個輸入偏移到一個輸出的路徑數，洞就看得見了。
+
+```python
+import numpy as np
+
+def coverage(rates, k=3):
+    """How many paths connect each input offset to one output of a stack of 1-D dilated convs."""
+    reach = np.array([1])
+    for r in rates:
+        taps = np.zeros(r * (k - 1) + 1, int); taps[::r] = 1      # a k-tap kernel with rate r
+        reach = np.convolve(reach, taps)
+    return reach
+
+for rates in [(2, 2, 2), (1, 2, 4), (1, 2, 5), (1, 2, 9)]:
+    c = coverage(rates)
+    print(f"rates {rates}: span {len(c)}, holes {int((c == 0).sum())}, paths {c}")
+```
+
+```text
+rates (2, 2, 2): span 13, holes 6, paths [1 0 3 0 6 0 7 0 6 0 3 0 1]
+rates (1, 2, 4): span 15, holes 0, paths [1 1 2 1 3 2 3 1 3 2 3 1 2 1 1]
+rates (1, 2, 5): span 17, holes 0, paths [1 1 2 1 2 2 2 2 1 2 2 2 2 1 2 1 1]
+rates (1, 2, 9): span 25, holes 4, paths [1 1 2 1 2 1 1 0 0 1 1 2 1 2 1 1 0 0 1 1 2 1 2 1 1]
+```
+
+比率都是 2 時，每隔一個輸入就看不到；從 2 跳到 9，則在內層圖樣的各個複本之間留下縫隙。路徑數也顯示，即使沒有洞，覆蓋也不均勻：有些偏移有三條路徑到達，有些只有一條。
+
+**邊界情況。** ASPP 不會以同樣的方式受影響，因為它的各個分支是在同一張圖上平行執行再結合，而不是堆疊。另外，如果骨幹網路較早、沒有膨脹的層已經混合了相鄰的像素，實務上會減輕網格效應；問題在好幾個高度膨脹的層連續出現時最嚴重。
+
+### 密集 CRF 後處理
+
+這則補充說明早期 DeepLab 版本套用在網路輸出上、用來銳化邊界的全連接條件隨機場。
+
+**模型。** 把每個像素 $i$ 當成帶有標籤 $x_i$ 的節點，並最小化能量 [8], [41]
+
+$$
+E(\mathbf{x}) = \sum_i \theta_i(x_i) + \sum_{i \lt j} \theta_{ij}(x_i, x_j),
+$$
+
+其中**一元項**（unary）$\theta_i(x_i) = -\log P(x_i)$ 使用網路在像素 $i$ 的機率 $P(x_i)$，**成對項**（pairwise）則連結*每一對*像素：
+
+$$
+\theta_{ij}(x_i, x_j) = \mu(x_i, x_j)\left[ w_1 \exp\!\Big(-\frac{\lVert \mathbf{p}_i - \mathbf{p}_j \rVert^2}{2\sigma_\alpha^2} - \frac{\lVert \mathbf{I}_i - \mathbf{I}_j \rVert^2}{2\sigma_\beta^2}\Big) + w_2 \exp\!\Big(-\frac{\lVert \mathbf{p}_i - \mathbf{p}_j \rVert^2}{2\sigma_\gamma^2}\Big) \right].
+$$
+
+這裡 $\mu(x_i, x_j) = 1$ 當 $x_i \ne x_j$，否則為 0（Potts 懲罰，所以只有標籤不一致的數對要付代價），$\mathbf{p}_i$ 是像素 $i$ 的位置，$\mathbf{I}_i$ 是它的 RGB 顏色，$w_1, w_2$ 是權重，$\sigma_\alpha, \sigma_\beta, \sigma_\gamma$ 設定各個核的尺度。第一個是**雙邊**（bilateral）核，它的意思是位置和顏色都相近的像素應共用標籤；第二個則只強制空間上的平滑。
+
+**為什麼可行。** 在百萬像素的影像上，全連接圖大約有 $5 \times 10^{11}$ 個像素對。Krähenbühl 與 Koltun [41] 證明，在平均場近似下（標籤分布對像素因式分解），對所有像素的每一次更新，都是在位置–顏色的聯合特徵空間中做高斯濾波；近似的高維度濾波讓每次更新對像素數是線性的，而不是平方的。
+
+**它能做什麼、不能做什麼。** 它讓邊界貼齊顏色邊緣，直覺和 [IP 03 的雙邊濾波器](/zh-tw/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#雙邊濾波器只和長得像的像素平均)相同，也能填補小洞。它無法找回網路漏掉的物體，因為離邊界遠的地方是一元項主導，而且它增加了需要在驗證集上調整的參數。DeepLabv3 報告的進步，並沒有用這個後處理 [10]。
+
+### 軟 Dice 損失的梯度
+
+這則補充推導軟 Dice 係數的導數，並說明它不尋常的行為。
+
+**導數。** 使用總和形式 $D = 2I / S$，其中 $I = \sum_i p_i g_i$、$S = \sum_i p_i + \sum_i g_i$，$p_i \in [0, 1]$ 是預測機率，$g_i \in \{0, 1\}$ 是標籤。由商的微分法則，對像素 $j$，
+
+$$
+\frac{\partial D}{\partial p_j} = \frac{2 g_j S - 2 I}{S^2} = \frac{2\,(g_j S - I)}{S^2},
+$$
+
+因為 $\partial I / \partial p_j = g_j$ 且 $\partial S / \partial p_j = 1$。（Milletari 等人 [15] 給出了他們平方分母版本的類似式子。）
+
+**它說了什麼。**
+
+- 每個**背景**像素（$g_j = 0$）得到同樣的梯度 $-2I / S^2$，不論它目前的機率是多少：Dice 把所有背景機率往下推的力道相同，不同於交叉熵，後者的推力 $p_j - g_j$ 正比於每個像素的誤差。
+- 每個**前景**像素得到同樣的正梯度 $2(S - I)/S^2$。
+- 推力的大小取決於全域的總和。當預測與真實遮罩都很小時，$S$ 很小，梯度就很大；這就是 Dice 如何「聽見」小物體，也是它在訓練初期可能不穩定的原因。
+
+下面的程式用有限差分檢查這個公式。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+g = (rng.random(200) < 0.05).astype(float)       # 200 pixels, about 5% foreground
+p = rng.uniform(0.05, 0.6, 200)                  # some soft prediction
+
+def dice(p, g):
+    return 2 * (p * g).sum() / (p.sum() + g.sum())
+
+I, S = (p * g).sum(), p.sum() + g.sum()
+grad = 2 * (g * S - I) / S ** 2                  # analytic dD/dp_j
+eps = 1e-6
+num = np.array([(dice(p + eps * np.eye(200)[j], g) - dice(p - eps * np.eye(200)[j], g)) / (2 * eps)
+                for j in range(200)])
+print("max |analytic - numeric|:", f"{np.abs(grad - num).max():.1e}")
+print("distinct gradient values on background pixels:", np.unique(grad[g == 0].round(12)).size)
+print(f"foreground gradient {grad[g == 1][0]:+.5f}, background gradient {grad[g == 0][0]:+.5f}")
+```
+
+```text
+max |analytic - numeric|: 9.0e-12
+distinct gradient values on background pixels: 1
+foreground gradient +0.02793, background gradient -0.00099
+```
+
+**邊界情況。** 如果真實標籤是空的（$g = 0$），則 $I = 0$，對任何非零的預測都有 $D = 0$，所以即使預測近乎完美，損失仍是 1；如果兩者都是零，比值沒有定義。實作上會在分子與分母加上平滑常數、對整個批次而不是每張影像計算總和，或是加上交叉熵，讓梯度不會只依賴 Dice 比值。有了這些機率之後，梯度鏈會經過 sigmoid 或 softmax，把每個像素的推力乘上 $p_j(1 - p_j)$，所以飽和的像素仍然學得很慢。
+
+### Boundary IoU 詳解
+
+這則補充定義 Boundary IoU [19]，並說明它為什麼能補足遮罩 IoU。
+
+**遮罩 IoU 的問題。** 對大物體而言，幾乎所有像素都離邊界很遠，所以預測的輪廓可以差好幾個像素，遮罩 IoU 仍高於 0.9。Boundary IoU 的論文顯示了這個敏感度的落差如何隨物體大小而變，並提出一個聚焦於輪廓的度量。
+
+**定義。** 對真實遮罩 $G$ 與預測 $P$，令 $G_d$ 為距離 $G$ 輪廓不超過 $d$ 的像素集合，$P_d$ 對 $P$ 同理。Boundary IoU 是
+
+$$
+\text{Boundary IoU}(G, P) = \frac{|(G_d \cap G) \cap (P_d \cap P)|}{|(G_d \cap G) \cup (P_d \cap P)|},
+$$
+
+也就是兩條**內側邊界帶**的 IoU。論文把 $d$ 設成影像對角線的固定比例（分析中用 2%），動機是觀察到兩位標註者對同一物體畫出的輪廓，不論物體大小，很少相差超過影像對角線的約 1%。把 AP 與 PQ 的評估流程中的遮罩 IoU 換成 Boundary IoU，就得到論文的 Boundary AP 與 Boundary PQ。
+
+**用程式碼檢查。** 預測每個圓盤時讓邊界往外多 2 個像素，分別對一個小圓盤與一個大圓盤各做一次。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+def boundary_band(mask, d):
+    """Pixels of the mask that lie within distance d of its contour."""
+    return mask & (ndi.distance_transform_edt(mask) <= d)
+
+def mask_iou(a, b):
+    return (a & b).sum() / (a | b).sum()
+
+def boundary_iou(g, p, d):
+    return mask_iou(boundary_band(g, d), boundary_band(p, d))
+
+n = 256
+yy, xx = np.mgrid[0:n, 0:n]
+d = 0.02 * np.hypot(n, n)                        # 2% of the image diagonal, about 7 pixels
+for r in [10, 100]:
+    g = (yy - 128) ** 2 + (xx - 128) ** 2 <= r ** 2
+    p = (yy - 128) ** 2 + (xx - 128) ** 2 <= (r + 2) ** 2      # boundary 2 pixels too far out
+    print(f"radius {r:3d}: mask IoU {mask_iou(g, p):.3f}, boundary IoU {boundary_iou(g, p, d):.3f}")
+```
+
+```text
+radius  10: mask IoU 0.719, boundary IoU 0.596
+radius 100: mask IoU 0.961, boundary IoU 0.562
+```
+
+對同樣 2 個像素的誤差，遮罩 IoU 說大圓盤近乎完美，小圓盤卻很差。Boundary IoU 對兩者的評分相近，因為兩種情況下它看的都是同樣寬度的一條帶子。
+
+**邊界情況。** 當兩個遮罩小或細到每個像素都落在離輪廓 $d$ 以內時，帶子就是整個遮罩，Boundary IoU 等於遮罩 IoU，所以小物體不會被過度懲罰。這條帶子是對每個物體分別計算的，所以這個度量是為實例與全景區段設計的，不適合一次用在整張語意圖上。
+
+## 論文導讀
+
+這些導讀是選讀：每一則帶你走過本篇所依據的一篇論文，包括它要解決的問題、核心想法、它呈現了什麼，以及閱讀時要檢查什麼。
+
+### Panoptic Segmentation：論文導讀
+
+Kirillov、He、Girshick、Rother 與 Dollár，*Panoptic Segmentation*，CVPR 2019 [4]。這則導讀摘要論文提出了什麼，以及怎麼讀它的結果。
+
+**要解決的問題。** 語意分割（stuff、逐像素標籤、mIoU）與實例分割（things、有分數的遮罩、AP）已經發展成各有各的資料集、方法與指標的獨立任務。作者主張這樣的劃分可能掩蓋了重要的東西，而且較早期的聯合「場景解析」工作逐漸消退，部分原因是缺少大家同意的任務定義與指標。
+
+**核心想法。** 這篇論文貢獻的是一個任務和一個指標，而不是一個網路。任務：每個像素得到一個（類別，實例編號）數對，stuff 的編號被忽略，區段不能重疊，也不需要信心分數。指標：PQ，其中配對步驟以 0.5 的 IoU 門檻讓配對唯一（論文中的定理 1，幾行就能證明），評分步驟則可分解成 SQ 與 RQ。它明確寫出了設計要求：完整性（stuff 與 things 一視同仁）、可解釋性與簡單性。
+
+**它呈現了什麼。**
+
+- *人類一致性*（它的表 1 與表 2）。對重複標註的影像（Cityscapes 30 張、ADE20K 64 張、Vistas 46 張）彼此評分。人類的 PQ 離完美還很遠，stuff 與 things 對人類來說難度相近，而對小物體，RQ 大幅下降而 SQ 還算合理：標註者漏掉小物體的情況，比畫錯它們更多。
+- *門檻*（圖 6 與圖 7）。以最佳二部圖配對、且不設門檻時，配對成功的數對中 IoU 低於 0.5 的不到 16%；把門檻降到 0.25 對 PQ 的改變，遠比升到 0.75 時小，這支持以 0.5 為預設值。
+- *機器基線*（表 3–6）。從挑戰賽主辦單位取得的主流語意與實例系統的輸出，用正文所述的啟發式方法合併。對實例方法，AP 與 PQ 彼此對應；對語意方法，mIoU 與 PQ 也是，但有一個很有啟發性的例外：在 ADE20K 上，一個會產生許多小而假的碎片的語意方法，PQ 掉得比 mIoU 多得多，因為 PQ 數的是區段，而 mIoU 數的是像素。
+- *人類對機器*（表 6）。機器在 SQ 上接近人類，但在 RQ 上遠遠落後：當時的主要差距在辨識，而不是分割。
+
+**閱讀表格時要檢查什麼。** 人類研究用的影像集很小，所以作者報告了 bootstrap 的誤差範圍；解讀小差異之前先看一下。人類對機器的比較用的是不同的測試影像，而且平均的類別集合略有不同，論文自己也指出這只是近似。論文還警告，人類的 PQ 值不能跨資料集比較，因為類別數、涵蓋範圍與場景複雜度都不同。機器的結果是競賽參賽作品的合併，而不是單一個訓練出來的模型，所以它們描述的是各個獨立系統的狀況，而不是某一種方法。
+
+**限制。** PQ 對每個區段給予相同的權重，不論面積大小，所以漏掉一個很小的物體，與漏掉一棟建築的代價一樣；這是刻意的設計，但它會改變哪些錯誤占主導。0.5 的門檻無視「超過一半」之外配對有多好，SQ 只能部分挽回這一點。邊界品質沒有被單獨衡量，這個缺口後來由 Boundary PQ [19] 補上。
+
+**為什麼和這裡有關。** PQ 是全景分割一節的指標，也是後面通用模型的動機；論文的觀察是，瓶頸在辨識而不是分割，這是閱讀後來結果時很有用的視角。
+
+### Mask2Former：論文導讀
+
+Cheng、Misra、Schwing、Kirillov 與 Girdhar，*Masked-attention Mask Transformer for Universal Image Segmentation*，CVPR 2022 [26]。這則導讀說明論文主張什麼，以及看它的表格時要注意什麼。
+
+**要解決的問題。** MaskFormer 這類「通用」的遮罩分類模型，可以用同一個架構處理所有分割任務，但它們在實例分割上落後於最好的專門模型，而且訓練成本高：論文指出 MaskFormer 在 COCO 上需要 300 個 epoch，而且在 32 GB 的 GPU 上只放得下一張影像。研究者因此持續為每個任務建造專門的架構。
+
+**核心想法。** 保留 MaskFormer 的整體架構，並修正 Transformer 解碼器：
+
+- **遮罩注意力**，把每個查詢的交叉注意力限制在它自己前一次遮罩預測的前景內（正文中的方程式）；
+- **輪流使用多尺度特徵**，把像素解碼器的 1/32、1/16 與 1/8 特徵圖依序餵給連續的解碼器層，重複 $L$ 次；
+- **最佳化上的改動**：交叉注意力放在自注意力之前、直接受監督的可學習查詢特徵（作者說它們的行為像區域提案網路）、不使用 dropout；
+- **取樣點的遮罩損失**：損失在 $K = 12544$（$112 \times 112$）個取樣點上計算，配對成本用均勻取樣、最終損失用重要性取樣，沿用 PointRend；論文報告每張影像的訓練記憶體從 18 GB 降到 6 GB。
+
+**它呈現了什麼。** 同一個架構，針對每個任務與資料集分別訓練，在 COCO、ADE20K、Cityscapes 與 Mapillary Vistas 的全景、實例與語意分割上，達到或超越了當時專門模型的最佳水準（摘要引述 COCO 全景 57.8 PQ、COCO 實例 50.1 AP 與 ADE20K 57.7 mIoU）。在消融實驗中（它的表 4），遮罩注意力帶來最大的進步，對實例與全景分割的幫助多於語意分割，高解析度的多尺度策略也很重要。
+
+**閱讀表格時要檢查什麼。**
+
+- *檢查訓練排程那一欄。* 在 COCO 全景表中（它的表 1），DETR 訓練 500+25 個 epoch，MaskFormer 300 個，Mask2Former 50 個；論文的訊息有一部分是收斂速度，所以論文有提供相同 epoch 的比較時，要在相同 epoch 下比較。
+- *檢查骨幹網路與預訓練。* 標了 †（dagger，劍號）的列，使用的是在比其他列更大的分類資料集上預訓練的骨幹網路，而最強的幾列使用 200 個查詢，而不是 100 個。要先比較骨幹網路相同的列，再把功勞歸給解碼器。
+- *把任務專用與全景訓練的數字分開。* 這張表也報告 $\text{AP}^{\text{Th}}_{\text{pan}}$ 與 $\text{mIoU}_{\text{pan}}$，它們來自只用全景標註訓練的同一個模型；與專為實例或語意分割訓練的模型數字不是同一回事。
+- *看成本那幾欄。* 準確率旁邊報告了參數量、FLOPs 與每秒影格數；最大的模型慢很多。
+
+**作者自己提到的限制。** 通用的*架構*還不是通用的*模型*：只用全景標籤訓練時，Mask2Former 在實例與語意指標上，略差於用任務專用標註訓練的同一個模型（它的表 7），所以仍然需要針對各任務訓練。它也仍然不擅長小物體，並且沒有充分利用多尺度特徵。
+
+**為什麼和這裡有關。** Mask2Former 是「遮罩分類」一節背後的參考設計，也是後來多數表格中的基線，包括 OneFormer 的單一模型訓練，以及 EoMT 只留編碼器的簡化。
+
+## 參考文獻
+
+1. S. Minaee, Y. Boykov, F. Porikli, A. Plaza, N. Kehtarnavaz and D. Terzopoulos, "Image segmentation using deep learning: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 7, 2022. [doi](https://doi.org/10.1109/TPAMI.2021.3059968) · [arXiv](https://arxiv.org/abs/2001.05566)
+2. X. Li, H. Ding, H. Yuan, W. Zhang, J. Pang, G. Cheng, K. Chen, Z. Liu and C. C. Loy, "Transformer-based visual segmentation: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, no. 12, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3434373) · [arXiv](https://arxiv.org/abs/2304.09854)
+3. T. Zhou, W. Xia, F. Zhang, B. Chang, W. Wang, Y. Yuan, E. Konukoglu and D. Cremers, "Image segmentation in foundation model era: A survey," arXiv:2408.12957, 2024. [arXiv](https://arxiv.org/abs/2408.12957)
+4. A. Kirillov, K. He, R. Girshick, C. Rother and P. Dollár, "Panoptic segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00963) · [arXiv](https://arxiv.org/abs/1801.00868)
+5. J. Long, E. Shelhamer and T. Darrell, "Fully convolutional networks for semantic segmentation," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2015. [doi](https://doi.org/10.1109/CVPR.2015.7298965) · [arXiv](https://arxiv.org/abs/1411.4038)
+6. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional networks for biomedical image segmentation," in *Medical Image Computing and Computer-Assisted Intervention (MICCAI)*, LNCS vol. 9351, 2015. [doi](https://doi.org/10.1007/978-3-319-24574-4_28)
+7. L.-C. Chen, Y. Zhu, G. Papandreou, F. Schroff and H. Adam, "Encoder-decoder with atrous separable convolution for semantic image segmentation," in *Proc. European Conference on Computer Vision (ECCV)*, 2018. [doi](https://doi.org/10.1007/978-3-030-01234-2_49) · [arXiv](https://arxiv.org/abs/1802.02611)
+8. L.-C. Chen, G. Papandreou, I. Kokkinos, K. Murphy and A. L. Yuille, "DeepLab: Semantic image segmentation with deep convolutional nets, atrous convolution, and fully connected CRFs," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 40, no. 4, 2018. [doi](https://doi.org/10.1109/TPAMI.2017.2699184) · [arXiv](https://arxiv.org/abs/1606.00915)
+9. F. Yu and V. Koltun, "Multi-scale context aggregation by dilated convolutions," in *Proc. International Conference on Learning Representations (ICLR)*, 2016. [arXiv](https://arxiv.org/abs/1511.07122)
+10. L.-C. Chen, G. Papandreou, F. Schroff and H. Adam, "Rethinking atrous convolution for semantic image segmentation," arXiv:1706.05587, 2017. [arXiv](https://arxiv.org/abs/1706.05587)
+11. P. Wang, P. Chen, Y. Yuan, D. Liu, Z. Huang, X. Hou and G. Cottrell, "Understanding convolution for semantic segmentation," in *Proc. IEEE Winter Conference on Applications of Computer Vision (WACV)*, 2018. [doi](https://doi.org/10.1109/WACV.2018.00163) · [arXiv](https://arxiv.org/abs/1702.08502)
+12. H. Zhao, J. Shi, X. Qi, X. Wang and J. Jia, "Pyramid scene parsing network," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.660) · [arXiv](https://arxiv.org/abs/1612.01105)
+13. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner et al., "An image is worth 16x16 words: Transformers for image recognition at scale," in *Proc. International Conference on Learning Representations (ICLR)*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+14. E. Xie, W. Wang, Z. Yu, A. Anandkumar, J. M. Alvarez and P. Luo, "SegFormer: Simple and efficient design for semantic segmentation with transformers," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/64f1f27bf1b4ec22924fd0acb550c235-Abstract.html) · [arXiv](https://arxiv.org/abs/2105.15203)
+15. F. Milletari, N. Navab and S.-A. Ahmadi, "V-Net: Fully convolutional neural networks for volumetric medical image segmentation," in *Proc. Fourth International Conference on 3D Vision (3DV)*, 2016. [doi](https://doi.org/10.1109/3DV.2016.79) · [arXiv](https://arxiv.org/abs/1606.04797)
+16. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+17. B. Cheng, A. G. Schwing and A. Kirillov, "Per-pixel classification is not all you need for semantic segmentation," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2021. [NeurIPS](https://proceedings.neurips.cc/paper/2021/hash/950a4152c2b4aa3ad78bdd6b366cc179-Abstract.html) · [arXiv](https://arxiv.org/abs/2107.06278)
+18. M. Cordts, M. Omran, S. Ramos, T. Rehfeld, M. Enzweiler, R. Benenson, U. Franke, S. Roth and B. Schiele, "The Cityscapes dataset for semantic urban scene understanding," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [doi](https://doi.org/10.1109/CVPR.2016.350) · [arXiv](https://arxiv.org/abs/1604.01685)
+19. B. Cheng, R. Girshick, P. Dollár, A. C. Berg and A. Kirillov, "Boundary IoU: Improving object-centric image segmentation evaluation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2021. [doi](https://doi.org/10.1109/CVPR46437.2021.01508) · [arXiv](https://arxiv.org/abs/2103.16562)
+20. K. He, G. Gkioxari, P. Dollár and R. Girshick, "Mask R-CNN," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.322) · [arXiv](https://arxiv.org/abs/1703.06870)
+21. S. Ren, K. He, R. Girshick and J. Sun, "Faster R-CNN: Towards real-time object detection with region proposal networks," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 39, no. 6, 2017. [doi](https://doi.org/10.1109/TPAMI.2016.2577031)
+22. T.-Y. Lin, P. Dollár, R. Girshick, K. He, B. Hariharan and S. Belongie, "Feature pyramid networks for object detection," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.106)
+23. A. Kirillov, Y. Wu, K. He and R. Girshick, "PointRend: Image segmentation as rendering," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2020. [doi](https://doi.org/10.1109/CVPR42600.2020.00982) · [arXiv](https://arxiv.org/abs/1912.08193)
+24. A. Kirillov, R. Girshick, K. He and P. Dollár, "Panoptic feature pyramid networks," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00656) · [arXiv](https://arxiv.org/abs/1901.02446)
+25. N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov and S. Zagoruyko, "End-to-end object detection with transformers," in *Proc. European Conference on Computer Vision (ECCV)*, 2020. [doi](https://doi.org/10.1007/978-3-030-58452-8_13) · [arXiv](https://arxiv.org/abs/2005.12872)
+26. B. Cheng, I. Misra, A. G. Schwing, A. Kirillov and R. Girdhar, "Masked-attention mask transformer for universal image segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2022. [doi](https://doi.org/10.1109/CVPR52688.2022.00135) · [arXiv](https://arxiv.org/abs/2112.01527)
+27. J. Jain, J. Li, M. Chiu, A. Hassani, N. Orlov and H. Shi, "OneFormer: One transformer to rule universal image segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2023. [doi](https://doi.org/10.1109/CVPR52729.2023.00292) · [arXiv](https://arxiv.org/abs/2211.06220)
+28. T. Kerssies, N. Cavagnero, A. Hermans, N. Norouzi, G. Averta, B. Leibe, G. Dubbelman and D. de Geus, "Your ViT is secretly an image segmentation model," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Kerssies_Your_ViT_is_Secretly_an_Image_Segmentation_Model_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2503.19108)
+29. A. Kirillov, E. Mintun, N. Ravi, H. Mao, C. Rolland, L. Gustafson et al., "Segment anything," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2023. [doi](https://doi.org/10.1109/ICCV51070.2023.00371) · [arXiv](https://arxiv.org/abs/2304.02643)
+30. N. Ravi, V. Gabeur, Y.-T. Hu, R. Hu, C. Ryali, T. Ma et al., "SAM 2: Segment anything in images and videos," in *Proc. International Conference on Learning Representations (ICLR)*, 2025. [OpenReview](https://openreview.net/forum?id=Ha6RTeWMd0) · [arXiv](https://arxiv.org/abs/2408.00714)
+31. N. Carion, L. Gustafson, Y.-T. Hu, S. Debnath, R. Hu, D. Suris et al., "SAM 3: Segment anything with concepts," in *Proc. International Conference on Learning Representations (ICLR)*, 2026. [OpenReview](https://openreview.net/forum?id=r35clVtGzw) · [arXiv](https://arxiv.org/abs/2511.16719)
+32. A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal et al., "Learning transferable visual models from natural language supervision," in *Proc. International Conference on Machine Learning (ICML)*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/radford21a.html)
+33. B. Li, K. Q. Weinberger, S. Belongie, V. Koltun and R. Ranftl, "Language-driven semantic segmentation," in *Proc. International Conference on Learning Representations (ICLR)*, 2022. [OpenReview](https://openreview.net/forum?id=RriDjddCLN) · [arXiv](https://arxiv.org/abs/2201.03546)
+34. S. Cho, H. Shin, S. Hong, A. Arnab, P. H. Seo and S. Kim, "CAT-Seg: Cost aggregation for open-vocabulary semantic segmentation," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2024. [doi](https://doi.org/10.1109/CVPR52733.2024.00394) · [arXiv](https://arxiv.org/abs/2303.11797)
+35. C. Zhu and L. Chen, "A survey on open-vocabulary detection and segmentation: Past, present, and future," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, no. 12, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3413013)
+36. M. Everingham, L. Van Gool, C. K. I. Williams, J. Winn and A. Zisserman, "The PASCAL Visual Object Classes (VOC) challenge," *International Journal of Computer Vision*, vol. 88, no. 2, 2010. [doi](https://doi.org/10.1007/s11263-009-0275-4)
+37. B. Zhou, H. Zhao, X. Puig, S. Fidler, A. Barriuso and A. Torralba, "Scene parsing through ADE20K dataset," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2017. [doi](https://doi.org/10.1109/CVPR.2017.544) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Zhou_Scene_Parsing_Through_CVPR_2017_paper.html)
+38. T.-Y. Lin, M. Maire, S. Belongie, J. Hays, P. Perona, D. Ramanan et al., "Microsoft COCO: Common objects in context," in *Proc. European Conference on Computer Vision (ECCV)*, 2014. [doi](https://doi.org/10.1007/978-3-319-10602-1_48) · [arXiv](https://arxiv.org/abs/1405.0312)
+39. H. Caesar, J. Uijlings and V. Ferrari, "COCO-Stuff: Thing and stuff classes in context," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2018. [doi](https://doi.org/10.1109/CVPR.2018.00132) · [arXiv](https://arxiv.org/abs/1612.03716)
+40. G. Neuhold, T. Ollmann, S. Rota Bulò and P. Kontschieder, "The Mapillary Vistas dataset for semantic understanding of street scenes," in *Proc. IEEE International Conference on Computer Vision (ICCV)*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.534)
+41. P. Krähenbühl and V. Koltun, "Efficient inference in fully connected CRFs with Gaussian edge potentials," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2011. [NeurIPS](https://proceedings.neurips.cc/paper/2011/hash/beda24c1e1b46055dff2c39c98fd6fc1-Abstract.html) · [arXiv](https://arxiv.org/abs/1210.5644)

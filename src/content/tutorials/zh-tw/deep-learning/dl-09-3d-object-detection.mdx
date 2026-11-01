@@ -1,0 +1,1095 @@
+---
+title: "DLCV 09・三維物件偵測：光達、相機與鳥瞰視角"
+description: "機器如何在三維空間中找出汽車、行人與單車騎士：點雲與座標系、從 PointNet 到 CenterPoint 的光達偵測器、純相機的鳥瞰視角方法、感測器融合、旋轉三維框與 IoU，以及 KITTI、nuScenes 與 Waymo 如何衡量結果。"
+track: deep-learning
+order: 90
+level: advanced
+prereqs: [deep-learning/dl-03-object-detection, deep-learning/dl-08-3d-reconstruction]
+tags: [3d-object-detection, lidar, point-clouds, birds-eye-view, sensor-fusion, autonomous-driving]
+published: 2026-10-31
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figSensors from '../../../../assets/deep-learning/dl-09-3d-object-detection/sensors-frames.png';
+import figDensity from '../../../../assets/deep-learning/dl-09-3d-object-detection/density-range.png';
+import figClassical from '../../../../assets/deep-learning/dl-09-3d-object-detection/classical-pipeline.png';
+import figPillars from '../../../../assets/deep-learning/dl-09-3d-object-detection/pillars.png';
+import figRotIou from '../../../../assets/deep-learning/dl-09-3d-object-detection/rotated-iou.png';
+import figMatch from '../../../../assets/deep-learning/dl-09-3d-object-detection/iou-vs-distance.png';
+import figTimeline from '../../../../assets/deep-learning/dl-09-3d-object-detection/timeline.png';
+
+## 你將學到
+
+- 三維偵測器輸出什麼（一個有中心、尺寸與偏航角的框，加上類別、分數，常常還有速度）、有哪些感測器提供輸入，以及座標系如何把它們連在一起。
+- 為什麼點雲需要特殊的網路：點是無序的、稀疏的，而且密度隨距離快速下降；以及傳統流程（地面移除、分群、框擬合）單靠自己能走多遠。
+- 光達（LiDAR）偵測器的主要家族如何運作：以點為基礎（PointNet、PointNet++、PointRCNN）、體素與柱網格（VoxelNet、SECOND、PointPillars）、以中心為基礎的偵測頭（CenterPoint）、點–體素混合（PV-RCNN），以及稀疏 Transformer。
+- 純相機如何在缺少深度的情況下做三維偵測（lift-splat、BEVDet、BEVDepth、DETR3D、PETR、BEVFormer），以及光達、相機與雷達如何融合。
+- 三維框如何編碼與比較（偏航角編碼、旋轉的 BEV IoU、三維 IoU、旋轉 NMS），以及 KITTI 的 3D AP、nuScenes 的 mAP 與 NDS、Waymo 的 mAPH 如何定義。
+- 三維偵測器為什麼會失敗：遠處與稀疏的物體、遮擋、天氣、校正誤差，以及資料集之間的分布偏移。
+
+## 先看全貌
+
+二維偵測器在影像上畫矩形。**三維偵測器**則把框放進真實世界：每個物體在幾公尺外、有多大、面向哪個方向，而對會移動的東西，還有它跑得多快。自駕車不會因為一個像素矩形而煞車；它煞車，是因為一位行人在前方 14 公尺處，正走進它的車道。
+
+<Callout type="tip" title="用最簡單的話說">
+在黑暗的房間裡閉上眼睛，揮動一支只能告訴你各個方向牆壁有多遠的手電筒。過一陣子，你會得到一團勾勒出家具輪廓的點。三維偵測器看著這樣一團點，然後說：「這裡有張沙發，長 2 公尺，稍微朝左轉。」遠處東西上的點又少又散，所以遠處的沙發很難找。如果你手上只有一張照片、沒有這些點，你能把沙發看得很清楚，卻得猜它有多遠。
+</Callout>
+
+**為什麼重要。** 三維偵測是自動駕駛感知系統的核心，它的輸出餵給追蹤、運動預測與規劃 [1]。機器人需要它來抓取與避開物體，擴增實境需要它把虛擬內容錨定在真實物體上。這項任務也逼出了二維視覺從未需要的新想法：處理無序點集的網路、稀疏卷積、鳥瞰視角表示，以及把平面影像「提升」到三維的方法。
+
+本篇假設你已經熟悉 [DLCV 03・物件偵測：從 R-CNN 到 DETR](/zh-tw/learn/deep-learning/dl-03-object-detection/) 的二維偵測詞彙：框的迴歸目標、IoU、錨框與標籤指派、NMS 與焦點損失（見其[核心基本元件](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件)）、以中心為基礎的偵測（[無錨框偵測器](/zh-tw/learn/deep-learning/dl-03-object-detection/#無錨框偵測器用點取代框)）、DETR 式的集合預測（[以 Transformer 做集合預測](/zh-tw/learn/deep-learning/dl-03-object-detection/#以-transformer-做集合預測detr-及其後繼者)），以及平均精確率（[偵測器的評估](/zh-tw/learn/deep-learning/dl-03-object-detection/#偵測器的評估)）。我們沿用這些想法，只說明在三維中改變了什麼。兩篇綜述為這個領域搭起框架：Mao 等人 [1] 與 Qian 等人 [2]；我們在「現代觀點」中回頭談它們。
+
+## 三維偵測問題
+
+**白話版。** 輸入是某一個時刻的感測器資料：一次光達掃描、一圈相機影像、雷達回波，或它們的混合。輸出是一份物體清單，每個物體有一個三維框、一個類別名稱與一個信心值。這個框是「直立」的：它可以向左或向右轉，但不會翻倒。
+
+**精確版。** 三維偵測器輸出一個集合
+
+$$
+\hat{Y} = \{(\hat{\mathbf{b}}_i, \hat{c}_i, \hat{s}_i, \hat{\mathbf{v}}_i)\}_{i=1}^{N}, \qquad \hat{\mathbf{b}}_i = (x, y, z, l, w, h, \theta),
+$$
+
+其中 $(x, y, z)$ 是框的中心（單位為公尺），$(l, w, h)$ 是它的長、寬、高，$\theta$ 是**偏航角**（yaw，繞垂直軸的朝向角），$\hat{c}_i$ 是 $K$ 個類別之一，$\hat{s}_i \in [0, 1]$ 是信心值，$\hat{\mathbf{v}}_i = (v_x, v_y)$ 是選用的地面平面速度（單位為公尺每秒），而 $N$ 隨場景而異。這種 7 個數字的框稱為 **7-DoF**（自由度，degrees of freedom）框；例如 Waymo Open Dataset 就是這樣標註每個物體，長、寬、高沿著框自己的 $x$、$y$ 與 $z$ 軸量測 [3]。翻滾角與俯仰角假設為零，這對大致平坦道路上的用路人來說是合理的。
+
+和二維偵測相比，有三件事改變了：
+
+1. **框存在於公制空間。** 尺寸不會隨距離縮小，所以一輛車不管在 5 m 還是 80 m 外，都約 4.5 m 長。這讓尺寸先驗（錨框、各類別的平均尺寸）遠比在影像中有用。
+2. **朝向很重要。** 二維框是與座標軸對齊的。三維框必須隨物體轉動，而錯誤的偏航角即使中心完全正確，也可能毀掉重疊程度。
+3. **資料稀疏且不均勻。** 光達看到的是表面而不是體積，而且多半是面向它的那幾面，遠處的物體只得到幾個點。
+
+### 感測器與座標系
+
+**白話版。** 每個感測器都在自己的座標中量測。要把它們結合起來，我們用每個感測器已知的位置與朝向，也就是它的**校正**（calibration），把所有東西搬進一個固定在車上的共同座標系。
+
+三種感測器占主導地位（圖 1，左）：
+
+- **光達**（LiDAR）發出雷射脈衝並計時它們的回波。旋轉式的光達每次掃描回傳一個**點雲**（point cloud）：數萬個點 $(x, y, z)$，每個點帶一個**強度**（intensity，即反射率）。深度是直接且準確地量到的，但沒有顏色，而且點很稀疏。
+- **相機**以低成本提供稠密的顏色與紋理，但沒有深度：一個像素只告訴你一條射線的*方向*，不告訴你物體在這條射線上的多遠處。
+- **雷達**（radar）對每個物體只回傳寥寥幾個點，帶有距離，並透過都卜勒效應得到徑向速度。它在霧和雨中也能運作，但角解析度很差。
+
+例如 nuScenes 的車子配有 6 台相機、5 個雷達與 1 個光達，涵蓋 360 度 [4]；Waymo 的車子配有五個光達與五台相機 [3]。
+
+<Figure src={figSensors} alt="左：車子位於原點的俯視圖，x 朝前、y 朝左，有同心的光達環、六個陰影相機扇形、五個虛線雷達扇形，以及一個標出偏航角的綠色旋轉框。右：針孔相機的側視圖，一個近處的小框與一個遠處的大框落在同一條虛線射線上，因此影像高度相同。" caption="圖 1 — (a) 從上方看的自車（ego，即本車）座標系：x 朝前、y 朝左、z 朝上，並標出一個光達、六台相機與數個雷達的視野，以及一個 7-DoF 框。(b) 單一相機為什麼會丟失深度：近處的小物體與遠處的大物體投影成相同的影像高度。" />
+
+Waymo 資料集與本篇採用的慣例是右手系的**車輛座標系**（vehicle frame）：$x$ 朝前、$y$ 朝左、$z$ 朝上；每個感測器有自己的座標系，一個稱為**外參**（extrinsics）的 4×4 矩陣把感測器座標映射到車輛座標系 [3]。用公式表示，感測器量到的一點 $\mathbf{p}_s$ 變成
+
+$$
+\mathbf{p}_v = R\,\mathbf{p}_s + \mathbf{t},
+$$
+
+其中 $R$ 是 3×3 旋轉矩陣，$\mathbf{t}$ 是 3 維平移向量，兩者合起來就是該感測器的外參。相機另外還有**內參**（intrinsics）$K$，一個 3×3 矩陣，內含以像素為單位的焦距與影像中心。相機座標中的一點 $\mathbf{p}_c = (X, Y, Z)$（$Z$ 指向鏡頭外）投影到像素
+
+$$
+\begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = \frac{1}{Z}\, K \begin{bmatrix} X \\ Y \\ Z \end{bmatrix},
+$$
+
+其中 $(u, v)$ 是像素座標。除以 $Z$ 是整件事的核心：射線 $\lambda (X, Y, Z)$ 上的每一點（$\lambda \gt 0$）都落在同一個像素上，所以深度就丟失了（圖 1，右）。校正在實務上很重要：如果 $R$ 差了半度，60 m 外的一點會移動約半公尺，足以把行人的像素塗到他身後的牆上。
+
+### 鳥瞰視角
+
+**白話版。** 從正上方看這個場景。在道路上，物體很少疊在彼此上面，所以從上面看它們不會重疊，而且一輛車不論在哪裡都一樣大。這張由上往下的地圖，也就是**鳥瞰視角**（bird's-eye view，BEV），正是大多數現代偵測器工作的地方。
+
+在 BEV 中，我們捨棄 $z$，在 $(x, y)$ 上保留一個二維網格，例如 $0.16$ m 的格子。高度變成特徵通道，而不是一條座標軸。因為物體在這個視角中保持公制尺寸、也不會互相遮擋，一個普通的二維卷積偵測器就能在 BEV 網格上執行，下游的規劃器也是用這張地圖思考。代價是高度的細節被壓縮了；這對路上的車影響不大，對有桌子與架子的室內場景則影響較大。
+
+## 點雲：網路實際看到的東西
+
+**白話版。** 點雲是一袋點，不是一張影像。點的順序沒有意義，空間大部分是空的，而一個物體上的點數大致與它距離的平方成反比。
+
+一次光達掃描是一個集合 $P = \{\mathbf{p}_j\}_{j=1}^{M}$，其中 $\mathbf{p}_j = (x_j, y_j, z_j, r_j)$，$r_j$ 是強度，$M$ 是點數，常常有數萬個。三個性質塑造了本篇的每一個網路：
+
+1. **無序。** 清單的任何排列描述的都是同一個場景，所以處理這些點的網路 $f$ 必須是**排列不變**（permutation invariant）的：對索引的每個排列 $\pi$，都有 $f(\mathbf{p}_1, \dots, \mathbf{p}_M) = f(\mathbf{p}_{\pi(1)}, \dots, \mathbf{p}_{\pi(M)})$。
+2. **稀疏。** 點位於表面上。把車子周圍的空間切成 16 cm 的柱，超過 9/10 的柱是空的（我們在下面量測）。
+3. **密度與距離有關。** 旋轉式光達以固定的角度間隔 $\Delta\phi$（水平）與 $\Delta\epsilon$（垂直）發射射線。在距離 $r$ 處，相鄰射線相隔約 $r\,\Delta\phi$ 與 $r\,\Delta\epsilon$，所以一個正對面積固定為 $A$ 的物體大約會得到
+
+$$
+n(r) \approx \frac{A}{r^2\, \Delta\phi\, \Delta\epsilon}
+$$
+
+個點，其中 $n(r)$ 是點數的期望值，角度以弧度計。距離加倍，點數約減為四分之一。
+
+下面的程式碼建立一個玩具旋轉式光達（32 條光束，每 0.2 度一條射線），並計算打到放在不同距離、大小如一輛車的框的射線數。它使用**平板法**（slab method）：如果一條射線在每一對平行面之間的區間互相重疊，它就打到了這個框。
+
+```python
+import numpy as np
+
+# A toy spinning LiDAR mounted 1.8 m above the ground: 32 beams between -16 and +10 degrees
+# elevation, one ray every 0.2 degrees of azimuth (1800 rays per beam per turn).
+elev = np.deg2rad(np.linspace(-16, 10, 32))
+azim = np.deg2rad(np.arange(0, 360, 0.2))
+E, A = np.meshgrid(elev, azim, indexing="ij")
+dirs = np.stack([np.cos(E) * np.cos(A), np.cos(E) * np.sin(A), np.sin(E)], -1).reshape(-1, 3)
+origin = np.array([0.0, 0.0, 1.8])
+
+def hits_on_box(center, size):
+    """Count rays whose first hit is an axis-aligned box (slab method)."""
+    lo, hi = center - size / 2, center + size / 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t1, t2 = (lo - origin) / dirs, (hi - origin) / dirs
+    t_near = np.nanmax(np.minimum(t1, t2), axis=1)
+    t_far = np.nanmin(np.maximum(t1, t2), axis=1)
+    return int(np.sum((t_far >= t_near) & (t_far > 0)))
+
+car = np.array([4.5, 1.8, 1.5])                      # length, width, height in metres
+ranges = np.array([5, 10, 20, 40, 80])
+counts = np.array([hits_on_box(np.array([r, 0, car[2] / 2]), car) for r in ranges])
+for r, c in zip(ranges, counts):
+    print(f"car at {r:2d} m: {c:5d} points")
+slope = np.polyfit(np.log(ranges[1:]), np.log(counts[1:]), 1)[0]
+print(f"log-log slope (10-80 m): {slope:.2f}")
+```
+
+```text
+car at  5 m:  2817 points
+car at 10 m:   924 points
+car at 20 m:   172 points
+car at 40 m:    39 points
+car at 80 m:     7 points
+log-log slope (10-80 m): -2.33
+```
+
+點數從 5 m 處的數千個，掉到 80 m 處的 7 個。擬合出的斜率比 $-2$ 略陡，因為在遠處，32 條光束中只有少數幾條會穿過 1.5 m 高的物體，垂直取樣變得很粗；擁有更多光束的真實感測器會更接近 $1/r^2$。圖 2 在整個場景上顯示同樣的效應：完全相同的車，證據卻天差地別。
+
+<Figure src={figDensity} alt="左：玩具光達掃描的俯視圖，感測器周圍有地面環，五輛相同的車以輪廓畫出，標示的點數從靠近感測器的 1462 降到 65 公尺處的 17。右：5 到 80 公尺範圍內，車上點數對距離的對數–對數圖，接近一條虛線的 1/r² 參考線。" caption="圖 2 — (a) 從上方看的玩具光線投射光達掃描：五輛相同的車，標上打到各車的點數。(b) 一輛 4.5 m 的車上的點數對距離的關係，附 1/r² 參考線。" />
+
+## 傳統基準：地面移除、分群與框擬合
+
+**白話版。** 在深度學習之前，常見的光達流程是：把路面移除，把剩下的點分成一塊一塊，再在每一塊外面畫一個緊貼的矩形。它不需要訓練資料，也準確地告訴你後來的網路必須解決哪些問題。
+
+三個步驟如下：
+
+1. **用 RANSAC 移除地面** [5]。擬合一個平面 $\mathbf{n}^\top \mathbf{p} = d$（單位法向量 $\mathbf{n}$、偏移量 $d$）：重複隨機挑三個點、建出通過它們的平面，並計算**內點**（inlier）數，也就是滿足 $|\mathbf{n}^\top \mathbf{p} - d| \lt \tau$（$\tau$ 為容許誤差）的點。內點最多的平面就是地面。（RANSAC 在 [IP 12・特徵擷取](/zh-tw/learn/image-processing/dip-12-feature-extraction/notes/#ransac在有離群值時擬合模型)的補充資料中有更詳細的說明。）
+2. **用 DBSCAN 分群** [6]。在 BEV 中把剩下的點分組：兩點若距離小於 $\varepsilon$ 就是鄰居，擁有至少 $m$ 個鄰居的點是核心點，群從核心點長出去；孤立的點被標為雜訊。DBSCAN 不需要事先指定群數，適合物體數量未知的場景。（分群的一般介紹見 [PR 07・分群、混合模型與 EM](/zh-tw/learn/pattern-recognition/pr-07-clustering-mixtures/)。）
+3. **有向框擬合。** 對每個群，嘗試各個偏航角 $\theta$，把點旋轉到框的座標系，取緊貼的軸對齊矩形，並給它打分。沿著角度搜尋、配上擬合準則，就是搜尋式 L 形擬合（L-shape fitting）的想法 [7]。我們採用一個簡單的準則：每個點到最近矩形邊的平均距離。光達通常看到的是一個「L」（車子的兩個側面），而正確的偏航角會讓這些點落在兩條邊上。
+
+```python
+import numpy as np
+from sklearn.cluster import DBSCAN
+
+rng = np.random.default_rng(0)
+
+def box_surface(cx, cy, l, w, h, yaw, n):
+    """n points on the sides of a yawed box that face the sensor at the origin."""
+    c, s = np.cos(yaw), np.sin(yaw)
+    pts = []
+    for nx, ny, half, along in [(1, 0, l / 2, w), (-1, 0, l / 2, w), (0, 1, w / 2, l), (0, -1, w / 2, l)]:
+        normal = np.array([c * nx - s * ny, s * nx + c * ny])
+        mid = np.array([cx, cy]) + half * normal
+        if normal @ mid >= 0:                      # face points away from the sensor: hidden
+            continue
+        t = rng.uniform(-along / 2, along / 2, n)
+        tangent = np.array([-normal[1], normal[0]])
+        xy = mid + t[:, None] * tangent
+        pts.append(np.column_stack([xy, rng.uniform(0, h, n)]))
+    return np.vstack(pts)
+
+# ground plane z = 0 with slight noise, sampled uniformly in range and angle (density ~ 1/r)
+r, a = rng.uniform(2, 60, 20000), rng.uniform(-np.pi / 2, np.pi / 2, 20000)
+ground = np.column_stack([r * np.cos(a), r * np.sin(a), rng.normal(0, 0.03, r.size)])
+objects = [(12, -4, 4.5, 1.8, 1.5, 0.3), (25, 6, 4.2, 1.7, 1.4, -1.0), (40, -10, 0.8, 0.6, 1.7, 0.0)]
+cloud = [ground] + [box_surface(*o, n=int(40000 / np.hypot(o[0], o[1]) ** 2) + 5) for o in objects]
+pts = np.vstack(cloud) + rng.normal(0, 0.02, (sum(len(c) for c in cloud), 3))
+
+# 1) RANSAC plane fit: pick 3 points, count inliers within 0.1 m, keep the best plane
+best = None
+for _ in range(100):
+    p = pts[rng.choice(len(pts), 3, replace=False)]
+    n = np.cross(p[1] - p[0], p[2] - p[0])
+    if np.linalg.norm(n) < 1e-9:
+        continue
+    n /= np.linalg.norm(n)
+    inl = np.abs((pts - p[0]) @ n) < 0.1
+    if best is None or inl.sum() > best.sum():
+        best = inl
+above = pts[~best]
+print(f"{len(pts)} points, {best.sum()} ground inliers, {len(above)} left")
+
+# 2) DBSCAN in the bird's-eye view
+labels = DBSCAN(eps=0.7, min_samples=5).fit_predict(above[:, :2])
+
+# 3) oriented box per cluster: search the yaw; score = mean distance of points to the nearest edge
+for k in range(labels.max() + 1):
+    q = above[labels == k]
+    best_score, best_fit = np.inf, None
+    for yaw in np.deg2rad(np.arange(0, 180, 1)):
+        R = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+        uv = q[:, :2] @ R                              # coordinates along the box axes
+        lo, hi = uv.min(0), uv.max(0)
+        edge_dist = np.minimum(np.minimum(uv - lo, hi - uv)[:, 0], np.minimum(uv - lo, hi - uv)[:, 1])
+        if edge_dist.mean() < best_score and hi[0] - lo[0] >= hi[1] - lo[1]:   # x axis = long side
+            best_score, best_fit = edge_dist.mean(), (R @ ((lo + hi) / 2), hi - lo, np.rad2deg(yaw))
+    ctr, size, yaw = best_fit
+    print(f"cluster {k}: {len(q):4d} pts, centre ({ctr[0]:5.1f}, {ctr[1]:5.1f}), "
+          f"size {size[0]:.1f} x {size[1]:.1f} m, yaw {yaw:4.0f} deg, height {q[:, 2].max():.1f} m")
+```
+
+```text
+20694 points, 19944 ground inliers, 750 left
+cluster 0:  471 pts, centre ( 12.0,  -4.0), size 4.6 x 1.9 m, yaw   17 deg, height 1.5 m
+cluster 1:  124 pts, centre ( 25.0,   6.1), size 4.1 x 1.9 m, yaw  123 deg, height 1.4 m
+cluster 2:   53 pts, centre ( 40.0,  -9.9), size 0.8 x 0.6 m, yaw    0 deg, height 1.7 m
+```
+
+在這個合成場景上（真實物體：位於 $(12, -4)$、偏航角 17° 的一輛車，位於 $(25, 6)$、偏航角 −57° 的一輛車（模 180° 即 123°），以及位於 $(40, -10)$、0.8 × 0.6 m 的一位行人），這個流程能把中心、尺寸與偏航角都還原得很好。圖 3 顯示結果。一個看似更簡單的準則，最小矩形面積，在這裡會失敗：L 形點集的凸包大致是一個三角形，沿著三角形長對角線的矩形能以相同的面積把它框住，所以面積準則可能選出偏差約 20° 的偏航角。
+
+<Figure src={figClassical} alt="左：所有點依高度著色的俯視圖，地面為深紫色，三個代表物體的 L 形短線段為綠色與黃色。中與右：兩輛車的特寫，顯示灰色地面點、沿著每輛車兩側的彩色物體點、一個黑色的擬合矩形，以及一個幾乎重合的粉紅色虛線真實矩形。" caption="圖 3 — 傳統流程在合成場景上的結果。(a) 依高度著色的原始點。(b, c) RANSAC 地面移除與 DBSCAN 分群之後：物體點（彩色）、擬合的框（黑色）與真實的框（虛線）。光達只看到面向它的兩個側面。" />
+
+這個基準也顯示了它的極限，而每一項極限都是學習的理由：
+
+- **沒有語意。** 一個群就只是「某個東西」。要分辨行人與電線桿、汽車與灌木，需要學習到的特徵。
+- **只看到局部。** 框只對可見的點擬合。從後面看到的遠處汽車只給出一條短線，所以它的長度未知。學習式偵測器用類別層級的尺寸先驗來補全看不到的部分。
+- **合併與分裂。** 兩個並肩走的人會合併成一個群；隔著縫隙看到的卡車會分裂成兩個。
+- **朝向。** 擬合只給出模 180° 的偏航角：它分不出車頭與車尾。
+
+## 三維框：編碼、IoU 與 NMS
+
+這些是 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#核心基本元件) 基本元件的三維版本。我們只說明新的部分。
+
+### 框的編碼與偏航角問題
+
+**白話版。** 和二維一樣，網路預測的是對一個參考框（錨框或一個點）的小幅修正。新的部分是角度：角度會繞回來，而且轉了 180° 的框涵蓋的空間完全相同，所以天真的角度損失會懲罰幾何上正確的答案。
+
+VoxelNet [8]、SECOND [9] 與 PointPillars [10] 使用相同的殘差，作用在真值框（上標 $g$）與錨框（上標 $a$）之間：
+
+$$
+\Delta x = \frac{x^g - x^a}{d^a}, \quad \Delta y = \frac{y^g - y^a}{d^a}, \quad \Delta z = \frac{z^g - z^a}{h^a}, \quad
+\Delta l = \log \frac{l^g}{l^a}, \quad \Delta w = \log \frac{w^g}{w^a}, \quad \Delta h = \log \frac{h^g}{h^a},
+$$
+
+其中 $d^a = \sqrt{(l^a)^2 + (w^a)^2}$ 是錨框底面的對角線，用同一個長度把兩個方向的水平偏移正規化。這些就是 DLCV 03 的二維目標多加一個維度。
+
+對於角度，VoxelNet 迴歸的是原始差值 $\theta^g - \theta^a$。SECOND [9] 指出這會造成衝突：預測正好差 $\pi$ 時，框是一樣的，損失卻很大。它的**正弦誤差損失**（sine-error loss）
+
+$$
+L_\theta = \text{SmoothL1}\big(\sin(\theta^p - \theta^t)\big)
+$$
+
+（$\theta^p$ 是預測角、$\theta^t$ 是目標角，SmoothL1 是 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#邊界框參數化與迴歸目標) 的平滑 L1 損失：誤差小於 1 時是二次，大於 1 時是線性）在預測完全正確與預測翻轉了 $\pi$ 時都是零。因為它分不出前後，SECOND 加了一個很小的**方向分類器**（direction classifier），有兩個分格，用來決定框指向哪一邊 [9]；PointPillars 使用同樣這一對損失 [10]。CenterPoint 則迴歸 $(\sin\theta, \cos\theta)$，再用 $\theta = \operatorname{atan2}(\sin\theta, \cos\theta)$ 還原角度，這既連續又沒有歧義 [11]。
+
+*選讀：[偏航角編碼比較](#偏航角編碼比較原始角度正弦誤差與-sin-cos)（見「補充資料」頁）。把四種編碼放在實際的角度配對上並排比較，包括框被翻轉的情形。*
+
+### 旋轉框的 BEV IoU 與三維 IoU
+
+**白話版。** IoU 仍然是「重疊面積除以總面積」，但框現在是旋轉的，所以重疊部分是一個多邊形，不是矩形。在三維中，再把這個多邊形的面積乘上兩個高度區間的重疊長度。
+
+對兩個直立的框 $A$ 與 $B$，令 $A_{\text{bev}} \cap B_{\text{bev}}$ 為它們 BEV 矩形的交集（一個最多有 8 個角的凸多邊形），並令
+
+$$
+o_z = \max\!\Big(0,\; \min\big(z_A + \tfrac{h_A}{2},\, z_B + \tfrac{h_B}{2}\big) - \max\big(z_A - \tfrac{h_A}{2},\, z_B - \tfrac{h_B}{2}\big)\Big)
+$$
+
+為它們垂直範圍的重疊長度，其中 $z$ 是框的中心高度，$h$ 是它的高度。於是
+
+$$
+\text{IoU}_{\text{bev}} = \frac{|A_{\text{bev}} \cap B_{\text{bev}}|}{l_A w_A + l_B w_B - |A_{\text{bev}} \cap B_{\text{bev}}|}, \qquad
+\text{IoU}_{\text{3D}} = \frac{|A_{\text{bev}} \cap B_{\text{bev}}|\, o_z}{l_A w_A h_A + l_B w_B h_B - |A_{\text{bev}} \cap B_{\text{bev}}|\, o_z},
+$$
+
+其中 $|\cdot|$ 表示面積，$l, w, h$ 是框的尺寸。兩個凸多邊形的交集多邊形，可以用 **Sutherland–Hodgman 裁切法**（clipping）[12] 算出：依序用第二個多邊形的每條邊所在的直線去切第一個多邊形，只保留內側的部分。接著，多邊形的面積由它各角 $(x_k, y_k)$ 的**鞋帶公式**（shoelace formula）$\tfrac12 \lvert \sum_k (x_k y_{k+1} - x_{k+1} y_k) \rvert$ 得到，其中索引循環取值。
+
+```python
+import numpy as np
+
+def corners(box):
+    """BEV corners (counter-clockwise) of box = (x, y, z, l, w, h, yaw); z is the box centre."""
+    x, y, _, l, w, _, yaw = box
+    c, s = np.cos(yaw), np.sin(yaw)
+    local = np.array([[l, w], [-l, w], [-l, -w], [l, -w]]) / 2
+    return local @ np.array([[c, s], [-s, c]]) + [x, y]
+
+def clip(subject, clipper):
+    """Sutherland-Hodgman: keep the part of polygon `subject` inside convex CCW polygon `clipper`."""
+    out = list(subject)
+    for i in range(len(clipper)):
+        a, b = clipper[i], clipper[(i + 1) % len(clipper)]
+        inside = lambda p: (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0
+        pts, out = out, []
+        for j in range(len(pts)):
+            p, q = pts[j], pts[(j + 1) % len(pts)]
+            if inside(q):
+                if not inside(p):
+                    out.append(cross_point(p, q, a, b))
+                out.append(q)
+            elif inside(p):
+                out.append(cross_point(p, q, a, b))
+        if not out:
+            break
+    return np.array(out)
+
+def cross_point(p, q, a, b):
+    """Intersection of segment p-q with the infinite line through a and b."""
+    d1, d2 = q - p, b - a
+    t = ((a[0] - p[0]) * d2[1] - (a[1] - p[1]) * d2[0]) / (d1[0] * d2[1] - d1[1] * d2[0])
+    return p + t * d1
+
+def area(poly):                                   # shoelace formula
+    if len(poly) < 3:
+        return 0.0
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * abs(x @ np.roll(y, -1) - y @ np.roll(x, -1))
+
+def iou_bev_3d(a, b):
+    inter = area(clip(corners(a), corners(b)))
+    bev = inter / (a[3] * a[4] + b[3] * b[4] - inter)
+    dz = max(0.0, min(a[2] + a[5] / 2, b[2] + b[5] / 2) - max(a[2] - a[5] / 2, b[2] - b[5] / 2))
+    inter3 = inter * dz
+    return bev, inter3 / (a[3] * a[4] * a[5] + b[3] * b[4] * b[5] - inter3)
+
+car = (0, 0, 0, 4, 2, 1.5, 0)
+cases = {"identical":                 (car, car),
+         "rotated by 180 deg":        (car, (0, 0, 0, 4, 2, 1.5, np.pi)),
+         "rotated by 90 deg":         (car, (0, 0, 0, 4, 2, 1.5, np.pi / 2)),
+         "unit square vs 45 deg":     ((0, 0, 0, 1, 1, 1, 0), (0, 0, 0, 1, 1, 1, np.pi / 4)),
+         "shifted 1 m along length":  (car, (1, 0, 0, 4, 2, 1.5, 0)),
+         "same BEV, raised 0.5 m":    (car, (0, 0, 0.5, 4, 2, 1.5, 0)),
+         "far apart":                 (car, (10, 0, 0, 4, 2, 1.5, 0.3))}
+for name, (a, b) in cases.items():
+    bev, iou3 = iou_bev_3d(np.array(a, float), np.array(b, float))
+    print(f"{name:26s} BEV IoU {bev:.4f}   3D IoU {iou3:.4f}")
+```
+
+```text
+identical                  BEV IoU 1.0000   3D IoU 1.0000
+rotated by 180 deg         BEV IoU 1.0000   3D IoU 1.0000
+rotated by 90 deg          BEV IoU 0.3333   3D IoU 0.3333
+unit square vs 45 deg      BEV IoU 0.7071   3D IoU 0.7071
+shifted 1 m along length   BEV IoU 0.6000   3D IoU 0.6000
+same BEV, raised 0.5 m     BEV IoU 1.0000   3D IoU 0.5000
+far apart                  BEV IoU 0.0000   3D IoU 0.0000
+```
+
+每個值都與手算相符：4 × 2 的框對上自己旋轉 90° 後的框，重疊成一個 2 × 2 的正方形，所以 $\text{IoU} = 4 / (8 + 8 - 4) = 1/3$；單位正方形對上自己旋轉 45° 後的版本，重疊成一個面積為 $2(\sqrt2 - 1)$ 的正八邊形，得到 $\sqrt2 / 2 \approx 0.7071$；抬高了自身高度三分之一的框，BEV 重疊完整保留，三維重疊卻只剩一半。請注意第二行：轉了 180° 的框，IoU 是 1。IoU 對朝向的方向是盲的，這正是 Waymo 的指標要加上朝向項的原因（見下文）。
+
+圖 4（右）顯示偏航角誤差對細長物體有多嚴苛。在中心與尺寸都完美的情況下，車子大小的框在偏航角誤差約 17° 時，IoU 就掉到 0.7 以下；巴士大小的框約在 8.5°；而方形的行人框永遠不會低於 0.7。
+
+<Figure src={figRotIou} alt="左：一個綠色的軸對齊真實矩形，與一個旋轉 25 度並略微位移的橘色虛線預測矩形，以及它們的藍色交集多邊形與標出的角點；BEV IoU 為 0.508。右：車、行人與巴士的 BEV IoU 對 0 到 90 度偏航角誤差的曲線；巴士掉得最快，車在約 17 度處低於 0.7，方形的行人則一直高於 0.7，並在 90 度時回到 1。" caption="圖 4 — (a) 兩個旋轉的框；它們的交集是一個用裁切法求出的多邊形。(b) 單單偏航角誤差所損失的 BEV IoU，針對三種物體形狀，中心與尺寸皆精確。" />
+
+### 旋轉 NMS 及其替代方案
+
+**白話版。** 移除重複的框，做法和二維相同，但「重疊」現在必須在旋轉的框之間量測，這比較慢。兩種捷徑很常見：用軸對齊的框近似重疊，或是用中心峰值或集合預測，完全避開 NMS。
+
+三維中的貪婪 NMS 依分數排序，並移除與某個已保留的框之間 BEV IoU 超過門檻的框，使用上面的旋轉 IoU。因為道路上的物體在 BEV 中很少重疊，門檻可以設得低。PointPillars 發現，對軸對齊的 BEV 框用門檻 0.5 做 NMS，結果與旋轉 NMS 相近，卻快得多 [10]。CenterPoint 從中心熱圖的局部極大值讀出物體，就像 CenterNet [13] 一樣，這在設計上就移除了大部分重複；論文仍在第二階段之前對這些峰值套用 NMS [11]。DETR 家族 [14] 的相機方法（例如 DETR3D）直接預測一組框，完全不需要 NMS [15]。
+
+## 以光達為基礎的偵測器
+
+**白話版。** 光達偵測器的差別，主要在於它們如何把一個無序的點集變成網路能處理的東西：保留點本身（以點為基礎）、把點丟進三維網格（體素）、把點丟進垂直的柱（pillar），或是混用。在那之後，大多數方法會在 BEV 上使用二維偵測頭。
+
+### 以點為基礎：PointNet、PointNet++ 與 PointRCNN
+
+**白話版。** 用同一個小網路處理每一個點，再用取最大值把所有點彙整起來。最大值不在乎輸入的順序，所以結果是排列不變的。
+
+**PointNet** [16] 計算
+
+$$
+f(\mathbf{p}_1, \dots, \mathbf{p}_M) = \gamma\Big(\max_{j = 1, \dots, M} h(\mathbf{p}_j)\Big),
+$$
+
+其中 $h$ 是套用在每個點上的共用多層感知器，$\max$ 對所有點逐元素取最大（這是對稱函數，所以順序無關緊要），$\gamma$ 是第二個網路，把彙整後的特徵映射到輸出。它先單獨看每個點，再一次看整個集合，所以會錯過局部結構。**PointNet++** [17] 用**集合抽象**（set abstraction）層修正這一點：用**最遠點取樣**（farthest point sampling，每個新的中心是離已選中心最遠的點）選出一個中心點子集，收集每個中心半徑內的鄰居（**球查詢**，ball query），再對每個鄰域執行一個小型 PointNet。把這些層疊起來，就得到一個局部特徵的階層，就像 CNN 逐步擴大的感受野。兩者主要都是骨幹網路：它們產生特徵，偵測頭另外建在上面。
+
+**PointRCNN** [18] 是直接在點上運作的二階段偵測器。第一階段用 PointNet++ 骨幹把場景分割成前景點與背景點，並由下而上地從每個前景點提出一個三維框。第二階段在每個提議內部做點的池化，把它們轉換到提議自己的**標準座標**（canonical coordinates，經過平移與旋轉，使框與座標軸對齊），再精修這個框。以點為基礎的偵測器對小物體很準確，但在大型點雲上的取樣與鄰居搜尋很慢。
+
+### 以體素為基礎：VoxelNet 與 SECOND
+
+**白話版。** 把空間切成小的三維格子（體素），用一個小型 PointNet 彙整每個格子裡的點，再對得到的三維網格做卷積。由於幾乎所有體素都是空的，只在有點的地方計算。
+
+**VoxelNet** [8] 依體素把點分組，並讓每個點帶上它相對於體素質心的偏移，得到 7 維輸入 $(x, y, z, r, x - v_x, y - v_y, z - v_z)$，其中 $(v_x, v_y, v_z)$ 是該體素內各點的平均。一疊**體素特徵編碼**（voxel feature encoding，VFE）層，每層是一個共用的全連接層，後接體素內的逐元素最大池化，把每個體素變成一個特徵向量。接著三維卷積處理這個網格，再由 Faster R-CNN [19] 風格的區域提議網路在 BEV 特徵圖上預測框。它是端到端的，而且很強，但稠密的三維卷積讓它很慢。
+
+**SECOND** [9] 以**稀疏卷積**（sparse convolution）取代稠密的三維卷積，只儲存與計算有被占用的體素。它多半使用**子流形**（submanifold）稀疏卷積 [20]，其輸出只在輸入為活躍的地方才活躍，所以被占用位置的集合不會一層一層地長大。SECOND 也引入了正弦誤差角度損失與真值取樣資料增強（兩者都在本篇中說明），而這類稀疏體素骨幹後來被 PV-RCNN [21] 等偵測器採用。
+
+*選讀：[稀疏卷積與子流形卷積](#稀疏卷積與子流形卷積)（見「補充資料」頁）。規則表、為什麼一般的稀疏卷積會讓活躍集合「膨脹」，以及一個小量測。*
+
+### 以柱為基礎：PointPillars
+
+**白話版。** 讓格子無限高。每一根垂直的柱（**pillar**）由一個小型 PointNet 彙整，結果是一張平面的「偽影像」，普通的二維 CNN 就能很快地處理它。
+
+**PointPillars** [10] 有三個階段：柱特徵網路、二維卷積骨幹，以及 SSD 風格的偵測頭 [22]。柱中的每個點被裝飾成 $D = 9$ 維：$(x, y, z, r)$、它相對於柱內各點平均值的偏移 $(x_c, y_c, z_c)$，以及它在 $x$–$y$ 平面上相對於柱中心的偏移 $(x_p, y_p)$。非空的柱被打包成形狀為 $(D, P, N)$ 的稠密張量，每個樣本最多 $P$ 根柱、每根柱最多 $N$ 個點（論文在 0.16 m 網格下用 12,000 與 100），不足的補零，過多的隨機子取樣。對每個點套用一個線性層、批次正規化與 ReLU，對 $N$ 個點取最大值，每根柱得到一個 $C$ 維特徵，再把這些特徵**散佈**（scatter）回它們的網格位置，形成 $C \times H \times W$ 的偽影像。論文報告完整流程為 62 Hz，較快的變體為 105 Hz [10]。
+
+*選讀：[PointPillars：閱讀指南](#pointpillars閱讀指南)（見「論文導讀」頁）。如何閱讀論文中的速度與準確度表格，以及 KITTI 改用 40 個召回點之後有什麼改變。*
+
+下面的程式碼在一個玩具點雲上執行這個流程的輸入端：分格、9 維裝飾、稠密的 $(P, N, D)$ 張量，以及散佈（PointNet 的權重在這裡是隨機的；真實模型中則是學出來的）。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+# toy cloud: ground sampled uniformly in range and angle (so density falls as 1/r) + two "cars"
+r, a = rng.uniform(2, 70, 10000), rng.uniform(-0.5, 0.5, 10000)
+ground = np.column_stack([r * np.cos(a), r * np.sin(a), rng.normal(-1.7, 0.03, r.size)])
+cars = [c + rng.uniform([-2.2, -0.9, -1.7], [2.2, 0.9, -0.2], (n, 3))
+        for c, n in [(np.array([10.0, 2.0, 0.0]), 3000), (np.array([35.0, -6.0, 0.0]), 60)]]
+xyz = np.vstack([ground] + cars)
+pts = np.column_stack([xyz, rng.uniform(0, 1, len(xyz))])          # x, y, z, reflectance
+
+# 1) bin into a bird's-eye-view grid of 0.16 m pillars over x in [0, 70.4), y in [-40, 40)
+vx, x0, y0, W, H = 0.16, 0.0, -40.0, 440, 500
+ix = np.floor((pts[:, 0] - x0) / vx).astype(int)
+iy = np.floor((pts[:, 1] - y0) / vx).astype(int)
+ok = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
+pts, ix, iy = pts[ok], ix[ok], iy[ok]
+pillar_id, inv, counts = np.unique(iy * W + ix, return_inverse=True, return_counts=True)
+print(f"{len(pts)} points -> {len(pillar_id)} non-empty pillars out of {W * H} "
+      f"({100 * (1 - len(pillar_id) / (W * H)):.1f}% empty); max {counts.max()} points in one pillar")
+
+# 2) per-point 9-D features: x, y, z, r, offsets to the pillar mean, offsets to the pillar centre
+mean = np.zeros((len(pillar_id), 3))
+np.add.at(mean, inv, pts[:, :3])
+mean /= counts[:, None]
+centre = np.column_stack([(ix + 0.5) * vx + x0, (iy + 0.5) * vx + y0])
+feat = np.column_stack([pts, pts[:, :3] - mean[inv], pts[:, :2] - centre])
+
+# 3) dense tensor (P pillars, N points, D=9): pad with zeros, keep at most N points per pillar
+P, N = len(pillar_id), 16          # PointPillars caps P at 12000 and N at 100, sampling at random
+order = np.argsort(inv, kind="stable")
+slot = np.arange(len(inv)) - np.searchsorted(inv[order], inv[order])   # rank inside its pillar
+keep = slot < N
+dense = np.zeros((P, N, 9))
+dense[inv[order][keep], slot[keep]] = feat[order][keep]
+print("dense pillar tensor:", dense.shape, "| points dropped by the cap N:", int((~keep).sum()))
+
+# 4) a one-layer 'PointNet' (random weights here): linear + ReLU per point, max over points, scatter
+Wt = rng.normal(0, 0.3, (9, 64))
+pillar_feat = np.maximum(dense @ Wt, 0).max(axis=1)                      # (P, 64)
+canvas = np.zeros((64, H * W))
+canvas[:, pillar_id] = pillar_feat.T
+print("pseudo-image:", canvas.reshape(64, H, W).shape)
+```
+
+```text
+13060 points -> 9481 non-empty pillars out of 220000 (95.7% empty); max 24 points in one pillar
+dense pillar tensor: (9481, 16, 9) | points dropped by the cap N: 23
+pseudo-image: (64, 500, 440)
+```
+
+在這個玩具中，22 萬個格子有超過 95% 是空的，接近 PointPillars 論文針對相同網格大小下真實 64 線掃描所報告的約 97% 稀疏度 [10]。這就是為什麼輸入步驟需要多少記憶體，取決於柱化與散佈，而不是卷積。圖 5 在一次光線投射的掃描上顯示這個網格。
+
+<Figure src={figPillars} alt="左：細緻 0.16 公尺網格的特寫俯視圖，黑色的光達點沿著彎曲的掃描線並圍繞一個車子輪廓，被占用的格子加上陰影；1672 個格子中有 341 個被占用。右：60 × 60 公尺範圍內每根柱的點數熱圖，大部分是空的，被占用格子形成細環，隨距離變得更稀疏。" caption="圖 5 — 對一次玩具光線投射掃描做柱化。(a) 特寫中被占用的 0.16 m 柱（加陰影）。(b) 整個網格上每根柱的點數：97.7% 的柱是空的，被占用的柱隨距離變得稀疏。" />
+
+### 以中心為基礎的偵測頭：CenterPoint
+
+**白話版。** 不使用多種朝向的錨框，而是把物體的*中心*當成 BEV 熱圖中的峰值找出來，再從峰值處的特徵讀出其他所有屬性。中心沒有朝向，所以錨框的旋轉問題就消失了。
+
+**CenterPoint** [11] 保留標準的體素或柱骨幹，並以 CenterNet [13] 精神的中心偵測頭取代錨框偵測頭。熱圖每個類別一個通道，用焦點損失 [23] 對著畫在投影後框中心的高斯峰值訓練；因為物體在 BEV 中很小，高斯半徑被放大到至少 2 個格子。在每個中心，迴歸頭預測次體素偏移、離地高度、三維尺寸、以 $(\sin\theta, \cos\theta)$ 表示的偏航角，以及二維速度。速度來自餵入連續兩次掃描，並讓追蹤變成在幀間對中心做貪婪的最近點配對。一個輕量的第二階段在框各面的中心取樣特徵，預測精修後的框，以及一個朝著該框與真值的三維 IoU 訓練的信心值。以中心為基礎的偵測頭也擴展到光達之外：例如相機偵測器 BEVDet 就使用 CenterPoint 的偵測頭 [24]。
+
+### 點–體素混合：PV-RCNN
+
+**白話版。** 體素快，並能給出好的提議；點則保有精確的位置。用體素來提議，用點來精修。
+
+**PV-RCNN** [21] 先執行稀疏三維體素 CNN 取得特徵與提議，再把多尺度的體素特徵彙整成一小組**關鍵點**（keypoints，即體素集合抽象）。對每個提議，**RoI 網格池化**（RoI-grid pooling）在框內的一個規則點網格上、以數種半徑收集關鍵點特徵，再由精修頭預測最終的框與信心值。在 Transformer 骨幹出現之前，這類二階段混合方法是最準確的光達偵測器之一。
+
+### 點上的 Transformer 與序列模型
+
+**白話版。** 一輛車只占 150 m 場景中極小的一部分，所以像二維網路那樣縮小特徵圖，會丟掉細節。如果把注意力限制在被占用的體素上，它就能讓特徵在不縮小的情況下長距離互動。
+
+**SST** [25] 觀察到降取樣在光達偵測中帶來的好處很小，因此全程只用單一步幅，並在鄰近的被占用體素之間使用注意力，來取回降取樣原本會提供的感受野；論文報告這對行人等小物體幫助最大。**DSVT** [26] 重新組織這種注意力，使它能在 GPU 上完全平行地執行，也容易部署。**LION** [27] 與 **Voxel Mamba** [28] 以線性時間的序列模型（線性遞迴網路與狀態空間模型）取代注意力，把體素當作長序列來讀。唯一要記住的一點是：這些骨幹用來換取長距離脈絡的成本，隨被占用體素的數量成長，而不是隨場景的大小成長。
+
+*選讀：[稀疏體素上的注意力](#稀疏體素上的注意力視窗集合與序列)（見「補充資料」頁）。視窗、等大小集合與空間填充曲線序列化，如何讓注意力與序列模型在稀疏體素上變得實用。*
+
+## 純相機的三維偵測
+
+**白話版。** 相機便宜，看得到顏色、紋理與標誌，但照片是平的。每個相機偵測器都必須回答同一個問題：它看到的每樣東西有多遠？本節先說明為什麼這很困難，再介紹從影像建出三維地圖的兩種主要方式：把像素推出到三維，或把影像特徵拉到三維位置。
+
+### 為什麼單一相機不夠：深度歧義
+
+**白話版。** 近距離的一輛玩具車，與遠處的一輛真車，在照片上可能看起來一模一樣。要從單張影像得到深度，網路必須依賴一些線索，例如物體的典型尺寸、它接觸路面的位置，以及透視，而這些線索中的小誤差，到了遠處會變成以公尺計的大誤差。
+
+對於焦距為 $f$（以像素計）的針孔相機，一個真實高度為 $H$、深度為 $Z$ 的物體，在影像中高 $h = fH/Z$ 像素，所以 $Z = fH/h$。微分得到
+
+$$
+\left|\frac{\partial Z}{\partial h}\right| = \frac{fH}{h^2} = \frac{Z^2}{fH},
+$$
+
+所以一個像素的量測誤差所造成的深度誤差，隨距離的平方成長，而假設的尺寸 $H$ 若有誤差，深度會被乘上相同的倍數。
+
+```python
+import numpy as np
+
+f, H = 1000.0, 1.5                       # focal length in pixels, true car height in metres
+for Z in [10, 20, 40, 80]:
+    h = f * H / Z                        # image height of the car in pixels
+    z_pix = f * H / (h - 1)              # depth if we mis-measure the height by one pixel
+    z_size = f * (1.1 * H) / h           # depth if we assume a car 10% taller than it is
+    print(f"Z = {Z:2d} m: car is {h:6.2f} px tall | 1 px error -> {z_pix - Z:5.2f} m | "
+          f"10% size error -> {z_size - Z:4.1f} m")
+```
+
+```text
+Z = 10 m: car is 150.00 px tall | 1 px error ->  0.07 m | 10% size error ->  1.0 m
+Z = 20 m: car is  75.00 px tall | 1 px error ->  0.27 m | 10% size error ->  2.0 m
+Z = 40 m: car is  37.50 px tall | 1 px error ->  1.10 m | 10% size error ->  4.0 m
+Z = 80 m: car is  18.75 px tall | 1 px error ->  4.51 m | 10% size error ->  8.0 m
+```
+
+在 80 m 處，單單一個像素就能讓車子移動約 4.5 m，遠遠超出三維 IoU 0.7 能容忍的範圍。這就是為什麼單眼三維偵測器在遠處物體上遠遠落後光達。像 **FCOS3D** [29] 這樣的單眼方法，改造二維一階段偵測器（FCOS [30]），在投影後的三維中心迴歸深度、尺寸與朝向。**Pseudo-LiDAR** [31] 提出了一個有影響力的觀點：影像式與光達式偵測器之間的差距，很大一部分來自*表示方式*，而不只是深度品質；把估計出的深度圖轉成三維點雲，再對它執行光達偵測器，效果遠比把深度圖當成影像來處理好。
+
+### 把影像提升到鳥瞰視角
+
+**白話版。** 每個像素不知道自己的深度，所以給它一個深度的機率分布，在每個可能的深度放一份它的特徵副本、以該機率加權，然後把所有這些三維特徵丟到 BEV 網格上。結果可以跨相機融合，並像光達的 BEV 圖那樣處理。
+
+**Lift-Splat-Shoot**（LSS）[32] 把每張影像「提升」成特徵的視錐。在每個像素，網路預測一個脈絡向量 $\mathbf{c} \in \mathbb{R}^{C}$，以及一個在離散深度集合 $\mathcal{D}$ 上的分布 $\boldsymbol{\alpha}$（$\alpha_d \ge 0$，$\sum_{d \in \mathcal{D}} \alpha_d = 1$）。放在像素射線上深度 $d$ 處的特徵是
+
+$$
+\mathbf{c}_d = \alpha_d\, \mathbf{c},
+$$
+
+也就是深度機率與脈絡的外積。有把握的深度把特徵放在一個地方；不確定的深度則把它沿著射線散開。「splat」步驟用相機外參與內參，把視錐中所有的點轉換到車輛座標系，再以加總池化放進 BEV 的柱中，並用累積和的技巧讓池化變快 [32]。論文評估的是 BEV 分割與規劃；**BEVDet** [24] 則用 BEV 編碼器與以中心為基礎的偵測頭，加上同時在影像與 BEV 空間進行的資料增強，把同一個視角轉換變成三維偵測器。**BEVDepth** [33] 發現只從偵測損失學到的深度分布品質很差，於是用投影到影像中的光達點所提供的深度明確監督它，並搭配一個感知相機參數的深度網路。
+
+*選讀：[Lift-Splat-Shoot：閱讀指南](#lift-splat-shoot閱讀指南)（見「論文導讀」頁）。LSS 論文實際評估了什麼、它的穩健性實驗，以及它的限制。*
+
+### 從三維回頭查詢影像：DETR3D、PETR 與 BEVFormer
+
+**白話版。** 反過來走。從三維的猜測出發，無論是物體查詢還是一個 BEV 格子的網格，用已知的相機矩陣把它們投影到影像中，再取出它們落點上的影像特徵。不需要深度圖。
+
+**DETR3D** [15] 把每個物體查詢解碼成一個三維參考點，投影到所有相機中，以雙線性內插在那裡取樣影像特徵，並用它們精修查詢；訓練使用 DETR 的集合對集合損失 [14]，所以不需要 NMS。**PETR** [34] 則把三維位置編碼進影像特徵本身：把相機視錐離散成數個深度上的點，用相機參數轉換到三維，再通過一個小型網路產生**三維位置嵌入**（3D position embedding），加到影像特徵上；然後普通的 DETR 式查詢去關注這些具位置感知的特徵。**BEVFormer** [35] 保留一個由可學習的 **BEV 查詢**組成的網格，每個 BEV 格子一個。空間交叉注意力讓每個 BEV 查詢，用可變形注意力 [36]，在它的位置所投影到的影像區域中取樣特徵；時間自注意力則讓它去看前一幀的 BEV 特徵，這對速度和暫時被遮住的物體有幫助。它的 BEV 圖支援偵測與地圖分割的偵測頭。
+
+事實證明，時間是相機深度的強力來源：幀與幀之間的運動就是一種立體視覺。**StreamPETR** [37] 在線上把物體查詢從一幀傳到下一幀，並報告在 nuScenes 上，純相機的結果可與光達方法相提並論；**Far3D** [38] 則以 2D 偵測產生的 3D 查詢，瞄準長距離的相機偵測。
+
+## 融合光達、相機與雷達
+
+**白話版。** 光達擅長「在哪裡」，相機擅長「是什麼」。融合把兩者結合起來，而主要的設計問題是*在哪裡*結合：在原始點、在提議、在共用的 BEV 圖，或是透過注意力。
+
+我們依融合發生的位置把方法分組；Wang 等人 [39] 給出更細緻的分類。
+
+- **點層級（早期）融合。** **PointPainting** [40] 把每個光達點投影到影像語意分割結果上，並把類別分數附加到該點；然後任何光達偵測器都能在這個「上色」的點雲上執行。
+- **提議層級融合。** **MV3D** [41] 從點雲的 BEV 圖產生三維提議，並融合來自 BEV、光達前視圖與影像的區域特徵。**Frustum PointNets** [42] 則由 2D 走向 3D：2D 偵測器在影像中找到物體，PointNet 只處理那個 2D 框後方視錐內的點。
+- **BEV 層級融合。** 兩個都叫 **BEVFusion** 的方法，把相機特徵轉成 BEV 圖（用 LSS 風格的視角轉換），再與光達 BEV 圖結合。其中一個來自 MIT [43]，以串接與卷積編碼器融合，支援偵測與地圖分割，並把相機到 BEV 的池化加速了 40 倍以上。另一個 [44] 讓相機分支獨立於光達，因此光達故障時偵測器仍能運作，並報告在模擬的光達故障下有很大的增益。
+- **查詢層級融合。** **TransFusion** [45] 先從光達預測物體查詢，再用 Transformer 解碼器讓每個查詢去關注影像特徵。這種透過注意力的「軟」關聯，而不是把點硬投影到像素，讓它對不佳的影像條件與校正誤差更穩健。**UniTR** [46] 更進一步，用一個共用的 Transformer 骨幹處理相機與光達的 token。
+
+**雷達。** 雷達帶來速度資訊，以及對天氣的穩健性。**CenterFusion** [47] 在影像中偵測物體中心，透過圍繞每個偵測的視錐把雷達回波與它關聯起來，再用雷達特徵改善深度、旋轉與速度，使相機偵測器的 nuScenes 偵測分數大幅提高。
+
+## 訓練：指派與資料增強
+
+**白話版。** 訓練三維偵測器和訓練二維很像，只有兩個轉折：指派使用旋轉的 BEV 重疊或中心熱圖；而資料增強可以把物體從一個場景切出來、貼進另一個場景，這在照片上不可能做得令人信服。
+
+**指派。** 以錨框為基礎的偵測頭在每個 BEV 格子放幾個錨框（每個類別一種尺寸，通常偏航角為 0° 與 90°），並依 BEV IoU 指派，就像 DLCV 03 的二維規則。例如 VoxelNet 的車輛錨框，BEV IoU 高於 0.6 為正樣本、低於 0.45 為負樣本 [8]。因為三維場景中的錨框遠多於物體，這些偵測頭使用焦點損失 [23]。以中心為基礎的偵測頭則以高斯熱圖目標取代 IoU 指派 [11]。
+
+**資料增強。** 光達場景數量不多（KITTI 有 7,481 筆訓練掃描 [48]），每個場景裡的物體更少。標準的資料增強有 [8], [9], [10]：
+
+- **真值取樣**（ground-truth sampling）。把所有標註框以及框內的點建成資料庫，再把隨機挑選的物體貼進每個訓練場景 [9]。PointPillars 在 KITTI 上每個場景取樣 15 輛車、0 位行人與 8 位單車騎士 [10]。VoxelNet 在擾動框時就已使用碰撞測試，來剔除物理上不可能的結果 [8]，貼上時也需要相同的檢查。
+- **逐物體擾動。** 把每個框連同它的點一起旋轉與平移；VoxelNet 的旋轉角從 $[-\pi/10, \pi/10]$ 抽取，平移從標準差為 1 m 的零平均高斯分布抽取 [8]。
+- **全域轉換。** 繞垂直軸旋轉整個場景（VoxelNet 的角度從 $[-\pi/4, \pi/4]$ 抽取，模擬車子在轉彎）、以 $[0.95, 1.05]$ 中的倍率縮放，以及左右翻轉 [8], [10]。
+
+這些做法很便宜，因為點雲不過就是一堆座標：把點與框一起旋轉，標註就能保持精確。麻煩在於跨感測器的一致性：貼進光達掃描的物體並不在相機影像裡，所以融合模型需要格外小心。
+
+*選讀：[真值取樣細說](#真值取樣細說)（見「補充資料」頁）。資料庫、碰撞檢查與陷阱（漂浮的物體、不一致的遮擋、相機不匹配）。*
+
+## 資料集與指標
+
+**白話版。** 三個公開基準塑造了這個領域。KITTI 規模小、只看前方，指標是嚴格的三維 IoU。nuScenes 與 Waymo 規模大、涵蓋 360 度；nuScenes 以中心距離配對框並加上誤差項，Waymo 則依朝向吻合的程度，對每個正確的框加權。
+
+| 資料集 | 感測器（取自論文） | 規模（取自論文） | 主要偵測指標 |
+| --- | --- | --- | --- |
+| KITTI 3D [49], [48] | 兩組立體相機（灰階與彩色）、一個 Velodyne HDL-64E 光達 | 7,481 筆訓練與 7,518 筆測試的影像與點雲；80,256 個標註物體 | IoU 0.7（車）／0.5（行人、單車）的 3D AP，分簡單／中等／困難 |
+| nuScenes [4], [50] | 6 台相機、5 個雷達、1 個光達，360° | 1,000 個 20 秒的場景；23 個類別與 8 種屬性（偵測用 10 個類別） | 以中心距離配對的 mAP；NDS |
+| Waymo Open [3], [51] | 5 個光達、5 台相機 | 1,150 個 20 秒的場景；約 1,200 萬個標註的三維光達物體 | LEVEL_1／LEVEL_2 的 mAPH |
+
+### KITTI：分難度等級的 3D AP
+
+在 KITTI 的三維基準上，一個偵測若與某個真值框的三維 IoU 至少為 0.7（車）或 0.5（行人與單車騎士），就是正確的 [48]。物體依其影像外觀被分成三個累積的難度等級 [48]：
+
+- **簡單：** 2D 框高度至少 40 px、完全可見、截斷最多 15%。
+- **中等：** 高度至少 25 px、最多部分被遮擋、截斷最多 30%。
+- **困難：** 高度至少 25 px、最多「難以看見」、截斷最多 50%。
+
+方法依中等難度的 AP 排名。自 2019 年 10 月 8 日起，基準依 Simonelli 等人的分析 [48], [52]，改用 40 個召回點而不是原本的 11 個來計算 AP；論文把它寫成 $\text{AP}|_{R_{40}}$，兩種規則算出的數字不能拿來比較。標註只涵蓋前方相機可見的物體，所以 KITTI 的光達偵測器通常只保留投影到影像內的點 [10]。
+
+### nuScenes：以中心距離計算的 mAP 與 NDS
+
+**用距離配對。** nuScenes 不用 IoU 判斷偵測是否正確。一個預測會與地面平面上二維中心距離最小的真值物體配對，只要該距離低於門檻 [50]。AP 針對每個類別，在門檻 $\{0.5, 1, 2, 4\}$ m 下計算，並只在召回率與精確率都超過 0.1 的範圍內對精確率–召回率曲線積分，而
+
+$$
+\text{mAP} = \frac{1}{|\mathbb{C}|\,|\mathbb{D}|} \sum_{c \in \mathbb{C}} \sum_{d \in \mathbb{D}} \text{AP}_{c,d},
+$$
+
+其中 $\mathbb{C}$ 是 10 個偵測類別的集合，$\mathbb{D} = \{0.5, 1, 2, 4\}$ 是以公尺為單位的距離門檻集合 [50]。每個類別只在離自車的自己那一段範圍內評估（障礙物與交通錐為 30 m，自行車、機車與行人為 40 m，各種車輛類別為 50 m），而且每個樣本最多可以提交 500 個框 [50]。
+
+為什麼用距離？同樣的中心誤差，IoU 對小物體的懲罰遠比對大物體重（圖 6）。例如，0.25 m 的誤差會讓 0.7 m 的行人框掉到 IoU 約 0.47，低於 0.5，而一輛車沿著車長方向平移同樣的量，IoU 仍接近 0.9。
+
+<Figure src={figMatch} alt="BEV IoU 對 0 到 4.5 公尺中心誤差的圖：沿著車長方向平移的車下降得很慢，在 1.5 公尺處越過 0.5；同一輛車向側邊平移，在約 0.6 公尺處越過 0.5；行人在約 0.23 公尺處越過 0.5，並在 0.7 公尺處降到 0。紫色虛線標出 0.5、1、2 與 4 公尺。" caption="圖 6 — 車（4.5 × 1.8 m）與行人（0.7 × 0.7 m）的 BEV IoU 對中心誤差，尺寸與偏航角皆精確。紫線是 nuScenes 的配對門檻。" />
+
+下面的程式碼用 AP 說明同一件事。兩個類別得到相同的中心誤差（高斯分布，每個軸的標準差 0.25 m）和相同數量的偽陽性；只有尺寸不同。（我們計算的是一般的 101 點內插 AP，並略過 nuScenes 的 0.1 截斷，這不影響比較。）
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+size = {"car": (4.5, 1.8), "pedestrian": (0.7, 0.7)}     # BEV length x width in metres
+
+def bev_iou(a, b):
+    """Axis-aligned BEV IoU of boxes (x, y, l, w); yaw is 0 in this toy."""
+    ox = max(0, min(a[0] + a[2] / 2, b[0] + b[2] / 2) - max(a[0] - a[2] / 2, b[0] - b[2] / 2))
+    oy = max(0, min(a[1] + a[3] / 2, b[1] + b[3] / 2) - max(a[1] - a[3] / 2, b[1] - b[3] / 2))
+    return ox * oy / (a[2] * a[3] + b[2] * b[3] - ox * oy)
+
+def average_precision(gts, preds, is_match):
+    """Greedy matching in score order; AP = mean interpolated precision at 101 recall points."""
+    used, tp = np.zeros(len(gts), bool), []
+    for p in sorted(preds, key=lambda p: -p[-1]):
+        ok = [j for j in range(len(gts)) if not used[j] and is_match(p, gts[j])]
+        if ok:
+            j = min(ok, key=lambda j: np.hypot(p[0] - gts[j][0], p[1] - gts[j][1]))
+            used[j] = True
+        tp.append(bool(ok))
+    tp = np.array(tp)
+    recall = np.cumsum(tp) / len(gts)
+    precision = np.cumsum(tp) / np.arange(1, len(tp) + 1)
+    envelope = np.maximum.accumulate(precision[::-1])[::-1]
+    return np.mean([envelope[recall >= r].max() if np.any(recall >= r) else 0
+                    for r in np.linspace(0, 1, 101)])
+
+for cls, (l, w) in size.items():
+    gts = [(x, y, l, w) for x, y in rng.uniform(-50, 50, (100, 2))]
+    preds = [(g[0] + dx, g[1] + dy, l, w, s) for g, (dx, dy), s in
+             zip(gts, rng.normal(0, 0.25, (100, 2)), rng.uniform(0.3, 1, 100))]
+    preds += [(x, y, l, w, s) for (x, y), s in zip(rng.uniform(-50, 50, (20, 2)), rng.uniform(0, 0.6, 20))]
+    ap_iou = average_precision(gts, preds, lambda p, g: bev_iou(p, g) >= 0.5)
+    ap_d = [average_precision(gts, preds, lambda p, g, t=t: np.hypot(p[0] - g[0], p[1] - g[1]) <= t)
+            for t in (0.5, 1, 2, 4)]
+    print(f"{cls:10s} AP(BEV IoU>=0.5) = {ap_iou:.3f} | AP(centre dist <= 0.5/1/2/4 m) = "
+          f"{' / '.join(f'{a:.3f}' for a in ap_d)} | mean = {np.mean(ap_d):.3f}")
+```
+
+```text
+car        AP(BEV IoU>=0.5) = 0.951 | AP(centre dist <= 0.5/1/2/4 m) = 0.789 / 0.988 / 0.988 / 0.990 | mean = 0.939
+pedestrian AP(BEV IoU>=0.5) = 0.126 | AP(centre dist <= 0.5/1/2/4 m) = 0.791 / 0.979 / 0.979 / 0.979 | mean = 0.932
+```
+
+在這次玩具實驗中，IoU 配對把行人偵測器評為幾乎沒用（AP 0.126），把車輛偵測器評為極好（0.951），雖然兩者的中心誤差完全相同。中心距離配對則給兩者大致相同的分數。距離配對並沒有忽略框的品質；它把品質移到另外的誤差項中。
+
+**真陽性誤差與 NDS。** 對於在 2 m 門檻下配對成功的偵測，nuScenes 量測五種**真陽性誤差**（TP errors）：平移誤差 ATE（中心距離，單位公尺）、尺度誤差 ASE（對齊中心與朝向之後的 $1 - \text{IoU}$）、朝向誤差 AOE（最小偏航角差，單位弧度）、速度誤差 AVE（m/s）與屬性誤差 AAE（$1 -$ 屬性準確率）[50]。它們的類別平均與 mAP 結合成 **nuScenes 偵測分數**（nuScenes detection score，NDS）：
+
+$$
+\text{NDS} = \frac{1}{10}\Big[\,5\,\text{mAP} + \sum_{e \in \mathbb{E}} \big(1 - \min(1, e)\big)\Big],
+$$
+
+其中 $\mathbb{E} = \{\text{mATE}, \text{mASE}, \text{mAOE}, \text{mAVE}, \text{mAAE}\}$ 是平均 TP 誤差的集合 [50]。NDS 有一半來自 mAP，另一半來自框的品質、朝向、速度與屬性，所以能把速度估得好的方法（靠多次掃描或多幀）能在 NDS 上獲得很大的增益。
+
+*選讀：[一步步計算 NDS](#一步步計算-nds)（見「補充資料」頁）。TP 誤差如何平均、哪些類別略過哪些項，以及兩個偵測器的實例比較。*
+
+### Waymo：以朝向加權的 AP
+
+Waymo Open Dataset 使用三維 IoU 配對，車輛的門檻為 0.7，行人與單車騎士為 0.5，它的主要指標是 **APH**，即依朝向（heading）加權的平均精確率 [51]。每個真陽性不是算 1，而是算成一個朝向準確度
+
+$$
+a_h = 1 - \frac{\min\big(|\tilde\theta - \theta|,\; 2\pi - |\tilde\theta - \theta|\big)}{\pi} \in [0, 1],
+$$
+
+其中 $\tilde\theta$ 與 $\theta$ 分別是預測與真值的朝向，範圍在 $[-\pi, \pi]$ [3], [53]。因此一個正確但正好朝著反方向的框（$|\tilde\theta - \theta| = \pi$）算 0，這堵住了 IoU 留下的漏洞。真值框被分成兩個難度等級：**LEVEL_2** 是有 1 到 5 個光達點的框（或在釋出標註中被標為 LEVEL_2 的框），**LEVEL_1** 是其餘的框（沒有光達點的框不評估），而 LEVEL_2 的指標兩者都包含 [51]。它的 2020 年三維偵測挑戰賽以 **LEVEL_2 的 mAPH**（車輛、行人與單車騎士的平均）排名，並依距離細分結果：$[0, 35)$、$[35, 50)$ 與超過 50 m [51]。
+
+## 效率與部署
+
+**白話版。** 車上的電腦必須在下一次掃描到來之前，早早完成感知，在嵌入式硬體上，每一次都是如此。表示方式決定了大部分的成本：有多少格子、每個格子多少個點，以及運算子能否在目標晶片上跑得快。
+
+- **網格大小與範圍決定預算。** 格子尺寸減半，BEV 格子數就變成四倍。PointPillars 正是這樣拿準確度換速度，從預設網格的 62 Hz 到較粗柱的 105 Hz [10]。
+- **稀疏運算子需要支援。** 稀疏卷積與點取樣原則上很有效率，但它們依賴自訂核心（kernel）；柱網路則跑在每個推論引擎都支援的稠密二維卷積上。DSVT 把部署明確當作設計目標，其池化不需要自訂的 CUDA 運算子，並報告部署後可即時推論 [26]。
+- **相機的視角轉換很昂貴。** 把每個像素提升到許多深度，會產生巨大的中間點集；BEVFusion 優化後的 BEV 池化，把這一步的延遲降低了 40 倍以上 [43]。
+- **基準上的速度不是車上的速度。** PointPillars 的論文指出，KITTI 只使用前方相機視野內的點，大約是一次掃描的 10%，而且桌上型 GPU 的計時不能直接換算到嵌入式電腦 [10]。要在目標硬體上、用完整 360 度的輸入、從頭到尾地量測。
+- **後處理與時間輸入也要算進來。** 旋轉 NMS 要處理很多框；多次掃描的輸入會讓點數成倍增加。nuScenes 把偵測方法可使用的過去感測器資料，限制在約 0.5 秒 [50]。
+
+## 失敗模式
+
+**白話版。** 三維偵測器會在證據薄弱處（遠的、小的或被遮住的物體）、感測器受到干擾處（天氣、髒汙、校正不準），以及測試資料與訓練資料不同處（另一座城市、另一種感測器）失敗。
+
+- **遠處與稀疏的物體。** 點數大致隨 $1/r^2$ 下降（圖 2），所以遠處的物體只有幾個點，甚至一個也沒有。基準也承認這一點：Waymo 的 LEVEL_2 收納最多 5 個點的框 [51]，而 nuScenes 只在 30–50 m 內評估每個類別 [50]。相機的深度誤差隨 $Z^2$ 成長，對同樣這些物體傷害更大。
+- **遮擋與截斷。** 感測器只看到面向它的表面，而一輛停著的車會擋住它後面的行人。KITTI 的難度等級就是依遮擋與截斷定義的 [48]；時間模型能靠記住暫時被擋住的物體來幫忙 [35]。
+- **容易混淆的類別。** PointPillars 報告，行人與單車騎士常被彼此混淆，行人也會與電線桿和樹幹混淆 [10]。
+- **天氣。** 霧、雨和雪會散射雷射脈衝，產生虛假的近距離回波並丟掉遠處的回波。Hahner 等人在晴天的光達掃描上模擬基於物理的霧，並證明用它訓練能改善真實霧中的偵測 [54]。
+- **校正與同步誤差。** 把點硬投影到像素的融合，在外參漂移時會壞掉；TransFusion 的軟關聯正是為此設計的 [45]，而 LSS 則顯示，用帶雜訊的外參或丟棄相機來訓練，能讓相機 BEV 模型對它們更穩健 [32]。
+- **常見的損壞。** 一個針對 KITTI、nuScenes 與 Waymo 套用 27 種光達與相機損壞、測試 24 個偵測器的基準發現：與運動相關的損壞對所有模型傷害最大，光達–相機融合模型比較穩健，而純相機模型對影像損壞極其脆弱 [55]。
+- **資料集之間的領域偏移。** 在一個資料集上訓練的偵測器，到了另一個資料集可能大幅下滑。Wang 等人發現，德國與美國駕駛資料集之間的主要障礙，單純就是平均車輛尺寸不同，修正它就能彌補大部分差距 [56]。Waymo 論文本身也報告不同城市的資料之間有明顯的落差 [3]。不同的光達型號（光束數、安裝高度）也會讓點的分布偏移。
+
+## 現代觀點
+
+圖 7 依各篇引用的論文發表年份，把本篇的方法放在時間軸上。
+
+<Figure src={figTimeline} alt="一個格子圖，列為 2012 到 2024 年，有五欄：以點為基礎、體素／柱／混合與序列模型、純相機、融合，以及資料集。有標籤的方框把每個方法放在適當位置，從 2012 年的 KITTI 與 2017 年的 PointNet，到 2024 年的 LION、Voxel Mamba 與 Far3D。" caption="圖 7 — 依本篇所引論文的發表年份整理的里程碑，並按家族分組。沒有列出里程碑的年份省略。" />
+
+### 綜述怎麼說
+
+六篇綜述為這個領域搭起框架，各有自己的分類法。Mao 等人 [1] 給出自駕三維偵測最完整的地圖：光達方法依資料表示分類（點、網格、點–體素、距離影像），相機方法（單眼、立體、多視角）、融合、Transformer、時間與標註高效的偵測，並分析準確度與速度的趨勢。Qian 等人 [2] 涵蓋感測器、資料集與指標，並附有一個含執行時間、誤差與穩健性分析的案例研究。Guo 等人 [57] 回顧整個點雲深度學習，偵測只是其中一項任務。在相機方面，Ma 等人 [58] 與 Li 等人 [59] 綜述鳥瞰視角感知；後者把核心問題歸納為視角轉換、BEV 真值、多感測器流程，以及跨感測器配置的泛化，並補上一份實用的技巧「配方」。Wang 等人 [39] 則依融合階段、輸入與粒度來整理融合方法。兩個共通的結論：BEV 已成為各種感測器與任務共同的交會點，而標準基準上準確度的進步，已經超過穩健性與可部署性的進步。
+
+*選讀：[現代觀點綜述導讀](#現代觀點綜述導讀)（見「論文導讀」頁）。每篇綜述涵蓋什麼、如何組織這個領域，以及怎麼使用它。*
+
+### 2023–2026 年的最先進技術
+
+- **光達骨幹**已從稀疏卷積走向稀疏 Transformer，以及對序列化體素的線性時間序列模型（DSVT [26]、LION [27]、Voxel Mamba [28]）。Point Transformer V3 [60] 主張規模比繁複的設計更重要，並在多個資料集聯合訓練下進一步提升。
+- **純相機偵測**已經縮小了與光達的差距，主要靠時間建模與稀疏查詢（StreamPETR [37]）以及更好的深度監督（BEVDepth [33]）；長距離相機偵測是活躍的方向（Far3D [38]）。
+- 在共用的 BEV 或 token 空間中做**融合**（BEVFusion [43], [44]、UniTR [46]），是最強系統的標準配方，而對感測器缺失或劣化的穩健性，現在已是設計目標，而不是事後補救。
+- **端到端駕駛。** 偵測越來越常是為規劃而訓練的單一網路中的一個階段，例如 UniAD [61]，其中感知、預測與規劃任務透過統一的查詢介面溝通。
+
+### 尚待解決的問題
+
+1. **遠處、小型與罕見的物體。** 遠距離的稀疏證據，以及訓練資料中罕見的類別（動物、碎片、特殊車輛），仍是弱點；封閉集合的資料集並未涵蓋長尾 [1]。
+2. **穩健性。** 天氣、感測器故障、校正漂移與運動損壞仍會造成大幅下降 [55], [54]。
+3. **跨感測器與跨地點的泛化。** 在一種光達型號、相機配置或城市上訓練的模型，常常在另一種上失敗 [56], [3]。
+4. **符合駕駛需求的指標。** AP 對 10 m 處漏掉的行人與 45 m 處漏掉的行人一視同仁；nuScenes 與 Waymo 加入了朝向、速度與距離細分，但正如 Mao 等人所指出，只最大化 AP 對整個駕駛系統來說未必是最佳的 [1]。
+5. **標註。** 三維框的標註很昂貴，這催生了半監督、自監督與自動標註的方法 [1]。
+
+## 重點整理
+
+- 三維偵測器輸出直立的 7-DoF 框 $(x, y, z, l, w, h, \theta)$，單位為公尺，附帶類別、分數，常常還有速度；校正（外參與內參）把感測器繫到同一個車輛座標系。
+- 點雲是無序、稀疏的，並大致隨 $1/r^2$ 變稀薄；網路必須是排列不變的，並善用稀疏性。
+- 光達家族的差別在表示方式：點（PointNet++、PointRCNN）、搭配稀疏卷積的體素（VoxelNet、SECOND）、柱（PointPillars）、中心偵測頭（CenterPoint）、混合方法（PV-RCNN）與稀疏 Transformer；多數在鳥瞰視角中偵測。
+- 相機會丟失深度；相機偵測器要嘛用深度分布提升像素（LSS、BEVDet、BEVDepth），要嘛從三維回頭查詢影像（DETR3D、PETR、BEVFormer），而時間幫助很大。
+- 偏航角要小心處理：正弦誤差損失加上方向分格，或用 $(\sin\theta, \cos\theta)$；旋轉的 BEV IoU 與三維 IoU 要靠多邊形裁切，而且 IoU 看不出 180° 的翻轉。
+- KITTI 使用三維 IoU（車為 0.7），分簡單／中等／困難等級，並用 40 個召回點；nuScenes 使用中心距離的 mAP，再把 TP 誤差放進 NDS；Waymo 使用依朝向加權的 APH，分 LEVEL_1／LEVEL_2。
+- 失敗集中在遠的、小的、被遮住的物體、壞天氣、校正不準與領域偏移；基準上的速度很少等於車上的速度。
+
+## 練習
+
+1. **距離上的點數。** 某個光達的水平間隔為 0.1°、垂直間隔為 0.4°。用 $n(r) \approx A / (r^2 \Delta\phi \Delta\epsilon)$，估計一輛車 1.8 m × 1.5 m 的車尾，在 20 m 與 60 m 處各有多少個點。在 60 m 處，有幾條光束垂直穿過這輛車？
+
+<details>
+<summary>提示</summary>
+
+換算成弧度：$\Delta\phi = 1.75 \times 10^{-3}$，$\Delta\epsilon = 6.98 \times 10^{-3}$。取 $A = 2.7$ m²，則 $n(20) \approx 2.7 / (400 \cdot 1.22 \times 10^{-5}) \approx 550$，$n(60) \approx 62$。垂直方向上，射線在 60 m 處相隔 $r\,\Delta\epsilon \approx 0.42$ m，所以只有約 3–4 條光束穿過 1.5 m 高的物體；其餘的點來自細小的水平間隔。
+
+</details>
+
+2. **手算 IoU。** 兩個 4 m × 2 m × 1.5 m 的框共用同一個中心；其中一個繞垂直軸旋轉 90°。計算 BEV IoU 與三維 IoU。接著把第二個框抬高 0.75 m，重新計算三維 IoU。用 IoU 的程式碼檢查你的答案。
+
+<details>
+<summary>提示</summary>
+
+BEV 交集是 2 m × 2 m 的正方形：$\text{IoU}_{\text{bev}} = 4 / (8 + 8 - 4) = 1/3$。高度相等時，三維 IoU 也是 $6/(12 + 12 - 6) = 1/3$。抬高 0.75 m 之後，高度重疊是 0.75 m，所以交集是 3 m³，$\text{IoU}_{\text{3D}} = 3 / (24 - 3) \approx 0.143$。
+
+</details>
+
+3. **弄壞傳統流程。** 在傳統基準的程式碼中，把行人移到 $(13.5, -2.2)$，貼著第一輛車（在我們的執行中，它的點與車的點相距不到約 0.15 m），再執行一次。DBSCAN 會怎麼做？改變 `eps` 來修正它，並說明太小的 `eps` 會對遠處的物體造成什麼新的失敗。
+
+<details>
+<summary>提示</summary>
+
+在我們的執行中，`eps` 從 0.7 一路降到 0.15，都會把行人與車子合併成同一個群，得到錯誤的框（5.1 × 1.8 m、偏航角 28°，而不是 4.5 × 1.8 m、17°）。在 `eps=0.12` 時行人分開了，但 25 m 處的車已經碎成好幾塊；在 `eps=0.1` 時，連近處的車也裂成兩個可見的側面。遠處物體的點較少，所以點與點之間的間隙較大（在真實掃描器上，間隙以 $r\,\Delta\phi$ 的方式成長）。固定的 `eps` 無法適用所有距離，這是 $1/r^2$ 密度的直接後果。
+
+</details>
+
+4. **配對協定。** 使用配對的程式碼，找出中心誤差的標準差為多少時，車的 AP（IoU ≥ 0.5）會等於行人在標準差 0.25 m 時的 AP。這對於比較用 IoU 配對算出的各類別 AP，說明了什麼？
+
+<details>
+<summary>提示</summary>
+
+在我們的執行中，車的 IoU 型 AP 在標準差 0.75 m 時降到 0.117，約是行人的 0.25 m 的三倍（大致是車寬與行人寬的比值），與圖 6 一致。因此各類別的 IoU 型 AP 把偵測品質與物體大小混在一起，所以行人 AP 低，並不表示行人偵測器以公尺計的定位比較差。
+
+</details>
+
+5. **依朝向加權的 AP。** 某個偵測器找到場景中全部 10 輛車，沒有偽陽性，IoU 也完美，但其中 3 輛朝向相反，2 輛偏差 30°。它的 AP 與 APH 各是多少（假設所有偵測的分數相同）？哪一個 nuScenes TP 誤差會揭露同樣的問題？
+
+<details>
+<summary>提示</summary>
+
+AP 是 1，因為每個框都配對成功。朝向準確度：$5 \times 1 + 3 \times 0 + 2 \times (1 - 30/180) = 6.67$，所以 APH $\approx 0.667$。在 nuScenes 中，朝向誤差 AOE（弧度）會上升，透過 $1 - \min(1, \text{mAOE})$ 這一項拉低 NDS。
+
+</details>
+
+6. **柱的預算。** 在柱化的程式碼中，把網格改成 0.32 m 與 0.08 m（調整 `W` 與 `H`，使網格仍涵蓋 70.4 m × 80 m）。回報非空柱的數量、空格子的比例，以及被上限 $N$ 丟掉的點數。把這個趨勢與 PointPillars 所報告的速度–準確度取捨連起來。
+
+<details>
+<summary>提示</summary>
+
+在我們的執行中，0.32 m 得到 7,567 根非空柱（86.2% 為空），在 $N = 16$ 時丟掉 1,734 個點；0.08 m 得到 10,908 根柱（98.8% 為空），沒有丟掉任何點。較粗的柱表示柱比較少、比較滿：偽影像較小，被上限丟掉的點較多，所以較快但較不精確。較細的柱表示柱比較多、每根只有一兩個點，偽影像較大，空格子也較多。PointPillars 報告較粗的網格速度較高，損失主要出現在行人與單車騎士。
+
+</details>
+
+偵測結果是追蹤的輸入，追蹤把它們跨時間連起來；見 [DLCV 06・物件追蹤：從單一物件到多物件](/zh-tw/learn/deep-learning/dl-06-object-tracking/)。
+
+## 補充資料
+
+這些補充資料是選讀內容：每一則從正文取出一個重點，講得更細。正文與練習都不依賴它們。
+
+### 偏航角編碼比較：原始角度、正弦誤差與 (sin, cos)
+
+這則補充比較迴歸朝向角的幾種方式，並指出每一種究竟在哪裡失敗。
+
+令 $\theta^t$ 為目標偏航角、$\theta^p$ 為預測，兩者都以弧度計。常見的有四種選擇：
+
+1. **原始殘差** $|\theta^p - \theta^t|$。跨過 $\pm\pi$ 邊界時是錯的：$179°$ 與 $-179°$ 只差 $2°$，但殘差卻是 $358°$。
+2. **包裹後的殘差** $|\operatorname{wrap}(\theta^p - \theta^t)|$，其中 $\operatorname{wrap}(\alpha) = ((\alpha + \pi) \bmod 2\pi) - \pi$ 把任何角度映射到 $[-\pi, \pi)$。對朝向來說是正確的，但一個翻轉了 $\pi$、涵蓋完全相同空間的框，卻會受到最大的懲罰。
+3. **正弦誤差** $|\sin(\theta^p - \theta^t)|$，也就是 SECOND 損失內的那一項 [9]。它在 $\Delta = 0$ 與 $\Delta = \pi$ 都是 0，所以翻轉的框不會被懲罰；方向改由另外的兩分格分類器決定。在 $\Delta = \pi/2$ 附近，它的斜率為零，所以對轉向側面的框，梯度會消失。
+4. **向量目標** $(\cos\theta, \sin\theta)$，CenterPoint 所用 [11]：迴歸兩個數字，並用 $\operatorname{atan2}$ 解碼。單位向量之間的歐氏距離是 $2|\sin(\Delta/2)|$，從 0 平滑地增加到 2，並且分得出前後。
+
+下面的程式碼在 170° 的目標上評估這四種做法。「direction bin」那一欄是兩分格分類器的簡化替身：它問預測是否與目標指向圓的同一個半邊（$\cos\Delta \gt 0$）。
+
+```python
+import numpy as np
+
+def wrap(a):                                    # angle difference into (-pi, pi]
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+gt = np.deg2rad(170.0)
+for pred_deg in [175, -175, -10, 100]:
+    pred = np.deg2rad(pred_deg)
+    raw = abs(pred - gt)                        # naive residual
+    sin_err = abs(np.sin(pred - gt))            # SECOND-style residual sin(pred - gt)
+    vec = np.hypot(np.cos(pred) - np.cos(gt), np.sin(pred) - np.sin(gt))   # (cos, sin) target
+    print(f"pred {pred_deg:5d} deg: |raw| {raw:5.2f}  |wrapped| {abs(wrap(pred - gt)):5.2f}  "
+          f"|sin| {sin_err:4.2f}  (cos,sin) dist {vec:4.2f}  same direction bin: {np.cos(pred - gt) > 0}")
+```
+
+```text
+pred   175 deg: |raw|  0.09  |wrapped|  0.09  |sin| 0.09  (cos,sin) dist 0.09  same direction bin: True
+pred  -175 deg: |raw|  6.02  |wrapped|  0.26  |sin| 0.26  (cos,sin) dist 0.26  same direction bin: True
+pred   -10 deg: |raw|  3.14  |wrapped|  3.14  |sin| 0.00  (cos,sin) dist 2.00  same direction bin: False
+pred   100 deg: |raw|  1.22  |wrapped|  1.22  |sin| 0.94  (cos,sin) dist 1.15  same direction bin: True
+```
+
+第二列顯示原始殘差的邊界問題（10° 的誤差卻是 6.02 rad）。第三列是翻轉的框：正弦誤差是 0，只有方向分格抓得到這個錯誤；向量目標則直接看得出來（距離 2）。第四列顯示正弦誤差的代價：70° 的誤差給出 0.94，接近最大值 1，所以超過 90° 的誤差會開始看起來*更好*。
+
+**陷阱。** 在推論時把正弦誤差損失與方向分類器合用時，要先從迴歸解碼出角度，若分類器與解碼出的方向不一致，再加上 $\pi$。忘了這一步，會產生 IoU 正確、朝向卻相反的框；以 IoU 為基礎的 AP 注意不到，APH 卻會完全懲罰它。
+
+### 稀疏卷積與子流形卷積
+
+這則補充說明稀疏卷積如何節省計算，以及為什麼子流形版本是光達骨幹大多數層所使用的。
+
+**設定。** 體素網格有一個**活躍位置**（active sites）集合 $\mathcal{A}$（含有點或特徵的體素）；其他地方的特徵為零。核大小為 $k$ 的稠密三維卷積，在每個位置都計算輸出，成本正比於整個網格的體積，儘管幾乎所有輸入都是零。
+
+**一般的稀疏卷積**只在核視窗內至少有一個輸入為活躍的地方計算輸出，所以輸出的活躍集合是
+
+$$
+\mathcal{A}_{\text{out}} = \{\, \mathbf{u} : \exists\, \mathbf{a} \in \mathcal{A},\; \lVert \mathbf{u} - \mathbf{a} \rVert_\infty \le \lfloor k/2 \rfloor \,\},
+$$
+
+其中 $\mathbf{u}$ 與 $\mathbf{a}$ 是整數網格位置，$\lVert \cdot \rVert_\infty$ 是座標差的最大絕對值。每一層都會讓活躍集合膨脹一個核半徑，所以過幾層之後，這個「稀疏」張量就不再稀疏了。
+
+**子流形稀疏卷積**（submanifold sparse convolution）[20] 把輸出限制在輸入的活躍集合內，$\mathcal{A}_{\text{out}} = \mathcal{A}$。它無法把資訊散佈到空白的空間，所以骨幹會交錯使用許多子流形層，以及少數做降取樣的一般步幅稀疏卷積。SECOND 的中間萃取器就遵循這個模式：每個階段有數個子流形層，沿著 $z$ 有一個一般稀疏卷積做降取樣，然後再轉成稠密的 BEV 圖 [9]。
+
+**實作。** 兩種變體都用**規則簿**（rule book）計算：對每個核偏移，記錄一份（輸入索引、輸出索引）配對的清單。該層為每個偏移收集輸入特徵，乘上該偏移的權重矩陣，再把結果散佈到輸出。建立規則簿是個雜湊問題；SECOND 的貢獻包括一個 GPU 上的規則產生演算法，讓它變快 [9]。
+
+下面的程式碼在一個二維切片上量測膨脹的程度，切片中 1% 的位置是活躍的，外加一個稠密物體。
+
+```python
+import numpy as np
+from scipy.ndimage import binary_dilation
+
+rng = np.random.default_rng(0)
+active = np.zeros((200, 200), bool)                 # a BEV slice of a voxel grid
+active[rng.integers(0, 200, 400), rng.integers(0, 200, 400)] = True   # 1% of sites hold points
+active[90:94, 50:70] = True                         # plus one dense "car"
+kernel = np.ones((3, 3), bool)
+
+regular = active.copy()
+for layer in range(1, 4):
+    regular = binary_dilation(regular, kernel)      # a 3x3 sparse conv writes to every neighbour
+    print(f"after {layer} layer(s): sparse conv {regular.mean():6.1%} active | "
+          f"submanifold conv {active.mean():6.1%} active")
+```
+
+```text
+after 1 layer(s): sparse conv   8.9% active | submanifold conv   1.2% active
+after 2 layer(s): sparse conv  22.2% active | submanifold conv   1.2% active
+after 3 layer(s): sparse conv  38.4% active | submanifold conv   1.2% active
+```
+
+經過三層一般的 3×3 稀疏卷積後，活躍的比例從 1.2% 成長到 38.4%；子流形版本則維持在 1.2%。由於成本隨活躍輸出的數量而定，這個差距在骨幹的幾十層中會不斷累積。
+
+**邊界情形。** 因為子流形層永遠不會填補空隙，被一個空體素隔開的同一物體的兩個部分，無法透過它們交換資訊。步幅式的一般稀疏卷積，或 SST 與 DSVT 中那樣在視窗內的注意力 [25], [26]，提供了這樣的連通性。
+
+### 稀疏體素上的注意力：視窗、集合與序列
+
+這則補充說明 Transformer 與序列模型骨幹如何組織一次光達掃描中被占用的體素，使計算量維持在負擔得起的範圍。
+
+**問題。** 一次掃描有 $N$ 個被占用的體素，常常是數萬個。完整的自注意力讓每個體素與其他每個體素比較，所以成本約隨 $N^2$ 成長。因此所有實用的設計都讓每個體素只與一群其他體素互動，差別在於如何形成這些群組。
+
+**視窗。** 把網格切成不重疊、大小固定的視窗（例如 $12 \times 12$ 個體素），並在每個視窗內被占用的體素之間執行注意力。麻煩在於各視窗含有的體素數相差很大：靠近感測器的很多，遠處的只有寥寥幾個。GPU 想要大小相等的批次，所以天真的實作會把每個視窗都補到最大視窗的大小，而補的部分就主導了成本。SST [25] 以這種方式依區域把體素分組，也使用平移半個區域大小的區域，讓被區域邊界切開的物體仍能交換資訊。
+
+**等大小集合。** DSVT [26] 把每個視窗切成若干集合，每個集合都含有相同的 $\tau$ 個體素。對一個有 $N_w$ 個被占用體素的視窗，集合數是
+
+$$
+S_w = \left\lceil \frac{N_w}{\tau} \right\rceil,
+$$
+
+其中 $\lceil \cdot \rceil$ 表示無條件進位。體素依視窗內的索引排序，平均分配到 $S_w$ 個集合中；不足的集合以重複的體素補滿，這些體素會在注意力中被遮罩掉。這樣每個集合恰好有 $\tau$ 個 token，所以所有視窗的所有集合可以在同一個平行批次中處理，而稠密的視窗只是得到更多的集合。因為注意力現在停留在集合內，DSVT 在連續的層交替使用兩種排序，分別沿著 $x$ 軸與 $y$ 軸，讓同一層中不同集合的體素在下一層相遇。
+
+下面的程式碼在一次玩具掃描上計算注意力配對數（注意力的成本就是 token 配對的數量），比較把每個視窗補到最大視窗，與使用等大小集合。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+# occupied BEV voxels of a toy scan: density falls with range, as for a spinning LiDAR
+r = 2 + 70 * rng.random(20000) ** 2                   # more points close to the sensor
+a = rng.uniform(-np.pi, np.pi, r.size)
+cells = np.unique(np.floor(np.column_stack([r * np.cos(a), r * np.sin(a)]) / 0.32).astype(int), axis=0)
+
+win = 12                                              # windows of 12 x 12 voxels
+_, n = np.unique(cells // win, axis=0, return_counts=True)   # occupied voxels per window
+tau = 36                                              # voxels per set
+S = -(-n // tau)                                      # ceil(N / tau) sets per window
+
+print(f"{len(cells)} occupied voxels in {len(n)} non-empty windows; "
+      f"per window: min {n.min()}, median {int(np.median(n))}, max {n.max()}")
+print(f"pad every window to {n.max()}:  {len(n) * n.max() ** 2 / 1e6:5.1f} M attention pairs")
+print(f"equal-size sets, tau = {tau}: {S.sum() * tau ** 2 / 1e6:5.1f} M attention pairs in {S.sum()} sets")
+```
+
+```text
+14431 occupied voxels in 1136 non-empty windows; per window: min 1, median 8, max 120
+pad every window to 120:   16.4 M attention pairs
+equal-size sets, tau = 36:   1.6 M attention pairs in 1234 sets
+```
+
+大多數視窗幾乎是空的（中位數 8 個體素），只有少數靠近感測器的視窗是滿的，所以補到最大視窗的成本，是等大小集合的十倍配對數。這個比較不算完全公平：使用集合時，每個體素只在自己的集合內做注意力，這就是為什麼需要交替的分割。
+
+**序列。** 第二個家族先把體素**序列化**（serialize）：沿著一條**空間填充曲線**（space-filling curve）排序，這是一條恰好經過網格每個格子一次的路徑，並讓空間上靠近的格子在順序中大多也靠近。Point Transformer V3 的骨幹就是圍繞這種序列化建立的 [60]。線性時間的序列模型接著讓非常長的群組變得負擔得起：LION [27] 把線性遞迴網路套用在大群體素上，Voxel Mamba [28] 則用希爾伯特曲線（Hilbert curve）把整個場景的所有體素變成單一序列，交給狀態空間模型，完全不做分組。
+
+**陷阱。** 沒有任何一種二維或三維網格的排序，能讓所有鄰居都保持相鄰：曲線在任何折返之處，空間上並排的兩個體素，在序列中都可能相距很遠。因此以序列化為基礎的設計會加入跨越曲線跳躍來混合資訊的方式：Point Transformer V3 在多種序列化模式之間切換 [60]，Voxel Mamba 則在序列模型中加入第二個較粗的尺度 [28]。
+
+### 真值取樣細說
+
+這則補充逐步說明真值取樣這種資料增強，以及實務上重要的陷阱。
+
+**步驟。**
+
+1. **一次建好資料庫。** 對每個有標註的訓練框，儲存它的類別、它的 7-DoF 參數，以及框內的點（在框座標系或感測器座標中）[9]。
+2. **逐場景取樣。** 對每個訓練場景，從資料庫中每個類別抽出固定數量的物體；PointPillars 在 KITTI 上用 15 輛車、0 位行人與 8 位單車騎士 [10]。資料中罕見的類別可以更常被取樣，這能對抗類別不平衡。
+3. **剔除碰撞。** 丟棄 BEV 底面與既有框或其他取樣框重疊的取樣框。VoxelNet 對它的逐框擾動使用了同類的碰撞測試 [8]。與任何框的 BEV IoU 大於 0，就是一個簡單的測試。
+4. **貼上。** 把取樣到的點與框加入場景。然後再套用逐物體與全域的資料增強。
+
+**陷阱。**
+
+- **漂浮或埋入的物體。** 資料庫中的框保有原本的高度。在傾斜的路面上，或感測器高度不同時，貼上的車會漂浮或下沉。簡單的修正是重新估計局部的地面高度（例如用傳統基準中的 RANSAC 平面），再平移框。
+- **不一致的遮擋。** 貼上的車不會在它後面的點上投下光達陰影，而且它可能位在牆後卻仍保有全部的點。網路可以學會從這些人工痕跡認出貼上的物體。
+- **距離的一致性。** 在 10 m 處擷取的物體，具有 10 m 的點密度。貼到 50 m 處就太稠密了。把物體貼在接近原本距離之處，或依新的距離對點做子取樣（$n \propto 1/r^2$），能讓密度保持真實。
+- **多感測器的一致性。** 貼上的物體不在相機影像中，所以融合模型看到的是只有光達證據、沒有影像證據的物體。對融合模型的訓練，這種資料增強必須關掉，或是同時貼上相應的影像內容。
+
+### 一步步計算 NDS
+
+這則補充依 nuScenes 開發套件的定義 [50]，從各類別的誤差一路算到最終分數。
+
+1. **以 2 m 配對。** 計算 TP 誤差時，預測以 2 m 的門檻、依中心距離與真值配對，逐類別進行。
+2. **對召回率取平均。** 對每種 TP 誤差，對在每個達到的召回率（高於 10%）上的累積平均取平均。若某個類別達不到 10% 的召回率，它所有的 TP 誤差都設為 1。
+3. **略過未定義的項。** 交通錐不計朝向誤差，障礙物的朝向誤差以模 180° 計算；障礙物與錐的速度和屬性誤差不計。
+4. **對類別取平均**，得到 mATE、mASE、mAOE、mAVE 與 mAAE。
+5. **轉成分數並結合。** 每個 TP 分數是 $\max(1 - e, 0)$；NDS 給 mAP 權重 5、五個 TP 分數各權重 1，再除以 10 正規化。
+
+平移與速度誤差是無上界的（公尺與公尺每秒），所以截斷在 1 很重要：速度誤差超過 1 m/s 的模型，在速度這一項完全拿不到分數。下面的程式碼比較兩個捏造的偵測器（數字是為了說明而虛構的）。
+
+```python
+def nds(mAP, tp_errors):
+    """nuScenes detection score from mAP and the five mean TP errors (mATE, mASE, mAOE, mAVE, mAAE)."""
+    tp_scores = [max(1 - e, 0.0) for e in tp_errors]
+    return (5 * mAP + sum(tp_scores)) / 10
+
+# two made-up detectors: B localizes and estimates velocity better, A has the higher mAP
+A = dict(mAP=0.45, tp=[0.60, 0.27, 0.45, 1.20, 0.20])
+B = dict(mAP=0.40, tp=[0.35, 0.25, 0.30, 0.30, 0.18])
+for name, d in [("A", A), ("B", B)]:
+    print(f"detector {name}: mAP {d['mAP']:.2f}  NDS {nds(d['mAP'], d['tp']):.3f}")
+```
+
+```text
+detector A: mAP 0.45  NDS 0.473
+detector B: mAP 0.40  NDS 0.562
+```
+
+偵測器 A 的 mAP 較高，但 B 在 NDS 上贏了將近 0.09，主要是因為它的速度誤差（0.30 m/s 對 1.20 m/s）拿到 0.7 分，而不是 0 分。速度需要不只一次掃描或一幀，這就是為什麼時間輸入對 NDS 如此重要。比較論文時，要檢查它們報告的是驗證集還是測試集的 NDS，以及是否使用了過去的掃描。
+
+## 論文導讀
+
+這些導讀是選讀內容：每篇帶你讀一篇本篇依據的論文——它要解決的問題、核心想法、它呈現了什麼，以及閱讀時該檢查什麼。
+
+### 現代觀點綜述導讀
+
+這份導讀展開「現代觀點」中簡短的綜述摘要：每篇回顧涵蓋什麼、如何組織，以及何時該讀它。
+
+**3D Object Detection for Autonomous Driving: A Comprehensive Survey**（Mao、Shi、Wang 與 Li，*IJCV*，2023）[1]。這個領域最完整的單一地圖。它定義任務、感測器、資料集與指標，接著依資料表示組織光達偵測器：以點為基礎、以網格為基礎（體素、柱、BEV 圖）、點–體素與距離影像方法，再來是學習目標。相機方法分成單眼、立體與多視角；接著是多模態融合、以 Transformer 為基礎、時間與標註高效的偵測，以及模擬與穩健性等相關主題。它的分析一節整理了 KITTI、nuScenes 與 Waymo 上的準確度與速度統計，並觀察到光達在 KITTI 上的結果很快就收斂，推動研究轉向更大的資料集。想把任何方法放進整個版圖中，就讀它。
+
+**3D Object Detection for Autonomous Driving: A Survey**（Qian、Lai 與 Li，*Pattern Recognition*，2022）[2]。較短也較實用。它指出三項核心挑戰（沒有深度的影像要還原三維、從被遮擋且無結構的點雲學習、對齊不同模態的異質特徵），並附上十五個代表性方法的案例研究，含執行時間、誤差與穩健性分析。想要一份附有定量比較的精簡入門，就讀它。
+
+**Deep Learning for 3D Point Clouds: A Survey**（Guo 等人，*IEEE TPAMI*，2021）[57]。一篇整體談點雲學習的綜述，涵蓋形狀分類、偵測與追蹤，以及分割。想了解骨幹網路那一面，就讀它：在駕駛之外，以點為基礎、以體素為基礎與以圖為基礎的運算子彼此如何相關。
+
+**Vision-Centric BEV Perception: A Survey**（Ma 等人，*IEEE TPAMI*，2024）[58] 與 **Delving into the Devils of Bird's-Eye-View Perception: A Review, Evaluation and Recipe**（Li 等人，*IEEE TPAMI*，2024）[59]。兩者都聚焦於從相機做鳥瞰視角感知及其延伸。Li 等人圍繞四個問題組織這個領域：如何透過視角轉換還原三維、如何取得 BEV 真值、如何建立融合不同來源與視角的流程，以及感測器配置改變時如何泛化。他們也描述了工業系統的設計，以及針對相機、光達與融合輸入的實用技巧指南。在實作 BEV 模型之前讀它們；它們收集了論文省略的細節。
+
+**Multi-Modal 3D Object Detection in Autonomous Driving: A Survey**（Wang 等人，*IJCV*，2023）[39]。介紹感測器與它們的資料特性、適合融合的資料集，再依三項設計選擇回顧融合網路：融合階段、融合輸入與融合粒度，以及這些選擇如何演變。設計融合模型時就讀它。
+
+**如何閱讀這些綜述。** 綜述的表格彙整了許多論文的數字，而這些論文的訓練資料、切分、測試時資料增強與硬體各不相同。用它們來看趨勢，不要用來替兩個方法排名；要公平比較，請找在同一個協定下重新執行基準模型的論文。
+
+### PointPillars：閱讀指南
+
+**要解決的問題。** 2018 年時，光達偵測器面臨一個取捨：固定、手工設計的 BEV 編碼很快但比較不準，學習式的編碼器（VoxelNet 的 VFE 搭配三維卷積）很準但很慢 [10]。
+
+**核心想法。** 用 PointNet 學出編碼，但把點組織在垂直的柱中，讓編碼器之後的一切都是稠密的二維 CNN。不沿著 $z$ 分格，就沒有三維卷積，也沒有 $z$ 解析度要調。
+
+**它呈現了什麼。** 論文報告，僅用光達時，PointPillars 在 KITTI 的 BEV 與三維測試基準上超越了已發表的最先進方法（包括融合方法），同時以 62 Hz 運行（表 1 與表 2）。例如，它的表 2 列出中等難度車輛的三維 AP：PointPillars 為 74.99（62 Hz），SECOND 為 73.66（20 Hz），VoxelNet 為 65.11（4.4 Hz）。第 6 節拆解了它 16.2 ms 的執行時間：柱編碼器占 1.3 ms，骨幹與偵測頭占 7.7 ms，其餘步驟是載入、裝飾、上傳、散佈與 NMS。表 4 在同一個網路內、數種網格大小下比較編碼器，這分離出了編碼器的貢獻。
+
+**閱讀它的表格時。** 第一，這些 KITTI 數字早於 2019 年 10 月改用 40 個召回點之前 [48]，所以不能直接與之後的 $\text{AP}|_{R_{40}}$ 結果比較。第二，表 1 與表 2 的速度來自不同的論文與硬體；論文自己的計時是在桌上型 CPU 與 GTX 1080 Ti GPU 上量測的。表 4 才是受控的比較：同樣的網路與訓練，只改變編碼器與網格解析度，並用 KITTI 驗證集上的 BEV mAP 評分。第三，論文指出 KITTI 上只處理了約 10% 的掃描（前方相機看得到的部分），所以完整的 360 度系統會更慢。第四，速度–準確度曲線（圖 5）是靠改變柱的大小得到的，而粗網格上的損失主要來自行人與單車騎士。
+
+**限制。** 把高度壓進特徵，對道路場景可行，但會丟掉垂直方向的細節；小物體在粗網格上吃虧；每個類別兩種朝向的錨框偵測頭，承襲了本篇討論過的偏航角問題，後來以中心為基礎的偵測頭避開了它 [11]。
+
+**為什麼在這裡重要。** PointPillars 讓「點 → BEV 偽影像 → 二維偵測器」成為標準設計。它是 Waymo 資料集論文的參考基準 [3]，LSS 也把它的柱池化借給了相機 [32]。
+
+### Lift-Splat-Shoot：閱讀指南
+
+**要解決的問題。** 規劃器想要的是車子周圍的一張 BEV 地圖，但六台相機給的是六張沒有深度的透視影像。分別處理每台相機再合併輸出，會把融合留給手寫的規則；LSS 想要一個模型，從整個相機配置中學會如何融合 [32]。
+
+**核心想法。** 用預測的深度分布（$\mathbf{c}_d = \alpha_d \mathbf{c}$）把每個像素提升成特徵視錐，用加總池化把所有相機的所有視錐散佈到同一個 BEV 網格，並從 BEV 標註端到端地訓練。這個架構明確地使用相機校正，所以當不同車子之間的內參與外參改變時，它能適應。
+
+**它呈現了什麼。** 在 nuScenes 的 BEV 分割（車與車輛、可行駛區域與車道線）上，這個方法勝過沒有三維結構的 CNN 基準、凍結影像編碼器的版本，以及較早的 BEV 基準（它的表 1 與表 2）。它的穩健性實驗顯示，用帶雜訊的外參訓練，在測試時有強烈雜訊的情況下有幫助；訓練時隨機丟棄一台相機，無論在相機被丟棄還是六台齊全時，結果都會改善（圖 6）。它也能在測試時加入訓練中沒見過的相機，且不經重新訓練就有所改善（表 3）。
+
+**怎麼讀它。** 論文的網格是 100 m × 100 m、格子 0.5 m，深度分格從 4 到 45 m、每格 1 m [32]。它的任務是 BEV 分割與規劃，不是三維框偵測，所以它的數字是 BEV 遮罩的 IoU；使用這種視角轉換的偵測結果來自後續工作，例如 BEVDet [24]。它表格中有些比較的數字來自同期的工作，那些工作使用不同的 BEV 網格與切分，論文本身也警告這些比較並不精確。
+
+**限制。** 深度只被 BEV 任務間接監督，BEVDepth 後來證明這是個弱點 [33]；視錐點集很大，使得高效的 BEV 池化本身成了一個研究主題 [43]；固定的深度範圍則限制了遠距離偵測。
+
+**為什麼在這裡重要。** LSS 是大多數相機 BEV 偵測器與 BEV 融合中的「lift」；理解 $\mathbf{c}_d = \alpha_d \mathbf{c}$，就是理解二維影像如何變成三維地圖。
+
+## 參考文獻
+
+1. J. Mao, S. Shi, X. Wang and H. Li, "3D object detection for autonomous driving: A comprehensive survey," *International Journal of Computer Vision*, vol. 131, no. 8, 2023. [doi](https://doi.org/10.1007/s11263-023-01790-1)
+2. R. Qian, X. Lai and X. Li, "3D object detection for autonomous driving: A survey," *Pattern Recognition*, vol. 130, 2022. [doi](https://doi.org/10.1016/j.patcog.2022.108796)
+3. P. Sun, H. Kretzschmar, X. Dotiwalla, A. Chouard, V. Patnaik et al., "Scalability in perception for autonomous driving: Waymo Open Dataset," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Sun_Scalability_in_Perception_for_Autonomous_Driving_Waymo_Open_Dataset_CVPR_2020_paper.html)
+4. H. Caesar, V. Bankiti, A. H. Lang, S. Vora, V. E. Liong et al., "nuScenes: A multimodal dataset for autonomous driving," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Caesar_nuScenes_A_Multimodal_Dataset_for_Autonomous_Driving_CVPR_2020_paper.html)
+5. M. A. Fischler and R. C. Bolles, "Random sample consensus: A paradigm for model fitting with applications to image analysis and automated cartography," *Communications of the ACM*, vol. 24, no. 6, 1981. [doi](https://doi.org/10.1145/358669.358692)
+6. M. Ester, H.-P. Kriegel, J. Sander and X. Xu, "A density-based algorithm for discovering clusters in large spatial databases with noise," in *Proc. KDD*, 1996. [AAAI](https://cdn.aaai.org/KDD/1996/KDD96-037.pdf)
+7. X. Zhang, W. Xu, C. Dong and J. M. Dolan, "Efficient L-shape fitting for vehicle detection using laser scanners," in *Proc. IEEE Intelligent Vehicles Symposium (IV)*, 2017. [doi](https://doi.org/10.1109/IVS.2017.7995698)
+8. Y. Zhou and O. Tuzel, "VoxelNet: End-to-end learning for point cloud based 3D object detection," in *Proc. IEEE CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Zhou_VoxelNet_End-to-End_Learning_CVPR_2018_paper.html)
+9. Y. Yan, Y. Mao and B. Li, "SECOND: Sparsely embedded convolutional detection," *Sensors*, vol. 18, no. 10, 3337, 2018. [doi](https://doi.org/10.3390/s18103337)
+10. A. H. Lang, S. Vora, H. Caesar, L. Zhou, J. Yang and O. Beijbom, "PointPillars: Fast encoders for object detection from point clouds," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Lang_PointPillars_Fast_Encoders_for_Object_Detection_From_Point_Clouds_CVPR_2019_paper.html)
+11. T. Yin, X. Zhou and P. Krähenbühl, "Center-based 3D object detection and tracking," in *Proc. IEEE/CVF CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Yin_Center-Based_3D_Object_Detection_and_Tracking_CVPR_2021_paper.html)
+12. I. E. Sutherland and G. W. Hodgman, "Reentrant polygon clipping," *Communications of the ACM*, vol. 17, no. 1, 1974. [doi](https://doi.org/10.1145/360767.360802)
+13. X. Zhou, D. Wang and P. Krähenbühl, "Objects as points," arXiv:1904.07850, 2019. [arXiv](https://arxiv.org/abs/1904.07850)
+14. N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov and S. Zagoruyko, "End-to-end object detection with transformers," in *Proc. ECCV*, 2020. [doi](https://doi.org/10.1007/978-3-030-58452-8_13)
+15. Y. Wang, V. Guizilini, T. Zhang, Y. Wang, H. Zhao and J. Solomon, "DETR3D: 3D object detection from multi-view images via 3D-to-2D queries," in *Proc. Conference on Robot Learning (CoRL)*, 2021. [arXiv](https://arxiv.org/abs/2110.06922)
+16. C. R. Qi, H. Su, K. Mo and L. J. Guibas, "PointNet: Deep learning on point sets for 3D classification and segmentation," in *Proc. IEEE CVPR*, 2017. [arXiv](https://arxiv.org/abs/1612.00593)
+17. C. R. Qi, L. Yi, H. Su and L. J. Guibas, "PointNet++: Deep hierarchical feature learning on point sets in a metric space," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2017. [NeurIPS](https://papers.nips.cc/paper/2017/hash/d8bf84be3800d12f74d8b05e9b89836f-Abstract.html)
+18. S. Shi, X. Wang and H. Li, "PointRCNN: 3D object proposal generation and detection from point cloud," in *Proc. IEEE/CVF CVPR*, 2019. [arXiv](https://arxiv.org/abs/1812.04244)
+19. S. Ren, K. He, R. Girshick and J. Sun, "Faster R-CNN: Towards real-time object detection with region proposal networks," *IEEE TPAMI*, vol. 39, no. 6, 2017. [doi](https://doi.org/10.1109/TPAMI.2016.2577031)
+20. B. Graham, M. Engelcke and L. van der Maaten, "3D semantic segmentation with submanifold sparse convolutional networks," in *Proc. IEEE CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Graham_3D_Semantic_Segmentation_CVPR_2018_paper.html)
+21. S. Shi, C. Guo, L. Jiang, Z. Wang, J. Shi, X. Wang and H. Li, "PV-RCNN: Point-voxel feature set abstraction for 3D object detection," in *Proc. IEEE/CVF CVPR*, 2020. [arXiv](https://arxiv.org/abs/1912.13192)
+22. W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y. Fu and A. C. Berg, "SSD: Single shot multibox detector," in *Proc. ECCV*, 2016. [arXiv](https://arxiv.org/abs/1512.02325)
+23. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE ICCV*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+24. J. Huang, G. Huang, Z. Zhu, Y. Ye and D. Du, "BEVDet: High-performance multi-camera 3D object detection in bird-eye-view," arXiv:2112.11790, 2021. [arXiv](https://arxiv.org/abs/2112.11790)
+25. L. Fan, Z. Pang, T. Zhang, Y.-X. Wang, H. Zhao, F. Wang, N. Wang and Z. Zhang, "Embracing single stride 3D object detector with sparse transformer," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Fan_Embracing_Single_Stride_3D_Object_Detector_With_Sparse_Transformer_CVPR_2022_paper.html)
+26. H. Wang, C. Shi, S. Shi, M. Lei, S. Wang, D. He, B. Schiele and L. Wang, "DSVT: Dynamic sparse voxel transformer with rotated sets," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Wang_DSVT_Dynamic_Sparse_Voxel_Transformer_With_Rotated_Sets_CVPR_2023_paper.html)
+27. Z. Liu, J. Hou, X. Wang, X. Ye, J. Wang, H. Zhao and X. Bai, "LION: Linear group RNN for 3D object detection in point clouds," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2024. [NeurIPS](https://proceedings.neurips.cc/paper_files/paper/2024/hash/189699197ead7a012c7fa4cdc4cc413d-Abstract-Conference.html)
+28. G. Zhang, L. Fan, C. He, Z. Lei, Z. Zhang and L. Zhang, "Voxel Mamba: Group-free state space models for point cloud based 3D object detection," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2024. [NeurIPS](https://proceedings.neurips.cc/paper_files/paper/2024/hash/947b63838c90f1485188b9c673bc3a14-Abstract-Conference.html)
+29. T. Wang, X. Zhu, J. Pang and D. Lin, "FCOS3D: Fully convolutional one-stage monocular 3D object detection," in *Proc. IEEE/CVF ICCV Workshops*, 2021. [arXiv](https://arxiv.org/abs/2104.10956)
+30. Z. Tian, C. Shen, H. Chen and T. He, "FCOS: Fully convolutional one-stage object detection," in *Proc. IEEE/CVF ICCV*, 2019. [arXiv](https://arxiv.org/abs/1904.01355)
+31. Y. Wang, W.-L. Chao, D. Garg, B. Hariharan, M. Campbell and K. Q. Weinberger, "Pseudo-LiDAR from visual depth estimation: Bridging the gap in 3D object detection for autonomous driving," in *Proc. IEEE/CVF CVPR*, 2019. [arXiv](https://arxiv.org/abs/1812.07179)
+32. J. Philion and S. Fidler, "Lift, splat, shoot: Encoding images from arbitrary camera rigs by implicitly unprojecting to 3D," in *Proc. ECCV*, 2020. [arXiv](https://arxiv.org/abs/2008.05711)
+33. Y. Li, Z. Ge, G. Yu, J. Yang, Z. Wang, Y. Shi, J. Sun and Z. Li, "BEVDepth: Acquisition of reliable depth for multi-view 3D object detection," in *Proc. AAAI*, 2023. [arXiv](https://arxiv.org/abs/2206.10092)
+34. Y. Liu, T. Wang, X. Zhang and J. Sun, "PETR: Position embedding transformation for multi-view 3D object detection," in *Proc. ECCV*, 2022. [arXiv](https://arxiv.org/abs/2203.05625)
+35. Z. Li, W. Wang, H. Li, E. Xie, C. Sima, T. Lu, Y. Qiao and J. Dai, "BEVFormer: Learning bird's-eye-view representation from multi-camera images via spatiotemporal transformers," in *Proc. ECCV*, 2022. [arXiv](https://arxiv.org/abs/2203.17270)
+36. X. Zhu, W. Su, L. Lu, B. Li, X. Wang and J. Dai, "Deformable DETR: Deformable transformers for end-to-end object detection," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.04159)
+37. S. Wang, Y. Liu, T. Wang, Y. Li and X. Zhang, "Exploring object-centric temporal modeling for efficient multi-view 3D object detection," in *Proc. IEEE/CVF ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Wang_Exploring_Object-Centric_Temporal_Modeling_for_Efficient_Multi-View_3D_Object_Detection_ICCV_2023_paper.html)
+38. X. Jiang, S. Li, Y. Liu, S. Wang, F. Jia, T. Wang, L. Han and X. Zhang, "Far3D: Expanding the horizon for surround-view 3D object detection," in *Proc. AAAI*, 2024. [arXiv](https://arxiv.org/abs/2308.09616)
+39. Y. Wang, Q. Mao, H. Zhu, J. Deng, Y. Zhang, J. Ji, H. Li and Y. Zhang, "Multi-modal 3D object detection in autonomous driving: A survey," *International Journal of Computer Vision*, vol. 131, no. 8, 2023. [doi](https://doi.org/10.1007/s11263-023-01784-z)
+40. S. Vora, A. H. Lang, B. Helou and O. Beijbom, "PointPainting: Sequential fusion for 3D object detection," in *Proc. IEEE/CVF CVPR*, 2020. [arXiv](https://arxiv.org/abs/1911.10150)
+41. X. Chen, H. Ma, J. Wan, B. Li and T. Xia, "Multi-view 3D object detection network for autonomous driving," in *Proc. IEEE CVPR*, 2017. [arXiv](https://arxiv.org/abs/1611.07759)
+42. C. R. Qi, W. Liu, C. Wu, H. Su and L. J. Guibas, "Frustum PointNets for 3D object detection from RGB-D data," in *Proc. IEEE CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Qi_Frustum_PointNets_for_CVPR_2018_paper.html)
+43. Z. Liu, H. Tang, A. Amini, X. Yang, H. Mao, D. Rus and S. Han, "BEVFusion: Multi-task multi-sensor fusion with unified bird's-eye view representation," in *Proc. IEEE ICRA*, 2023. [arXiv](https://arxiv.org/abs/2205.13542)
+44. T. Liang, H. Xie, K. Yu, Z. Xia, Z. Lin, Y. Wang, T. Tang, B. Wang et al., "BEVFusion: A simple and robust LiDAR-camera fusion framework," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2022. [arXiv](https://arxiv.org/abs/2205.13790)
+45. X. Bai, Z. Hu, X. Zhu, Q. Huang, Y. Chen, H. Fu and C.-L. Tai, "TransFusion: Robust LiDAR-camera fusion for 3D object detection with transformers," in *Proc. IEEE/CVF CVPR*, 2022. [arXiv](https://arxiv.org/abs/2203.11496)
+46. H. Wang, H. Tang, S. Shi, A. Li, Z. Li, B. Schiele and L. Wang, "UniTR: A unified and efficient multi-modal transformer for bird's-eye-view representation," in *Proc. IEEE/CVF ICCV*, 2023. [arXiv](https://arxiv.org/abs/2308.07732)
+47. R. Nabati and H. Qi, "CenterFusion: Center-based radar and camera fusion for 3D object detection," in *Proc. IEEE/CVF WACV*, 2021. [doi](https://doi.org/10.1109/WACV48630.2021.00157)
+48. A. Geiger, P. Lenz, C. Stiller and R. Urtasun, "3D object detection evaluation 2017," The KITTI Vision Benchmark Suite, official benchmark page (data sizes, IoU thresholds, difficulty levels, 40 recall positions). [link](https://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d)
+49. A. Geiger, P. Lenz and R. Urtasun, "Are we ready for autonomous driving? The KITTI vision benchmark suite," in *Proc. IEEE CVPR*, 2012. [doi](https://doi.org/10.1109/CVPR.2012.6248074)
+50. nuScenes devkit, "nuScenes detection task," official evaluation documentation (classes, detection ranges, mAP, TP metrics, NDS, submission rules). [link](https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/eval/detection/README.md)
+51. Waymo Open Dataset, "3D detection challenge (2020)," official challenge page (APH, IoU thresholds, LEVEL_1/LEVEL_2, range breakdown). [link](https://waymo.com/open/challenges/2020/3d-detection/)
+52. A. Simonelli, S. Rota Bulò, L. Porzi, M. López-Antequera and P. Kontschieder, "Disentangling monocular 3D object detection," in *Proc. IEEE/CVF ICCV*, 2019. [doi](https://doi.org/10.1109/ICCV.2019.00208)
+53. Waymo Open Dataset, `metrics_utils.cc`, official metric implementation (function `ComputeHeadingAccuracy`). [code](https://github.com/waymo-research/waymo-open-dataset/blob/master/src/waymo_open_dataset/metrics/metrics_utils.cc)
+54. M. Hahner, C. Sakaridis, D. Dai and L. Van Gool, "Fog simulation on real LiDAR point clouds for 3D object detection in adverse weather," in *Proc. IEEE/CVF ICCV*, 2021. [arXiv](https://arxiv.org/abs/2108.05249)
+55. Y. Dong, C. Kang, J. Zhang, Z. Zhu, Y. Wang, X. Yang, H. Su, X. Wei et al., "Benchmarking robustness of 3D object detection to common corruptions in autonomous driving," in *Proc. IEEE/CVF CVPR*, 2023. [arXiv](https://arxiv.org/abs/2303.11040)
+56. Y. Wang, X. Chen, Y. You, L. E. Li, B. Hariharan, M. Campbell, K. Q. Weinberger and W.-L. Chao, "Train in Germany, test in the USA: Making 3D object detectors generalize," in *Proc. IEEE/CVF CVPR*, 2020. [arXiv](https://arxiv.org/abs/2005.08139)
+57. Y. Guo, H. Wang, Q. Hu, H. Liu, L. Liu and M. Bennamoun, "Deep learning for 3D point clouds: A survey," *IEEE TPAMI*, vol. 43, no. 12, 2021. [doi](https://doi.org/10.1109/TPAMI.2020.3005434)
+58. Y. Ma, T. Wang, X. Bai, H. Yang, Y. Hou, Y. Wang, Y. Qiao, R. Yang and X. Zhu, "Vision-centric BEV perception: A survey," *IEEE TPAMI*, vol. 46, no. 12, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3449912)
+59. H. Li, C. Sima, J. Dai, W. Wang, L. Lu, H. Wang, J. Zeng, Z. Li et al., "Delving into the devils of bird's-eye-view perception: A review, evaluation and recipe," *IEEE TPAMI*, vol. 46, no. 4, 2024. [doi](https://doi.org/10.1109/TPAMI.2023.3333838)
+60. X. Wu, L. Jiang, P.-S. Wang, Z. Liu, X. Liu, Y. Qiao, W. Ouyang, T. He and H. Zhao, "Point Transformer V3: Simpler, faster, stronger," in *Proc. IEEE/CVF CVPR*, 2024. [arXiv](https://arxiv.org/abs/2312.10035)
+61. Y. Hu, J. Yang, L. Chen, K. Li, C. Sima, X. Zhu, S. Chai, S. Du et al., "Planning-oriented autonomous driving," in *Proc. IEEE/CVF CVPR*, 2023. [arXiv](https://arxiv.org/abs/2212.10156)
