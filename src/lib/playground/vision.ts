@@ -31,7 +31,7 @@ export const visionExperiments: Experiment[] = [
     description: L('When do overlapping detections represent one object? Inspect how greedy suppression makes that decision.', '重疊的偵測框何時會被當成同一個物件？觀察貪婪抑制如何作出決定。'),
     challenge: L('Move B onto A, then raise the IoU threshold. Find a setting that keeps both. Can the rule tell duplicates from two nearby objects?', '將 B 移到 A 上，再提高 IoU 門檻。找出同時保留兩框的設定。這項規則能分辨重複偵測與兩個相鄰物件嗎？'),
     note: L('Three fixed-score boxes of the same class. First keep scores ≥ the score threshold; then visit boxes by descending score and suppress any box whose intersection-over-union with a kept box is strictly greater than the IoU threshold. Scores are toy inputs, not model accuracy.', '三個同類別的框具有固定分數。先保留分數 ≥ 分數門檻的框，再依分數由高到低處理；若與已保留框的交集聯集比（IoU）嚴格大於 IoU 門檻，就抑制該框。分數是示範輸入，不代表模型準確率。'),
-    related: ['deep-learning/dl-03-object-detection'],
+    related: ['deep-learning/dl-03-object-detection', 'deep-learning/dl-03a-real-time-detection'],
     predict: { question: L("At the default positions, boxes A (score 0.92) and B (score 0.84) overlap with IoU about 0.55 and the IoU threshold is 0.5. How many of the three boxes survive?", "預設位置下，A 框（分數 0.92）與 B 框（分數 0.84）的 IoU 約為 0.55，IoU 門檻是 0.5。三個框會保留幾個？"), options: [{ value: "3", label: L("All three", "三個都保留") }, { value: "2", label: L("Two: A and C", "兩個：A 與 C") }, { value: "1", label: L("Only A", "只剩 A") }], answer: "2", explain: L("B overlaps the higher-scoring A by more than the threshold, so it is suppressed. C is far from both and stays. Move B away or raise the threshold to keep it.", "B 與分數較高的 A 重疊超過門檻，因此被抑制；C 離兩者都很遠，所以保留。把 B 移開或提高門檻，就能保留 B。") },
     controls: [
       { key: 'offset', label: L('Box B horizontal offset', 'B 框水平位移'), kind: 'range', value: 20, min: 0, max: 280, step: 5 },
