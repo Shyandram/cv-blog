@@ -169,6 +169,8 @@ renaming a tutorial or heading (CI runs it with \`--check\`). Rules for editing 
   guides, figures, figure script and playground experiments.
 - **Machine-readable:** [../content-index.json](../content-index.json) has the same data plus every reference entry (number, text,
   URL) — e.g. \`node -e "const d=require('./docs/content-index.json');console.log(d.tutorials.filter(t=>t.references.some(r=>/ArcFace/.test(r.text))).map(t=>t.slug))"\`.
+- **By question (RAG):** \`npm run rag -- "how is PQ computed"\` ranks section chunks (BM25, English and Chinese) and prints the
+  file, line range and anchor of each; \`--json\` for tools. Format and options: [../rag.md](../rag.md).
 - **Anchors:** links between pages must use the anchors shown here. Items in a Supplementary-notes section are served on
   \`…/<slug>/notes/#…\`, Paper guides on \`…/<slug>/papers/#…\`. Headings containing math have KaTeX-derived slugs (e.g. \`rank-kkk\`);
   copy them from this map rather than guessing.
@@ -199,6 +201,7 @@ ${[
   ['src/i18n/ui.ts, src/lib/site.ts, src/lib/taxonomy.ts', 'UI strings, site helpers, track list'],
   ['scripts/check-mdx.mjs, check-playground.mjs, tests/', 'validators (see AGENTS.md section 6)'],
   ['scripts/book/', 'PDF book export (four volumes per language)'],
+  ['scripts/rag/, docs/rag.md', 'local retrieval interface (chunked corpus + BM25 search) for agents and RAG pipelines'],
   ['docs/', 'design notes, this content map and content-index.json'],
 ].map(row).join('\n')}
 
