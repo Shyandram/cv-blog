@@ -1531,10 +1531,10 @@ Why vision models fail outside their test set and what to do about it: kinds of 
 
 ## dl-11a-text-in-images
 
-**DLCV 11A · Text in Images: OCR and Document Understanding**  
+**DLCV 11A · Text in Images: OCR and Document Understanding** · DLCV 11A・影像中的文字：OCR 與文件理解  
 How machines read text in photos, scans and screenshots: the detection, recognition and layout pipeline and where each stage fails; regression and segmentation text detectors, CTC, attention and transformer recognizers, text spotting, LayoutLM-style and OCR-free document models; CER, WER and H-mean; the standard benchmarks and the failure modes that matter.
 
-- Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` (no zh-tw twin)
+- Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11a-text-in-images.mdx`
 - Pages: `/en/learn/deep-learning/dl-11a-text-in-images/`, `/en/learn/deep-learning/dl-11a-text-in-images/notes/`, `/en/learn/deep-learning/dl-11a-text-in-images/papers/`
 - Level advanced · order 115 · needs: `deep-learning/dl-03-object-detection` · tags: ocr, scene-text, text-detection, text-recognition, ctc, document-understanding, layout-analysis, ocr-free, evaluation-metrics
 - Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51
