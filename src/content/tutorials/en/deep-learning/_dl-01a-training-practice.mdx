@@ -1,0 +1,977 @@
+---
+title: "DLCV 01A · Training Deep Vision Models in Practice"
+description: "A practical workflow for training vision networks: data pipelines and augmentation, initialization, learning-rate finding and schedules, batch size, regularization, mixed precision, fine-tuning, debugging and fair experiments."
+track: deep-learning
+order: 15
+level: advanced
+prereqs: [deep-learning/dl-01-deep-learning-for-image-processing]
+tags: [training, learning-rate-schedules, data-augmentation, fine-tuning, debugging, reproducibility]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figSchedules from '../../../../assets/deep-learning/dl-01a-training-practice/schedules.png';
+import figCurves from '../../../../assets/deep-learning/dl-01a-training-practice/schedule-curves.png';
+import figRange from '../../../../assets/deep-learning/dl-01a-training-practice/lr-range-test.png';
+import figOverfit from '../../../../assets/deep-learning/dl-01a-training-practice/overfit-one-batch.png';
+import figSeeds from '../../../../assets/deep-learning/dl-01a-training-practice/seed-variance.png';
+import figAugment from '../../../../assets/deep-learning/dl-01a-training-practice/augment-geometry.png';
+import figFlow from '../../../../assets/deep-learning/dl-01a-training-practice/debug-flowchart.png';
+
+## What you'll learn
+
+- A short, ordered checklist for any new training run, and where each step's theory lives on this site.
+- How to build a data pipeline that does not leak: normalization statistics, class imbalance, and augmentation chosen per task, including geometric consistency for boxes, masks and keypoints.
+- How to find a learning rate with a range test, and how warmup, step decay, cosine and one-cycle schedules use it; how the learning rate should follow the batch size, and when gradient accumulation is exactly equivalent to a bigger batch.
+- Which regularizers to reach for in practice (decoupled weight decay, dropout, stochastic depth, early stopping, an EMA of the weights) and what mixed precision changes.
+- How to fine-tune a pretrained backbone: freezing, discriminative learning rates, and linear probing followed by fine-tuning.
+- How to debug a run (overfit one batch, read curves, watch gradient norms, chase NaNs) and how to run a fair experiment with baselines, ablations and several seeds.
+
+## The big picture
+
+You already know how convolutional and transformer networks for images are built ([DLCV 01](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/)). This chapter is about the other half of the job: getting one to train well, quickly, and knowing whether a result is real.
+
+<Callout type="tip" title="Explain like I'm five">
+Training a network is like cooking a new dish in a big kitchen. First you taste one spoonful to check that the recipe works at all (overfit one batch). You check how hot the oven can go before things burn (the learning-rate range test). You heat up slowly instead of putting the pan straight on full flame (warmup), and you turn the heat down at the end so nothing burns (the decay). And before you tell anyone your new recipe is better, you cook it several times, because one good dinner can be luck (several seeds).
+</Callout>
+
+Why spend a chapter on this? Because the recipe often matters as much as the architecture. He et al. combined training refinements, such as learning-rate warmup and cosine decay, with small changes to the network and raised the ImageNet top-1 accuracy of ResNet-50 from 75.3% to 79.29% [1]; [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#resnet-strikes-back) describes a similar result. And training failures are often **silent**: a network with a bug in its data pipeline usually still trains, just worse, so nothing crashes to warn you [2]. The habits in this chapter are how practitioners catch those bugs early.
+
+The theory behind most tools is already covered elsewhere on this site, and this chapter links to it instead of repeating it:
+
+| Topic | Covered in depth in |
+|---|---|
+| Floating point, gradient checks, a debugging order for NaN values | [ML 01C](/en/learn/ml/ml-01c-numerical-computation/) |
+| SGD, momentum, Adam, AdamW, initialization, normalization layers, gradient clipping, basic schedules | [ML 02](/en/learn/ml/ml-02-neural-networks/#training-ii-making-optimization-work) |
+| Baselines, splits and leakage, significance tests, reproducibility, latency and deployment | [ML 10](/en/learn/ml/ml-10-evaluation-deployment/) |
+| How batch normalization works; knowledge distillation | [DLCV 01 notes](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/notes/#batch-normalization-standardize-inside-the-network) |
+| Classification recipes: augmentation, loss and optimizer choices, transfer learning, calibration | [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#training-recipes) |
+
+What this chapter adds is the **workflow**: the order in which to do things, the quick tests that catch mistakes, and the defaults that work for most vision models.
+
+## A training checklist
+
+**Plain version.** Do the cheap checks first and change one thing at a time. Most wasted weeks come from training a large model for days before checking that a small one can learn at all.
+
+The list below is the whole chapter in one place. Each item links to the section that explains it.
+
+1. **Fix the evaluation first.** Define the split unit, the metric and a simple baseline before training anything ([data pipeline](#the-data-pipeline); [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#start-with-a-meaningful-baseline)).
+2. **Look at the data.** Plot a batch *after* the full input pipeline (decoding, resizing, augmentation, normalization), with its labels drawn on top. This catches most pipeline bugs in a minute.
+3. **Start from known-good defaults.** A standard architecture, He initialization, a pretrained backbone if one exists, AdamW or SGD with momentum ([initialization](#initialization-and-normalization-in-practice)).
+4. **Overfit one batch.** The training loss on a single fixed batch must go to almost zero ([debugging](#debugging-a-training-run)).
+5. **Find the learning rate** with a short range test, then pick a schedule with warmup and a decay ([learning rate](#choosing-the-learning-rate)).
+6. **Set the batch size** from memory, and scale the learning rate with it ([batch size](#batch-size-and-gradient-accumulation)).
+7. **Train the full model, log everything** (losses, metrics, learning rate, gradient norms), and keep the best checkpoint by validation score.
+8. **Regularize only when you see overfitting**, one tool at a time ([regularization](#regularization-in-practice)).
+9. **Speed up** with mixed precision once the run is correct ([mixed precision](#mixed-precision-and-loss-scaling)).
+10. **Compare fairly:** same budget, same data, several seeds, one change per ablation; open the test set once at the end ([fair experiments](#reproducibility-and-fair-experiments)).
+
+### The running example
+
+To show each step with real numbers, the snippets train a small multilayer perceptron (MLP) written in NumPy: 64 inputs, one hidden layer of 32 ReLU units and 10 outputs, trained with SGD and momentum on scikit-learn's $8 \times 8$ handwritten digits [3]. It is not a deep vision model, but every training decision in this chapter applies to it, and each run takes well under a second on a CPU. All numbers called "our toy runs" below come from this code; the figure script `scripts/figures/dl_01a_training_practice.py` reproduces them.
+
+The code below defines it once: data loading with a stratified split, normalization with training-split statistics, a two-layer network with He initialization, backpropagation, and a training loop that accepts any learning-rate schedule. The loop also keeps an exponential moving average of the weights, which the [EMA section](#ema-of-the-weights) uses. Later snippets reuse these functions, so run this block first.
+
+```python
+import numpy as np
+from sklearn.datasets import load_digits
+from sklearn.model_selection import train_test_split
+
+X, y = load_digits(return_X_y=True)                     # 1,797 images of 8x8 pixels, 10 classes
+X_tmp, X_te, y_tmp, y_te = train_test_split(X, y, test_size=0.3, stratify=y, random_state=0)
+X_tr, X_va, y_tr, y_va = train_test_split(X_tmp, y_tmp, test_size=0.25, stratify=y_tmp, random_state=0)
+mu, sd = X_tr.mean(0), X_tr.std(0) + 1e-8               # statistics of the TRAINING split only
+X_tr, X_va, X_te = [(a - mu) / sd for a in (X_tr, X_va, X_te)]
+
+def init(seed, sizes=(64, 32, 10)):                     # He initialization for ReLU layers
+    rng = np.random.default_rng(seed)
+    return [[rng.normal(0, np.sqrt(2 / m), (m, n)), np.zeros(n)]
+            for m, n in zip(sizes[:-1], sizes[1:])]
+
+def forward(P, X):
+    h = [X]
+    for i, (W, b) in enumerate(P):
+        z = h[-1] @ W + b
+        h.append(np.maximum(z, 0) if i < len(P) - 1 else z)   # ReLU; the last layer gives logits
+    return h
+
+def loss_and_grads(P, X, y):
+    h = forward(P, X)
+    z = h[-1] - h[-1].max(1, keepdims=True)             # stable log-softmax
+    logp = z - np.log(np.exp(z).sum(1, keepdims=True))
+    loss = -logp[np.arange(len(y)), y].mean()           # cross-entropy
+    d = np.exp(logp)                                    # softmax probabilities
+    d[np.arange(len(y)), y] -= 1
+    d /= len(y)                                         # dLoss/dlogits
+    grads = []
+    for i in reversed(range(len(P))):
+        grads.insert(0, [h[i].T @ d, d.sum(0)])
+        if i:
+            d = (d @ P[i][0].T) * (h[i] > 0)            # back through the ReLU
+    return loss, grads
+
+def evaluate(P, X, y):
+    z = forward(P, X)[-1]
+    z = z - z.max(1, keepdims=True)
+    logp = z - np.log(np.exp(z).sum(1, keepdims=True))
+    return -logp[np.arange(len(y)), y].mean(), (z.argmax(1) == y).mean()
+
+def train(schedule, peak, epochs=15, bs=16, momentum=0.9, seed=0, ema_decay=0.99):
+    P = init(seed)
+    V = [[np.zeros_like(W), np.zeros_like(b)] for W, b in P]   # momentum buffers
+    E = [[W.copy(), b.copy()] for W, b in P]                    # EMA copy of the weights
+    rng = np.random.default_rng(seed + 1000)            # data order depends on the seed too
+    T, t, log = epochs * int(np.ceil(len(y_tr) / bs)), 0, []
+    for _ in range(epochs):
+        order = rng.permutation(len(y_tr))
+        for i in range(0, len(y_tr), bs):
+            idx = order[i:i + bs]
+            _, G = loss_and_grads(P, X_tr[idx], y_tr[idx])
+            lr = schedule(t, T, peak)
+            t += 1
+            for (W, b), (gW, gb), v, e in zip(P, G, V, E):   # SGD with momentum, in place
+                v[0] = momentum * v[0] + gW
+                v[1] = momentum * v[1] + gb
+                W -= lr * v[0]
+                b -= lr * v[1]
+                e[0] += (1 - ema_decay) * (W - e[0])    # e <- decay * e + (1 - decay) * w
+                e[1] += (1 - ema_decay) * (b - e[1])
+        log.append(evaluate(P, X_tr, y_tr) + evaluate(P, X_va, y_va))
+    return P, np.array(log), E   # log columns: train loss, train acc, val loss, val acc
+```
+
+The split is 942 training, 315 validation and 540 test images; the test images are not touched in this chapter.
+
+## The data pipeline
+
+**Plain version.** The data pipeline turns files on disk into the tensors the network sees. It decides what the model can learn and what the evaluation can prove, so it deserves the first and most careful look.
+
+### Splits, leakage and the test set
+
+The test set must be new in the same way deployment data will be new. Split by the unit that will be new (patient, video, camera, site or time period), deduplicate before splitting, fit every preprocessing step on the training split only, and use the validation set for all decisions so that the test set is opened once. [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#data-splits-and-leakage) covers the forms leakage takes and how to measure uncertainty; this chapter assumes those rules.
+
+### Normalization statistics
+
+Networks train best when each input channel has a mean near zero and a spread near one. The standard step is
+
+$$
+x'_{c} = \frac{x_{c} - \mu_c}{\sigma_c},
+$$
+
+where $x_c$ is a pixel value in channel $c$ (for example red, green or blue), $\mu_c$ and $\sigma_c$ are the mean and standard deviation of channel $c$, and $x'_c$ is the value the network sees. Two practical rules follow.
+
+- **Training from scratch:** compute $\mu_c$ and $\sigma_c$ on the training split only, store them with the model, and apply the same stored values at validation, test and deployment time. The [running example](#the-running-example) does exactly this, per pixel rather than per channel.
+- **Fine-tuning a pretrained model:** use the statistics the model was *pretrained* with, not those of your new dataset. The first layer's filters were learned for inputs on that scale.
+
+The most common bug here is a mismatch: images scaled to $[0, 1]$ in training but raw $0$–$255$ values in deployment, or RGB in one place and BGR in another. Both still produce predictions, just bad ones.
+
+### Class imbalance
+
+**Plain version.** If one class has nine hundred examples and another twenty, the network can score well by mostly ignoring the rare class. You can rebalance what the network sees, how much each mistake costs, or where the classifier starts.
+
+Buda et al. compared remedies for convolutional networks on benchmarks of increasing difficulty [4]. In their experiments oversampling the rare classes was the dominant method in almost all scenarios, it worked best when it removed the imbalance completely, and, unlike for some classical models, it did not cause the networks to overfit; they also recommend thresholding to compensate for the class priors when overall accuracy is what matters [4]. The three levers look like this:
+
+```python
+import numpy as np
+
+counts = np.array([900, 80, 20])                        # training images per class
+labels = np.repeat([0, 1, 2], counts)
+
+w = counts.sum() / (len(counts) * counts)               # option 1: weight the loss
+print("loss weight per class:", np.round(w, 2))
+
+p = 1.0 / counts[labels]                                # option 2: oversample rare classes
+p /= p.sum()
+rng = np.random.default_rng(0)
+drawn = labels[rng.choice(len(labels), size=3000, p=p)]
+print("class share in 3,000 sampled examples:", np.round(np.bincount(drawn) / 3000, 3))
+
+prior = counts / counts.sum()                           # option 3: start the output bias at the prior
+b0 = np.log(prior)
+print("initial softmax output:", np.round(np.exp(b0) / np.exp(b0).sum(), 3))
+```
+
+```text
+loss weight per class: [ 0.37  4.17 16.67]
+class share in 3,000 sampled examples: [0.33  0.338 0.332]
+initial softmax output: [0.9  0.08 0.02]
+```
+
+Option 1 multiplies each example's loss by $w_k = N / (K\,n_k)$, where $N$ is the number of training examples, $K$ the number of classes and $n_k$ the count of class $k$. Option 2 draws each example with probability proportional to $1/n_k$, so every class appears equally often. Option 3 sets the output biases to $b_k = \log(n_k / N)$, so the untrained network already predicts the class frequencies; Lin et al. use the same idea in dense detection, starting every location at a foreground probability of about 0.01 [5] (see the focal loss in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#focal-loss-and-class-imbalance)). Whatever you choose, report per-class metrics ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#the-confusion-matrix-and-the-metrics-built-on-it)).
+
+### Augmentation as a regularizer
+
+**Plain version.** Augmentation shows the network a slightly different version of each image every time, so it cannot memorize pixels and must learn what stays the same. The golden rule: a transformation is allowed only if the correct label of the new image is known.
+
+That rule decides the augmentation for each task:
+
+| Task | Usually safe | Needs care or is wrong |
+|---|---|---|
+| Classification of photos | random crops and rescaling, horizontal flips, color jitter, mild blur | vertical flips for upright scenes; flips for text, digits and left/right-sensitive classes |
+| Detection | flips, crops, scaling, color jitter, applied to the image **and** the boxes | crops that cut objects: clip the box and drop it if too little is left |
+| Segmentation | the same geometry applied to the image **and** the mask | interpolating the mask: resize labels with nearest neighbor, never bilinear |
+| Keypoints and pose | geometry applied to the image **and** the points | a horizontal flip must also **swap** left and right keypoint labels ([DLCV 06A](/en/learn/deep-learning/dl-06a-pose-keypoints/)) |
+| Restoration and low-level vision | flips, 90° rotations, crops applied identically to input and target | color or blur augmentation that changes the target itself |
+| Medical and remote sensing | rotations where orientation carries no meaning | intensity changes that alter diagnostic values |
+
+For dense tasks the key word is **consistency**: every geometric change applied to the pixels must be applied to the labels in the same coordinates. The snippet flips and crops a photo of coins together with a segmentation mask and a bounding box for one coin, then checks that the transformed box equals the box of the transformed mask:
+
+```python
+import numpy as np
+from scipy import ndimage
+from skimage import data, filters, measure, segmentation
+
+img = data.coins()                                      # 303 x 384 grayscale photo
+fg = segmentation.clear_border(img > filters.threshold_otsu(img))
+lab = measure.label(ndimage.binary_fill_holes(fg))
+coin = max(measure.regionprops(lab), key=lambda r: r.area)
+mask = lab == coin.label                                # segmentation target for one coin
+box = tuple(int(v) for v in coin.bbox)                  # detection target (y0, x0, y1, x1)
+H, W = img.shape
+
+def hflip(img, mask, box):
+    y0, x0, y1, x1 = box
+    return img[:, ::-1], mask[:, ::-1], (y0, W - x1, y1, W - x0)
+
+def crop(img, mask, box, top, left, h, w):
+    y0, x0, y1, x1 = box                                # shift, then clip to the crop
+    new = (max(y0 - top, 0), max(x0 - left, 0), min(y1 - top, h), min(x1 - left, w))
+    return img[top:top + h, left:left + w], mask[top:top + h, left:left + w], new
+
+i2, m2, b2 = crop(*hflip(img, mask, box), top=90, left=0, h=180, w=240)
+r, c = np.nonzero(m2)
+print("original box:               ", box)
+print("box after flip + crop:      ", b2)
+print("box of the transformed mask:", (int(r.min()), int(c.min()), int(r.max()) + 1, int(c.max()) + 1))
+```
+
+```text
+original box:                (156, 315, 218, 380)
+box after flip + crop:       (66, 4, 128, 69)
+box of the transformed mask: (66, 4, 128, 69)
+```
+
+Under a horizontal flip of an image of width $W$, a box with columns $x_0$ to $x_1$ moves to columns $W - x_1$ to $W - x_0$: the edges swap roles. Flipping the image but not its labels gives the network contradictory targets (Figure 1, right). Karpathy lists exactly this kind of mistake, flipping images without flipping their labels, among the bugs that make a network train silently worse instead of failing [2]. In practice, use a library that transforms images together with their masks and boxes, such as Albumentations [6], and still verify it once with a check like the one above.
+
+<Figure src={figAugment} alt="Three panels of the coins photo. Left: the original with one coin highlighted by a blue mask and a blue box. Middle: the image flipped horizontally and cropped, with the green mask and box still exactly on the same coin. Right: the same transformed image, but the annotations were not transformed, so no box or mask covers the coin." caption="Figure 1 — Geometric augmentation for dense tasks. A flip and crop must move the mask and the box with the pixels (middle). Transforming only the image (right) leaves annotations that no longer match any object; here the old box falls outside the crop entirely." />
+
+**How strong?** Augmentation strength is a hyperparameter: tune it on the validation set, and expect a strongly augmented model to show a *higher* training loss than validation loss. Shorten and Khoshgoftaar survey the families of image augmentation [7]; [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#data-augmentation) shows the mixing augmentations of modern classification recipes.
+
+## Initialization and normalization in practice
+
+**Plain version.** A good start keeps the signal at a sensible size through every layer, so the first steps of training are spent learning instead of recovering from a bad scale. For standard architectures, the defaults below are well tested; use them unless you have a reason not to.
+
+- **Weights.** Use He initialization for layers followed by ReLU-like activations: draw weights with variance $2/n_{\text{in}}$, where $n_{\text{in}}$ is the number of inputs to a unit, which keeps the activation variance roughly constant across layers [8]. Biases start at zero. [ML 02](/en/learn/ml/ml-02-neural-networks/#weight-initialization) derives this.
+- **Residual blocks.** Initialize the scale $\gamma$ of the last batch-normalization layer in each residual branch to zero. Each block then starts as the identity, the signal travels through the shortcuts, and early training is easier; Goyal et al. found that this helped all their models and especially large-batch training [9], and He et al. include it in their bag of tricks [1].
+- **Output layer.** Initialize the classifier bias at the log class prior when classes are imbalanced (option 3 above).
+- **Pretrained weights.** When a pretrained backbone exists for your input type, start from it. A new head is the only part initialized from scratch.
+
+**Normalization layers in practice.** Batch normalization (BN) [10] standardizes each channel with the mean and variance of the current mini-batch, then keeps running averages for inference ([DLCV 01 note](/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/notes/#batch-normalization-standardize-inside-the-network)). Two habits avoid most BN problems:
+
+1. **Switch modes.** Training mode uses batch statistics and updates the running averages; evaluation mode uses the stored averages. Forgetting to switch to evaluation mode at test time is a classic bug.
+2. **Watch the per-device batch size.** BN statistics are computed over the examples on one device. With only one or two images per device, as is common in detection and segmentation, the statistics become noisy. Group Normalization, which normalizes groups of channels within each example, does not depend on the batch size and stays accurate where BN degrades; Wu and He also describe the common detection practice of *freezing* a pretrained backbone's BN, using its stored statistics as a fixed linear layer [11].
+
+Transformers use a normalization computed within each example, which does not depend on the batch; [ML 02](/en/learn/ml/ml-02-neural-networks/#normalization-layers) compares the normalization layers.
+
+## Choosing the learning rate
+
+**Plain version.** The learning rate is the size of each step downhill. Too small and training crawls; too large and the loss jumps around or explodes. The best rate also changes during training: larger steps help early, smaller steps help at the end.
+
+Bengio wrote that the learning rate is often the single most important hyperparameter [12]. The procedure here: measure the usable range once, then let a schedule move through it.
+
+### The learning-rate range test
+
+**Plain version.** Run training once while raising the learning rate a little at every step, and watch the loss. Where the loss stops falling and starts to climb, the rate has become too large.
+
+Smith introduced this **learning-rate range test** together with cyclical learning rates: train for a short time while increasing the rate between a low and a high value, and read off the range in which the network still learns [13]. In his later guidance, the rate where the loss is lowest (or the accuracy highest) is the largest usable value, a suitable maximum for a schedule that ramps up and down, while a constant learning rate must be smaller or the network will not begin to converge; for a single-cycle schedule he suggests a minimum 10 to 20 times below the maximum [14].
+
+Our version increases the rate exponentially from $10^{-4}$ to $10$ over at most 200 steps, so that every decade gets equal time, and smooths the noisy batch loss with an exponential moving average:
+
+$$
+\bar{\ell}_t = \beta\,\bar{\ell}_{t-1} + (1 - \beta)\,\ell_t, \qquad \hat{\ell}_t = \frac{\bar{\ell}_t}{1 - \beta^{t+1}},
+$$
+
+where $\ell_t$ is the loss of the batch at step $t$, $\bar{\ell}_t$ the running average (starting from $\bar{\ell}_{-1} = 0$), $\beta = 0.9$ the smoothing factor, and $\hat{\ell}_t$ the bias-corrected average that is plotted; the correction removes the pull toward the zero starting value. The test stops when the smoothed loss exceeds four times its minimum. The code below reuses `init` and `loss_and_grads` from the [running example](#the-running-example).
+
+```python
+def lr_range_test(lo=1e-4, hi=10.0, steps=200, bs=16, momentum=0.9, seed=0):
+    P = init(seed)
+    V = [[np.zeros_like(W), np.zeros_like(b)] for W, b in P]
+    rng = np.random.default_rng(seed)
+    lrs, smooth, avg = [], [], 0.0
+    for t in range(steps):
+        lr = lo * (hi / lo) ** (t / (steps - 1))        # exponential sweep
+        idx = rng.choice(len(y_tr), bs, replace=False)
+        loss, G = loss_and_grads(P, X_tr[idx], y_tr[idx])
+        avg = 0.9 * avg + 0.1 * loss                    # smooth the noisy batch loss
+        lrs.append(lr)
+        smooth.append(avg / (1 - 0.9 ** (t + 1)))       # bias-corrected average
+        if not np.isfinite(loss) or smooth[-1] > 4 * min(smooth):
+            break                                       # the loss has blown up: stop
+        for (W, b), (gW, gb), v in zip(P, G, V):
+            v[0] = momentum * v[0] + gW
+            v[1] = momentum * v[1] + gb
+            W -= lr * v[0]
+            b -= lr * v[1]
+    return np.array(lrs), np.array(smooth)
+
+lrs, smooth = lr_range_test()
+best = lrs[smooth.argmin()]
+print(f"lowest smoothed loss {smooth.min():.3f} at lr {best:.3f}; stopped at lr {lrs[-1]:.3f}")
+print(f"suggested peak for a one-cycle or warmup schedule: about {best:.2f}")
+print(f"suggested constant learning rate: about {best / 10:.3f}")
+```
+
+```text
+lowest smoothed loss 0.270 at lr 0.138; stopped at lr 0.392
+suggested peak for a one-cycle or warmup schedule: about 0.14
+suggested constant learning rate: about 0.014
+```
+
+<Figure src={figRange} alt="Training loss against learning rate on a log axis from 1e-4 to about 0.4. The smoothed loss stays near 2.7 up to about 1e-3, falls steadily to a minimum of 0.27 near a learning rate of 0.14, then rises sharply. A green dashed line marks 0.14 as the peak for a schedule and an orange dotted line marks 0.014 as a safe constant rate." caption="Figure 2 — A learning-rate range test on the toy MLP (our run). The loss falls once the rate is large enough to make progress, bottoms out near 0.14 and then climbs; the test stopped at 0.39." />
+
+Read Figure 2 from left to right: too small to change anything, then the useful range where the loss falls steeply, then steps that are too large. A range test costs a few hundred steps, so rerun it whenever you change the model, batch size, optimizer or weight decay. Treat the result as a range, not an exact value: the curve is noisy and depends on the seed.
+
+### Warmup
+
+**Plain version.** Start with a small learning rate and raise it to the target over the first few hundred or thousand steps. At the start, the weights are random and the optimizer's running statistics are empty, so a full-size step can throw the model into a bad region it never leaves.
+
+With a linear warmup over $W$ steps, the rate at step $t \lt W$ is
+
+$$
+\eta_t = \eta_{\text{peak}}\,\frac{t + 1}{W},
+$$
+
+where $\eta_{\text{peak}}$ is the target rate reached at the end of warmup. Goyal et al. showed why the *shape* matters: in large-batch ImageNet training, a constant low rate for the first epochs followed by a jump to the target made the training error spike, while a gradual ramp avoided that spike [9]. Warmup matters most for large batches, large learning rates, adaptive optimizers and Transformers, and it is cheap insurance in fine-tuning. Goyal et al. report that even a constant low-rate warmup was particularly helpful when prototyping detection and segmentation models that fine-tune pretrained layers together with new ones [9]. Our toy warms up over the first 5% of the steps.
+
+### Schedules: step, cosine and one-cycle
+
+**Plain version.** After warmup, the rate should fall. How it falls matters less than *that* it falls: large steps explore, small steps at the end settle into a good region.
+
+Write $t$ for the current step, $T$ for the total number of steps and $\eta_{\text{peak}}$ for the largest rate. The four schedules in Figure 3 are:
+
+- **Constant:** $\eta_t = \eta_{\text{peak}}$. Simple, but the final steps are as large as the first ones.
+- **Step decay:** multiply the rate by a factor $\gamma$ (often 0.1) at fixed milestones, for example at 50% and 75% of training. The classic choice for CNNs trained with SGD.
+- **Warmup + cosine:** after $W$ warmup steps, $\eta_t = \tfrac12 \eta_{\text{peak}}\big(1 + \cos(\pi q)\big)$ with progress $q = (t - W)/(T - W)$ running from 0 to 1, so the rate glides from $\eta_{\text{peak}}$ to zero. The cosine shape comes from SGDR, which also restarted it periodically [15]; He et al. adopted the plain cosine decay for ImageNet classification, where it improved accuracy over their step-decay baseline [1].
+- **One-cycle:** a single long rise from a low rate to $\eta_{\text{peak}}$, then a fall to a value far below the starting rate. Smith and Topin used this "1cycle" policy with a large maximum rate to train some networks much faster than with standard schedules, which they called super-convergence [16]. Our version uses the default shape and constants of PyTorch's `OneCycleLR`: a cosine-shaped rise over the first 30% of steps from $\eta_{\text{peak}}/25$, then a cosine fall to $10^4$ times below the start [17]. That implementation also cycles momentum opposite to the rate (0.95 to 0.85 by default), following Smith's observation that lower momentum helps while the rate rises [14]; our toy keeps momentum fixed.
+
+```python
+import numpy as np
+
+def constant(t, T, peak):
+    return peak
+
+def step_decay(t, T, peak, milestones=(0.5, 0.75), factor=0.1):
+    return peak * factor ** sum(t >= m * T for m in milestones)
+
+def warmup_cosine(t, T, peak, warmup=0.05):
+    W = max(1, int(warmup * T))
+    if t < W:
+        return peak * (t + 1) / W                       # linear warmup
+    q = (t - W) / max(1, T - W)                         # progress after warmup, 0 -> 1
+    return 0.5 * peak * (1 + np.cos(np.pi * q))         # cosine decay to 0
+
+def one_cycle(t, T, peak, pct=0.3, div=25, final_div=1e4):
+    up, lo = max(1, int(pct * T)), peak / div
+    if t < up:                                          # rise from peak/div to peak
+        return lo + (peak - lo) * 0.5 * (1 - np.cos(np.pi * t / up))
+    q = (t - up) / max(1, T - up)                       # fall far below the start
+    end = lo / final_div
+    return end + (peak - end) * 0.5 * (1 + np.cos(np.pi * q))
+
+T = 900
+for f in (constant, step_decay, warmup_cosine, one_cycle):
+    print(f"{f.__name__:13s}", [f"{f(t, T, 0.1):.2g}" for t in (0, 20, 270, 450, 700, 899)])
+```
+
+```text
+constant      ['0.1', '0.1', '0.1', '0.1', '0.1', '0.1']
+step_decay    ['0.1', '0.1', '0.1', '0.01', '0.001', '0.001']
+warmup_cosine ['0.0022', '0.047', '0.084', '0.054', '0.013', '3.4e-07']
+one_cycle     ['0.004', '0.0053', '0.1', '0.081', '0.023', '1e-06']
+```
+
+<Figure src={figSchedules} alt="Two plots of learning rate against training step for 885 steps. Constant stays at 0.1. Step decay drops to 0.01 halfway through and to 0.001 at three quarters. Warmup plus cosine rises to 0.1 within the first 44 steps and then falls smoothly to zero. One-cycle rises slowly from 0.004 to 0.1 at step 265 and then falls to about 1e-6. The right plot shows the same curves on a log scale." caption="Figure 3 — The four schedules used in this chapter with a peak of 0.1 over 885 steps (15 epochs of the toy). The log-scale view (right) shows how far cosine and one-cycle fall at the end." />
+
+*Optional: [Cosine annealing with warm restarts](#cosine-annealing-with-warm-restarts) (in the Supplementary notes). The SGDR formula with restart periods, and when restarts are useful.*
+
+### What the schedules do on the toy
+
+The loop below trains the [running example](#the-running-example) once with each schedule at a peak of 0.1, and once more with a constant rate of 0.01. It uses `train` from the running example and the schedule functions just above.
+
+```python
+for f in (constant, step_decay, warmup_cosine, one_cycle):
+    _, log, _ = train(f, peak=0.1)
+    print(f"{f.__name__:13s} peak 0.1   final train loss {log[-1, 0]:8.3f}   val acc {log[-1, 3]:.3f}")
+_, log, _ = train(constant, peak=0.01)
+print(f"{'constant':13s} peak 0.01  final train loss {log[-1, 0]:8.3f}   val acc {log[-1, 3]:.3f}")
+```
+
+```text
+constant      peak 0.1   final train loss  995.468   val acc 0.917
+step_decay    peak 0.1   final train loss    0.000   val acc 0.940
+warmup_cosine peak 0.1   final train loss    0.000   val acc 0.971
+one_cycle     peak 0.1   final train loss    0.000   val acc 0.956
+constant      peak 0.01  final train loss    0.021   val acc 0.959
+```
+
+Figure 4 shows the runs epoch by epoch. Three lessons come out of this toy, and they match the advice above:
+
+1. **A peak near the edge needs a schedule.** At a constant 0.1, close to the range-test minimum, the loss explodes and validation accuracy swings between 81% and 92%. The same peak is fine inside a schedule that ramps up and decays (warmup + cosine reached 97.1%, one-cycle 95.6% in this run).
+2. **Decay rescues, but late.** Step decay spends half of training at the unstable rate; once the rate drops, during epoch 8, the loss recovers and validation accuracy reaches 94.0%.
+3. **A constant rate can work if it is small.** At 0.01, a tenth of the peak as the range test suggested, the constant schedule trains smoothly (95.9%), just less far in the same budget: its training loss is still 0.021.
+
+<Figure src={figCurves} alt="Left: training loss on a log scale over 15 epochs. Constant at 0.1 climbs to about 1000. Step decay climbs to about 18 and then falls quickly after epoch 8. Warmup plus cosine and one-cycle fall below 0.001. Constant at 0.01 falls slowly to 0.02. Right: validation accuracy. Warmup plus cosine reaches 0.97, one-cycle and constant 0.01 about 0.96, step decay 0.94, and constant at 0.1 swings between 0.81 and 0.92." caption="Figure 4 — The schedules of Figure 3 on the toy MLP, seed 0 (our runs). With a peak of 0.1, the constant rate diverges, step decay recovers after its first drop, and warmup + cosine and one-cycle train stably. The dashed line is a constant rate of 0.01." />
+
+Do not read the ranking between cosine and one-cycle into this figure: it is one seed, and the [seed study](#how-much-do-seeds-matter) below shows that their order flips from seed to seed. The robust lesson is the first one.
+
+**Which schedule to pick.** Warmup followed by cosine decay is a safe default; step decay is fine when reproducing an older paper; one-cycle suits short budgets; a constant rate with a short final decay helps when the training length is not known in advance ([Modern view](#the-state-of-the-art-20232026)). Schedules are defined in *steps*, so recompute $T$ when the epochs, batch size or dataset size change.
+
+## Batch size and gradient accumulation
+
+**Plain version.** A bigger batch gives a less noisy gradient, so each step can be bigger. If you double the batch, you can usually double the learning rate, up to a point.
+
+Goyal et al. trained ResNet-50 [18] on ImageNet [19] with mini-batches of up to 8,192 images without losing accuracy, using two rules [9]:
+
+- **Linear scaling rule:** when the mini-batch size is multiplied by $k$, multiply the learning rate by $k$ and keep the other hyperparameters, such as weight decay, unchanged. He et al. state the same rule in the form $\eta = 0.1 \times B / 256$ for a ResNet-50 trained with SGD at batch size $B$ [1].
+- **Gradual warmup:** ramp the rate from the small-batch value to the scaled value over the first 5 epochs.
+
+The rule is an approximation. It assumes the gradient changes little over the $k$ small steps that one big step replaces, which fails early in training (hence warmup) and beyond some batch size; in their ImageNet experiments that limit was around 8,000 images [9]. For adaptive optimizers the relationship is less simple, so re-run the range test after a large change in batch size.
+
+*Optional: [Accurate, Large Minibatch SGD (Goyal et al.)](#accurate-large-minibatch-sgd-goyal-et-al) (in the Paper guides). Where the scaling rule comes from, how to read their warmup comparison, and the implementation pitfalls they list.*
+
+**Gradient accumulation.** When the batch you want does not fit in memory, run several smaller *micro-batches*, add up their gradients, and take one optimizer step. With a loss that is a mean over examples and $k$ micro-batches of equal size,
+
+$$
+\nabla_\theta L_{\text{batch}} = \frac{1}{k}\sum_{j=1}^{k} \nabla_\theta L_j,
+$$
+
+where $L_{\text{batch}}$ is the mean loss over all $k \cdot m$ examples, $L_j$ the mean loss over micro-batch $j$ of $m$ examples, and $\theta$ the parameters. The snippet checks this on the toy (it reuses `init` and `loss_and_grads` from the running example):
+
+```python
+P = init(0)
+xb, yb = X_tr[:32], y_tr[:32]
+_, full = loss_and_grads(P, xb, yb)                     # one batch of 32
+
+acc = [[np.zeros_like(W), np.zeros_like(b)] for W, b in P]
+k = 4                                                   # 4 micro-batches of 8
+for j in range(k):
+    _, G = loss_and_grads(P, xb[8 * j:8 * j + 8], yb[8 * j:8 * j + 8])
+    for a, (gW, gb) in zip(acc, G):
+        a[0] += gW / k                                  # divide by k: mean of means
+        a[1] += gb / k
+diff = max(np.abs(a[0] - g[0]).max() for a, g in zip(acc, full))
+print(f"largest difference, accumulated vs full batch: {diff:.1e}")
+```
+
+```text
+largest difference, accumulated vs full batch: 1.1e-16
+```
+
+The difference is floating-point rounding: the update is the same. Two things break the equivalence in real models. Batch normalization computes its statistics per micro-batch, so accumulation does not give BN a larger batch. And a loss averaged over a variable number of items per image (valid pixels in segmentation, boxes in detection, tokens in a caption) needs the accumulated sum divided by the *total* count, not by $k$.
+
+*Optional: [Gradient accumulation when the loss is not a plain mean](#gradient-accumulation-when-the-loss-is-not-a-plain-mean) (in the Supplementary notes). The correct weighting for per-pixel and per-box losses, and which counters (schedule, weight decay, EMA) must advance per optimizer step.*
+
+## Regularization in practice
+
+**Plain version.** Regularizers make memorizing harder so that the network learns patterns that generalize. They all pull in the same direction, so add them one at a time and only when the validation curve shows overfitting.
+
+Smith and Topin stress a point that is easy to miss: large learning rates regularize too, so a high peak needs less of the other kinds, and all forms (learning rate, batch size, weight decay, dropout) must be balanced together [16]. When you change the schedule, re-tune weight decay and augmentation, and vice versa.
+
+**Weight decay.** Weight decay shrinks every weight a little at each step. With plain SGD this equals adding an L2 penalty to the loss; with adaptive optimizers such as Adam [20] it does not, because the penalty's gradient gets rescaled per parameter. Loshchilov and Hutter's AdamW decouples the decay from the gradient step [21]; [ML 02](/en/learn/ml/ml-02-neural-networks/#optimizers) derives the difference. Two practical rules:
+
+- In PyTorch, `torch.optim.AdamW` applies decoupled decay, while the `weight_decay` argument of `torch.optim.Adam` adds an L2 term to the gradient unless `decoupled_weight_decay=True` is set [22]. Use decoupled decay with Transformers and modern CNN recipes.
+- Do not decay biases and the scale and shift of normalization layers. He et al. list this "no bias decay" among their refinements [1]; [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#optimizer-schedule-and-regularizers) shows the two parameter groups in code.
+
+**Dropout and stochastic depth.** Dropout zeroes random activations during training [23]; stochastic depth skips whole residual blocks at random, with a skip probability that grows with depth [24]. Dropout is common in classifier heads and Transformer blocks, stochastic depth in deep residual networks and vision Transformers. Both change behavior between training and evaluation mode.
+
+**Early stopping and checkpoint selection.** Evaluate on the validation set at regular intervals, keep the best checkpoint, and stop when the score has not improved for a while (the "patience"). In Prechelt's study on multilayer perceptrons, slower stopping criteria gave small improvements in generalization at a much higher training cost [25]. The Tuning Playbook recommends saving checkpoints regularly and selecting the best one retrospectively [26].
+
+### EMA of the weights
+
+**Plain version.** Keep a slowly moving average of the weights next to the weights themselves, and evaluate the average. The last few noisy steps cancel out, much as averaging several photos of the same scene removes noise.
+
+After every optimizer step, update
+
+$$
+\bar{\theta} \leftarrow \mu\,\bar{\theta} + (1 - \mu)\,\theta,
+$$
+
+where $\theta$ are the current weights, $\bar{\theta}$ their exponential moving average (EMA), and $\mu \in [0, 1)$ the decay. The average effectively covers about the last $1/(1 - \mu)$ steps: about 100 steps for $\mu = 0.99$, about 1,000 for $\mu = 0.999$. Averaging the iterates of stochastic gradient descent has a long history in optimization [27]; in deep learning, stochastic weight averaging (SWA) takes an equal average of checkpoints along the trajectory [28]. Morales-Brotons et al. studied the EMA of weights systematically: EMA models generalized better than the last iterate and needed less learning-rate decay, and batch normalization limited how long the averaging window could be unless its statistics were recomputed [29].
+
+The window must be short compared with the run. Our toy makes this concrete (it reuses `train`, `constant` and `evaluate` from above):
+
+```python
+for decay in (0.99, 0.999):
+    raw, avg = [], []
+    for s in range(5):
+        P, log, E = train(constant, peak=0.05, seed=s, ema_decay=decay)
+        raw.append(evaluate(P, X_va, y_va)[1])
+        avg.append(evaluate(E, X_va, y_va)[1])
+    print(f"decay {decay}: window ~{1 / (1 - decay):.0f} steps   "
+          f"val acc raw {np.mean(raw):.3f}   EMA {np.mean(avg):.3f}")
+print("steps in the whole run:", 15 * int(np.ceil(len(y_tr) / 16)))
+```
+
+```text
+decay 0.99: window ~100 steps   val acc raw 0.963   EMA 0.963
+decay 0.999: window ~1000 steps   val acc raw 0.963   EMA 0.945
+steps in the whole run: 885
+```
+
+On this small, easy problem the EMA brings no gain at $\mu = 0.99$, and at $\mu = 0.999$ it is *worse*: its window of about 1,000 steps is longer than the whole 885-step run, so the average still carries weight from the poor early iterates. EMA pays off in long runs with noisy updates, which is where it is used in practice.
+
+*Optional: [EMA of weights: choosing the decay](#ema-of-weights-choosing-the-decay) (in the Supplementary notes). The effective window, a bias correction for the start, batch-normalization statistics and how to evaluate the average.*
+
+## Mixed precision and loss scaling
+
+**Plain version.** Doing most arithmetic with 16-bit numbers halves memory traffic and uses fast hardware units, but 16 bits cannot hold everything. Keep a few sensitive quantities in 32 bits, and scale the loss so that tiny gradients do not round to zero.
+
+Micikevicius et al. made float16 training work with two techniques: a float32 master copy of the weights that accumulates the updates, and loss scaling, which multiplies the loss by a factor $S$ before backpropagation and divides the gradients by $S$ before the update [30]. Both problems are easy to reproduce:
+
+```python
+import numpy as np
+
+g = np.float32(2e-8)                                    # a small, real gradient value
+print("float16 gradient:          ", np.float16(g))     # underflows to zero
+S = np.float32(1024)                                    # loss scale
+g16 = np.float16(g * S)                                 # scaled: representable in float16
+print("scaled, then unscaled:     ", np.float32(g16) / S)
+print("float16 weight 1 + 1e-4:   ", np.float16(1) + np.float16(1e-4))   # update lost
+print("float32 weight 1 + 1e-4:   ", np.float32(1) + np.float32(1e-4))
+```
+
+```text
+float16 gradient:           0.0
+scaled, then unscaled:      2.0023435e-08
+float16 weight 1 + 1e-4:    1.0
+float32 weight 1 + 1e-4:    1.0001
+```
+
+The first line is **underflow**: $2 \times 10^{-8}$ is below the smallest positive float16 value, so it becomes zero, and scaling by 1,024 moves it back into range. The third line is a **lost update**: near 1.0, float16 numbers are spaced too far apart to register a change of $10^{-4}$, which is why the weights themselves stay in float32.
+
+In PyTorch, automatic mixed precision combines `torch.autocast`, which runs each operation in a suitable precision, with `torch.amp.GradScaler`, which performs dynamic loss scaling; with bfloat16, which has the same exponent range as float32, the documentation uses autocast without a scaler [31]. Make the run correct in float32 first, then switch on mixed precision and check that the loss curve barely changes; if NaNs appear only in mixed precision, look for operations that overflow in 16 bits. [ML 01C](/en/learn/ml/ml-01c-numerical-computation/#mixed-precision) explains the formats in detail.
+
+## Transfer learning and fine-tuning strategies
+
+**Plain version.** A pretrained network already knows edges, textures and object parts. Fine-tuning teaches it your task without destroying that knowledge: change the new parts quickly and the old parts gently.
+
+Yosinski et al. measured how general the features of each layer are: early layers learn features that transfer across datasets, later layers are more task-specific, and transferability falls as the source and target tasks drift apart, though transferred features beat random ones even for distant tasks [32]. That is the reason behind the strategies below, ordered from cheapest to most flexible:
+
+| Strategy | What trains | When it fits |
+|---|---|---|
+| Linear probe | only a new linear head on frozen features | very little data; features already good for the task; also to *measure* feature quality |
+| Partial fine-tuning | the head and the last stages | moderate data; target close to the pretraining domain |
+| Full fine-tuning | everything, with a small learning rate for the backbone | enough data or a large domain gap |
+| Linear probe, then fine-tune (LP-FT) | first the head alone, then everything | when robustness to distribution shift matters |
+| Parameter-efficient fine-tuning | small added modules, such as low-rank updates (LoRA [33]) | very large models; many tasks sharing one backbone |
+
+Three tools make full fine-tuning gentler:
+
+- **Discriminative learning rates.** Give each layer group its own rate, smaller for earlier layers. Howard and Ruder introduced this as *discriminative fine-tuning*, together with *gradual unfreezing* (train the last layer first, then unfreeze one more layer group per epoch) [34]. In vision recipes the backbone often gets a rate 10 to 100 times smaller than the head ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#transfer-learning-and-fine-tuning)).
+- **LP-FT.** Kumar et al. showed that full fine-tuning with a randomly initialized head can *distort* good pretrained features: while the head is being learned, the lower layers change at the same time, and the features of training-like inputs move while those of different-looking inputs change less. In their experiments fine-tuning was more accurate than linear probing in distribution but less accurate out of distribution, and training the linear head first, then fine-tuning everything, gave the best of both [35].
+- **Warmup and BN.** A short warmup protects the pretrained weights from the first large gradients of the new head, and with small per-device batches the backbone's BN layers are often frozen ([above](#initialization-and-normalization-in-practice)).
+
+*Optional: [Discriminative learning rates and gradual unfreezing](#discriminative-learning-rates-and-gradual-unfreezing) (in the Supplementary notes). How to set per-layer rates, the layer-wise decay rule, and how to unfreeze in stages.*
+
+*Optional: [Fine-Tuning can Distort Pretrained Features (Kumar et al.)](#fine-tuning-can-distort-pretrained-features-kumar-et-al) (in the Paper guides). The argument for LP-FT and how to read its in-distribution and out-of-distribution results.*
+
+## Debugging a training run
+
+**Plain version.** Most training bugs do not crash; they make the model a little worse. Debugging means running cheap tests that a correct pipeline must pass, in an order that isolates the cause (Figure 5).
+
+<Figure src={figFlow} alt="A flowchart with five questions in order: is the loss finite; can it overfit one small batch; does the training loss fall on the full data; does validation follow training; is it better than the baseline over several seeds. Each 'no' leads to a box of fixes, and the final 'yes' leads to evaluating the test set once and reporting mean and standard deviation over seeds." caption="Figure 5 — A debugging order. Each question assumes the ones above it are answered yes, so a failure points to a small set of causes." />
+
+### Overfit one batch first
+
+**Plain version.** Take one small batch and train on it over and over. A correct model and training loop can memorize a handful of images, so the loss must fall to nearly zero. If it cannot, something is broken, and you have found that out in seconds instead of days.
+
+Karpathy's recipe for training networks puts this test early: overfit a single small batch, and before that, check that the loss at initialization is what it should be [2]. For $K$ balanced classes and a well-initialized final layer, the first predictions are close to uniform, so the cross-entropy starts near $\ln K$ ($\ln 10 \approx 2.30$ for our digits). The snippet checks that, then runs the one-batch test on 16 digits twice: once correctly, and once with a bug that is easy to make, applying softmax in the model *and* inside the loss. It reuses `init` and `forward` from the running example.
+
+```python
+def overfit_one_batch(double_softmax=False, steps=300, lr=0.1, seed=0):
+    P = init(seed)
+    xb, yb = X_tr[:16], y_tr[:16]                       # ONE fixed batch of 16 images
+    for step in range(steps):
+        h = forward(P, xb)
+        z = h[-1]
+        if double_softmax:                              # BUG: the "logits" are already probabilities
+            z = np.exp(z - z.max(1, keepdims=True))
+            z = z / z.sum(1, keepdims=True)
+        s = z - z.max(1, keepdims=True)
+        p = np.exp(s) / np.exp(s).sum(1, keepdims=True)
+        loss = -np.log(p[np.arange(16), yb]).mean()
+        d = p.copy()
+        d[np.arange(16), yb] -= 1
+        d /= 16
+        if double_softmax:                              # chain rule through the extra softmax
+            d = z * (d - (d * z).sum(1, keepdims=True))
+        for i in reversed(range(len(P))):
+            gW, gb = h[i].T @ d, d.sum(0)
+            if i:
+                d = (d @ P[i][0].T) * (h[i] > 0)
+            P[i][0] -= lr * gW
+            P[i][1] -= lr * gb
+    return loss
+
+print(f"loss at init:          {evaluate(init(0), X_tr, y_tr)[0]:.4f}   (ln 10 = {np.log(10):.4f})")
+print(f"correct loss:          {overfit_one_batch():.4f}")
+print(f"double-softmax bug:    {overfit_one_batch(double_softmax=True):.4f}")
+print(f"floor of the bug:      {-np.log(np.e / (np.e + 9)):.4f}")
+```
+
+```text
+loss at init:          2.8204   (ln 10 = 2.3026)
+correct loss:          0.0036
+double-softmax bug:    1.4661
+floor of the bug:      1.4612
+```
+
+<Figure src={figOverfit} alt="Training loss on a log scale over 300 steps on one batch of 16 images. The correct model falls from about 2.4 to 0.0036. The buggy model with softmax applied twice falls only to about 1.47 and stays on a dotted line marking its floor of 1.46." caption="Figure 6 — Overfitting one batch (our run). The correct pipeline memorizes 16 images; the double-softmax bug cannot go below 1.46, however long it trains." />
+
+The initial loss is somewhat above $\ln 10$ because the He-initialized output layer produces logits of moderate size, so the first predictions are not exactly uniform; that is harmless here. A value far above $\ln K$ means the network starts out confidently wrong, and scaling the last layer's initial weights down fixes it. The bug has a hard floor. After the first softmax, the "logits" passed to the loss lie between 0 and 1, so the best the second softmax can do is give the true class $e^1$ against $e^0$ for each of the nine others: a probability of $e/(e + 9) \approx 0.23$ and a loss of $1.46$. On the full dataset this bug does not crash and still produces a usable classifier, so it can go unnoticed; the one-batch test exposes it in seconds.
+
+A passing test proves less than it seems. Zhang et al. showed that standard image classifiers can fit random labels, and even random noise images, perfectly [36], so memorizing one batch says that the model, the loss and the update can learn, not that the labels are correct. Mislabeled or misaligned data must be caught by looking at it (checklist item 2).
+
+### Reading loss curves
+
+[ML 02](/en/learn/ml/ml-02-neural-networks/#reading-a-loss-curve) explains the four basic shapes (flat, overfitting, converged, healthy). A few more patterns are typical of vision training:
+
+- **Stuck exactly at $\ln K$.** The network outputs uniform probabilities: the gradient is not reaching it (a detached tensor, frozen parameters, a learning rate of zero) or the labels are constant.
+- **Loss spikes that recover.** The learning rate is near the edge of stability, as in Figure 4, or a few batches contain corrupted images or labels. Log the indices of the batches with the largest loss and look at them.
+- **Validation better than training.** Normal with strong augmentation or dropout, because the training loss is measured on harder, augmented inputs.
+- **Validation accuracy flat while validation loss rises.** The network becomes overconfident on the examples it gets wrong; the ranking is fine, but the probabilities are not ([calibration in DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#calibration-and-temperature-scaling)).
+- **A drop at every milestone.** Expected with step decay. If the curve is still falling steeply at the end of a cosine schedule, the budget is too short.
+- **Good validation, bad deployment.** Suspect a preprocessing mismatch, or *shortcut learning*: the network relies on a cue that the validation set shares with the training set but deployment data lacks [37] ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#shortcut-learning)).
+
+### Gradient norms, dead units and NaNs
+
+**Plain version.** Log a few health numbers every few hundred steps: the size of each layer's gradient, the fraction of units that never activate, and whether anything has become NaN. When training goes wrong, these numbers usually go wrong first.
+
+The snippet computes two of them after three epochs at three constant learning rates. It reuses `train`, `forward`, `loss_and_grads` and `constant` from above.
+
+```python
+def health(P, X, y):
+    _, G = loss_and_grads(P, X, y)
+    h = forward(P, X)[1]                                # hidden ReLU activations
+    dead = (h.max(0) == 0).mean()                       # units that are zero for every input
+    norms = [np.linalg.norm(gW) for gW, _ in G]
+    return norms, dead
+
+for peak in (0.01, 0.1, 0.3):
+    P, log, _ = train(constant, peak=peak, epochs=3)
+    norms, dead = health(P, X_tr, y_tr)
+    print(f"lr {peak:<5} train loss {log[-1, 0]:9.3g}  grad norms "
+          f"{norms[0]:9.3g} {norms[1]:9.3g}  dead units {dead:.0%}")
+```
+
+```text
+lr 0.01  train loss     0.127  grad norms    0.0664    0.0496  dead units 0%
+lr 0.1   train loss      3.61  grad norms      1.44      2.11  dead units 0%
+lr 0.3   train loss   2.1e+08  grad norms  1.02e+04  1.31e+04  dead units 0%
+```
+
+The gradient norms grow by more than five orders of magnitude between the healthy and the diverging run, long before the loss becomes NaN, so logging them is cheap insurance. Gradient clipping ([ML 02](/en/learn/ml/ml-02-neural-networks/#gradient-clipping)) is a sensible guard, but it hides a too-large learning rate rather than fixing it. No units die here, because this toy fails by explosion. A **dead ReLU** outputs zero for every input, so it gets no gradient and never recovers; many dead units, typically after a huge step or with strongly negative biases, mean lost capacity.
+
+When the loss becomes NaN or infinite, find the *first* operation that produced a non-finite value rather than clipping everything: check inputs, then the forward pass, the loss, the gradients and the update size, and reproduce in float32 before blaming mixed precision. [ML 01C](/en/learn/ml/ml-01c-numerical-computation/#a-debugging-order-for-non-finite-values) gives this order in detail, and its section on [checking derivatives](/en/learn/ml/ml-01c-numerical-computation/#checking-derivatives) shows how to test a hand-written backward pass.
+
+## Reproducibility and fair experiments
+
+**Plain version.** A result is only useful if it can be repeated and if the comparison behind it is fair. Fix the seeds, log what you did, and run each setting several times, because random chance alone can move a score by more than the improvement you hope to show.
+
+### Seeds, determinism and logging
+
+Seed every random number generator: Python's, NumPy's, the framework's and the data-loader workers'. The PyTorch documentation states that completely reproducible results are not guaranteed across releases, commits or platforms, or between CPU and GPU; within one setup it recommends seeding, `torch.use_deterministic_algorithms(True)` and disabling cuDNN benchmarking, and it seeds data-loader workers through `worker_init_fn` and a `generator`; it also warns that deterministic operations are often slower [38]. Log enough to rerun the experiment: code version, configuration, data version and split identifiers, seeds, environment and hardware, and the curves of loss, metrics, learning rate and gradient norm ([ML 10](/en/learn/ml/ml-10-evaluation-deployment/#making-runs-repeatable)).
+
+### How much do seeds matter?
+
+The seed changes the initialization and the order of the data, and therefore the result. The snippet trains two configurations on the toy, A (warmup + cosine) and B (one-cycle), each with five seeds, and compares them pair by pair (it reuses `train` and the schedule functions):
+
+```python
+seeds = range(5)
+A = [train(warmup_cosine, peak=0.1, seed=s)[1][-1, 3] for s in seeds]
+B = [train(one_cycle, peak=0.1, seed=s)[1][-1, 3] for s in seeds]
+print("A (warmup + cosine):", np.round(A, 3))
+print("B (one-cycle):      ", np.round(B, 3))
+d = np.array(B) - np.array(A)                           # paired: same seed, same data order
+print(f"A mean {np.mean(A):.3f} +- {np.std(A, ddof=1):.3f}   B mean {np.mean(B):.3f} +- {np.std(B, ddof=1):.3f}")
+print(f"paired difference B - A: mean {d.mean():+.3f}, range {d.min():+.3f} to {d.max():+.3f}")
+```
+
+```text
+A (warmup + cosine): [0.971 0.962 0.956 0.956 0.959]
+B (one-cycle):       [0.956 0.952 0.952 0.978 0.956]
+A mean 0.961 +- 0.007   B mean 0.959 +- 0.011
+paired difference B - A: mean -0.002, range -0.016 to +0.022
+```
+
+<Figure src={figSeeds} alt="Left: validation accuracy of five seeds for configuration A, between 0.956 and 0.971, and for configuration B, between 0.952 and 0.978, with lines joining equal seeds and squares showing means of about 0.961 and 0.959. Right: bars of the paired difference B minus A per seed: about -1.6, -1.0, -0.3, +2.2 and -0.3 accuracy points, with a mean of -0.2 points." caption="Figure 7 — Seed variance on the toy (our runs, validation set of 315 images). A single seed could support either conclusion: seed 3 says B wins by 2.2 points, seed 0 says A wins by 1.6. Over five seeds the two are indistinguishable." />
+
+With only seed 3 you would report that one-cycle wins by 2.2 points; with seed 0, that it loses by 1.6. Over five seeds the mean difference is 0.2 points with a spread far larger than that: no detectable difference on this toy (and one validation image is worth about 0.3 points here). Report the mean and standard deviation over seeds, compare configurations **paired** on the same seeds and splits, and use the confidence intervals and paired tests of [ML 10](/en/learn/ml/ml-10-evaluation-deployment/#statistical-significance-and-confidence-intervals) before claiming an improvement. Published large-scale results do this too: Goyal et al. report every ImageNet error as a mean and standard deviation over five trials [9].
+
+### Baselines, ablations and budgets
+
+A fair experiment changes one thing and holds everything else fixed:
+
+- **Baselines.** Always include a simple baseline and the previous best recipe, trained by you in the same pipeline. A new method compared with a baseline from an old paper mixes the effect of the method with the effect of the recipe ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#resnet-strikes-back)).
+- **Equal tuning budget.** Give every method the same number of trials for its hyperparameters. A method tuned for a week against a baseline run once wins by tuning, not by design.
+- **Equal training budget.** Compare at the same number of steps or the same compute; a longer schedule alone can explain a gain.
+- **Ablations.** Remove one component at a time from the full method, with several seeds each, and report the drop. An ablation that changes two things at once cannot tell you which one mattered.
+- **One test evaluation.** Make every decision on validation data; evaluate the final choice on the test set once.
+
+The Deep Learning Tuning Playbook organizes this into an incremental strategy: decide on the goal of each round of experiments, separate the hyperparameters being studied from those that must be re-tuned for each setting ("nuisance" hyperparameters) and those held fixed, and adopt a change only when the evidence is strong [26].
+
+## Modern view
+
+### What the surveys and guides say
+
+Practical training knowledge lives more in reviews and guides than in single papers. Bengio's chapter in *Neural Networks: Tricks of the Trade* collects recommendations for gradient-based training, from the learning rate and mini-batch size to early stopping and hyperparameter search [12]. The Deep Learning Tuning Playbook covers choosing the architecture, optimizer, batch size and initial configuration, an incremental, scientific tuning process, how long to train, and pipeline details such as checkpoint selection and experiment tracking [26]. Shorten and Khoshgoftaar organize image augmentation into geometric and color transformations, kernel filters, mixing images, random erasing, feature-space and adversarial augmentation, generative and style-transfer augmentation, and meta-learned policies, and also discuss test-time augmentation [7]. Xin et al. divide parameter-efficient fine-tuning of vision models into addition-based, partial-based, unified-based and multi-task tuning, and propose a unified benchmark [39].
+
+Comparing training methods fairly is itself hard. Dahl et al. argue that the community cannot reliably identify training-algorithm improvements, because it is unclear when training is complete, results are sensitive to workload details, and methods that need tuning are hard to compare fairly; they introduced the AlgoPerf benchmark, which measures time to reach a target result on fixed hardware across several workloads [40].
+
+### The state of the art, 2023–2026
+
+- **Benchmarked training algorithms.** The first AlgoPerf competition drew 18 submissions from 10 teams. In the ruleset where submitters provide a search space, the winner used non-diagonal preconditioning and beat popular methods such as Adam even on wall-clock time; in the ruleset with no tuning allowed, the winner was based on Schedule-Free AdamW [41].
+- **Fewer schedules to tune.** Defazio et al.'s Schedule-Free approach removes the need to know the stopping step in advance by unifying scheduling and iterate averaging, without new hyperparameters beyond those of momentum optimizers [42]. A simpler alternative is a constant learning rate followed by a short "cooldown" decay, named warmup-stable-decay (WSD) in MiniCPM [43]. Hägele et al. found that this scales as predictably as a cosine schedule, that a cooldown over a modest fraction of training is enough, and that weight averaging improves results along the trajectory at no extra training cost; their experiments are on language models, so verify the transfer to vision workloads yourself [44].
+- **Weight averaging everywhere.** Beyond the EMA study above [29], averaging is also used in fine-tuning: WiSE-FT interpolates between the zero-shot and fine-tuned weights of a pretrained model and improves robustness under distribution shift [45], and model soups average several fine-tuned models to improve accuracy without extra inference cost [46].
+- **Fine-tuning foundation models.** With very large pretrained backbones, full fine-tuning can be replaced by linear probing, LP-FT [35], or parameter-efficient methods such as LoRA [33], [39]. The practical questions shift from "which architecture" to "which pretrained model, and how much of it to adapt".
+
+### Open problems
+
+1. **Hyperparameters that transfer.** Best learning rates, warmup lengths and weight decays still change with model size, batch size and dataset; the range test and the linear scaling rule are approximations, not laws.
+2. **Fair, affordable comparison.** Tuning budgets differ between papers, and seeds are often too few to separate methods. Benchmarks such as AlgoPerf address this for training algorithms [40], but no comparable standard exists for most vision tasks.
+3. **Determinism at scale.** Bit-exact reproducibility is not guaranteed across hardware and software versions [38], which makes small regressions hard to diagnose in large training runs.
+4. **Augmentation for dense and specialized tasks.** How to choose augmentation automatically for detection, segmentation, medical and remote-sensing images, where geometry and intensity carry label information, is still an open question.
+5. **Fine-tuning without forgetting.** Adapting a foundation model to a narrow task while keeping its robustness out of distribution is still an active research question [35], [45].
+
+## Key takeaways
+
+- Do cheap checks first: look at a batch after the full pipeline, check the initial loss (about $\ln K$), and overfit one batch before training the full model.
+- Keep data honest: split by the unit that will be new, compute normalization statistics on the training split (or use the pretrained model's), and transform boxes, masks and keypoints together with the pixels.
+- Find the learning rate with a short range test; use the minimum as the peak of a schedule with warmup and decay, and a value about ten times smaller for a constant rate.
+- Warmup protects the first steps; the decay at the end matters more than its exact shape. Warmup + cosine is a safe default; scale the rate linearly with the batch size, with warmup, and recompute schedules in steps.
+- Gradient accumulation equals a larger batch only for mean losses over equal-size micro-batches and without batch normalization; weight per-pixel and per-box losses by their total counts.
+- Regularizers interact (a large learning rate is one): add them one at a time, use decoupled weight decay without decay on biases and normalization parameters, and keep the best checkpoint by validation.
+- Fine-tune gently: smaller rates for earlier layers, a trained head before full fine-tuning when robustness matters, warmup, and care with BN on small batches.
+- One seed proves little: report mean and spread over several seeds, compare paired runs with equal budgets, ablate one change at a time, and open the test set once.
+
+## Exercises
+
+1. **Range test, then schedule.** Rerun the range test with batch sizes 8, 16 and 64 (change `bs`). How does the learning rate of the minimum move? Then train with `warmup_cosine` at each batch size, using a peak taken from its own range test, and compare with the linear scaling rule.
+
+<details>
+<summary>
+Hint
+</summary>
+
+In our runs (seeds 0 and 1) the minimum sat at about 0.15 for batch 8, 0.13–0.14 for batch 16 and 0.35 for batch 64: it moves up with the batch size, but not in exact proportion, and a short test is noisy. Remember that $T$ in steps shrinks as the batch grows at a fixed number of epochs, so the larger batches also get fewer updates.
+
+</details>
+
+2. **A one-batch test that passes for the wrong reason.** Shuffle `y_tr[:16]` (so labels no longer match images) and run `overfit_one_batch`. What happens to the loss, and what does that tell you about what the test can and cannot detect? Which check from the checklist would have caught the shuffled labels?
+
+<details>
+<summary>
+Hint
+</summary>
+
+The loss still goes to nearly zero (0.0056 in our run with the labels permuted by `np.random.default_rng(0)`), because a network can memorize any 16 labels, as Zhang et al. showed for random labels at scale [36]. The test checks the model, the loss and the update, not the data. Looking at a batch with its labels drawn on it (item 2) catches misaligned labels; so does a validation accuracy near chance.
+
+</details>
+
+3. **Flip a keypoint.** Extend the `hflip` function so it also transforms a list of keypoints given as `(x, y, name)` with names such as `left_eye` and `right_eye`. Write a check that fails if a flipped `left_eye` is still called `left_eye`.
+
+<details>
+<summary>
+Hint
+</summary>
+
+The coordinates follow $x \to W - 1 - x$ for pixel centers (or $W - x$ for continuous coordinates, matching the box convention used here), $y$ unchanged. Then swap every left/right name pair with a lookup table. Applying the flip twice must return the original keypoints exactly, which is a good test.
+
+</details>
+
+4. **Accumulation with ignored pixels.** A segmentation loss averages the per-pixel cross-entropy over pixels whose label is not "ignore". Micro-batch 1 has 1,000 valid pixels with mean loss 0.5; micro-batch 2 has 3,000 valid pixels with mean loss 0.9. What is the mean loss of the combined batch, and what does averaging the two micro-batch means give instead?
+
+<details>
+<summary>
+Hint
+</summary>
+
+The combined mean is $(1000 \cdot 0.5 + 3000 \cdot 0.9)/4000 = 0.8$. Averaging the means gives $(0.5 + 0.9)/2 = 0.7$, which underweights the micro-batch with more valid pixels. The same weighting applies to the gradients: accumulate sums and divide by the total count.
+
+</details>
+
+5. **How many seeds?** Using `train`, run configurations A and B with 10 seeds each instead of 5. Does the mean difference change sign? Estimate the standard error of the paired mean difference, $s_d / \sqrt{n}$, where $s_d$ is the standard deviation of the per-seed differences and $n$ the number of seeds, and decide whether a 0.5-point improvement could be detected with 10 seeds.
+
+<details>
+<summary>
+Hint
+</summary>
+
+With per-seed differences spread over about $\pm 2$ points, $s_d$ is on the order of 1.5 points, so the standard error with 10 seeds is about 0.5 points: a 0.5-point improvement would be within about one standard error and not convincing. Larger validation sets and more seeds both help; ML 10 shows paired bootstrap intervals.
+
+</details>
+
+6. **Fine-tuning plan.** You have 2,000 labeled X-ray images, a backbone pretrained on natural photos and one GPU that fits 8 images per batch. Write a training plan: normalization statistics, augmentations (which ones are unsafe?), how to handle batch normalization, the fine-tuning strategy, the learning-rate procedure and how you will decide that a change helped.
+
+<details>
+<summary>
+Hint
+</summary>
+
+Use the pretrained normalization statistics; avoid intensity augmentations that change diagnostic values, and be careful with flips if laterality matters; freeze the backbone BN statistics (or use group normalization in new layers) because 8 images per batch give noisy statistics; start with a linear probe, then LP-FT with smaller rates for early layers and a short warmup; run a range test for the head; split by patient; compare variants over several seeds with paired intervals.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each takes one point from the main text and treats it in more detail. Nothing in the main text, code or exercises depends on them.
+
+### Cosine annealing with warm restarts
+
+This note gives the full SGDR schedule, of which the main text uses only the single cosine decay.
+
+Loshchilov and Hutter's SGDR (stochastic gradient descent with warm restarts) runs several cosine decays one after another [15]. Within the $i$-th run, the rate is
+
+$$
+\eta_t = \eta_{\min}^{i} + \tfrac12\left(\eta_{\max}^{i} - \eta_{\min}^{i}\right)\left(1 + \cos\!\left(\pi\,\frac{T_{\text{cur}}}{T_i}\right)\right),
+$$
+
+where $\eta_{\max}^{i}$ and $\eta_{\min}^{i}$ are the upper and lower rates of that run, $T_{\text{cur}}$ is the number of epochs since the last restart (updated at every batch, so it takes fractional values), and $T_i$ is the length of run $i$ in epochs. When $T_{\text{cur}} = 0$ the rate is $\eta_{\max}^{i}$; when $T_{\text{cur}} = T_i$ it reaches $\eta_{\min}^{i}$, and the next run restarts at the top. The lengths grow geometrically, $T_{i+1} = T_{\text{mult}} \cdot T_i$, starting from $T_0$; the paper studies settings such as $T_0 = 1, T_{\text{mult}} = 2$ and $T_0 = 10, T_{\text{mult}} = 2$ [15].
+
+**Steps.** (1) Choose $T_0$ and $T_{\text{mult}}$. (2) Track $T_{\text{cur}}$ in fractional epochs. (3) At $T_{\text{cur}} = T_i$, set $T_{\text{cur}} = 0$ and $T_{i+1} = T_{\text{mult}} T_i$.
+
+**Why restart?** The paper's motivation is *anytime* performance: at the end of every run the rate is small, so the model is in a good state at many points of training, not only at the end. The paper also builds an ensemble from the snapshots taken just before each restart [15].
+
+**Pitfalls.** The total length should end exactly at the end of a run; with $T_0 = 1$ and $T_{\text{mult}} = 2$ that means $1 + 2 + 4 + \dots$ epochs, for example 31 or 63. A run that is cut in the middle of a cycle ends at a high rate and gives a poor final model. The jump back to $\eta_{\max}$ at each restart briefly increases the loss, which is expected; if you combine restarts with a warmup, decide explicitly whether each restart repeats it.
+
+### Gradient accumulation when the loss is not a plain mean
+
+This note gives the correct weighting when micro-batches contribute different numbers of items to the loss, and lists what else must follow the optimizer step instead of the micro-batch.
+
+Suppose micro-batch $j$ contains $n_j$ loss items (valid pixels, matched boxes or tokens) with summed loss $S_j = \sum_{i=1}^{n_j} \ell_{ij}$, where $\ell_{ij}$ is the loss of item $i$ in micro-batch $j$. The loss of the full batch is the mean over all items,
+
+$$
+L = \frac{\sum_{j=1}^{k} S_j}{\sum_{j=1}^{k} n_j}, \qquad
+\nabla_\theta L = \frac{\sum_{j=1}^{k} \nabla_\theta S_j}{N}, \quad N = \sum_{j=1}^{k} n_j ,
+$$
+
+where $k$ is the number of micro-batches and $N$ the total item count. Averaging the micro-batch means, $\tfrac{1}{k}\sum_j S_j / n_j$, gives each micro-batch the same weight whatever its size, which is a different objective whenever the $n_j$ differ (Exercise 4).
+
+**Steps.** (1) For each micro-batch, compute the *summed* loss $S_j$ and the count $n_j$. (2) Backpropagate $S_j$ and add the gradients. (3) Before the optimizer step, divide the accumulated gradient by $N$. If $N$ is only known after all micro-batches (it usually is), keep the gradients unscaled until then; in data-parallel training, $N$ must be summed across devices too.
+
+**Counters that follow the optimizer step.** The learning-rate schedule, weight decay, gradient clipping and the EMA update should all advance once per *optimizer* step, not once per micro-batch. Clipping must be applied to the accumulated gradient, after the division by $N$; clipping each micro-batch separately clips a different quantity.
+
+**What accumulation cannot change.** Batch normalization still sees only the micro-batch; so do in-batch negatives in contrastive losses, where the number of negatives per example is set by the micro-batch size. Dropout masks differ per micro-batch, which is harmless. With mixed precision and a loss scaler, the PyTorch documentation specifies that the gradients stay scaled and the scale factor stays constant during one accumulation cycle, and that the inf/NaN check, step skipping and scale update happen once per effective batch [47].
+
+### EMA of weights: choosing the decay
+
+This note explains how to choose the EMA decay $\mu$, why the average is biased at the start, and how batch normalization affects it.
+
+**Effective window.** After $n$ updates, the EMA is a weighted sum of past weights, $\bar{\theta}_n = (1 - \mu)\sum_{s=1}^{n} \mu^{\,n-s}\theta_s + \mu^{n}\bar{\theta}_0$, where $\theta_s$ are the weights after step $s$ and $\bar{\theta}_0$ is the initial average. The weight of step $s$ falls by a factor $\mu$ per step, so the mean age of the averaged weights is $\mu/(1 - \mu)$ steps, about $1/(1 - \mu)$ for $\mu$ near 1. Choose $\mu$ so that this window is a small fraction of the run: with $\mu = 0.999$ and a run of 885 steps, as in the main text, the average is dominated by early weights.
+
+**Bias at the start.** If $\bar{\theta}_0$ is the initial (random) weights, the term $\mu^n \bar{\theta}_0$ dies out slowly: after $n = 1/(1-\mu)$ steps its weight is still about $e^{-1} \approx 0.37$. Two fixes follow from the formula. Either start the EMA only after warmup, from the current weights, or start from $\bar{\theta}_0 = 0$ and divide by the total weight, $\hat{\theta}_n = \bar{\theta}_n / (1 - \mu^n)$, the same bias correction Adam applies to its moment estimates; the weights $(1-\mu)\mu^{n-s}/(1-\mu^n)$ then sum to one at every step.
+
+**Batch normalization.** The EMA averages the learnable weights, but BN layers also store running statistics computed for the *current* weights. Morales-Brotons et al. found that BN is the limiting factor when choosing the decay: without recomputing the statistics, long averaging windows fail, while recomputing them allows larger windows [29]. SWA, which averages checkpoints with equal weight, recomputes BN statistics with an extra pass over the training data after training [28]. To recompute, reset the running statistics, run the averaged model in training mode without gradient updates over the training data (or a large sample of it), then switch to evaluation mode.
+
+**Evaluation.** Evaluate both the raw and the averaged weights at every validation step and keep the better one; it costs one extra forward pass over the validation set. EMA models are also often used as "teacher" models in larger training pipelines [29].
+
+### Discriminative learning rates and gradual unfreezing
+
+This note shows how to set a separate learning rate for each layer group and how to unfreeze a pretrained network in stages.
+
+**Discriminative learning rates.** Split the parameters into groups $\theta^1, \dots, \theta^L$ from the input ($l = 1$) to the head ($l = L$), and give group $l$ its own rate $\eta^l$. The update is $\theta^l_t = \theta^l_{t-1} - \eta^l\,\nabla_{\theta^l} J$, where $J$ is the training objective. Howard and Ruder chose the head's rate $\eta^L$ by fine-tuning only the last layer and then set $\eta^{l-1} = \eta^l / 2.6$ for each lower layer [34]; the factor 2.6 is an empirical choice from their language-model experiments, not a universal constant. The general pattern is a geometric decay,
+
+$$
+\eta^l = \eta^L\,\alpha^{\,L - l}, \qquad 0 \lt \alpha \le 1,
+$$
+
+where $\alpha$ is the per-group decay factor: $\alpha = 1$ is ordinary fine-tuning, and small $\alpha$ approaches freezing the early layers. In practice, use groups such as the stem, each backbone stage and the head, rather than every layer.
+
+**Gradual unfreezing.** Instead of training everything from the start, unfreeze the last layer group first and train for one epoch, then unfreeze the next lower group and train all unfrozen groups for another epoch, and continue until the whole network trains [34]. The motivation is the generality gradient measured by Yosinski et al.: later layers are the most task-specific and should adapt first [32].
+
+**Edge cases.** (1) Frozen layers that contain BN should normally be in evaluation mode too, otherwise their running statistics keep changing even though their weights do not. (2) Keep frozen parameters out of the optimizer, or give them no gradient, so that no update of any kind, including weight decay, touches them. (3) When a group is unfrozen, its optimizer state (momentum, or Adam's moment estimates) starts from zero; a short warmup for that group avoids a sudden jump. (4) A schedule defined as a multiplier of each group's base rate keeps the ratios $\eta^l / \eta^L$ fixed during warmup and decay.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Accurate, Large Minibatch SGD (Goyal et al.)
+
+**The problem.** Training on many GPUs at once requires a large total batch, because each GPU needs enough work to be efficient. But larger batches had been reported to hurt accuracy. Goyal et al. asked whether this loss was an optimization problem that could be fixed [9].
+
+**The idea.** Two rules: scale the learning rate linearly with the batch size, and ramp it up gradually over the first epochs. The scaling rule follows from a simple comparison. $k$ SGD steps with small batches and rate $\eta$ move the weights by $\eta$ times the sum of $k$ small-batch mean gradients, each taken at a slightly different point; one step with a $k$-times larger batch moves them by $\hat{\eta}$ times the mean of the same gradients taken at the starting point. If the gradients barely change over the $k$ steps, the two updates match when $\hat{\eta} = k\eta$. The paper names the two situations where that assumption fails: early in training, when the network changes quickly, which the warmup addresses, and beyond some batch size, where accuracy degrades.
+
+**What it showed.** ResNet-50 on ImageNet with a batch of 8,192 images across 256 GPUs, trained in one hour, matched the accuracy of the batch-256 baseline [9].
+
+**How to read its table.** The key table compares warmup strategies at batch 8k with the baseline, each as mean and standard deviation of the top-1 validation error over 5 trials: baseline 23.60% ± 0.12, no warmup 24.84% ± 0.37, constant warmup 25.88% ± 0.56, gradual warmup 23.74% ± 0.09 [9]. Read it in three steps. First, the spread of each row: differences smaller than about two standard deviations are not meaningful. Second, the surprise: a constant low rate for warmup is *worse* than no warmup, because the switch to the full rate causes a spike from which training never fully recovers. Third, the authors attribute the no-warmup gap to higher *training* error, not to worse generalization, which is what makes it an optimization problem.
+
+**Implementation pitfalls it lists.** Scaling the cross-entropy loss is not equivalent to scaling the learning rate when weight decay is present; momentum needs a correction when the learning rate changes if the implementation folds the rate into the momentum buffer; BN statistics are computed per GPU over 32 images, and this per-worker batch is part of the definition of the loss; the zero-$\gamma$ initialization of the last BN in each residual block helps, especially at large batches.
+
+**Limits.** The experiments are ImageNet classification with SGD and momentum, plus transfer of the pretrained models to detection and instance segmentation; the rule is an approximation whose limit (about 8k images in their setting) depends on the task and model, and it says nothing direct about adaptive optimizers.
+
+**Why it matters here.** It is the source of two defaults in this chapter, linear scaling with warmup and zero-$\gamma$ residual initialization, and an example of reporting variance over several trials.
+
+### Fine-Tuning can Distort Pretrained Features (Kumar et al.)
+
+**The problem.** Given a good pretrained model, should you train only a new linear head (linear probing) or update all weights (fine-tuning)? Fine-tuning is known to be more accurate on data like the training data. Kumar et al. asked what happens on shifted data [35].
+
+**The idea.** When fine-tuning starts from a fixed or random head, the head and the feature extractor are optimized together. The features of the in-distribution training inputs are updated to suit the head, while the features of out-of-distribution inputs change less, so the final head fits the *distorted* in-distribution features and works poorly on the others. The authors prove this tradeoff for overparameterized two-layer linear networks and show that, in that setting, early stopping does not fix it: fine-tuning never passes through parameters that do better out of distribution than linear probing. Their remedy is to train the head first (linear probing), then fine-tune everything starting from that head (LP-FT).
+
+**What it showed.** On ten distribution-shift benchmarks, fine-tuning was on average 2% more accurate in distribution but 7% less accurate out of distribution than linear probing, and LP-FT beat full fine-tuning by about 1% in distribution and 10% out of distribution [35].
+
+**How to read its results.** Look at two columns for every method: in-distribution (ID) and out-of-distribution (OOD) accuracy. A method that wins ID and loses OOD is fitting features specific to the training distribution. The gaps depend on how good the pretrained features are and how large the shift is: the paper's claim is that fine-tuning can underperform when the features are good and the shift is large, not that it always does.
+
+**Limits.** The analysis assumes good pretrained features; with poor features or small shifts, plain fine-tuning can be the better choice. LP-FT adds a stage whose length and learning rate need tuning.
+
+**Why it matters here.** It explains why "train the head first" is a sensible default when a robust model matters, and why the head's initialization is part of a fine-tuning recipe, not a detail.
+
+## References
+
+1. T. He, Z. Zhang, H. Zhang, Z. Zhang, J. Xie and M. Li, "Bag of tricks for image classification with convolutional neural networks," in *Proc. IEEE/CVF CVPR*, 2019. [doi](https://doi.org/10.1109/CVPR.2019.00065)
+2. A. Karpathy, "A recipe for training neural networks," blog post, 2019. [link](https://karpathy.github.io/2019/04/25/recipe/)
+3. scikit-learn developers, "load_digits," *scikit-learn documentation*, version 1.9. [link](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_digits.html)
+4. M. Buda, A. Maki and M. A. Mazurowski, "A systematic study of the class imbalance problem in convolutional neural networks," *Neural Networks*, vol. 106, 2018. [doi](https://doi.org/10.1016/j.neunet.2018.07.011)
+5. T.-Y. Lin, P. Goyal, R. Girshick, K. He and P. Dollár, "Focal loss for dense object detection," in *Proc. IEEE ICCV*, 2017. [doi](https://doi.org/10.1109/ICCV.2017.324)
+6. A. Buslaev, V. I. Iglovikov, E. Khvedchenya, A. Parinov, M. Druzhinin and A. A. Kalinin, "Albumentations: Fast and flexible image augmentations," *Information*, vol. 11, no. 2, 2020. [doi](https://doi.org/10.3390/info11020125)
+7. C. Shorten and T. M. Khoshgoftaar, "A survey on image data augmentation for deep learning," *Journal of Big Data*, vol. 6, 2019. [doi](https://doi.org/10.1186/s40537-019-0197-0)
+8. K. He, X. Zhang, S. Ren and J. Sun, "Delving deep into rectifiers: Surpassing human-level performance on ImageNet classification," in *Proc. IEEE ICCV*, 2015. [doi](https://doi.org/10.1109/ICCV.2015.123)
+9. P. Goyal, P. Dollár, R. Girshick, P. Noordhuis, L. Wesolowski, A. Kyrola, A. Tulloch, Y. Jia and K. He, "Accurate, large minibatch SGD: Training ImageNet in 1 hour," arXiv:1706.02677 (technical report), 2017. [arXiv](https://arxiv.org/abs/1706.02677)
+10. S. Ioffe and C. Szegedy, "Batch normalization: Accelerating deep network training by reducing internal covariate shift," in *Proc. ICML*, PMLR 37, 2015. [link](https://proceedings.mlr.press/v37/ioffe15.html)
+11. Y. Wu and K. He, "Group normalization," in *Proc. ECCV*, 2018. [doi](https://doi.org/10.1007/978-3-030-01261-8_1)
+12. Y. Bengio, "Practical recommendations for gradient-based training of deep architectures," in *Neural Networks: Tricks of the Trade*, 2nd ed., LNCS 7700, Springer, 2012. [doi](https://doi.org/10.1007/978-3-642-35289-8_26)
+13. L. N. Smith, "Cyclical learning rates for training neural networks," in *Proc. IEEE WACV*, 2017. [doi](https://doi.org/10.1109/WACV.2017.58)
+14. L. N. Smith, "A disciplined approach to neural network hyper-parameters: Part 1 — learning rate, batch size, momentum, and weight decay," US Naval Research Laboratory Technical Report 5510-026, arXiv:1803.09820, 2018. [arXiv](https://arxiv.org/abs/1803.09820)
+15. I. Loshchilov and F. Hutter, "SGDR: Stochastic gradient descent with warm restarts," in *Proc. ICLR*, 2017. [arXiv](https://arxiv.org/abs/1608.03983)
+16. L. N. Smith and N. Topin, "Super-convergence: Very fast training of neural networks using large learning rates," in *Artificial Intelligence and Machine Learning for Multi-Domain Operations Applications*, Proc. SPIE 11006, 2019. [doi](https://doi.org/10.1117/12.2520589)
+17. PyTorch contributors, "torch.optim.lr_scheduler.OneCycleLR," *PyTorch 2.15 documentation*, 2026. [link](https://docs.pytorch.org/docs/2.15/generated/torch.optim.lr_scheduler.OneCycleLR.html)
+18. K. He, X. Zhang, S. Ren and J. Sun, "Deep residual learning for image recognition," in *Proc. IEEE CVPR*, 2016. [doi](https://doi.org/10.1109/CVPR.2016.90)
+19. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A large-scale hierarchical image database," in *Proc. IEEE CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+20. D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1412.6980)
+21. I. Loshchilov and F. Hutter, "Decoupled weight decay regularization," in *Proc. ICLR*, 2019. [arXiv](https://arxiv.org/abs/1711.05101)
+22. PyTorch contributors, "torch.optim.Adam," *PyTorch 2.15 documentation*, 2026. [link](https://docs.pytorch.org/docs/2.15/generated/torch.optim.Adam.html)
+23. N. Srivastava, G. Hinton, A. Krizhevsky, I. Sutskever and R. Salakhutdinov, "Dropout: A simple way to prevent neural networks from overfitting," *Journal of Machine Learning Research*, vol. 15, 2014. [link](https://jmlr.org/papers/v15/srivastava14a.html)
+24. G. Huang, Y. Sun, Z. Liu, D. Sedra and K. Q. Weinberger, "Deep networks with stochastic depth," in *Proc. ECCV*, 2016. [doi](https://doi.org/10.1007/978-3-319-46493-0_39)
+25. L. Prechelt, "Early stopping — but when?," in *Neural Networks: Tricks of the Trade*, 2nd ed., LNCS 7700, Springer, 2012. [doi](https://doi.org/10.1007/978-3-642-35289-8_5)
+26. V. Godbole, G. E. Dahl, J. Gilmer, C. J. Shallue and Z. Nado, "Deep learning tuning playbook," Google Research, GitHub repository, 2023. [link](https://github.com/google-research/tuning_playbook)
+27. B. T. Polyak and A. B. Juditsky, "Acceleration of stochastic approximation by averaging," *SIAM Journal on Control and Optimization*, vol. 30, no. 4, 1992. [doi](https://doi.org/10.1137/0330046)
+28. P. Izmailov, D. Podoprikhin, T. Garipov, D. Vetrov and A. G. Wilson, "Averaging weights leads to wider optima and better generalization," in *Proc. UAI*, 2018. [arXiv](https://arxiv.org/abs/1803.05407)
+29. D. Morales-Brotons, T. Vogels and H. Hendrikx, "Exponential moving average of weights in deep learning: Dynamics and benefits," *Transactions on Machine Learning Research*, 2024. [arXiv](https://arxiv.org/abs/2411.18704)
+30. P. Micikevicius, S. Narang, J. Alben, G. Diamos, E. Elsen, D. Garcia, B. Ginsburg, M. Houston, O. Kuchaiev, G. Venkatesh and H. Wu, "Mixed precision training," in *Proc. ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.03740)
+31. PyTorch contributors, "Automatic mixed precision package — torch.amp," *PyTorch 2.15 documentation*, 2026. [link](https://docs.pytorch.org/docs/2.15/amp.html)
+32. J. Yosinski, J. Clune, Y. Bengio and H. Lipson, "How transferable are features in deep neural networks?," in *Advances in Neural Information Processing Systems 27*, 2014. [link](https://papers.nips.cc/paper_files/paper/2014/hash/532a2f85b6977104bc93f8580abbb330-Abstract.html)
+33. E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang and W. Chen, "LoRA: Low-rank adaptation of large language models," in *Proc. ICLR*, 2022. [arXiv](https://arxiv.org/abs/2106.09685)
+34. J. Howard and S. Ruder, "Universal language model fine-tuning for text classification," in *Proc. ACL*, 2018. [doi](https://doi.org/10.18653/v1/P18-1031)
+35. A. Kumar, A. Raghunathan, R. Jones, T. Ma and P. Liang, "Fine-tuning can distort pretrained features and underperform out-of-distribution," in *Proc. ICLR*, 2022. [arXiv](https://arxiv.org/abs/2202.10054)
+36. C. Zhang, S. Bengio, M. Hardt, B. Recht and O. Vinyals, "Understanding deep learning requires rethinking generalization," in *Proc. ICLR*, 2017. [arXiv](https://arxiv.org/abs/1611.03530)
+37. R. Geirhos, J.-H. Jacobsen, C. Michaelis, R. Zemel, W. Brendel, M. Bethge and F. A. Wichmann, "Shortcut learning in deep neural networks," *Nature Machine Intelligence*, vol. 2, 2020. [doi](https://doi.org/10.1038/s42256-020-00257-z)
+38. PyTorch contributors, "Reproducibility," *PyTorch 2.15 documentation*, 2026. [link](https://docs.pytorch.org/docs/2.15/notes/randomness.html)
+39. Y. Xin, J. Yang, S. Luo, Y. Du, Q. Qin, K. Cen, Y. He, Z. Zhang, B. Fu, X. Yang, G. Zhai, M.-H. Yang and X. Liu, "Parameter-efficient fine-tuning for pre-trained vision models: A survey and benchmark," arXiv:2402.02242, 2024. [arXiv](https://arxiv.org/abs/2402.02242)
+40. G. E. Dahl, F. Schneider, Z. Nado, N. Agarwal, C. S. Sastry, P. Hennig, S. Medapati, R. Eschenhagen, P. Kasimbeg, D. Suo et al., "Benchmarking neural network training algorithms," arXiv:2306.07179, 2023. [arXiv](https://arxiv.org/abs/2306.07179)
+41. P. Kasimbeg, F. Schneider, R. Eschenhagen, J. Bae, C. S. Sastry, M. Saroufim, B. Feng, L. Wright, E. Z. Yang, Z. Nado, S. Medapati, P. Hennig, M. Rabbat and G. E. Dahl, "Accelerating neural network training: An analysis of the AlgoPerf competition," in *Proc. ICLR*, 2025. [arXiv](https://arxiv.org/abs/2502.15015)
+42. A. Defazio, X. A. Yang, H. Mehta, K. Mishchenko, A. Khaled and A. Cutkosky, "The road less scheduled," in *Advances in Neural Information Processing Systems 37*, 2024. [link](https://proceedings.neurips.cc/paper_files/paper/2024/hash/136b9a13861308c8948cd308ccd02658-Abstract-Conference.html)
+43. S. Hu, Y. Tu, X. Han, C. He, G. Cui, X. Long, Z. Zheng, Y. Fang, Y. Huang, W. Zhao et al., "MiniCPM: Unveiling the potential of small language models with scalable training strategies," arXiv:2404.06395, 2024. [arXiv](https://arxiv.org/abs/2404.06395)
+44. A. Hägele, E. Bakouch, A. Kosson, L. Ben Allal, L. Von Werra and M. Jaggi, "Scaling laws and compute-optimal training beyond fixed training durations," in *Advances in Neural Information Processing Systems 37*, 2024. [link](https://papers.nips.cc/paper_files/paper/2024/hash/8b970e15a89bf5d12542810df8eae8fc-Abstract-Conference.html)
+45. M. Wortsman, G. Ilharco, J. W. Kim, M. Li, S. Kornblith, R. Roelofs, R. Gontijo Lopes, H. Hajishirzi, A. Farhadi, H. Namkoong and L. Schmidt, "Robust fine-tuning of zero-shot models," in *Proc. IEEE/CVF CVPR*, 2022. [doi](https://doi.org/10.1109/CVPR52688.2022.00780)
+46. M. Wortsman, G. Ilharco, S. Y. Gadre, R. Roelofs, R. Gontijo-Lopes, A. S. Morcos, H. Namkoong, A. Farhadi, Y. Carmon, S. Kornblith and L. Schmidt, "Model soups: Averaging weights of multiple fine-tuned models improves accuracy without increasing inference time," in *Proc. ICML*, PMLR 162, 2022. [link](https://proceedings.mlr.press/v162/wortsman22a.html)
+47. PyTorch contributors, "Automatic mixed precision examples," *PyTorch 2.15 documentation*, 2026. [link](https://docs.pytorch.org/docs/2.15/notes/amp_examples.html)
