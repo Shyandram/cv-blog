@@ -20,4 +20,6 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'contour-energy': () => import('./contour-energy.ts'),
   'mlp-training': () => import('./mlp.ts'),
   'tracking-association': () => import('./tracking-association.ts'),
+  'adversarial-budget': () => import('./adversarial-budget.ts'),
+  'ctc-decoding': () => import('./ctc-decoding.ts'),
 };

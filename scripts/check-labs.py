@@ -191,6 +191,26 @@ def check_tracking(metrics, set_, zh):
     assert first_float(m2[0]) == 0 and first_float(m2[2]) > 0.8, f"mixing colour in should remove the swap: {m2}"
 
 
+def check_adversarial(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # clean, FGSM, random-sign accuracy (%)
+    assert v[0] > 95 and v[1] < 10 and v[2] > 95, f"default (32 x 32, eps 8): FGSM should collapse accuracy, random signs should not: {metrics()}"
+    set_("dim", "64")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[1] > 90 and w[2] > 95, f"the same eps on 8 x 8 should barely hurt: {metrics()}"
+    set_("eps", "0")
+    z = [pct(x) for x in list(metrics().values())[:3]]
+    assert z[0] == z[1] == z[2], f"eps 0 changes nothing: {metrics()}"
+
+
+def check_ctc(metrics, set_, zh):
+    v = list(metrics().values())  # decoded text, double letter kept, greedy path p, p(decoded), p(correct), loss
+    assert v[0] == "BOK" and first_float(v[4]) > first_float(v[3]), f"default greedy decoding drops one O although BOOK is the likelier text: {v}"
+    set_("decoder", "beam")
+    assert list(metrics().values())[0] == "BOOK", metrics()
+    set_("decoder", "greedy"); set_("q", "0.5")
+    assert list(metrics().values())[0] == "BOOK", metrics()
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -201,6 +221,7 @@ EXPECT = {
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
     "bagging-trees": check_bagging, "tracking-association": check_tracking, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "adversarial-budget": check_adversarial, "ctc-decoding": check_ctc,
 }
 
 

@@ -55,6 +55,8 @@ export const chapterPlan: Record<string, string[]> = {
     'deep-learning/dl-05a-lightweight-enhancement': ['lowlight-photons'],
     'deep-learning/dl-06-object-tracking': ['tracking-association'],
     'deep-learning/dl-07-world-models': ['world-model-rollout'],
+    'deep-learning/dl-11-robustness': ['adversarial-budget'],
+    'deep-learning/dl-11a-text-in-images': ['ctc-decoding'],
     'ml/ml-01a-linear-algebra': ['linear-transform'],
     'ml/ml-01b-probability-information': ['probability-mismatch', 'bayes-decision'],
     'ml/ml-01c-numerical-computation': ['gradient-check'],
@@ -115,9 +117,7 @@ export const readingOnlyChapters = [
     'deep-learning/dl-06b-video-understanding',
     'deep-learning/dl-02a-face-metric-learning',
     'deep-learning/dl-01a-training-practice',
-    'deep-learning/dl-11-robustness',
     'deep-learning/dl-01b-building-blocks',
-    'deep-learning/dl-11a-text-in-images',
 ];
 const defaultReason = L('This chapter\u2019s own figures, code and exercises carry its main idea; a separate interactive demo would not add to them.', '本章的圖、程式與練習已經足以說明主要概念；另外加一個互動實驗不會增加理解。');
 const reasons: Record<string, Localized> = {

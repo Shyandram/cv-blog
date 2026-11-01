@@ -1481,7 +1481,7 @@ Why vision models fail outside their test set and what to do about it: kinds of 
 - Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11-robustness.mdx`
 - Pages: `/en/learn/deep-learning/dl-11-robustness/`, `/en/learn/deep-learning/dl-11-robustness/notes/`, `/en/learn/deep-learning/dl-11-robustness/papers/`
 - Level advanced · order 110 · needs: `deep-learning/dl-02-image-classification` · tags: robustness, distribution-shift, adversarial-examples, adversarial-training, out-of-distribution-detection, anomaly-detection, test-time-adaptation, domain-adaptation
-- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50
+- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50 · experiments: adversarial-budget
 
 - [What you'll learn](/en/learn/deep-learning/dl-11-robustness/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-11-robustness/#the-big-picture) `the-big-picture`
@@ -1537,7 +1537,7 @@ How machines read text in photos, scans and screenshots: the detection, recognit
 - Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11a-text-in-images.mdx`
 - Pages: `/en/learn/deep-learning/dl-11a-text-in-images/`, `/en/learn/deep-learning/dl-11a-text-in-images/notes/`, `/en/learn/deep-learning/dl-11a-text-in-images/papers/`
 - Level advanced · order 115 · needs: `deep-learning/dl-03-object-detection` · tags: ocr, scene-text, text-detection, text-recognition, ctc, document-understanding, layout-analysis, ocr-free, evaluation-metrics
-- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51
+- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51 · experiments: ctc-decoding
 
 - [What you'll learn](/en/learn/deep-learning/dl-11a-text-in-images/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-11a-text-in-images/#the-big-picture) `the-big-picture`
