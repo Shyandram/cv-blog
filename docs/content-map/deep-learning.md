@@ -9,6 +9,7 @@
 | 10 | [DLCV 01 · Deep Learning for Image Processing and Computer Vision](#dl-01-deep-learning-for-image-processing) | intermediate | ML 02, IP 03 | `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` |
 | 15 | [DLCV 01A · Training Deep Vision Models in Practice](#dl-01a-training-practice) | advanced | DLCV 01 | `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` |
 | 17 | [DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks](#dl-01b-building-blocks) | advanced | DLCV 01, ML 04 | `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` |
+| 18 | [DLCV 01C · Model Compression and Efficient Inference](#dl-01c-model-compression) | advanced | DLCV 01A, DLCV 01B | `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` |
 | 20 | [DLCV 02 · Deep Image Classification](#dl-02-image-classification) | advanced | DLCV 01, IP 13 | `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` |
 | 25 | [DLCV 02A · Face Recognition and Metric Learning](#dl-02a-face-metric-learning) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` |
 | 30 | [DLCV 03 · Object Detection: From R-CNN to DETR](#dl-03-object-detection) | advanced | DLCV 02, IP 12 | `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` |
@@ -203,6 +204,74 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 - [Simple Baselines for Image Restoration (NAFNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#simple-baselines-for-image-restoration-nafnet) `simple-baselines-for-image-restoration-nafnet`
 - [Designing Network Design Spaces (RegNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#designing-network-design-spaces-regnet) `designing-network-design-spaces-regnet`
 - [A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer) `a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer`
+
+## dl-01c-model-compression
+
+**DLCV 01C · Model Compression and Efficient Inference**  
+How to make a trained vision model smaller and faster without fooling yourself: what cost means and how to measure it, pruning, quantization, knowledge distillation, low-rank factorization, designing and searching for small architectures, and why a paper's speed-up is not your device's speed-up.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` (no zh-tw twin)
+- Pages: `/en/learn/deep-learning/dl-01c-model-compression/`, `/en/learn/deep-learning/dl-01c-model-compression/notes/`, `/en/learn/deep-learning/dl-01c-model-compression/papers/`
+- Level advanced · order 18 · needs: `deep-learning/dl-01a-training-practice`, `deep-learning/dl-01b-building-blocks` · tags: deep-learning, model-compression, pruning, quantization, knowledge-distillation, efficient-inference, low-rank, neural-architecture-search
+- Figures: 3 (script `scripts/figures/dl_01c_model_compression.py`) · references: 72
+
+- [What you'll learn](/en/learn/deep-learning/dl-01c-model-compression/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/dl-01c-model-compression/#the-big-picture) `the-big-picture`
+- [What "cost" means](/en/learn/deep-learning/dl-01c-model-compression/#what-cost-means) `what-cost-means`
+  - [Six numbers that are not the same](/en/learn/deep-learning/dl-01c-model-compression/#six-numbers-that-are-not-the-same) `six-numbers-that-are-not-the-same`
+  - [Arithmetic intensity and the roofline](/en/learn/deep-learning/dl-01c-model-compression/#arithmetic-intensity-and-the-roofline) `arithmetic-intensity-and-the-roofline`
+  - [Measuring honestly](/en/learn/deep-learning/dl-01c-model-compression/#measuring-honestly) `measuring-honestly`
+- [Pruning](/en/learn/deep-learning/dl-01c-model-compression/#pruning) `pruning`
+  - [What gets removed](/en/learn/deep-learning/dl-01c-model-compression/#what-gets-removed) `what-gets-removed`
+  - [Which weights: magnitude and other criteria](/en/learn/deep-learning/dl-01c-model-compression/#which-weights-magnitude-and-other-criteria) `which-weights-magnitude-and-other-criteria`
+  - [Prune, fine-tune, repeat](/en/learn/deep-learning/dl-01c-model-compression/#prune-fine-tune-repeat) `prune-fine-tune-repeat`
+  - [Code: unstructured and structured pruning of a small MLP](/en/learn/deep-learning/dl-01c-model-compression/#code-unstructured-and-structured-pruning-of-a-small-mlp) `code-unstructured-and-structured-pruning-of-a-small-mlp`
+  - [The lottery ticket hypothesis](/en/learn/deep-learning/dl-01c-model-compression/#the-lottery-ticket-hypothesis) `the-lottery-ticket-hypothesis`
+- [Quantization](/en/learn/deep-learning/dl-01c-model-compression/#quantization) `quantization`
+  - [Uniform affine quantization](/en/learn/deep-learning/dl-01c-model-compression/#uniform-affine-quantization) `uniform-affine-quantization`
+  - [Why integer kernels can factor out the scales](/en/learn/deep-learning/dl-01c-model-compression/#why-integer-kernels-can-factor-out-the-scales) `why-integer-kernels-can-factor-out-the-scales`
+  - [Granularity and range setting](/en/learn/deep-learning/dl-01c-model-compression/#granularity-and-range-setting) `granularity-and-range-setting`
+  - [What breaks: outliers, folded batch norm and activations](/en/learn/deep-learning/dl-01c-model-compression/#what-breaks-outliers-folded-batch-norm-and-activations) `what-breaks-outliers-folded-batch-norm-and-activations`
+  - [Post-training quantization and quantization-aware training](/en/learn/deep-learning/dl-01c-model-compression/#post-training-quantization-and-quantization-aware-training) `post-training-quantization-and-quantization-aware-training`
+  - [Mixed precision and other number formats](/en/learn/deep-learning/dl-01c-model-compression/#mixed-precision-and-other-number-formats) `mixed-precision-and-other-number-formats`
+- [Knowledge distillation](/en/learn/deep-learning/dl-01c-model-compression/#knowledge-distillation) `knowledge-distillation`
+  - [Code: distilling the toy MLP into an 8-unit student](/en/learn/deep-learning/dl-01c-model-compression/#code-distilling-the-toy-mlp-into-an-8-unit-student) `code-distilling-the-toy-mlp-into-an-8-unit-student`
+  - [Feature and attention distillation](/en/learn/deep-learning/dl-01c-model-compression/#feature-and-attention-distillation) `feature-and-attention-distillation`
+  - [What decides whether distillation helps](/en/learn/deep-learning/dl-01c-model-compression/#what-decides-whether-distillation-helps) `what-decides-whether-distillation-helps`
+- [Low-rank factorization](/en/learn/deep-learning/dl-01c-model-compression/#low-rank-factorization) `low-rank-factorization`
+  - [The three toys side by side](/en/learn/deep-learning/dl-01c-model-compression/#the-three-toys-side-by-side) `the-three-toys-side-by-side`
+- [Designing small from the start](/en/learn/deep-learning/dl-01c-model-compression/#designing-small-from-the-start) `designing-small-from-the-start`
+  - [Re-parameterization: train rich, deploy plain](/en/learn/deep-learning/dl-01c-model-compression/#re-parameterization-train-rich-deploy-plain) `re-parameterization-train-rich-deploy-plain`
+  - [Neural architecture search](/en/learn/deep-learning/dl-01c-model-compression/#neural-architecture-search) `neural-architecture-search`
+- [Deployment: from a small model to a fast one](/en/learn/deep-learning/dl-01c-model-compression/#deployment-from-a-small-model-to-a-fast-one) `deployment-from-a-small-model-to-a-fast-one`
+  - [Operator fusion and batch-norm folding](/en/learn/deep-learning/dl-01c-model-compression/#operator-fusion-and-batch-norm-folding) `operator-fusion-and-batch-norm-folding`
+  - [Integer kernels and runtime support](/en/learn/deep-learning/dl-01c-model-compression/#integer-kernels-and-runtime-support) `integer-kernels-and-runtime-support`
+  - [Why paper speed-ups shrink on devices](/en/learn/deep-learning/dl-01c-model-compression/#why-paper-speed-ups-shrink-on-devices) `why-paper-speed-ups-shrink-on-devices`
+- [Compressing vision models: what is sensitive](/en/learn/deep-learning/dl-01c-model-compression/#compressing-vision-models-what-is-sensitive) `compressing-vision-models-what-is-sensitive`
+  - [Classification backbones](/en/learn/deep-learning/dl-01c-model-compression/#classification-backbones) `classification-backbones`
+  - [Detectors](/en/learn/deep-learning/dl-01c-model-compression/#detectors) `detectors`
+  - [Dense prediction and restoration](/en/learn/deep-learning/dl-01c-model-compression/#dense-prediction-and-restoration) `dense-prediction-and-restoration`
+  - [Vision Transformers and diffusion models](/en/learn/deep-learning/dl-01c-model-compression/#vision-transformers-and-diffusion-models) `vision-transformers-and-diffusion-models`
+- [Modern view](/en/learn/deep-learning/dl-01c-model-compression/#modern-view) `modern-view`
+  - [What the surveys say](/en/learn/deep-learning/dl-01c-model-compression/#what-the-surveys-say) `what-the-surveys-say`
+  - [The state of the art, 2023–2026](/en/learn/deep-learning/dl-01c-model-compression/#the-state-of-the-art-20232026) `the-state-of-the-art-20232026`
+  - [Open problems](/en/learn/deep-learning/dl-01c-model-compression/#open-problems) `open-problems`
+- [Key takeaways](/en/learn/deep-learning/dl-01c-model-compression/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/dl-01c-model-compression/#exercises) `exercises`
+
+*Supplementary notes (`notes/` page):*
+
+- [N:M semi-structured sparsity](/en/learn/deep-learning/dl-01c-model-compression/notes/#nm-semi-structured-sparsity) `nm-semi-structured-sparsity`
+- [Pruning coupled channels](/en/learn/deep-learning/dl-01c-model-compression/notes/#pruning-coupled-channels) `pruning-coupled-channels`
+- [The gradual pruning schedule](/en/learn/deep-learning/dl-01c-model-compression/notes/#the-gradual-pruning-schedule) `the-gradual-pruning-schedule`
+- [Requantization with a fixed-point multiplier](/en/learn/deep-learning/dl-01c-model-compression/notes/#requantization-with-a-fixed-point-multiplier) `requantization-with-a-fixed-point-multiplier`
+- [Choosing the clipping range: min-max, percentile and MSE](/en/learn/deep-learning/dl-01c-model-compression/notes/#choosing-the-clipping-range-min-max-percentile-and-mse) `choosing-the-clipping-range-min-max-percentile-and-mse`
+- [Beyond round-to-nearest: AdaRound, BRECQ and LSQ](/en/learn/deep-learning/dl-01c-model-compression/notes/#beyond-round-to-nearest-adaround-brecq-and-lsq) `beyond-round-to-nearest-adaround-brecq-and-lsq`
+
+*Paper guides (`papers/` page):*
+
+- [The Lottery Ticket Hypothesis (Frankle and Carbin, ICLR 2019)](/en/learn/deep-learning/dl-01c-model-compression/papers/#the-lottery-ticket-hypothesis-frankle-and-carbin-iclr-2019) `the-lottery-ticket-hypothesis-frankle-and-carbin-iclr-2019`
+- [A White Paper on Neural Network Quantization (Nagel et al., 2021)](/en/learn/deep-learning/dl-01c-model-compression/papers/#a-white-paper-on-neural-network-quantization-nagel-et-al-2021) `a-white-paper-on-neural-network-quantization-nagel-et-al-2021`
 
 ## dl-02-image-classification
 
