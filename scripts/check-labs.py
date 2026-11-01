@@ -191,6 +191,30 @@ def check_tracking(metrics, set_, zh):
     assert first_float(m2[0]) == 0 and first_float(m2[2]) > 0.8, f"mixing colour in should remove the swap: {m2}"
 
 
+def check_image_fusion(metrics, set_, zh):
+    v = [pct(x) for x in metrics().values()]  # PSNR average, PSNR fused, map agreement on textured pixels (%)
+    assert 29 < v[0] < 31 and v[1] > 38.5 and v[1] - v[0] > 8, f"default: averaging blurry (~30 dB), local-detail rule sharp (~39 dB): {metrics()}"
+    set_("window", "0.5")
+    w = [pct(x) for x in metrics().values()]
+    assert w[1] < v[1] - 1.5 and w[2] < v[2] - 5, f"a tiny window should make the decision map noisy: {metrics()}"
+    set_("smooth", "2")
+    assert pct(list(metrics().values())[1]) > w[1] + 1.5, f"smoothing the map should repair most of it: {metrics()}"
+
+
+def check_lut_trilinear(metrics, set_, zh):
+    def errs():
+        m = list(metrics().values())  # table size, nearest mean / max, trilinear mean / max
+        return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", m[1])], [float(x) for x in re.findall(r"\d+(?:\.\d+)?", m[2])]
+    n, t = errs()
+    assert n[0] > 8 and n[1] > 20 and t[0] < 0.5 and t[1] <= 5, f"default M=9 gradient: nearest bands, trilinear near-exact: {metrics()}"
+    set_("m", "33")
+    n33, t33 = errs()
+    assert 1.5 < n33[0] < 3.5 and t33[0] < 0.1 and n33[0] > t[0] * 4, f"M=33: nearest still off by a couple of levels, more than trilinear at M=9: {metrics()}"
+    set_("m", "2")
+    n2, t2 = errs()
+    assert t2[0] > 5 and n2[0] > t2[0], f"two nodes cannot follow the curve: {metrics()}"
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -200,7 +224,7 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
-    "bagging-trees": check_bagging, "tracking-association": check_tracking, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "bagging-trees": check_bagging, "tracking-association": check_tracking, "image-fusion": check_image_fusion, "lut-trilinear": check_lut_trilinear, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
 }
 
 
