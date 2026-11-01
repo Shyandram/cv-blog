@@ -31,6 +31,7 @@
 | 100 | [DLCV 10 · Image Generation: From GANs to Text-to-Image Systems](#dl-10-image-generation) | advanced | ML 06, ML 07 | `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` |
 | 105 | [DLCV 10A · Video Generation](#dl-10a-video-generation) | advanced | DLCV 10 | `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` |
 | 110 | [DLCV 11 · Robustness: Distribution Shift, Adversarial Examples and Anomalies](#dl-11-robustness) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` |
+| 115 | [DLCV 11A · Text in Images: OCR and Document Understanding](#dl-11a-text-in-images) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` |
 
 ## dl-01-deep-learning-for-image-processing
 
@@ -1527,4 +1528,70 @@ Why vision models fail outside their test set and what to do about it: kinds of 
 - [Madry et al., "Towards Deep Learning Models Resistant to Adversarial Attacks" (ICLR 2018)](/en/learn/deep-learning/dl-11-robustness/papers/#madry-et-al-towards-deep-learning-models-resistant-to-adversarial-attacks-iclr-2018) `madry-et-al-towards-deep-learning-models-resistant-to-adversarial-attacks-iclr-2018`
 - [Athalye et al., "Obfuscated Gradients Give a False Sense of Security" (ICML 2018)](/en/learn/deep-learning/dl-11-robustness/papers/#athalye-et-al-obfuscated-gradients-give-a-false-sense-of-security-icml-2018) `athalye-et-al-obfuscated-gradients-give-a-false-sense-of-security-icml-2018`
 - [Gulrajani and Lopez-Paz, "In Search of Lost Domain Generalization" (ICLR 2021)](/en/learn/deep-learning/dl-11-robustness/papers/#gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021) `gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021`
+
+## dl-11a-text-in-images
+
+**DLCV 11A · Text in Images: OCR and Document Understanding**  
+How machines read text in photos, scans and screenshots: the detection, recognition and layout pipeline and where each stage fails; regression and segmentation text detectors, CTC, attention and transformer recognizers, text spotting, LayoutLM-style and OCR-free document models; CER, WER and H-mean; the standard benchmarks and the failure modes that matter.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` (no zh-tw twin)
+- Pages: `/en/learn/deep-learning/dl-11a-text-in-images/`, `/en/learn/deep-learning/dl-11a-text-in-images/notes/`, `/en/learn/deep-learning/dl-11a-text-in-images/papers/`
+- Level advanced · order 115 · needs: `deep-learning/dl-03-object-detection` · tags: ocr, scene-text, text-detection, text-recognition, ctc, document-understanding, layout-analysis, ocr-free, evaluation-metrics
+- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51
+
+- [What you'll learn](/en/learn/deep-learning/dl-11a-text-in-images/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/dl-11a-text-in-images/#the-big-picture) `the-big-picture`
+- [The reading pipeline and where it breaks](/en/learn/deep-learning/dl-11a-text-in-images/#the-reading-pipeline-and-where-it-breaks) `the-reading-pipeline-and-where-it-breaks`
+  - [Scene text versus document text](/en/learn/deep-learning/dl-11a-text-in-images/#scene-text-versus-document-text) `scene-text-versus-document-text`
+  - [Four places where errors start](/en/learn/deep-learning/dl-11a-text-in-images/#four-places-where-errors-start) `four-places-where-errors-start`
+- [Before deep learning: thresholds and connected components](/en/learn/deep-learning/dl-11a-text-in-images/#before-deep-learning-thresholds-and-connected-components) `before-deep-learning-thresholds-and-connected-components`
+- [Text detection](/en/learn/deep-learning/dl-11a-text-in-images/#text-detection) `text-detection`
+  - [Why text is not just another object](/en/learn/deep-learning/dl-11a-text-in-images/#why-text-is-not-just-another-object) `why-text-is-not-just-another-object`
+  - [Regression-based detectors: EAST](/en/learn/deep-learning/dl-11a-text-in-images/#regression-based-detectors-east) `regression-based-detectors-east`
+  - [Segmentation-based detectors: PSENet and DBNet](/en/learn/deep-learning/dl-11a-text-in-images/#segmentation-based-detectors-psenet-and-dbnet) `segmentation-based-detectors-psenet-and-dbnet`
+  - [Character-level and curved-text detectors](/en/learn/deep-learning/dl-11a-text-in-images/#character-level-and-curved-text-detectors) `character-level-and-curved-text-detectors`
+- [Text recognition](/en/learn/deep-learning/dl-11a-text-in-images/#text-recognition) `text-recognition`
+  - [Recognition as sequence prediction](/en/learn/deep-learning/dl-11a-text-in-images/#recognition-as-sequence-prediction) `recognition-as-sequence-prediction`
+  - [CTC: training without alignments](/en/learn/deep-learning/dl-11a-text-in-images/#ctc-training-without-alignments) `ctc-training-without-alignments`
+  - [Attention decoders and rectification](/en/learn/deep-learning/dl-11a-text-in-images/#attention-decoders-and-rectification) `attention-decoders-and-rectification`
+  - [Transformer recognizers](/en/learn/deep-learning/dl-11a-text-in-images/#transformer-recognizers) `transformer-recognizers`
+  - [Language models: help and harm](/en/learn/deep-learning/dl-11a-text-in-images/#language-models-help-and-harm) `language-models-help-and-harm`
+  - [Training data: synthetic text](/en/learn/deep-learning/dl-11a-text-in-images/#training-data-synthetic-text) `training-data-synthetic-text`
+- [End-to-end text spotting](/en/learn/deep-learning/dl-11a-text-in-images/#end-to-end-text-spotting) `end-to-end-text-spotting`
+- [Document understanding](/en/learn/deep-learning/dl-11a-text-in-images/#document-understanding) `document-understanding`
+  - [Layout analysis and reading order](/en/learn/deep-learning/dl-11a-text-in-images/#layout-analysis-and-reading-order) `layout-analysis-and-reading-order`
+  - [Text plus layout: the LayoutLM family](/en/learn/deep-learning/dl-11a-text-in-images/#text-plus-layout-the-layoutlm-family) `text-plus-layout-the-layoutlm-family`
+  - [OCR-free models: Donut and Pix2Struct](/en/learn/deep-learning/dl-11a-text-in-images/#ocr-free-models-donut-and-pix2struct) `ocr-free-models-donut-and-pix2struct`
+  - [Vision-language models for documents](/en/learn/deep-learning/dl-11a-text-in-images/#vision-language-models-for-documents) `vision-language-models-for-documents`
+- [Handwriting, many scripts and CJK text](/en/learn/deep-learning/dl-11a-text-in-images/#handwriting-many-scripts-and-cjk-text) `handwriting-many-scripts-and-cjk-text`
+  - [Handwriting](/en/learn/deep-learning/dl-11a-text-in-images/#handwriting) `handwriting`
+  - [Large character sets and vertical text](/en/learn/deep-learning/dl-11a-text-in-images/#large-character-sets-and-vertical-text) `large-character-sets-and-vertical-text`
+  - [Many scripts at once](/en/learn/deep-learning/dl-11a-text-in-images/#many-scripts-at-once) `many-scripts-at-once`
+- [Measuring OCR](/en/learn/deep-learning/dl-11a-text-in-images/#measuring-ocr) `measuring-ocr`
+  - [CER and WER from edit distance](/en/learn/deep-learning/dl-11a-text-in-images/#cer-and-wer-from-edit-distance) `cer-and-wer-from-edit-distance`
+  - [Detection: precision, recall and H-mean at IoU 0.5](/en/learn/deep-learning/dl-11a-text-in-images/#detection-precision-recall-and-h-mean-at-iou-05) `detection-precision-recall-and-h-mean-at-iou-05`
+  - [End-to-end and document metrics](/en/learn/deep-learning/dl-11a-text-in-images/#end-to-end-and-document-metrics) `end-to-end-and-document-metrics`
+- [Datasets and benchmarks](/en/learn/deep-learning/dl-11a-text-in-images/#datasets-and-benchmarks) `datasets-and-benchmarks`
+- [Failure modes](/en/learn/deep-learning/dl-11a-text-in-images/#failure-modes) `failure-modes`
+- [Modern view](/en/learn/deep-learning/dl-11a-text-in-images/#modern-view) `modern-view`
+  - [What the surveys say](/en/learn/deep-learning/dl-11a-text-in-images/#what-the-surveys-say) `what-the-surveys-say`
+  - [The state of the art, 2023–2026](/en/learn/deep-learning/dl-11a-text-in-images/#the-state-of-the-art-20232026) `the-state-of-the-art-20232026`
+  - [Open problems](/en/learn/deep-learning/dl-11a-text-in-images/#open-problems) `open-problems`
+- [Key takeaways](/en/learn/deep-learning/dl-11a-text-in-images/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/dl-11a-text-in-images/#exercises) `exercises`
+
+*Supplementary notes (`notes/` page):*
+
+- [CTC prefix beam search, step by step](/en/learn/deep-learning/dl-11a-text-in-images/notes/#ctc-prefix-beam-search-step-by-step) `ctc-prefix-beam-search-step-by-step`
+- [Shrinking and expanding text polygons](/en/learn/deep-learning/dl-11a-text-in-images/notes/#shrinking-and-expanding-text-polygons) `shrinking-and-expanding-text-polygons`
+- [Where the language model sits in a recognizer](/en/learn/deep-learning/dl-11a-text-in-images/notes/#where-the-language-model-sits-in-a-recognizer) `where-the-language-model-sits-in-a-recognizer`
+- [Reading vertical and mixed-direction text](/en/learn/deep-learning/dl-11a-text-in-images/notes/#reading-vertical-and-mixed-direction-text) `reading-vertical-and-mixed-direction-text`
+- [Evaluation protocols in detail](/en/learn/deep-learning/dl-11a-text-in-images/notes/#evaluation-protocols-in-detail) `evaluation-protocols-in-detail`
+
+*Paper guides (`papers/` page):*
+
+- [Guide to the Modern view surveys](/en/learn/deep-learning/dl-11a-text-in-images/papers/#guide-to-the-modern-view-surveys) `guide-to-the-modern-view-surveys`
+- [Baek et al., "What Is Wrong With Scene Text Recognition Model Comparisons?" (ICCV 2019)](/en/learn/deep-learning/dl-11a-text-in-images/papers/#baek-et-al-what-is-wrong-with-scene-text-recognition-model-comparisons-iccv-2019) `baek-et-al-what-is-wrong-with-scene-text-recognition-model-comparisons-iccv-2019`
+- [DBNet: a reading guide](/en/learn/deep-learning/dl-11a-text-in-images/papers/#dbnet-a-reading-guide) `dbnet-a-reading-guide`
+- [Donut: a reading guide](/en/learn/deep-learning/dl-11a-text-in-images/papers/#donut-a-reading-guide) `donut-a-reading-guide`
 

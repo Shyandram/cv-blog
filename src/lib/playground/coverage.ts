@@ -117,6 +117,7 @@ export const readingOnlyChapters = [
     'deep-learning/dl-01a-training-practice',
     'deep-learning/dl-11-robustness',
     'deep-learning/dl-01b-building-blocks',
+    'deep-learning/dl-11a-text-in-images',
 ];
 const defaultReason = L('This chapter\u2019s own figures, code and exercises carry its main idea; a separate interactive demo would not add to them.', '本章的圖、程式與練習已經足以說明主要概念；另外加一個互動實驗不會增加理解。');
 const reasons: Record<string, Localized> = {
