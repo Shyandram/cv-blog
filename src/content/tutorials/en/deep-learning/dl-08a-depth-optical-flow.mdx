@@ -1,0 +1,951 @@
+---
+title: "DLCV 08A · Depth Estimation and Optical Flow"
+description: "Dense correspondence for depth and motion: rectified stereo and disparity, matching costs, semi-global matching and learned cost volumes, monocular relative and metric depth with scale-and-shift-invariant losses, self-supervised depth from video, optical flow from FlowNet to RAFT, scene flow, and the metrics, benchmarks and failure modes of all three, with tested NumPy and OpenCV code."
+track: deep-learning
+order: 85
+level: advanced
+prereqs: [deep-learning/dl-08-3d-reconstruction]
+tags: [depth-estimation, stereo-matching, monocular-depth, optical-flow, scene-flow, raft, self-supervised-learning]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figGeom from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/stereo-geometry.png';
+import figFamilies from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/families.png';
+import figCosts from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/cost-curves.png';
+import figBM from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/block-matching.png';
+import figScale from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/scale-ambiguity.png';
+import figFlow from '../../../../assets/deep-learning/dl-08a-depth-optical-flow/flow-error.png';
+
+## What you'll learn
+
+- Why stereo depth, monocular depth and optical flow are three versions of one problem, **dense correspondence**, and what each one can and cannot recover.
+- How a rectified stereo pair turns depth into a horizontal shift, $Z = fB/d$, and why depth error grows with the square of distance.
+- The classical stereo pipeline (matching cost, cost volume, aggregation with semi-global matching, winner-take-all, left–right check) and the learned versions (MC-CNN, GC-Net, PSMNet, RAFT-Stereo, FoundationStereo), with a tested block-matching experiment.
+- Why depth from one image is ambiguous in scale, the difference between relative and metric depth, how scale-and-shift-invariant losses work, and what MiDaS, Depth Anything, Marigold, Metric3D and Depth Pro do; plus self-supervised depth from video (Monodepth2).
+- How optical flow became a learning problem (FlowNet, PWC-Net, RAFT and its successors), scene flow in brief, and how depth, stereo and flow are evaluated (AbsRel, δ &lt; 1.25, bad-τ, D1, EPE, Fl-all) on KITTI, Middlebury, ETH3D, Sintel and NYU Depth v2.
+
+## The big picture
+
+A depth map gives, for every pixel, how far away the surface is. An optical flow field gives, for every pixel, where that point moves in the next frame. Robots, cars, phones and video editors need both: depth to know where things are, flow to know how they move. Both are answers to the same question: *which pixel in the other image shows the same point?*
+
+<Callout type="tip" title="Explain like I'm five">
+Hold a pencil in front of your face and close one eye, then the other. The pencil jumps sideways, while the window far behind it hardly moves. How far something jumps tells you how close it is. A stereo camera does the same with two lenses, and a computer measures the jump for every pixel. If you have only one eye, you can still guess distances, because you know how big a car or a door usually is. But you can be fooled by a toy car close up. Optical flow is the same jumping game played over time: compare this video frame with the next one and measure how far each bit moved.
+</Callout>
+
+**Why it matters.** Stereo depth lets robots and cars measure distance without a laser scanner; single-image depth blurs portrait backgrounds on phones and places objects into video; optical flow drives video super-resolution, frame interpolation and stabilization.
+
+**How this tutorial relates to others.** [DLCV 08](/en/learn/deep-learning/dl-08-3d-reconstruction/) covers camera geometry, triangulation and multi-view stereo; [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/#optical-flow) introduces brightness constancy and warping; long-range point tracking is in [DLCV 06](/en/learn/deep-learning/dl-06-object-tracking/#point-tracking-a-related-trend) and sparse keypoint matching in [IP 12](/en/learn/image-processing/dip-12-feature-extraction/#matching). We link to them instead of repeating them. Our focus is the *dense* case: one answer per pixel.
+
+Figure 1 shows the four model families of this tutorial: three match two images, the fourth relies on what it has learned.
+
+<Figure src={figFamilies} alt="Four rows of four boxes joined by arrows. Classical stereo: matching cost, aggregation, winner-take-all, refinement. Cost-volume network: shared CNN features, cost volume, 3D CNN regularization, soft argmin. Iterative refinement: features and context, all-pairs correlation, look up around current estimate, GRU update with a loop arrow. Monocular network: one image, encoder, dense decoder, relative or metric depth." caption="Figure 1 — Four families of dense correspondence and depth models. Classical stereo (grey) and cost-volume networks (blue) follow the same four stages; iterative models (green) repeat a lookup-and-update step; monocular networks (orange) predict depth from a single image." />
+
+## Three dense correspondence problems
+
+**Plain version.** Stereo matching finds, for each pixel of the left image, the matching pixel in the right image, which lies on the same row. Optical flow does the same between two frames of a video, but the match can be anywhere nearby. Monocular depth has no second image at all and must predict depth from appearance.
+
+**Precise version.** Let $I_1, I_2$ be two images of $H \times W$ pixels and $\mathbf{p} = (u, v)$ a pixel, with column $u$ and row $v$.
+
+- **Optical flow** is a vector field $\mathbf{F}(\mathbf{p}) = (\Delta u, \Delta v)$ such that the point seen at $\mathbf{p}$ in $I_1$ is seen at $\mathbf{p} + \mathbf{F}(\mathbf{p})$ in $I_2$. Two unknowns per pixel; the cameras and the scene may both move.
+- **Stereo disparity** is the special case of two cameras that see the scene at the same instant and have been *rectified* (next section), so that every match lies on the same row: $\mathbf{F}(\mathbf{p}) = (-d(\mathbf{p}), 0)$. One unknown per pixel, the disparity $d \ge 0$, which converts to depth.
+- **Monocular depth** asks for a depth map $Z(\mathbf{p})$ from $I_1$ alone. No correspondence is available, so the answer comes from learned regularities, and it is only defined up to an unknown scale unless the network has learned metric cues.
+- **Scene flow** asks for the 3D motion of the point seen at each pixel; it combines depth at two times with optical flow (see [Scene flow](#scene-flow-in-brief) below).
+
+The two-image problems share one structure: a **cost** that scores a candidate match, a search over candidates, and a way to resolve pixels where the cost is ambiguous.
+
+## Stereo geometry: rectification and disparity
+
+**Plain version.** Two cameras side by side, pointing the same way, see a nearby point at noticeably different columns and a far point at almost the same column. The column difference, the disparity, is all we need to compute depth.
+
+### Rectification
+
+For a general pair of cameras, the match of a pixel lies on its **epipolar line** in the other image ([DLCV 08, epipolar geometry](/en/learn/deep-learning/dl-08-3d-reconstruction/#two-views-epipolar-geometry)). Rectification warps both images with a homography each so that all epipolar lines become horizontal and corresponding lines have the same row index [1]. After rectification the two virtual cameras have the same intrinsics, parallel optical axes and a purely horizontal baseline. Stereo rigs are calibrated once, and every frame is rectified before matching; all the stereo benchmarks below distribute rectified pairs. In the rest of this tutorial the pair is always rectified.
+
+### Disparity and depth
+
+Place the left camera centre at the origin and the right camera at distance $B$ along the $x$ axis (Figure 2a). A point at depth $Z$ and horizontal position $X$ projects to column $x_L = fX/Z$ in the left image and $x_R = f(X - B)/Z$ in the right image, both measured from the principal point. Subtracting gives
+
+$$
+d = x_L - x_R = \frac{fB}{Z}, \qquad Z = \frac{fB}{d},
+$$
+
+where $f$ is the focal length in pixels, $B$ is the **baseline** (distance between the camera centres, in metres), $Z$ is the depth along the optical axis and $d$ is the **disparity** in pixels. Depth and disparity are inversely proportional: disparity is an *inverse depth*, scaled by $fB$. Large disparities belong to near objects, and a disparity of zero means a point at infinity.
+
+<Figure src={figGeom} alt="Left: a top-view diagram with two camera centres joined by a green baseline B, an image line at distance f in front of each, a red star P at depth Z, blue rays from both cameras to P and orange dots where the rays cross the image lines, labelled x_L and x_R; text above reads disparity d = x_L minus x_R = fB/Z. Right: a log-scale plot of depth error against depth from 1 to 60 m; an orange curve for B = 0.12 m rises from a few millimetres to about 10 m, and a blue curve for B = 0.5 m stays about four times lower." caption="Figure 2 — (a) A rectified stereo pair seen from above: a point shifts by the disparity d between the two images. (b) Depth error for a disparity error of 0.25 px with a focal length of 700 px; the error grows with the square of the distance and shrinks with a wider baseline." />
+
+Because $Z = fB/d$, a small disparity error $\delta d$ becomes a depth error of about $\delta Z \approx Z^2 \delta d / (fB)$, the same relation that [DLCV 08, Triangulation](/en/learn/deep-learning/dl-08-3d-reconstruction/#triangulation) derives. The snippet puts numbers on it for a hypothetical camera with $f = 700$ px.
+
+```python
+import numpy as np
+
+f = 700.0                                    # focal length in pixels (a hypothetical rig)
+for B in [0.12, 0.5]:                        # baselines in metres
+    print(f"baseline {B} m: depth at a disparity of 1 px = {f * B:.0f} m")
+    for Z in [2, 10, 30, 60]:
+        d = f * B / Z                        # disparity in pixels
+        dZ = Z ** 2 * 0.25 / (f * B)         # depth error for a 0.25 px disparity error
+        print(f"   Z = {Z:2d} m  d = {d:6.2f} px  depth error for 0.25 px: {dZ:6.3f} m ({100 * dZ / Z:4.1f}%)")
+```
+
+```text
+baseline 0.12 m: depth at a disparity of 1 px = 84 m
+   Z =  2 m  d =  42.00 px  depth error for 0.25 px:  0.012 m ( 0.6%)
+   Z = 10 m  d =   8.40 px  depth error for 0.25 px:  0.298 m ( 3.0%)
+   Z = 30 m  d =   2.80 px  depth error for 0.25 px:  2.679 m ( 8.9%)
+   Z = 60 m  d =   1.40 px  depth error for 0.25 px: 10.714 m (17.9%)
+baseline 0.5 m: depth at a disparity of 1 px = 350 m
+   Z =  2 m  d = 175.00 px  depth error for 0.25 px:  0.003 m ( 0.1%)
+   Z = 10 m  d =  35.00 px  depth error for 0.25 px:  0.071 m ( 0.7%)
+   Z = 30 m  d =  11.67 px  depth error for 0.25 px:  0.643 m ( 2.1%)
+   Z = 60 m  d =   5.83 px  depth error for 0.25 px:  2.571 m ( 4.3%)
+```
+
+At 10 m, a quarter-pixel disparity error costs 30 cm with a 12 cm baseline and 7 cm with a 50 cm baseline. At 60 m, the short baseline sees a disparity of only 1.4 px and its depth is uncertain by 18%. This is why stereo cameras for driving use wide baselines and high resolution, and why sub-pixel accuracy matters: the last fraction of a pixel decides the far range.
+
+## Classical stereo matching
+
+**Plain version.** For each pixel of the left image, slide along the same row of the right image, compare small patches, and keep the shift that matches best. Then clean up the answers that are clearly wrong.
+
+Scharstein and Szeliski organized dense two-frame stereo algorithms into four steps that most methods perform in some form [2]:
+
+1. **Matching cost computation**: a per-pixel, per-disparity dissimilarity.
+2. **Cost (support) aggregation**: combine costs over a neighbourhood to reduce noise.
+3. **Disparity computation or optimization**: choose a disparity per pixel, either locally or by optimizing an energy over the whole image.
+4. **Disparity refinement**: sub-pixel estimates, consistency checks, filling and smoothing.
+
+The Middlebury stereo website, which accompanies that paper, still hosts an online evaluation [2], [3]. The plane sweep in [DLCV 08](/en/learn/deep-learning/dl-08-3d-reconstruction/#photo-consistency-and-plane-sweep) is exactly steps 1–3 with windowed SSD; here we look at each step more closely and add the refinement.
+
+### Matching costs and the cost volume
+
+The simplest cost compares intensities in a small window. The **sum of absolute differences** (SAD) at pixel $(u, v)$ and disparity $d$ is
+
+$$
+C(u, v, d) = \sum_{(i, j) \in \mathcal{W}} \bigl| I_L(u + i, v + j) - I_R(u + i - d, v + j) \bigr|,
+$$
+
+where $I_L, I_R$ are the left and right images, $\mathcal{W}$ is the set of offsets of a $w \times w$ window centred on the pixel, and $d$ ranges over integer hypotheses $0, 1, \dots, D - 1$. Squared differences give SSD. Computing $C$ for every pixel and every $d$ fills a **cost volume** of size $D \times H \times W$. The **winner-take-all** (WTA) rule picks $\hat d(u, v) = \arg\min_d C(u, v, d)$.
+
+SAD assumes both cameras record the same brightness for the same point. Real cameras differ in gain and exposure, so practical systems use **zero-mean normalized cross-correlation** (ZNCC) or the **census transform**, which encodes which neighbours are darker than the pixel as a bit string and compares bit strings [4].
+
+*Optional: [Robust matching costs: ZNCC and census](#robust-matching-costs-zncc-and-census) (in the Supplementary notes). The definitions, and a test in which a brightness change between the views breaks SAD but not the other two.*
+
+Figure 3a shows one row of a cost volume: dark valleys trace the surfaces. Figure 3b shows four typical cost curves. A textured pixel has one sharp minimum; a textureless pixel a flat curve; a repetitive pattern several equal minima, one per period; and an occluded pixel, hidden in the right image, no correct minimum at all.
+
+<Figure src={figCosts} alt="Left: a colour map with column x on the horizontal axis and disparity hypothesis on the vertical axis; dark horizontal valleys at disparities near 20, 9, 16, 13 and 8 follow a white dashed true-disparity line, and red dots of the lowest-cost choice sit on the valleys except near the left edge and object boundaries. Right: four normalized cost curves against disparity; a blue textured-wall curve with one sharp dip near 9, a nearly flat grey textureless curve, an orange stripes curve with several deep dips and a red occluded curve with no clear minimum." caption="Figure 3 — (a) One row of the SAD cost volume of the synthetic scene below; low cost (dark) follows the true disparity (dashed). (b) Cost curves of four pixels; dotted lines mark their true disparities." />
+
+### Code: block matching with a left–right check
+
+The snippet ray-casts a rectified pair of a synthetic scene with known depth: a slanted textured wall, a box, a disc and a thin pole in front of it, plus a textureless patch and a patch of fine stripes on the wall. It builds the SAD cost volume, takes the WTA disparity, and runs the **left–right consistency check**: match again with the right image as reference, and reject pixels where the two answers disagree by more than one pixel. Occluded pixels usually fail this check, because their "match" in the right image belongs to a different surface whose own match points elsewhere. For comparison it also runs OpenCV's semi-global matcher (next subsection). Errors are reported as **bad-1**, the percentage of pixels whose disparity is off by more than 1 px, separately for each kind of region.
+
+```python
+import numpy as np
+import cv2
+from scipy import ndimage as ndi
+
+rng = np.random.default_rng(0)
+H, W, f, B = 180, 280, 320.0, 0.25                    # image size, focal length (px), baseline
+tex = ndi.gaussian_filter(rng.random((700, 700)), 1.2)
+tex = (tex - tex.min()) / np.ptp(tex)                 # random texture painted on every surface
+
+def render(cx):
+    """Ray-cast a rectified camera at (cx, 0, 0) looking down +Z: image, depth Z, region labels."""
+    v, u = np.mgrid[0:H, 0:W].astype(float)
+    dx, dy = (u - W / 2) / f, (v - H / 2) / f            # ray direction (dx, dy, 1)
+    Z = (9 + 0.15 * cx) / (1 - 0.15 * dx)                # slanted wall Z = 9 + 0.15 X
+    lab = np.zeros((H, W), int)                          # 0 wall, 1 box, 2 disc, 3 thin pole
+    for k, z, inside in [(2, 6.0, lambda X, Y: (X - 1.2) ** 2 + (Y - 0.3) ** 2 < 0.36),
+                         (3, 5.0, lambda X, Y: np.abs(X - 0.2) < 0.04),
+                         (1, 4.0, lambda X, Y: (np.abs(X + 1.0) < 0.6) & (np.abs(Y) < 0.6))]:
+        hit = inside(cx + z * dx, z * dy) & (z < Z)
+        Z, lab = np.where(hit, z, Z), np.where(hit, k, lab)
+    X, Y = cx + Z * dx, Z * dy
+    img = ndi.map_coordinates(tex, [350 + 40 * Y + 60 * lab, 350 + 40 * X], order=1)
+    flat = (lab == 0) & (X > 2.2) & (X < 3.6) & (Y > -2.0) & (Y < -0.9)
+    rep = (lab == 0) & (X > -3.6) & (X < -2.2) & (Y > 0.9) & (Y < 2.0)
+    img[flat] = 0.5                                                  # textureless patch: label 4
+    img[rep] = 0.5 + 0.4 * np.sin(2 * np.pi * X[rep] / 0.15)        # repetitive stripes: label 5
+    lab[flat], lab[rep] = 4, 5
+    return img + rng.normal(0, 0.01, img.shape), Z, lab
+
+left, Z_left, lab = render(0.0)
+right, Z_right, _ = render(B)
+d_true = f * B / Z_left                                # ground-truth disparity of the left view
+rows, cols = np.mgrid[0:H, 0:W]
+xr = np.round(cols - d_true).astype(int)               # where each left pixel lands in the right view
+occluded = (xr < 0) | (np.abs(Z_right[rows, np.clip(xr, 0, W - 1)] - Z_left) > 0.05)
+
+def sad_volume(ref, other, D, win, sign):
+    """cost[d](y, x) = sum over a win x win window of |ref(y, x) - other(y, x - sign*d)|."""
+    cost = np.full((D, H, W), np.inf)
+    for d in range(D):
+        c = ndi.uniform_filter(np.abs(ref - np.roll(other, sign * d, axis=1)), win) * win ** 2
+        if sign > 0: c[:, :d] = np.inf                 # no partner pixel exists there
+        else:        c[:, W - d:] = np.inf
+        cost[d] = c
+    return cost
+
+D, win = 32, 7
+d_left = sad_volume(left, right, D, win, +1).argmin(0)     # winner-take-all, left image as reference
+d_right = sad_volume(right, left, D, win, -1).argmin(0)    # winner-take-all, right image as reference
+lr_ok = np.abs(d_left - d_right[rows, np.clip(cols - d_left, 0, W - 1)]) <= 1   # left-right check
+
+sgbm = cv2.StereoSGBM_create(minDisparity=0, numDisparities=D, blockSize=5,
+                             P1=8 * 25, P2=32 * 25, uniquenessRatio=0, disp12MaxDiff=-1)
+u8 = lambda a: np.clip(a * 255, 0, 255).astype(np.uint8)
+d_sgbm = sgbm.compute(u8(left), u8(right)).astype(float) / 16    # OpenCV stores 16 x disparity
+
+valid = ~occluded & (cols >= D)                        # visible in both views, away from the left strip
+regions = {"textured": valid & np.isin(lab, [0, 1, 2]), "textureless": valid & (lab == 4),
+           "stripes": valid & (lab == 5), "thin pole": valid & (lab == 3)}
+bad = lambda d, m: 100 * np.mean(np.abs(d - d_true)[m] > 1)      # % of pixels off by > 1 px
+print(f"disparity {d_true.min():.1f}-{d_true.max():.1f} px; occluded: {100 * occluded.mean():.1f}% of pixels")
+print("bad-1 (%)          " + "".join(f"{k:>12s}" for k in regions))
+for name, d in [("SAD + WTA", d_left), ("OpenCV SGBM", d_sgbm)]:
+    print(f"{name:19s}" + "".join(f"{bad(d, m):12.1f}" for m in regions.values()))
+print(f"left-right check: keeps {100 * lr_ok[valid].mean():.1f}% of visible pixels, "
+      f"rejects {100 * (~lr_ok[occluded]).mean():.1f}% of occluded ones")
+kept = valid & lr_ok
+print(f"SAD + WTA bad-1 on all visible pixels: {bad(d_left, valid):.1f}% -> after the check {bad(d_left, kept):.1f}%")
+```
+
+```text
+disparity 8.3-20.0 px; occluded: 7.7% of pixels
+bad-1 (%)              textured textureless     stripes   thin pole
+SAD + WTA                   1.8        67.7        89.6        17.4
+OpenCV SGBM                 1.7        18.2        53.3        67.2
+left-right check: keeps 96.6% of visible pixels, rejects 93.0% of occluded ones
+SAD + WTA bad-1 on all visible pixels: 6.1% -> after the check 3.6%
+```
+
+These numbers come from this synthetic scene only. On textured surfaces, SAD block matching is right on 98% of the pixels; in the textureless patch it is wrong on two thirds of them and on the stripes on nine out of ten, as the cost curves predicted. The left–right check rejects 93% of the occluded pixels while keeping 96.6% of the visible ones, and bad-1 on the kept pixels drops from 6.1% to 3.6%. Rejected pixels are *holes*, not errors: later stages know not to trust them and can fill them from neighbours.
+
+<Figure src={figBM} alt="Six panels. (a) A grey random-texture left image with outlines around a flat grey rectangle at the top right, a striped rectangle at the bottom left and a thin vertical pole. (b) The true disparity map: a bright square, a pink disc and a thin pink line on a dark slanted background. (c) The SAD result: mostly correct but noisy in the flat rectangle, wrong in the stripes, and with fattened borders around the square, disc and pole. (d) The same after the left-right check, with rejected pixels in green along object borders and in the flat patch. (e) The OpenCV SGBM result: the flat patch is filled smoothly, but the thin pole has mostly vanished. (f) A bar chart of bad-1 per region for both methods." caption="Figure 4 — Block matching on the synthetic rectified pair. (c) SAD 7 × 7 with winner-take-all; (d) after the left–right check (rejected pixels in green); (e) OpenCV's semi-global matcher; (f) bad-1 per region from the snippet. The left strip, which has no partner pixels, is not evaluated." />
+
+### Cost aggregation and semi-global matching
+
+**Plain version.** Window matching decides each pixel alone. A better rule lets neighbouring pixels "vote": a pixel in a blank region should take the disparity of its textured neighbours, unless there is good evidence for a depth jump.
+
+The classical way to say this is an energy over the whole disparity map $D$,
+
+$$
+E(D) = \sum_{\mathbf{p}} C\bigl(\mathbf{p}, D(\mathbf{p})\bigr) + \sum_{(\mathbf{p}, \mathbf{q})} P_1 \, [\,|D(\mathbf{p}) - D(\mathbf{q})| = 1\,] + P_2 \, [\,|D(\mathbf{p}) - D(\mathbf{q})| \gt 1\,],
+$$
+
+where the second sum runs over pairs of neighbouring pixels $\mathbf{p}, \mathbf{q}$, $[\cdot]$ is 1 when the condition holds and 0 otherwise, $P_1$ is a small penalty for a change of one disparity level (slanted surfaces) and $P_2 \gt P_1$ is a larger penalty for a jump (depth edges) [5], [6]. Minimizing this energy exactly over a 2D image is intractable in general.
+
+**Semi-global matching** (SGM) by Hirschmüller [5] approximates it by minimizing the energy along many straight 1D paths through each pixel, each of which can be solved exactly by dynamic programming, and summing the results. Along a path with direction $\mathbf{r}$ the aggregated cost is
+
+$$
+L_{\mathbf{r}}(\mathbf{p}, d) = C(\mathbf{p}, d) + \min\Bigl( L_{\mathbf{r}}(\mathbf{p} - \mathbf{r}, d),\; L_{\mathbf{r}}(\mathbf{p} - \mathbf{r}, d \pm 1) + P_1,\; \min_k L_{\mathbf{r}}(\mathbf{p} - \mathbf{r}, k) + P_2 \Bigr) - \min_k L_{\mathbf{r}}(\mathbf{p} - \mathbf{r}, k),
+$$
+
+where $\mathbf{p} - \mathbf{r}$ is the previous pixel on the path and the last term only keeps the numbers bounded [6]. The costs of all directions are summed and WTA picks the disparity, so each pixel receives evidence from far away in many directions at a cost linear in the size of the cost volume. OpenCV's `StereoSGBM` is a modified version: by default 5 directions instead of the full algorithm's 8, small blocks instead of single pixels, and the Birchfield–Tomasi cost instead of mutual information [7].
+
+The snippet shows SGM's trade-off. In the textureless patch, bad pixels drop from 67.7% to 18.2%, because the smoothness term carries the wall's disparity into it. But the thin pole, about five pixels wide, is mostly erased (17.4% → 67.2%): it costs two $P_2$ jumps for little evidence (Figure 4e). Neither method resolves the stripes, a genuine ambiguity of the data. Smoothness priors bet that the world is made of large surfaces, and that bet loses on thin structures.
+
+*Optional: [Semi-global matching step by step](#semi-global-matching-step-by-step) (in the Supplementary notes). The recursion along one scanline in code, why $P_1 \lt P_2$, and how two opposite paths fill a textureless gap without blurring a depth step.*
+
+### Refinement: sub-pixel disparity and post-processing
+
+WTA returns integer disparities, but Figure 2b showed that fractions of a pixel matter. The usual fix fits a parabola through the cost at the best integer disparity and its two neighbours and takes the parabola's minimum. Further post-processing steps include the left–right check, a median filter and filling of rejected pixels from their neighbours; MC-CNN's pipeline, for example, combines cross-based aggregation, SGM, a left–right check, sub-pixel enhancement, a median filter and a bilateral filter [6].
+
+*Optional: [Sub-pixel disparity and the soft argmin](#sub-pixel-disparity-and-the-soft-argmin) (in the Supplementary notes). The parabola formula, and why a learned soft argmin can land between two surfaces at a depth edge.*
+
+## Learned stereo matching
+
+**Plain version.** Every step of the classical pipeline has a hand-made rule. Deep stereo replaces them, one at a time, by learned ones: first the cost, then the aggregation, and finally the whole pipeline trained end to end on large synthetic datasets.
+
+The surveys of Laga et al. [8] and Tosi et al. [9] follow the same order as this section: learned parts of the pipeline, then end-to-end networks, then the architectures of the 2020s.
+
+### Learning the matching cost
+
+MC-CNN by Žbontar and LeCun [6] trains a convolutional network to decide whether two small patches show the same point, using pairs built from ground-truth disparities as a binary classification set. The network's output replaces SAD as the matching cost, and the rest of the classical pipeline (cross-based aggregation, SGM, left–right check, sub-pixel enhancement, filtering) follows. The lesson: a learned similarity is far more discriminative than raw intensities, but the hand-made aggregation remained.
+
+### End-to-end networks with cost volumes
+
+End-to-end training needs dense ground truth for many images, which real scans rarely give. Mayer et al. [10] rendered three datasets (FlyingThings3D, Monkaa, Driving); FlyingThings3D alone has about 25,000 stereo frames of random objects flying along random 3D paths, and with it they trained DispNet, an encoder–decoder that regresses disparity [10]. Together these "Scene Flow" datasets became the usual pre-training data for stereo networks.
+
+**GC-Net** by Kendall et al. [11] made the cost volume explicit and learnable. A shared 2D CNN extracts features from both images. For every disparity level the left feature is **concatenated** with the right feature shifted by that level, which gives a 4D volume of size height × width × (max disparity + 1) × feature size [11]. 3D convolutions over this volume learn the aggregation, using context in space and in disparity. Finally, a **soft argmin** turns the regularized costs $c_d$ into a sub-pixel disparity:
+
+$$
+\hat d = \sum_{d=0}^{D_{\max}} d \cdot \sigma(-c_d), \qquad \sigma(-c_d) = \frac{e^{-c_d}}{\sum_{d'} e^{-c_{d'}}},
+$$
+
+where $\sigma$ is the softmax over the disparity dimension and $D_{\max}$ the largest disparity [11]. Unlike the argmin it is differentiable, so the network trains end to end with a regression loss on $\hat d$. **PSMNet** [12] added a spatial pyramid pooling module that gathers context at several scales before the cost volume and a stacked-hourglass 3D CNN with intermediate supervision to regularize it, trained with the smooth L1 loss [12]. Both target ill-posed regions such as occlusions, repeated patterns, textureless and reflective surfaces, where local patches carry no answer [12].
+
+The price of 3D convolutions is memory and computation proportional to $D \times H \times W$, so these networks work at reduced resolution and a fixed maximum disparity.
+
+### Iterative refinement and zero-shot stereo
+
+**RAFT-Stereo** [13] adapts the RAFT optical flow network (described in the [optical flow section](#raft-all-pairs-correlation-and-iterative-updates) below) to rectified stereo: it replaces RAFT's 4D all-pairs volume by a 3D volume that only compares pixels on the same row, and refines a disparity field step by step with recurrent units that look up the volume around the current estimate, adding multi-level GRUs that pass information across the image more efficiently [13]. There is no 3D convolution and no fixed disparity range to regularize. Tosi et al. call this design "a game changer", noting that it brought much higher robustness to domain shift and that most recent frameworks follow it [9]. IGEV-Stereo [14] combines the two ideas: a geometry encoding volume that encodes geometry and context gives the recurrent updates a good starting point and is indexed by them at every iteration [14].
+
+The open problem these surveys emphasized was **generalization**: networks fine-tuned on one benchmark often fail on another [9], [15]. FoundationStereo [16] targets zero-shot use: it is trained on a large synthetic dataset of about one million stereo pairs with automatic removal of ambiguous samples, and it adapts features from a monocular vision foundation model through a side-tuning backbone to narrow the gap between synthetic and real images [16].
+
+## Monocular depth estimation
+
+**Plain version.** With one image there is nothing to match. A network has to *recognize* depth the way people do with one eye closed: from perspective, the known sizes of things, occlusion, shading, haze and texture that gets finer with distance. These cues tell you which things are nearer, but they cannot tell a toy car from a real one.
+
+### Why one image is not enough: scale ambiguity
+
+Scale the whole scene by a factor $s$ and the image does not change, because projection divides by depth (Figure 5a; see also [DLCV 08](/en/learn/deep-learning/dl-08-3d-reconstruction/#what-3d-reconstruction-is) and, for 3D detection, [DLCV 09](/en/learn/deep-learning/dl-09-3d-object-detection/#why-one-camera-is-not-enough-depth-ambiguity)). Eigen et al. called the global scale "a fundamental ambiguity in depth prediction" and showed that much of their error came from the mean depth alone [17].
+
+A network can still learn *metric* cues, such as typical object sizes or the camera height of a driving dataset, but they fail when the camera or scene type changes. So two kinds of output are used:
+
+- **Relative (affine-invariant) depth.** The prediction is correct up to an unknown scale and shift. Many such models, MiDaS and Depth Anything among them, predict *inverse* depth (disparity-like values) [18], [19], so the output $\hat y$ satisfies $1/Z \approx s \hat y + t$ for unknown $s \gt 0$ and $t$. This is enough for ordering, segmentation, editing and many robot tasks when combined with a few metric measurements.
+- **Metric depth.** The prediction is in metres. It requires either a known camera or a model that estimates the camera from the image.
+
+### Losses that ignore scale and shift
+
+To train on datasets whose depth is known only up to scale, or in different units, the loss must ignore the unknown factors. Eigen et al. introduced a **scale-invariant log error** [17]:
+
+$$
+D(y, y^*) = \frac{1}{n} \sum_{i=1}^{n} \bigl( \log y_i - \log y_i^* + \alpha(y, y^*) \bigr)^2, \qquad \alpha(y, y^*) = \frac{1}{n} \sum_{i=1}^{n} \bigl( \log y_i^* - \log y_i \bigr),
+$$
+
+where $y_i$ and $y_i^*$ are the predicted and true depths at pixel $i$, $n$ is the number of pixels with ground truth, and $\alpha$ is the log-scale offset that best aligns the two maps; multiplying $y$ by any constant leaves $D$ unchanged [17]. For training they used a blend of this error and the ordinary log-space L2 error, weighted by $\lambda = 0.5$, which they found gave good absolute-scale predictions [17].
+
+**MiDaS** by Ranftl et al. [18] went one step further: it predicts inverse depth (disparity) up to scale *and* shift, and aligns each prediction to the ground truth before computing the loss. With $\mathbf{d} \in \mathbb{R}^M$ the predicted disparities and $\mathbf{d}^*$ the ground truth at the $M$ valid pixels, the alignment solves
+
+$$
+(s, t) = \arg\min_{s, t} \sum_{i=1}^{M} \bigl( s d_i + t - d_i^* \bigr)^2, \qquad \hat d_i = s d_i + t,
+$$
+
+which is an ordinary least-squares fit of a line with a closed-form solution [18]. The **scale-and-shift-invariant loss** is then $\mathcal{L}_{\text{ssi}} = \frac{1}{2M} \sum_i \rho(\hat d_i - d_i^*)$ with a per-pixel loss $\rho$, here the squared error [18]. MiDaS also has a robust variant (median-based alignment, trimmed absolute loss), a gradient-matching term that keeps depth edges sharp, and mixes five training datasets, including one built from 3D films [18]. It is evaluated by **zero-shot cross-dataset transfer**, on datasets never seen in training [18].
+
+*Optional: [MiDaS (Ranftl et al., 2022)](#midas-ranftl-et-al-2022) (in the Paper guides). The problem the paper poses, how its tables are aligned, and what to check before comparing its numbers with others.*
+
+The snippet builds a toy depth map (a ground plane, a far wall and a box), simulates a relative model whose output is inverse depth with an unknown scale and shift, and compares three ways of reading it.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+H, W, f, cam_h = 120, 160, 150.0, 1.5
+v, u = np.mgrid[0:H, 0:W].astype(float)
+Z = np.full((H, W), 30.0)                                      # far wall
+below = v > H / 2 + 1
+Z[below] = np.minimum(30.0, f * cam_h / (v[below] - H / 2))    # ground plane seen by a camera 1.5 m high
+box = (np.abs(u - 50) < 15) & (v > 45) & (v < 80)
+Z[box] = 5.0                                                   # an object 5 m away
+
+# A "relative" network outputs inverse depth up to an unknown scale and shift, plus some noise.
+pred = 0.37 / Z + 0.05 + rng.normal(0, 0.001, Z.shape)
+
+def metrics(Zp, Zt):
+    absrel = np.mean(np.abs(Zp - Zt) / Zt)
+    rmse = np.sqrt(np.mean((Zp - Zt) ** 2))
+    delta1 = np.mean(np.maximum(Zp / Zt, Zt / Zp) < 1.25)
+    return f"AbsRel {absrel:6.3f}   RMSE {rmse:6.2f} m   delta<1.25 {100 * delta1:5.1f}%"
+
+Z_raw = 1 / pred                                               # read the output as if it were metric
+Z_med = Z_raw * np.median(Z) / np.median(Z_raw)                # median scaling (scale only)
+A = np.c_[pred.ravel(), np.ones(pred.size)]                    # least squares for (s, t) in inverse depth
+s, t = np.linalg.lstsq(A, (1 / Z).ravel(), rcond=None)[0]
+Z_ssi = 1 / (s * pred + t)
+print("raw output        ", metrics(Z_raw, Z))
+print("median scaling    ", metrics(Z_med, Z))
+print("scale+shift (LSQ) ", metrics(Z_ssi, Z), f"  s = {s:.3f}, t = {t:.4f}")
+```
+
+```text
+raw output         AbsRel  0.460   RMSE  10.46 m   delta<1.25  10.2%
+median scaling     AbsRel  0.785   RMSE   7.24 m   delta<1.25  54.8%
+scale+shift (LSQ)  AbsRel  0.043   RMSE   1.84 m   delta<1.25  99.5%   s = 2.699, t = -0.1348
+```
+
+These are toy numbers. Read as metric depth, the output is useless (δ &lt; 1.25 on 10% of the pixels). **Median scaling** multiplies the depth by one factor; it helps δ but makes AbsRel *worse*, because no single factor can undo a shift in inverse depth. The least-squares fit finds $s = 2.699$, $t = -0.1348$, almost exactly the simulated $1/Z = 2.703\,\hat y - 0.135$, and the map becomes nearly perfect. The same prediction can look poor or excellent depending on the alignment, so always check which one a paper used.
+
+<Figure src={figScale} alt="Three panels. (a) A camera at the bottom with an image line; dashed rays from the camera pass the edges of a small blue box nearby and continue to the edges of an orange box 2.5 times larger and 2.5 times farther away. (b) Photometric L1 error against a global depth scale from 0.5 to 2: a blue curve for a stereo pair with known baseline has a sharp minimum at 1, and an orange dashed line for video with learned translation is perfectly flat. (c) Predicted inverse depth against true inverse depth: grey raw points lie on a straight line with the wrong slope and offset; green points after least-squares scale and shift lie on the dotted diagonal." caption="Figure 5 — Scale ambiguity. (a) A box 2.5 times larger and farther gives the same image. (b) A self-supervised photometric loss pins the scale only when the baseline is known; if the camera translation is also learned, every scale fits equally well. (c) An affine-invariant prediction becomes accurate after a least-squares scale and shift in inverse depth (data from the snippet)." />
+
+### From relative to metric foundation models
+
+Modern monocular models use standard dense-prediction networks; the progress came from training data and from how scale is handled. On the **relative** side, DPT [20] brought a [Vision Transformer](/en/learn/ml/ml-04-vision-transformers/#the-vision-transformer-vit) encoder to dense prediction, Depth Anything [19], [21] scaled training with tens of millions of pseudo-labelled images, and Marigold [22] turned an image diffusion model into a depth estimator. On the **metric** side, ZoeDepth [23] adds metric heads to a relative model, while Metric3D [24], [25], UniDepth [26] and Depth Pro [27] handle the camera explicitly, by mapping images to a canonical focal length or by estimating the camera from the image. The one idea to remember: relative depth is now robust across many kinds of images, and metric depth becomes usable once the model knows, or can infer, the camera. Dense pointmap models such as DUSt3R and VGGT, which predict geometry and cameras jointly, are covered in [DLCV 08, Feed-forward reconstruction](/en/learn/deep-learning/dl-08-3d-reconstruction/#feed-forward-reconstruction).
+
+*Optional: [Monocular depth foundation models: data and the camera](#monocular-depth-foundation-models-data-and-the-camera) (in the Supplementary notes). What each of these seven models changes, model by model.*
+
+## Self-supervised depth from stereo pairs and video
+
+**Plain version.** Instead of ground-truth depth, use a second view as the teacher. If the network's depth were right, you could warp the second view onto the first and get the same picture. The difference between the warped and the real image is the training signal.
+
+### View synthesis as supervision
+
+Garg et al. [28] trained a monocular network on stereo pairs with a known, small camera displacement: the predicted depth of the left image, together with the known baseline, warps the right image into the left view, and the photometric error of this reconstruction is the loss, with no depth labels at all [28]. Godard et al. [29] added a **left–right consistency** loss that makes the disparities predicted for the two views agree, which improved quality [29]. Zhou et al. [30] removed the second camera: from unlabelled monocular video they trained a depth network and a **pose network** together, with view synthesis between neighbouring frames as the only supervision [30].
+
+For a target frame $I_t$ and a source frame $I_{t'}$, each target pixel $\mathbf{p}$ (in homogeneous coordinates) is mapped to the source by
+
+$$
+\mathbf{p}' \sim K \, T_{t \to t'} \, D_t(\mathbf{p}) \, K^{-1} \mathbf{p},
+$$
+
+where $K$ is the camera intrinsic matrix, $D_t(\mathbf{p})$ is the predicted depth of the pixel, $T_{t \to t'}$ is the predicted relative camera pose (rotation and translation) and $\sim$ means equality up to the homogeneous scale. Sampling $I_{t'}$ at $\mathbf{p}'$ with a bilinear sampler ([DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/#backward-warping-with-bilinear-sampling)) gives the synthesized image $I_{t' \to t}$; gradients flow through it into both networks.
+
+### Monodepth2
+
+Monodepth2 by Godard et al. [31] showed that a simple model with careful design choices beats more complex ones. Its photometric error between two images combines SSIM ([DLCV 04, full-reference metrics](/en/learn/deep-learning/dl-04-image-restoration/#full-reference-metrics)) and L1:
+
+$$
+\mathrm{pe}(I_a, I_b) = \frac{\alpha}{2} \bigl(1 - \mathrm{SSIM}(I_a, I_b)\bigr) + (1 - \alpha) \lVert I_a - I_b \rVert_1, \qquad \alpha = 0.85,
+$$
+
+where $I_a, I_b$ are the target image and a synthesized image, compared per pixel [31], [32]. Three ideas make it robust [31]:
+
+1. **Per-pixel minimum reprojection.** With several source frames (previous and next), take the *minimum* error over sources instead of the average, $\mathcal{L}_p = \min_{t'} \mathrm{pe}(I_t, I_{t' \to t})$, because a pixel occluded in one source is usually visible in the other.
+2. **Auto-masking.** Ignore pixels whose error *without* warping is already lower than with warping. This removes a static camera, and objects that move with the camera, which would otherwise teach the network "infinite depth" for cars driving ahead.
+3. **Full-resolution multi-scale loss.** Upsample lower-resolution depth predictions to the input size before computing the error, which reduces artefacts.
+
+An edge-aware smoothness term, weighted by $\lambda = 0.001$, discourages depth changes where the image itself is smooth [31].
+
+### Scale, again
+
+Trained from monocular video, a depth network never sees a metric quantity: depth and translation can be scaled together without changing $\mathbf{p}'$. Figure 5b shows it on the synthetic stereo scene: with the baseline fixed, the photometric loss has a sharp minimum at the true scale; if the translation scales with the depth, the loss is flat. This is why Monodepth2 reports monocular-trained results after per-image **median ground-truth scaling**, following SfMLearner, but not for stereo-trained ones, "as scale can be inferred from the known camera baseline" [31]. The other limits are those of matching itself: textureless and reflective surfaces, moving objects and occlusions.
+
+## Optical flow as a learning problem
+
+**Plain version.** Flow is stereo without the rulebook: the match can move in any direction, by a fraction of a pixel or by a hundred pixels, and objects move independently. Classical methods solved an energy for every image pair; deep methods learn to match and refine from synthetic videos.
+
+### From energies to networks
+
+The classical methods start from brightness constancy, $I_1(\mathbf{p}) = I_2(\mathbf{p} + \mathbf{F}(\mathbf{p}))$, which gives one equation for two unknowns per pixel, and add an assumption to resolve it: global smoothness of the flow field (Horn and Schunck [33]), constant flow in a small window solved by least squares (Lucas and Kanade [34]), or a local polynomial model of the image (Farnebäck [35]). DLCV 04B introduces these ideas and the aperture problem.
+
+*Optional: [Brightness constancy and the classical flow solvers](/en/learn/deep-learning/dl-04b-video-super-resolution/notes/#brightness-constancy-and-the-classical-flow-solvers) (in DLCV 04B's Supplementary notes). The linearized flow equation, the Horn–Schunck energy and the polynomial expansion behind Farnebäck's method.*
+
+Hur and Roth [36] describe the move to deep learning in two families: CNNs used as feature extractors inside classical energy formulations, and end-to-end networks that regress the flow directly. The second family won. Four milestones lead to RAFT:
+
+- **FlowNet** [37] regressed flow end to end with a CNN. Lacking real training data, its authors built **Flying Chairs**, 22,872 image pairs of rendered 3D chair models moved by random affine transformations over photographs, and found that networks trained on it still generalized to Sintel and KITTI [37]. Its FlowNetC variant added a **correlation layer** that compares the two images' features at a range of displacements.
+- **FlowNet 2.0** [38] stacked several FlowNets, each warping the second image with the current estimate, and showed that the order of the training datasets matters a lot [38].
+- **SPyNet** [39] used a classical image pyramid: at each level one image is warped by the current flow and a small network predicts an update of less than a pixel [39].
+- **PWC-Net** [40] combined **p**yramid, **w**arping and **c**ost volume on *learned* features, and is 17 times smaller than FlowNet2 [40].
+
+### RAFT: all-pairs correlation and iterative updates
+
+**Plain version.** RAFT compares every pixel of the first image with every pixel of the second, once. Then it starts from zero motion and, like a person adjusting a sketch, repeatedly looks at the match scores near its current guess and nudges the guess, the same small update applied again and again.
+
+RAFT by Teed and Deng [41] has three parts [41]:
+
+1. **Features.** A CNN encoder maps both images to features at 1/8 resolution with $D = 256$ channels; a separate context network encodes the first image only.
+2. **All-pairs correlation.** The correlation volume holds the dot product of every feature pair,
+$$
+C_{ijkl} = \sum_{h} g(I_1)_{ijh} \, g(I_2)_{klh},
+$$
+where $g(I)_{ijh}$ is channel $h$ of the feature at row $i$, column $j$, and $C \in \mathbb{R}^{H \times W \times H \times W}$ at feature resolution. Average pooling of the last two dimensions with kernels 1, 2, 4 and 8 gives a four-level **correlation pyramid**, which keeps full resolution for the first image and covers large displacements in the coarse levels.
+3. **Iterative updates.** Starting from $\mathbf{f}_0 = \mathbf{0}$, a convolutional GRU ([gated recurrent unit](/en/learn/ml/ml-03a-recurrent-recursive-networks/#gated-recurrent-unit-gru)) repeatedly reads the correlation values in a small neighbourhood (radius $r = 4$) around the position each pixel currently points to, at all pyramid levels, together with the context features and the current flow, and outputs an update: $\mathbf{f}_{k+1} = \mathbf{f}_k + \Delta \mathbf{f}$. The weights are shared across iterations. A learned convex upsampling turns the 1/8-resolution flow into full resolution.
+
+The loss supervises every iterate with exponentially increasing weight,
+
+$$
+\mathcal{L} = \sum_{i=1}^{N} \gamma^{N - i} \, \lVert \mathbf{f}_{\text{gt}} - \mathbf{f}_i \rVert_1, \qquad \gamma = 0.8,
+$$
+
+where $\mathbf{f}_i$ is the upsampled flow after update $i$, $N$ is the number of updates and $\mathbf{f}_{\text{gt}}$ the ground truth [41]. RAFT unrolls 12 updates in training and can run more at test time; the paper evaluates after 32 updates on Sintel and 24 on KITTI [41]. Training follows the standard schedule: Flying Chairs, then FlyingThings3D, then fine-tuning on the target benchmark [41].
+
+Why did this design win? The all-pairs volume avoids a weakness of coarse-to-fine schemes, which can lose a small fast object at a coarse level for good [41]; the shared update behaves like a learned optimizer; and the recipe transferred to stereo [13] and scene flow [42].
+
+*Optional: [RAFT (Teed and Deng, 2020)](#raft-teed-and-deng-2020) (in the Paper guides). How to read RAFT's ablations and its benchmark tables.*
+
+### After RAFT
+
+Later models change one part of the recipe. GMFlow [43] and Unimatch [44] replace iterative lookups by **global matching** with Transformer features: every pixel is compared with all pixels of the other image and the flow is the softmax-weighted average position; Unimatch uses one model for flow, stereo and depth from posed images [44]. FlowFormer [45] encodes RAFT's cost volume with transformer layers. SEA-RAFT [46] keeps RAFT but adds a mixture-of-Laplace loss, a directly regressed initial flow and rigid-motion pre-training, for speed and better generalization [46].
+
+### Code: measuring flow errors
+
+The snippet builds a pair of frames with known flow: the background (the camera test image) rotates by 2° and zooms by 3% about the centre, and a textured patch moves by (14, 6) pixels on top of it. It runs OpenCV's Farnebäck flow with one and with four pyramid levels and reports the **end-point error** (EPE, the length of the error vector) and the **Fl** outlier rate used by KITTI (defined in [Evaluation](#evaluation)) on different kinds of pixels.
+
+```python
+import numpy as np
+import cv2
+from scipy import ndimage as ndi
+from skimage import color, data, transform
+
+I0 = transform.resize(data.camera() / 255.0, (240, 320), anti_aliasing=True)
+H, W = I0.shape
+rows, cols = np.mgrid[0:H, 0:W].astype(float)
+cy, cx = H / 2, W / 2
+
+# Ground-truth motion from frame 0 to frame 1: the background rotates by 2 degrees and zooms by 3 %
+# about the image centre; a 50 x 50 textured patch moves by (dx, dy) = (14, 6) pixels.
+a, s = np.deg2rad(2.0), 1.03
+bx = cx + s * (np.cos(a) * (cols - cx) - np.sin(a) * (rows - cy))     # where each background pixel goes
+by = cy + s * (np.sin(a) * (cols - cx) + np.cos(a) * (rows - cy))
+flow = np.stack([bx - cols, by - rows], -1)
+patch = transform.resize(color.rgb2gray(data.astronaut())[30:230, 150:350], (50, 50), anti_aliasing=True)
+obj0 = (rows >= 90) & (rows < 140) & (cols >= 120) & (cols < 170)
+flow[obj0] = (14.0, 6.0)
+
+# Render frame 1 by backward mapping (inverse rotation and zoom), then paste the moved patch.
+xs = cx + (np.cos(a) * (cols - cx) + np.sin(a) * (rows - cy)) / s
+ys = cy + (-np.sin(a) * (cols - cx) + np.cos(a) * (rows - cy)) / s
+I1 = ndi.map_coordinates(I0, [ys, xs], order=3, mode="reflect")
+I0 = I0.copy(); I0[90:140, 120:170] = patch
+I1[96:146, 134:184] = patch
+# occluded: background points of frame 0 that land under the patch in frame 1
+occ = ~obj0 & (by >= 96) & (by < 146) & (bx >= 134) & (bx < 184)
+
+def evaluate(est, mask):
+    epe = np.linalg.norm(est - flow, axis=-1)[mask]
+    mag = np.linalg.norm(flow, axis=-1)[mask]
+    fl = np.mean((epe > 3) & (epe > 0.05 * mag))       # KITTI outlier: > 3 px and > 5 % of the true motion
+    return f"EPE {epe.mean():5.2f} px  Fl {100 * fl:5.1f}%"
+
+u8 = lambda im: (np.clip(im, 0, 1) * 255).round().astype(np.uint8)
+inner = np.zeros((H, W), bool); inner[10:-10, 10:-10] = True
+grad = ndi.gaussian_filter(np.hypot(ndi.sobel(I0, 0), ndi.sobel(I0, 1)), 4)
+bg = inner & ~obj0 & ~occ
+flat = grad < 0.05                                     # almost no texture (mostly the sky)
+for levels in [1, 4]:
+    est = cv2.calcOpticalFlowFarneback(u8(I0), u8(I1), None, pyr_scale=0.5, levels=levels, winsize=15,
+                                       iterations=5, poly_n=7, poly_sigma=1.5, flags=0)
+    print(f"Farneback, {levels} pyramid level(s):")
+    for name, m in [("background, textured", bg & ~flat), ("background, flat", bg & flat),
+                    ("moving patch", obj0), ("occluded", occ), ("all (Fl-all)", inner)]:
+        print(f"   {name:21s} {evaluate(est, m)}")
+print(f"true motion: background up to {np.linalg.norm(flow[~obj0], axis=-1).max():.1f} px, patch "
+      f"{np.hypot(14, 6):.1f} px; occluded pixels: {occ.sum()}")
+```
+
+```text
+Farneback, 1 pyramid level(s):
+   background, textured  EPE  0.87 px  Fl   9.3%
+   background, flat      EPE  5.51 px  Fl  90.3%
+   moving patch          EPE 18.24 px  Fl 100.0%
+   occluded              EPE  5.07 px  Fl  68.0%
+   all (Fl-all)          EPE  2.86 px  Fl  35.6%
+Farneback, 4 pyramid level(s):
+   background, textured  EPE  1.18 px  Fl  11.9%
+   background, flat      EPE  5.52 px  Fl  90.5%
+   moving patch          EPE  2.30 px  Fl  30.4%
+   occluded              EPE 12.20 px  Fl  99.8%
+   all (Fl-all)          EPE  2.55 px  Fl  35.2%
+true motion: background up to 9.3 px, patch 15.2 px; occluded pixels: 871
+```
+
+These numbers are from this toy pair only. With one level, the patch's 15 px motion is out of reach and every patch pixel is an outlier; with four levels the patch is found (EPE 2.30 px), the coarse-to-fine idea of SPyNet and PWC-Net in classical form. Two failures remain. In flat regions (mostly the sky) 90% of the pixels are outliers: there is nothing to match. On **occluded** pixels, the strip the patch covers in frame 1, the pyramid makes things worse (EPE 12.2 px), because the coarse levels drag them along with the patch (Figure 6). Learned methods are trained to handle both cases from data, but neither disappears.
+
+<Figure src={figFlow} alt="Six panels. (a) Frame 0: the cameraman photo with a pasted face patch. (b) Frame 1: the same scene slightly rotated and zoomed, with the patch moved down and right. (c) The true flow as a smooth colour field with a uniform blue square for the patch, and a colour-wheel key in the corner. (d) The Farneback estimate: similar colours on textured areas but washed-out white in the sky and on the dark coat, and a blob around the patch. (e) The end-point error map: dark on textured background and on the patch, bright in the sky, at the image corners and in a ring around the patch; a cyan outline marks the occluded strip. (f) A red and grey map of outliers covering the sky, the corners and the ring around the patch; the title says 35 percent." caption="Figure 6 — Farnebäck flow (4 pyramid levels) on the toy pair. Flow is drawn with hue for direction and saturation for length. Errors concentrate in textureless regions, around the moving patch and in the occluded strip (cyan). A 10 px border is not evaluated." />
+
+## Scene flow in brief
+
+**Plain version.** Optical flow says how a point moves in the image. Scene flow says how it moves in 3D: closer, farther, left or right, in metres.
+
+**Scene flow** is the dense 3D motion field of the scene, a term that goes back to Vedula et al. [47]; optical flow is its projection onto the image. RAFT-3D states the task as: given a pair of stereo or RGB-D video frames, estimate the 3D motion of every pixel [42]. With a stereo camera it can be estimated from the disparity at two times plus the optical flow between them. The KITTI 2015 benchmark by Menze and Geiger [48] evaluates exactly these parts: D1 (disparity in the first frame), D2 (disparity in the second frame), Fl (optical flow) and SF, which counts a pixel as wrong if any of the three is wrong [49]. Menze and Geiger modelled the scene as a small number of rigidly moving objects, with each superpixel a 3D plane assigned to one of them [48]; RAFT-3D [42] instead estimates a dense field of rigid 3D motions with RAFT-style iterations and groups pixels softly into rigid objects with learned embeddings [42]. Dynamic reconstruction ([DLCV 08](/en/learn/deep-learning/dl-08-3d-reconstruction/#dynamic-scenes-brief)) and point tracking ([DLCV 06](/en/learn/deep-learning/dl-06-object-tracking/#point-tracking-a-related-trend)) are its long-range relatives.
+
+## Evaluation
+
+**Plain version.** All three tasks are scored per pixel against ground truth, with an average error and a "percentage of bad pixels". The details, especially how monocular predictions are aligned and which pixels count, change the numbers more than you would expect.
+
+### Depth metrics
+
+The standard set goes back to Eigen et al. [17]. With $y_i$ the predicted and $y_i^*$ the true depth at the $n$ evaluated pixels,
+
+$$
+\begin{aligned}
+\text{AbsRel} &= \frac{1}{n} \sum_i \frac{|y_i - y_i^*|}{y_i^*}, &
+\text{RMSE} &= \sqrt{\frac{1}{n} \sum_i (y_i - y_i^*)^2}, \\
+\text{SqRel} &= \frac{1}{n} \sum_i \frac{(y_i - y_i^*)^2}{y_i^*}, &
+\delta_k &= \frac{1}{n} \Bigl| \Bigl\{ i : \max\Bigl(\tfrac{y_i}{y_i^*}, \tfrac{y_i^*}{y_i}\Bigr) \lt 1.25^k \Bigr\} \Bigr|,
+\end{aligned}
+$$
+
+plus RMSE of $\log y$ [17]. AbsRel, SqRel and RMSE are errors (lower is better); $\delta_1, \delta_2, \delta_3$ with $k = 1, 2, 3$ are accuracies (higher is better). AbsRel weights near and far pixels by their relative error; RMSE is dominated by far pixels; $\delta_1$ counts pixels within 25% of the truth.
+
+State three conventions with every result: the **alignment** (none for metric models, per-image median scaling for self-supervised monocular ones [31], least-squares scale and shift for affine-invariant ones [18]); the **depth cap** (80 m is standard on KITTI [31]); and the **split** (often that of Eigen et al. on KITTI [17], [31]). The [alignment snippet](#losses-that-ignore-scale-and-shift) showed how much the first one alone changes.
+
+### Stereo metrics
+
+- **EPE** (mean absolute disparity error, in pixels).
+- **bad-τ**: percentage of pixels with a disparity error larger than $\tau$ pixels. Middlebury's Version 3 evaluation reports bad 2.0 by default, on all or only non-occluded pixels [3]; KITTI 2012 reports the percentage of erroneous pixels at thresholds from 2 to 5 pixels, in non-occluded areas (Out-Noc) and in total (Out-All) [50].
+- **D1** (KITTI 2015): a pixel's disparity is correct if its error is below 3 px *or* below 5% of the true value; D1 is the percentage of outliers, reported over background, foreground or all pixels (D1-bg, D1-fg, D1-all) [49]. The relative clause keeps near objects, with large disparities, from being judged too harshly.
+
+### Flow metrics
+
+- **EPE**: the mean Euclidean distance between estimated and true flow vectors, $\frac{1}{n} \sum_i \lVert \mathbf{F}_i - \mathbf{F}^*_i \rVert_2$, where $\mathbf{F}_i$ and $\mathbf{F}^*_i$ are the estimated and true flow at pixel $i$; FlowNet calls it the standard error measure for optical flow and also trains with it [37]. Sintel results are reported as average EPE (often written AEPE).
+- **Fl-all** (KITTI 2015): the percentage of pixels whose end-point error is at least 3 px *and* at least 5% of the true flow length, over all pixels with ground truth [49]. The snippet's `evaluate` function computes exactly this.
+
+### Datasets and benchmarks
+
+| Dataset | Task | What it contains | Ground truth |
+| --- | --- | --- | --- |
+| KITTI 2012 [51], [50] | stereo, flow | 194 training and 195 test pairs of real road scenes | sparse, from a laser scanner |
+| KITTI 2015 [48], [49] | stereo, flow, scene flow | 200 training and 200 test scenes with moving cars | sparse, semi-automatic, with 3D CAD models fitted to moving vehicles |
+| Middlebury 2014 [52] | stereo | 33 high-resolution indoor scenes; 20 used in the Version 3 evaluation (10 training, 10 test) | dense, subpixel-accurate |
+| ETH3D [53] | stereo, multi-view stereo | indoor and outdoor scenes with DSLR images and low-resolution stereo videos; includes a low-resolution two-view benchmark | high-precision laser scans |
+| MPI Sintel [54] | flow (also stereo, depth) | frames of an open-source animated film; "clean" and "final" passes, the final one with motion blur and atmospheric effects | dense, rendered |
+| Flying Chairs [37] | flow (training) | 22,872 synthetic image pairs | dense, rendered |
+| FlyingThings3D [10] | stereo, flow, scene flow (training) | about 25,000 synthetic stereo frames at 960 × 540 | dense, rendered |
+| NYU Depth v2 [55] | monocular depth (indoor) | Kinect video of 464 indoor scenes; 1,449 densely labelled RGB-D pairs | dense, from the Kinect depth camera, missing values filled in |
+
+Sizes and ground-truth types come from the cited pages and papers; the description of Sintel's two passes is from [37], and KITTI 2015's semi-automatic ground truth from [49], [48]. The synthetic sets are used for pre-training, the real ones for fine-tuning and testing.
+
+## Failure modes
+
+**Plain version.** Every method in this tutorial relies on one of two things: something to match, or a prior learned from training data. Each failure below breaks one of them.
+
+- **Textureless regions** (white walls, sky, road): flat matching costs (Figure 3b), filled by smoothness or learned context, both possibly wrong.
+- **Repetitive patterns** (fences, tiles): several disparities fit equally well, as the stripes showed.
+- **Reflective and transparent surfaces**: the matched content is a reflection or the scene behind. Tosi et al. count transparent and reflective objects among the four main open challenges of deep stereo, with domain shift, over-smoothing and asymmetric stereo pairs [9].
+- **Occlusions**: no correct match exists; they need detection (left–right check) and filling, and in flow they are dragged along with neighbouring motion.
+- **Thin structures and depth edges**: windows fatten foreground objects, smoothness erases poles and wires, and a soft argmin over a two-peaked cost lands between surfaces.
+- **Large motion of small objects**: coarse-to-fine schemes can lose them; RAFT's all-pairs volume targets this [41].
+- **Domain gap**: models pre-trained on synthetic data and fine-tuned on one benchmark degrade on new cameras, weather and scenes [9], [36].
+- **Scale and the camera** (monocular): relative depth has no scale, and metric depth fails when the focal length is unknown or the image has been cropped unexpectedly.
+- **Moving objects in self-supervision** break the static-scene assumption; auto-masking handles only the simplest cases [31]. Rajapaksha et al. add thin, small and distant objects to the open gaps of monocular depth [56].
+
+## Modern view
+
+### What the surveys say
+
+Five reviews cover the ground of this tutorial. **Laga et al.** [8] survey deep stereo (two-view and multi-view) up to about 2019, split into methods that learn parts of the classical pipeline and end-to-end pipelines, with datasets and supervision modes; monocular depth is outside their scope. **Poggi et al.** [15] stress that learning and stereo help each other: learning improves stereo, and stereo supervises monocular networks; they also cover confidence estimation and domain shift. **Tosi et al.** [9] review the 2020s: architectures grouped into cost volume aggregation, neural architecture search, iterative optimization, Vision Transformers and Markov random fields, and four open challenges (domain shift, over-smoothing, transparent and reflective objects, asymmetric stereo); in 2024 they noted that a stereo foundation model was still missing. **Rajapaksha et al.** [56] organize monocular depth by input and output, architecture and degree of supervision. **Hur and Roth** [36] trace optical flow from energy minimization to CNNs and name domain overfitting and complex training schedules as the main limits.
+
+*Optional: [Guide to the Modern view surveys](#guide-to-the-modern-view-surveys) (in the Paper guides). Which survey to read for which question, and what each one does not cover.*
+
+### The state of the art, 2023–2026
+
+- **Foundation models for monocular depth.** Large-scale data (Depth Anything [19], [21]), generative priors (Marigold [22]) and explicit camera handling (Metric3D [24], [25], UniDepth [26], Depth Pro [27]) made zero-shot depth from arbitrary photos practical, first relative and now increasingly metric.
+- **Iterative matching for stereo and flow.** The RAFT recipe of a correlation volume plus recurrent updates dominates both tasks [9]; recent variants add geometry volumes (IGEV-Stereo [14]), global matching with attention (GMFlow, Unimatch [43], [44]) or simpler training (SEA-RAFT [46]).
+- **Zero-shot stereo.** FoundationStereo [16] answered the missing-foundation-model point of Tosi et al. by combining a million synthetic pairs with monocular priors.
+- **Convergence with 3D reconstruction.** Feed-forward models that predict pointmaps and cameras ([DLCV 08](/en/learn/deep-learning/dl-08-3d-reconstruction/#feed-forward-reconstruction)) blur the line between depth estimation, stereo and structure from motion.
+
+### Open problems
+
+1. **Metric depth in the wild**: unknown, cropped or unusual cameras, and a reliable uncertainty for each prediction.
+2. **Non-Lambertian scenes**: glass, mirrors and water for both stereo and flow [9].
+3. **Sharp boundaries and thin structures** without over-smoothing or "flying pixels" between surfaces.
+4. **Temporal consistency**: per-frame depth flickers in video; flow and depth over long sequences should agree with each other.
+5. **Evaluation**: sparse or semi-automatic ground truth, differing alignment conventions and benchmark saturation make small differences hard to interpret.
+
+## Key takeaways
+
+- Stereo, optical flow and monocular depth are dense correspondence problems; stereo is flow restricted to one row, and monocular depth replaces matching by learned priors.
+- In a rectified pair, $Z = fB/d$; depth error grows as $Z^2 \delta d / (fB)$, so baseline, resolution and sub-pixel accuracy set the usable range.
+- The classical stereo pipeline is cost, aggregation, optimization and refinement; SGM's 1D-path dynamic programming fills textureless regions but erases thin structures, and the left–right check finds most occlusions.
+- Learned stereo moved from learned costs (MC-CNN) to 3D-convolved cost volumes with soft argmin (GC-Net, PSMNet) to iterative updates (RAFT-Stereo) and zero-shot models (FoundationStereo), trained on synthetic data first.
+- One image fixes depth only up to scale; relative models predict affine-invariant inverse depth trained with scale-and-shift-invariant losses, and metric models must infer the camera.
+- Self-supervised depth uses view synthesis with a photometric loss; Monodepth2's minimum reprojection and auto-masking handle occlusion and moving objects, and monocular training needs median scaling at test time.
+- RAFT's all-pairs correlation pyramid and shared recurrent update define modern optical flow; EPE and Fl-all (> 3 px and > 5%) are its metrics on Sintel and KITTI.
+- Always report the alignment, the evaluated pixels (occluded or not, depth cap) and the split; they change the numbers as much as the method does.
+
+## Exercises
+
+1. **Choose a baseline.** A stereo camera with $f = 1000$ px must measure depth at 40 m with an error below 1 m, assuming a disparity error of 0.3 px. What is the smallest baseline? What disparity does a point at 40 m then have, and what happens at 80 m?
+
+<details>
+<summary>Hint</summary>
+
+From $\delta Z \approx Z^2 \delta d / (fB) \lt 1$: $B \gt 1600 \cdot 0.3 / 1000 = 0.48$ m. The disparity at 40 m is $fB/Z = 12$ px. At 80 m the error is four times larger (about 4 m) and the disparity is 6 px.
+
+</details>
+
+2. **Window size and fattening.** In the block-matching snippet, change `win` to 3, 7 and 15 and compare bad-1 on the four regions. Why does a large window help in one place and hurt in another?
+
+<details>
+<summary>Hint</summary>
+
+In our run, textureless bad-1 fell from 84.4% (3 × 3) to 67.7% (7 × 7) and 39.9% (15 × 15), while the thin pole rose from 15.3% to 17.4% and 74.6%. A large window gathers texture from outside the flat patch, but near depth edges it mixes two surfaces and spreads the foreground disparity into the background ("foreground fattening"), which swallows the pole.
+
+</details>
+
+3. **Stripes and the period.** The stripes on the wall have a period of 0.15 world units, and the wall there is about 8.6 units away. Estimate their period in pixels (use $f = 320$ px), then explain why block matching gives wrong disparities there. Which change to the scene would make the stripes matchable, and which change to the algorithm might help?
+
+<details>
+<summary>Hint</summary>
+
+The period is about $320 \cdot 0.15 / 8.6 \approx 5.6$ px, smaller than the true disparity there (about 9.3 px), so shifts that differ by one period fit equally well. A wider search does not help. Non-periodic texture would; a smoothness term that prefers the surrounding wall's disparity reduces the errors (in our run SGBM's bad-1 on the stripes was 53.3% against 89.6% for block matching) but does not remove them.
+
+</details>
+
+4. **Scale-invariant losses by hand.** Show that Eigen's error $D(y, y^*)$ does not change when $y$ is multiplied by a constant $c \gt 0$. Then show that MiDaS's least-squares $(s, t)$ makes $\mathcal{L}_{\text{ssi}}$ unchanged under $d \mapsto a d + b$ for any $a \ne 0$ and $b$.
+
+<details>
+<summary>Hint</summary>
+
+$\log(c y_i) = \log c + \log y_i$, and $\alpha$ absorbs $-\log c$, so every residual is unchanged. For MiDaS, if $(s, t)$ is optimal for $d$, then $(s/a, t - sb/a)$ gives the same aligned values for $ad + b$.
+
+</details>
+
+5. **Pyramids and large motion.** In the flow snippet, move the patch by (24, 10) instead of (14, 6) and run with 1, 4 and 6 pyramid levels; then move it by only (2, 1). Update the pasted position in frame 1 and the occlusion mask too. When does the pyramid help?
+
+<details>
+<summary>Hint</summary>
+
+In our run, at (24, 10) the patch was lost with every setting (EPE about 26 px), and 6 levels gave exactly the same result as 4, so the extra levels added nothing here. At (2, 1) all three settings gave a patch EPE of 0.27 px. A pyramid helps only for motions that its coarse levels can bring within reach of the local model; beyond that, a different search is needed, such as RAFT's all-pairs correlation.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each one takes a single point from the main text and goes into finer detail. Nothing in the main text, code or exercises depends on them.
+
+### Robust matching costs: ZNCC and census
+
+This note defines two matching costs that tolerate brightness differences between the two cameras, and tests them against SAD.
+
+**ZNCC.** For windows $\mathbf{a}$ and $\mathbf{b}$ of $m$ pixels each (from the left image at $(u, v)$ and the right image at $(u - d, v)$), with means $\bar a, \bar b$,
+
+$$
+\mathrm{ZNCC}(\mathbf{a}, \mathbf{b}) = \frac{\sum_{k=1}^{m} (a_k - \bar a)(b_k - \bar b)}{\sqrt{\sum_k (a_k - \bar a)^2 \, \sum_k (b_k - \bar b)^2}} \in [-1, 1],
+$$
+
+and the cost is $-\mathrm{ZNCC}$ (or $1 - \mathrm{ZNCC}$). Subtracting the means removes an offset and dividing by the norms removes a gain, so a change $b_k \mapsto g b_k + o$ with $g \gt 0$ leaves ZNCC unchanged. The denominator is close to zero in textureless windows, where ZNCC becomes unstable; implementations add a small constant.
+
+**Census.** For a pixel $\mathbf{p}$ and a set of neighbour offsets $\mathcal{N}$, the census transform is the bit string $b_{\mathbf{q}}(\mathbf{p}) = [\,I(\mathbf{p} + \mathbf{q}) \lt I(\mathbf{p})\,]$ for all offsets $\mathbf{q} \in \mathcal{N}$, where $I$ is the image and $[\cdot]$ is 1 when the condition holds [4]. Two pixels are compared by the Hamming distance of their bit strings (the number of differing bits), usually summed over a window. Census depends only on the *order* of intensities, so any strictly increasing change of brightness leaves it unchanged; and a single outlier pixel in the neighbourhood changes at most one bit of the centre's string. Its weakness is that it throws away contrast: a faint pattern and a strong one give the same bits, and image noise flips bits in flat regions.
+
+**A test.** The snippet builds a rectified pair of a single plane at disparity 10 and applies a gain of 1.3 and an offset of 0.1 to the right image.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+
+rng = np.random.default_rng(3)
+H, W, D, win = 100, 160, 24, 7
+left = ndi.gaussian_filter(rng.random((H, W + D)), 1.0)
+d_true = 10                                            # one fronto-parallel plane, disparity 10 px
+right = np.roll(left, -d_true, axis=1)[:, :W]          # right(x) = left(x + 10)
+left = left[:, :W]
+right = 1.3 * right + 0.1                              # the right camera has a different gain and offset
+
+def census(img, r=2):
+    """Bit string per pixel: is each neighbour in a (2r+1)^2 window darker than the centre?"""
+    bits = [np.roll(img, (dy, dx), (0, 1)) < img for dy in range(-r, r + 1) for dx in range(-r, r + 1)
+            if (dy, dx) != (0, 0)]
+    return np.stack(bits, -1)
+
+def zncc_cost(a, b):
+    box = lambda x: ndi.uniform_filter(x, win)
+    ma, mb = box(a), box(b)
+    va, vb = box(a * a) - ma ** 2, box(b * b) - mb ** 2
+    return -(box(a * b) - ma * mb) / np.sqrt(va * vb + 1e-12)      # negative correlation = cost
+
+cl, cr = census(left), census(right)
+costs = {"SAD": [], "ZNCC": [], "census": []}
+for d in range(D):
+    r_d = np.roll(right, d, axis=1)                    # right pixel x - d moved to column x
+    costs["SAD"].append(ndi.uniform_filter(np.abs(left - r_d), win))
+    costs["ZNCC"].append(zncc_cost(left, r_d))
+    ham = (cl != np.roll(cr, d, axis=1)).sum(-1).astype(float)     # Hamming distance of bit strings
+    costs["census"].append(ndi.uniform_filter(ham, win))
+inner = (slice(10, -10), slice(D + 5, -10))
+for name, c in costs.items():
+    d_hat = np.argmin(np.stack(c), axis=0)[inner]
+    print(f"{name:7s} correct disparity on {100 * np.mean(d_hat == d_true):5.1f}% of pixels")
+```
+
+```text
+SAD     correct disparity on   3.9% of pixels
+ZNCC    correct disparity on 100.0% of pixels
+census  correct disparity on 100.0% of pixels
+```
+
+In this test, SAD finds the right disparity on only 3.9% of the pixels, because the brightness change dominates the cost; ZNCC and census are correct everywhere. This is why classical systems use census or ZNCC, and why learned features, which can learn the same invariances, replaced them.
+
+### Semi-global matching step by step
+
+This note walks through SGM's recursion on one scanline, the part that the main text states in one equation.
+
+**The recursion.** On a path with direction $\mathbf{r}$ (for a horizontal scanline, $\mathbf{r} = (1, 0)$, left to right), the aggregated cost at pixel $x$ and disparity $d$ is
+
+$$
+L(x, d) = C(x, d) + \min\bigl( L(x-1, d),\; L(x-1, d-1) + P_1,\; L(x-1, d+1) + P_1,\; m_{x-1} + P_2 \bigr) - m_{x-1},
+$$
+
+where $C(x, d)$ is the matching cost, $L(x-1, \cdot)$ are the aggregated costs of the previous pixel, $m_{x-1} = \min_k L(x-1, k)$, $P_1$ is the penalty for a change of one level and $P_2$ the penalty for a larger jump [5], [6]. The four options are: keep the previous disparity (free), change by one level (cost $P_1$), or jump from the best previous disparity to any other (cost $P_2$). Subtracting $m_{x-1}$ does not change the minimizer; it only keeps $L$ bounded.
+
+**Why $P_1 \lt P_2$.** A slanted surface changes disparity gradually, one level every few pixels, so small steps must be cheap. A depth edge is a large jump that happens rarely, so it should cost more, but a fixed amount regardless of size, so that real edges are not smoothed into ramps. MC-CNN, for example, lowers both penalties where the image gradient is large, because depth edges often coincide with intensity edges [6].
+
+**Why several paths.** One left-to-right path only propagates information from the left; a pixel at the left end of a textureless region gets help, one at the right end does not. Summing paths from several directions gives each pixel support from all around. The full algorithm uses 8 directions; OpenCV's default uses 5 [7].
+
+**A test on one scanline.** The snippet builds a cost array for 60 pixels with a disparity step from 5 to 9 at column 30 and a textureless stretch (columns 10–23) where all costs are nearly equal, and compares WTA with the sum of a left-to-right and a right-to-left path.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+Wd, D = 60, 16
+d_true = np.where(np.arange(Wd) < 30, 5, 9)             # a depth step at column 30
+cost = rng.uniform(0.6, 1.0, (Wd, D))                   # matching cost C(x, d) along one scanline
+textured = np.ones(Wd, bool); textured[10:24] = False    # columns 10..23 have no texture
+cost[textured, d_true[textured]] = 0.1                   # textured pixels: a clear minimum
+cost[~textured] = 0.6 + 0.02 * rng.standard_normal((14, D))   # textureless: flat and noisy
+
+def aggregate(C, P1=0.05, P2=0.3):
+    """One SGM path from left to right: L(x, d) = C(x, d) + min(...) - min_k L(x-1, k)."""
+    L = np.empty_like(C); L[0] = C[0]
+    for x in range(1, len(C)):
+        prev = L[x - 1]; m = prev.min()
+        up = np.r_[prev[1:], np.inf] + P1               # neighbour had disparity d + 1
+        down = np.r_[np.inf, prev[:-1]] + P1            # neighbour had disparity d - 1
+        L[x] = C[x] + np.minimum.reduce([prev, up, down, np.full(D, m + P2)]) - m
+    return L
+
+S = aggregate(cost) + aggregate(cost[::-1])[::-1]       # two paths: left-to-right and right-to-left
+for name, c in [("winner-take-all", cost), ("SGM, 2 paths", S)]:
+    d_hat = c.argmin(1)
+    print(f"{name:16s} correct: textured {np.mean(d_hat[textured] == d_true[textured]):.2f}, "
+          f"textureless {np.mean(d_hat[~textured] == d_true[~textured]):.2f}, "
+          f"step kept at x=29/30: {d_hat[29]}/{d_hat[30]}")
+```
+
+```text
+winner-take-all  correct: textured 1.00, textureless 0.00, step kept at x=29/30: 5/9
+SGM, 2 paths     correct: textured 1.00, textureless 1.00, step kept at x=29/30: 5/9
+```
+
+WTA gets every textured pixel right and every textureless one wrong. Two SGM paths fill the textureless stretch with the disparity of its neighbours, and the depth step at columns 29/30 survives: a jump costs $P_2$ only once, while keeping the wrong disparity beyond the step would pay the large matching cost at every following textured pixel.
+
+### Sub-pixel disparity and the soft argmin
+
+This note gives the two common ways to get a sub-pixel disparity from a cost curve, and shows where the learned one goes wrong.
+
+**Parabola fitting.** Let $k$ be the integer disparity with the lowest cost and $c_-, c_0, c_+$ the costs at $k - 1, k, k + 1$. The parabola through these three points has its minimum at
+
+$$
+\hat d = k + \frac{c_- - c_+}{2\,(c_- - 2 c_0 + c_+)},
+$$
+
+where the denominator is positive because $c_0$ is the minimum. The correction lies within $\pm 0.5$, so the estimate stays next to the winning integer. For a cost that is exactly quadratic near its minimum the formula is exact; for other cost shapes it is an approximation.
+
+**Soft argmin.** GC-Net's soft argmin [11] computes the expectation of $d$ under the softmax of $-c_d$. When the cost has one clear minimum, the softmax is concentrated and the expectation is a good sub-pixel estimate. When the cost has two minima, as for a window that straddles a depth edge, the expectation lands *between* them, at a disparity that belongs to neither surface. This is one source of the over-smoothed depth discontinuities that Tosi et al. list as a challenge of deep stereo [9]. GC-Net's authors note that the network can learn to pre-scale the costs so that the softmax becomes sharper [11].
+
+```python
+import numpy as np
+
+d = np.arange(32, dtype=float)                          # integer disparity hypotheses
+
+def parabola(c):
+    """Sub-pixel minimum from the costs at the best integer d and its two neighbours."""
+    k = int(np.argmin(c)); cm, c0, cp = c[k - 1], c[k], c[k + 1]
+    return k + (cm - cp) / (2 * (cm - 2 * c0 + cp))
+
+def soft_argmin(c, beta=1.0):
+    p = np.exp(-beta * (c - c.min())); p /= p.sum()     # softmax of the negative cost
+    return (p * d).sum()
+
+one = (d - 7.3) ** 2 / 4                                # one surface at disparity 7.3
+two = np.minimum((d - 6.0) ** 2, (d - 15.0) ** 2 + 0.2) / 4   # window straddles an edge: 6 or 15
+for name, c in [("one surface at 7.3", one), ("edge between 6 and 15", two)]:
+    print(f"{name:22s} argmin {np.argmin(c):2d} | parabola {parabola(c):5.2f} | soft argmin {soft_argmin(c):5.2f}")
+```
+
+```text
+one surface at 7.3     argmin  7 | parabola  7.30 | soft argmin  7.30
+edge between 6 and 15  argmin  6 | parabola  6.00 | soft argmin 10.39
+```
+
+For one surface at 7.3, the parabola and the soft argmin both return 7.30. For a cost with minima at 6 and 15, the parabola stays at the winning minimum (6.00) while the soft argmin returns 10.39, a depth halfway between the foreground and the background.
+
+### Monocular depth foundation models: data and the camera
+
+This note describes, model by model, how the monocular depth models named in the main text obtain their training signal and how they deal with scale and the camera.
+
+**Relative (affine-invariant) models and their backbone.** These predict depth or inverse depth up to an unknown scale and shift, and are trained with an alignment-based loss such as MiDaS's [18].
+
+- **DPT** [20] replaced the convolutional encoder with a [Vision Transformer](/en/learn/ml/ml-04-vision-transformers/#the-vision-transformer-vit): tokens from several transformer stages are reassembled into image-like maps at several resolutions and fused by a convolutional decoder. Because every stage has a global receptive field, predictions are more globally coherent, especially with much training data [20].
+- **Depth Anything** [19] keeps the relative, affine-invariant formulation and scales the data: a teacher trained on 1.5M labelled images pseudo-labels about 62M unlabelled images, and a student learns from both under strong augmentation, with a feature-alignment loss to a frozen DINOv2 encoder that preserves semantic priors [19]. **Depth Anything V2** [21] replaces all labelled real images by precise synthetic ones, scales up the teacher, and teaches smaller students through large-scale pseudo-labelled real images; fine-tuning with metric labels gives metric variants [21].
+- **Marigold** [22] fine-tunes the Stable Diffusion image generator into an affine-invariant depth estimator, using only synthetic training data, to reuse the generator's prior about the visual world (diffusion models are covered in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/)).
+
+**Metric models.** These must produce metres, which requires knowing or inferring the focal length, because the same object looks larger in the image with a longer focal length.
+
+- **ZoeDepth** [23] pre-trains on twelve datasets with relative depth and fine-tunes metric heads on NYU Depth v2 and KITTI, routing each image to the right head with a classifier [23].
+- **Metric3D** [24] identifies the camera as the source of metric ambiguity. It transforms training images into a **canonical camera space** (one fixed focal length) and maps predictions back, which allows training on over 8 million images from thousands of camera models [24]. **Metric3D v2** [25] adds joint depth and surface-normal estimation.
+- **UniDepth** [26] predicts metric 3D points directly, with a camera module that predicts a dense camera representation to condition the depth features, so no intrinsics are needed at test time [26].
+- **Depth Pro** [27] predicts metric depth with sharp boundaries without camera metadata, using a multi-scale ViT and its own focal-length estimation; its authors report a 2.25-megapixel depth map in 0.3 seconds on a standard GPU [27].
+
+**What to check when comparing them.** Relative models are evaluated after a per-image scale-and-shift alignment, metric models without it; a zero-shot result means the test dataset was not used in training; and metric results depend on whether the true intrinsics were given to the model or estimated by it.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### RAFT (Teed and Deng, 2020)
+
+**The problem.** In 2020, learned optical flow used coarse-to-fine pyramids (PWC-Net) or stacks of networks (FlowNet 2.0). Coarse-to-fine schemes can miss small, fast objects that disappear at low resolution, and stacked networks are large and limited to a fixed number of refinement stages [41].
+
+**The idea.** Compute visual similarity once, for all pairs of pixels, and then refine a single flow field with one small, shared recurrent update operator that looks up the similarity volume around its current estimate. The paper's sections follow the three parts: feature extraction, the 4D correlation pyramid with its lookup operator, and the ConvGRU update with convex upsampling, followed by the sequence loss [41].
+
+**What it showed.** RAFT reported state-of-the-art accuracy on Sintel and KITTI at the time, strong cross-dataset generalization when trained only on synthetic data, and efficiency in inference time, training and parameter count [41]. Its iteration study shows that results improve quickly in the first few updates and continue to improve with more, without diverging even after 200 updates [41].
+
+**How to read its tables.** Separate the rows by training data: "C+T" (Flying Chairs then FlyingThings3D) measures generalization to Sintel and KITTI training sets, while the fine-tuned rows measure benchmark test accuracy. Sintel has two columns, clean and final; the final pass, with motion blur and atmospheric effects, is the harder one. KITTI is reported as EPE and Fl-all. The ablation table varies one design choice at a time (update operator, weight tying, context, feature scale, lookup radius, correlation pooling, correlation range, features for refinement, upsampling); read it to see which pieces matter most for each dataset.
+
+**Limits.** The all-pairs volume has memory quadratic in the number of pixels at 1/8 resolution; the paper describes an equivalent on-demand computation that trades memory for time [41]. Like all supervised flow models, RAFT relies on synthetic pre-training and target-domain fine-tuning for its best numbers.
+
+**Why it matters here.** RAFT's recipe became the template for RAFT-Stereo, RAFT-3D and most current flow and stereo networks.
+
+### MiDaS (Ranftl et al., 2022)
+
+**The problem.** Monocular depth networks trained on one dataset generalize poorly, and existing datasets are incompatible: some give metric depth, some depth up to scale, some disparity up to scale and shift [18].
+
+**The idea.** Predict inverse depth, and make the loss blind to each image's unknown scale and shift by aligning prediction and ground truth before comparing them. Mix many datasets with a principled multi-objective strategy, and add a large new source of stereo data from 3D films [18].
+
+**What it showed.** Mixing complementary datasets greatly improves monocular depth, and the authors evaluate with zero-shot cross-dataset transfer, on datasets never seen in training, which became the standard protocol for "depth foundation models" [18].
+
+**How to read its tables.** Every number is computed after aligning the prediction to the ground truth in scale and shift, so they measure relative depth quality only. The loss comparison varies the alignment and the robust loss; the mixing experiments vary the datasets and the mixing strategy. When comparing with a later paper, check that it uses the same alignment, the same test datasets and the same error definitions.
+
+**Limits.** The output has no metric scale; downstream use needs a few metric measurements or a separate scale estimate.
+
+**Why it matters here.** The scale-and-shift-invariant loss in the main text, and the relative-depth branch of every later foundation model, come from this paper.
+
+### Guide to the Modern view surveys
+
+**Which survey for which question.** For deep stereo up to about 2019 and the vocabulary of the field (pipelines, cost volumes, training and supervision), start with Laga et al. [8]. For the link between stereo and self-supervised monocular depth, confidence estimation and domain adaptation, read Poggi et al. [15]. For the 2020s architectures (iterative, transformer-based, efficient) and the current challenges, read Tosi et al. [9], which also has benchmark comparison tables. For monocular depth from images and video, read Rajapaksha et al. [56]. For optical flow, read Hur and Roth [36].
+
+**What they do not cover.** None of these surveys covers the newest monocular foundation models or zero-shot stereo in depth: Tosi et al. and Rajapaksha et al. appeared in 2024, before Depth Pro and FoundationStereo, and Hur and Roth's chapter does not cover RAFT. For those, read the model papers in the state-of-the-art list directly.
+
+**How to use them.** Read the taxonomy figure and the discussion section of each survey first; they summarize the authors' view of the field in a few pages. Use the benchmark tables to find representative methods, but treat numbers copied from different papers with the caution described in [Evaluation](#evaluation): alignment, evaluated pixels and splits differ.
+
+## References
+
+1. R. Hartley and A. Zisserman, *Multiple View Geometry in Computer Vision*, 2nd ed., Cambridge University Press, 2004. [doi](https://doi.org/10.1017/CBO9780511811685)
+2. D. Scharstein and R. Szeliski, "A taxonomy and evaluation of dense two-frame stereo correspondence algorithms," *International Journal of Computer Vision*, vol. 47, no. 1–3, pp. 7–42, 2002. [doi](https://doi.org/10.1023/A:1014573219977)
+3. D. Scharstein, R. Szeliski and H. Hirschmüller, "Middlebury Stereo Evaluation — Version 3," official benchmark page (bad 2.0 metric, non-occluded and all masks). [link](https://vision.middlebury.edu/stereo/eval3/) · [stereo home page](https://vision.middlebury.edu/stereo/)
+4. R. Zabih and J. Woodfill, "Non-parametric local transforms for computing visual correspondence," in *Computer Vision — ECCV '94* (Lecture Notes in Computer Science), pp. 151–158, Springer, 1994. [doi](https://doi.org/10.1007/BFb0028345)
+5. H. Hirschmüller, "Stereo processing by semiglobal matching and mutual information," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 30, no. 2, pp. 328–341, 2008. [doi](https://doi.org/10.1109/TPAMI.2007.1166)
+6. J. Žbontar and Y. LeCun, "Stereo matching by training a convolutional neural network to compare image patches," *Journal of Machine Learning Research*, vol. 17, no. 65, pp. 1–32, 2016. [JMLR](https://jmlr.org/papers/v17/15-535.html) · [arXiv](https://arxiv.org/abs/1510.05970)
+7. OpenCV contributors, "cv::StereoSGBM class documentation," OpenCV source, `modules/calib3d/include/opencv2/calib3d.hpp` (4.x branch). [source](https://raw.githubusercontent.com/opencv/opencv/4.x/modules/calib3d/include/opencv2/calib3d.hpp)
+8. H. Laga, L. V. Jospin, F. Boussaid and M. Bennamoun, "A survey on deep learning techniques for stereo-based depth estimation," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 4, pp. 1738–1764, 2022. [doi](https://doi.org/10.1109/TPAMI.2020.3032602) · [arXiv](https://arxiv.org/abs/2006.02535)
+9. F. Tosi, L. Bartolomei and M. Poggi, "A survey on deep stereo matching in the twenties," *International Journal of Computer Vision*, vol. 133, no. 7, pp. 4245–4276, 2025. [doi](https://doi.org/10.1007/s11263-024-02331-0) · [arXiv](https://arxiv.org/abs/2407.07816)
+10. N. Mayer, E. Ilg, P. Häusser, P. Fischer, D. Cremers, A. Dosovitskiy and T. Brox, "A large dataset to train convolutional networks for disparity, optical flow, and scene flow estimation," in *Proc. IEEE CVPR*, pp. 4040–4048, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Mayer_A_Large_Dataset_CVPR_2016_paper.html) · [doi](https://doi.org/10.1109/CVPR.2016.438)
+11. A. Kendall, H. Martirosyan, S. Dasgupta, P. Henry, R. Kennedy, A. Bachrach and A. Bry, "End-to-end learning of geometry and context for deep stereo regression," in *Proc. IEEE ICCV*, 2017. [CVF](https://openaccess.thecvf.com/content_iccv_2017/html/Kendall_End-To-End_Learning_of_ICCV_2017_paper.html)
+12. J.-R. Chang and Y.-S. Chen, "Pyramid stereo matching network," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Chang_Pyramid_Stereo_Matching_CVPR_2018_paper.html)
+13. L. Lipson, Z. Teed and J. Deng, "RAFT-Stereo: Multilevel recurrent field transforms for stereo matching," in *Proc. International Conference on 3D Vision (3DV)*, pp. 218–227, 2021. [doi](https://doi.org/10.1109/3DV53792.2021.00032) · [arXiv](https://arxiv.org/abs/2109.07547)
+14. G. Xu, X. Wang, X. Ding and X. Yang, "Iterative geometry encoding volume for stereo matching," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Xu_Iterative_Geometry_Encoding_Volume_for_Stereo_Matching_CVPR_2023_paper.html)
+15. M. Poggi, F. Tosi, K. Batsos, P. Mordohai and S. Mattoccia, "On the synergies between machine learning and binocular stereo for depth estimation from images: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2021. [doi](https://doi.org/10.1109/TPAMI.2021.3070917) · [arXiv](https://arxiv.org/abs/2004.08566)
+16. B. Wen, M. Trepte, J. Aribido, J. Kautz, O. Gallo and S. Birchfield, "FoundationStereo: Zero-shot stereo matching," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wen_FoundationStereo_Zero-Shot_Stereo_Matching_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2501.09898)
+17. D. Eigen, C. Puhrsch and R. Fergus, "Depth map prediction from a single image using a multi-scale deep network," in *Proc. NeurIPS*, 2014. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2014/hash/91c56ce4a249fae5419b90cba831e303-Abstract.html) · [arXiv](https://arxiv.org/abs/1406.2283)
+18. R. Ranftl, K. Lasinger, D. Hafner, K. Schindler and V. Koltun, "Towards robust monocular depth estimation: Mixing datasets for zero-shot cross-dataset transfer," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 44, no. 3, pp. 1623–1637, 2022. [doi](https://doi.org/10.1109/TPAMI.2020.3019967) · [arXiv](https://arxiv.org/abs/1907.01341)
+19. L. Yang, B. Kang, Z. Huang, X. Xu, J. Feng and H. Zhao, "Depth Anything: Unleashing the power of large-scale unlabeled data," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Yang_Depth_Anything_Unleashing_the_Power_of_Large-Scale_Unlabeled_Data_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2401.10891)
+20. R. Ranftl, A. Bochkovskiy and V. Koltun, "Vision transformers for dense prediction," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Ranftl_Vision_Transformers_for_Dense_Prediction_ICCV_2021_paper.html)
+21. L. Yang, B. Kang, Z. Huang, Z. Zhao, X. Xu, J. Feng and H. Zhao, "Depth Anything V2," in *Proc. NeurIPS*, 2024. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2024/hash/26cfdcd8fe6fd75cc53e92963a656c58-Abstract-Conference.html) · [arXiv](https://arxiv.org/abs/2406.09414)
+22. B. Ke, A. Obukhov, S. Huang, N. Metzger, R. C. Daudt and K. Schindler, "Repurposing diffusion-based image generators for monocular depth estimation," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Ke_Repurposing_Diffusion-Based_Image_Generators_for_Monocular_Depth_Estimation_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2312.02145)
+23. S. F. Bhat, R. Birkl, D. Wofk, P. Wonka and M. Müller, "ZoeDepth: Zero-shot transfer by combining relative and metric depth," arXiv:2302.12288, 2023. [arXiv](https://arxiv.org/abs/2302.12288)
+24. W. Yin, C. Zhang, H. Chen, Z. Cai, G. Yu, K. Wang, X. Chen and C. Shen, "Metric3D: Towards zero-shot metric 3D prediction from a single image," in *Proc. IEEE/CVF ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Yin_Metric3D_Towards_Zero-shot_Metric_3D_Prediction_from_A_Single_Image_ICCV_2023_paper.html) · [arXiv](https://arxiv.org/abs/2307.10984)
+25. M. Hu, W. Yin, C. Zhang, Z. Cai, X. Long, K. Wang, H. Chen, G. Yu, C. Shen and S. Shen, "Metric3D v2: A versatile monocular geometric foundation model for zero-shot metric depth and surface normal estimation," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 46, no. 12, pp. 10579–10596, 2024. [doi](https://doi.org/10.1109/TPAMI.2024.3444912) · [arXiv](https://arxiv.org/abs/2404.15506)
+26. L. Piccinelli, Y.-H. Yang, C. Sakaridis, M. Segu, S. Li, L. Van Gool and F. Yu, "UniDepth: Universal monocular metric depth estimation," in *Proc. IEEE/CVF CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Piccinelli_UniDepth_Universal_Monocular_Metric_Depth_Estimation_CVPR_2024_paper.html) · [arXiv](https://arxiv.org/abs/2403.18913)
+27. A. Bochkovskii, A. Delaunoy, H. Germain, M. Santos, Y. Zhou, S. R. Richter and V. Koltun, "Depth Pro: Sharp monocular metric depth in less than a second," in *Proc. ICLR*, 2025. [OpenReview](https://openreview.net/forum?id=aueXfY0Clv) · [arXiv](https://arxiv.org/abs/2410.02073)
+28. R. Garg, V. Kumar B.G., G. Carneiro and I. Reid, "Unsupervised CNN for single view depth estimation: Geometry to the rescue," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 740–756, 2016. [doi](https://doi.org/10.1007/978-3-319-46484-8_45) · [arXiv](https://arxiv.org/abs/1603.04992)
+29. C. Godard, O. Mac Aodha and G. J. Brostow, "Unsupervised monocular depth estimation with left-right consistency," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Godard_Unsupervised_Monocular_Depth_CVPR_2017_paper.html)
+30. T. Zhou, M. Brown, N. Snavely and D. G. Lowe, "Unsupervised learning of depth and ego-motion from video," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Zhou_Unsupervised_Learning_of_CVPR_2017_paper.html)
+31. C. Godard, O. Mac Aodha, M. Firman and G. J. Brostow, "Digging into self-supervised monocular depth estimation," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Godard_Digging_Into_Self-Supervised_Monocular_Depth_Estimation_ICCV_2019_paper.html) · [arXiv](https://arxiv.org/abs/1806.01260)
+32. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image quality assessment: From error visibility to structural similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+33. B. K. P. Horn and B. G. Schunck, "Determining optical flow," *Artificial Intelligence*, vol. 17, no. 1–3, pp. 185–203, 1981. [doi](https://doi.org/10.1016/0004-3702(81)90024-2)
+34. B. D. Lucas and T. Kanade, "An iterative image registration technique with an application to stereo vision," in *Proc. International Joint Conference on Artificial Intelligence (IJCAI)*, 1981. [pdf](https://www.ijcai.org/Proceedings/81-2/Papers/017.pdf)
+35. G. Farnebäck, "Two-frame motion estimation based on polynomial expansion," in *Image Analysis* (Lecture Notes in Computer Science), pp. 363–370, Springer, 2003. [doi](https://doi.org/10.1007/3-540-45103-X_50)
+36. J. Hur and S. Roth, "Optical flow estimation in the deep learning age," in *Modelling Human Motion*, N. Noceti, A. Sciutti and F. Rea, Eds., pp. 119–140, Springer, 2020. [doi](https://doi.org/10.1007/978-3-030-46732-6_7) · [arXiv](https://arxiv.org/abs/2004.02853)
+37. A. Dosovitskiy, P. Fischer, E. Ilg, P. Häusser, C. Hazırbaş, V. Golkov, P. van der Smagt, D. Cremers and T. Brox, "FlowNet: Learning optical flow with convolutional networks," in *Proc. IEEE ICCV*, 2015. [CVF](https://openaccess.thecvf.com/content_iccv_2015/html/Dosovitskiy_FlowNet_Learning_Optical_ICCV_2015_paper.html) · [arXiv](https://arxiv.org/abs/1504.06852)
+38. E. Ilg, N. Mayer, T. Saikia, M. Keuper, A. Dosovitskiy and T. Brox, "FlowNet 2.0: Evolution of optical flow estimation with deep networks," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Ilg_FlowNet_2.0_Evolution_CVPR_2017_paper.html)
+39. A. Ranjan and M. J. Black, "Optical flow estimation using a spatial pyramid network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Ranjan_Optical_Flow_Estimation_CVPR_2017_paper.html)
+40. D. Sun, X. Yang, M.-Y. Liu and J. Kautz, "PWC-Net: CNNs for optical flow using pyramid, warping, and cost volume," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Sun_PWC-Net_CNNs_for_CVPR_2018_paper.html)
+41. Z. Teed and J. Deng, "RAFT: Recurrent all-pairs field transforms for optical flow," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 402–419, 2020. [doi](https://doi.org/10.1007/978-3-030-58536-5_24) · [arXiv](https://arxiv.org/abs/2003.12039)
+42. Z. Teed and J. Deng, "RAFT-3D: Scene flow using rigid-motion embeddings," in *Proc. IEEE/CVF CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Teed_RAFT-3D_Scene_Flow_Using_Rigid-Motion_Embeddings_CVPR_2021_paper.html) · [arXiv](https://arxiv.org/abs/2012.00726)
+43. H. Xu, J. Zhang, J. Cai, H. Rezatofighi and D. Tao, "GMFlow: Learning optical flow via global matching," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Xu_GMFlow_Learning_Optical_Flow_via_Global_Matching_CVPR_2022_paper.html)
+44. H. Xu, J. Zhang, J. Cai, H. Rezatofighi, F. Yu, D. Tao and A. Geiger, "Unifying flow, stereo and depth estimation," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 45, no. 11, pp. 13941–13958, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3298645) · [arXiv](https://arxiv.org/abs/2211.05783)
+45. Z. Huang, X. Shi, C. Zhang, Q. Wang, K. C. Cheung, H. Qin, J. Dai and H. Li, "FlowFormer: A transformer architecture for optical flow," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 668–685, 2022. [doi](https://doi.org/10.1007/978-3-031-19790-1_40) · [arXiv](https://arxiv.org/abs/2203.16194)
+46. Y. Wang, L. Lipson and J. Deng, "SEA-RAFT: Simple, efficient, accurate RAFT for optical flow," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 36–54, 2024. [doi](https://doi.org/10.1007/978-3-031-72667-5_3) · [arXiv](https://arxiv.org/abs/2405.14793)
+47. S. Vedula, S. Baker, P. Rander, R. Collins and T. Kanade, "Three-dimensional scene flow," in *Proc. IEEE ICCV*, vol. 2, pp. 722–729, 1999. [doi](https://doi.org/10.1109/ICCV.1999.790293)
+48. M. Menze and A. Geiger, "Object scene flow for autonomous vehicles," in *Proc. IEEE CVPR*, pp. 3061–3070, 2015. [CVF](https://openaccess.thecvf.com/content_cvpr_2015/html/Menze_Object_Scene_Flow_2015_CVPR_paper.html) · [doi](https://doi.org/10.1109/CVPR.2015.7298925)
+49. A. Geiger, P. Lenz, C. Stiller and R. Urtasun, "Scene flow evaluation 2015 (stereo 2015, flow 2015, scene flow 2015)," The KITTI Vision Benchmark Suite, official benchmark page (dataset size, D1, D2, Fl and SF outlier definitions). [link](https://www.cvlibs.net/datasets/kitti/eval_scene_flow.php)
+50. A. Geiger, P. Lenz, C. Stiller and R. Urtasun, "Stereo evaluation 2012," The KITTI Vision Benchmark Suite, official benchmark page (dataset size, Out-Noc and Out-All at 2–5 px). [link](https://www.cvlibs.net/datasets/kitti/eval_stereo_flow.php)
+51. A. Geiger, P. Lenz and R. Urtasun, "Are we ready for autonomous driving? The KITTI vision benchmark suite," in *Proc. IEEE CVPR*, pp. 3354–3361, 2012. [doi](https://doi.org/10.1109/CVPR.2012.6248074)
+52. D. Scharstein, H. Hirschmüller, Y. Kitajima, G. Krathwohl, N. Nešić, X. Wang and P. Westling, "High-resolution stereo datasets with subpixel-accurate ground truth," in *Pattern Recognition (Proc. GCPR)* (Lecture Notes in Computer Science), pp. 31–42, Springer, 2014. [doi](https://doi.org/10.1007/978-3-319-11752-2_3) · [datasets](https://vision.middlebury.edu/stereo/data/scenes2014/)
+53. T. Schöps, J. L. Schönberger, S. Galliani, T. Sattler, K. Schindler, M. Pollefeys and A. Geiger, "A multi-view stereo benchmark with high-resolution images and multi-camera videos," in *Proc. IEEE CVPR*, pp. 2538–2547, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Schops_A_Multi-View_Stereo_CVPR_2017_paper.html) · [datasets](https://www.eth3d.net/datasets)
+54. D. J. Butler, J. Wulff, G. B. Stanley and M. J. Black, "A naturalistic open source movie for optical flow evaluation," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 611–625, 2012. [doi](https://doi.org/10.1007/978-3-642-33783-3_44) · [project page](http://sintel.is.tue.mpg.de/)
+55. N. Silberman, D. Hoiem, P. Kohli and R. Fergus, "Indoor segmentation and support inference from RGBD images," in *Proc. ECCV* (Lecture Notes in Computer Science), pp. 746–760, 2012. [doi](https://doi.org/10.1007/978-3-642-33715-4_54) · [dataset page](https://cs.nyu.edu/~fergus/datasets/nyu_depth_v2.html)
+56. U. Rajapaksha, F. Sohel, H. Laga, D. Diepeveen and M. Bennamoun, "Deep learning-based depth estimation methods from monocular image and videos: A comprehensive survey," *ACM Computing Surveys*, vol. 56, no. 12, 2024. [doi](https://doi.org/10.1145/3677327) · [arXiv](https://arxiv.org/abs/2406.19675)
