@@ -463,7 +463,7 @@ How deep networks label every pixel: the three segmentation tasks, fully convolu
 - Files: `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-03b-image-segmentation.mdx`
 - Pages: `/en/learn/deep-learning/dl-03b-image-segmentation/`, `/en/learn/deep-learning/dl-03b-image-segmentation/notes/`, `/en/learn/deep-learning/dl-03b-image-segmentation/papers/`
 - Level advanced · order 38 · needs: `deep-learning/dl-03-object-detection`, `image-processing/dip-10-segmentation` · tags: semantic-segmentation, instance-segmentation, panoptic-segmentation, deeplab, mask2former, mean-iou, panoptic-quality
-- Figures: 5 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41
+- Figures: 5 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41 · experiments: segmentation-metrics
 
 - [What you'll learn](/en/learn/deep-learning/dl-03b-image-segmentation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-03b-image-segmentation/#the-big-picture) `the-big-picture`
@@ -1236,7 +1236,7 @@ Dense correspondence for depth and motion: rectified stereo and disparity, match
 - Files: `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-08a-depth-optical-flow.mdx`
 - Pages: `/en/learn/deep-learning/dl-08a-depth-optical-flow/`, `/en/learn/deep-learning/dl-08a-depth-optical-flow/notes/`, `/en/learn/deep-learning/dl-08a-depth-optical-flow/papers/`
 - Level advanced · order 85 · needs: `deep-learning/dl-08-3d-reconstruction` · tags: depth-estimation, stereo-matching, monocular-depth, optical-flow, scene-flow, raft, self-supervised-learning
-- Figures: 6 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56
+- Figures: 6 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56 · experiments: stereo-matching
 
 - [What you'll learn](/en/learn/deep-learning/dl-08a-depth-optical-flow/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-08a-depth-optical-flow/#the-big-picture) `the-big-picture`

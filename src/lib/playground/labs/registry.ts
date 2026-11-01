@@ -19,4 +19,6 @@ import { lab as linearTransform } from './linear-transform.ts';
 import { lab as contourEnergy } from './contour-energy.ts';
 import { lab as mlpTraining } from './mlp.ts';
 import { lab as trackingAssociation } from './tracking-association.ts';
-export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining, trackingAssociation];
+import { lab as segmentationMetrics } from './segmentation-metrics.ts';
+import { lab as stereoMatching } from './stereo-matching.ts';
+export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining, trackingAssociation, segmentationMetrics, stereoMatching];
