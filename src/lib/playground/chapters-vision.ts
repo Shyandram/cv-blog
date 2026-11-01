@@ -387,7 +387,7 @@ export const chapterVisionExperiments: Experiment[] = [
         "平均值的風險是 p(1−p) = 0.09，清晰的 A 的風險是 1−p = 0.10。p 越接近 1 差距越小，但永遠不會消失，因為平均值正是期望平方誤差的精確最小化者。",
       ),
     },
-    related: [DL("dl-04-image-restoration")],
+    related: [DL("dl-04-image-restoration"), DL("dl-04a-super-resolution"), DL("dl-04c-generative-restoration")],
     controls: [
       range(
         "probability",

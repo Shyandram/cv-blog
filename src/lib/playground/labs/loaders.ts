@@ -20,4 +20,12 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'contour-energy': () => import('./contour-energy.ts'),
   'mlp-training': () => import('./mlp.ts'),
   'tracking-association': () => import('./tracking-association.ts'),
+  'image-fusion': () => import('./image-fusion.ts'),
+  'lut-trilinear': () => import('./lut-trilinear.ts'),
+  'segmentation-metrics': () => import('./segmentation-metrics.ts'),
+  'stereo-matching': () => import('./stereo-matching.ts'),
+  'adversarial-budget': () => import('./adversarial-budget.ts'),
+  'ctc-decoding': () => import('./ctc-decoding.ts'),
+  'heatmap-decoding': () => import('./heatmap-decoding.ts'),
+  'bev-iou': () => import('./bev-iou.ts'),
 };

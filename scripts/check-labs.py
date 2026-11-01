@@ -191,6 +191,104 @@ def check_tracking(metrics, set_, zh):
     assert first_float(m2[0]) == 0 and first_float(m2[2]) > 0.8, f"mixing colour in should remove the swap: {m2}"
 
 
+def check_image_fusion(metrics, set_, zh):
+    v = [pct(x) for x in metrics().values()]  # PSNR average, PSNR fused, map agreement on textured pixels (%)
+    assert 29 < v[0] < 31 and v[1] > 38.5 and v[1] - v[0] > 8, f"default: averaging blurry (~30 dB), local-detail rule sharp (~39 dB): {metrics()}"
+    set_("window", "0.5")
+    w = [pct(x) for x in metrics().values()]
+    assert w[1] < v[1] - 1.5 and w[2] < v[2] - 5, f"a tiny window should make the decision map noisy: {metrics()}"
+    set_("smooth", "2")
+    assert pct(list(metrics().values())[1]) > w[1] + 1.5, f"smoothing the map should repair most of it: {metrics()}"
+
+
+def check_lut_trilinear(metrics, set_, zh):
+    def errs():
+        m = list(metrics().values())  # table size, nearest mean / max, trilinear mean / max
+        return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", m[1])], [float(x) for x in re.findall(r"\d+(?:\.\d+)?", m[2])]
+    n, t = errs()
+    assert n[0] > 8 and n[1] > 20 and t[0] < 0.5 and t[1] <= 5, f"default M=9 gradient: nearest bands, trilinear near-exact: {metrics()}"
+    set_("m", "33")
+    n33, t33 = errs()
+    assert 1.5 < n33[0] < 3.5 and t33[0] < 0.1 and n33[0] > t[0] * 4, f"M=33: nearest still off by a couple of levels, more than trilinear at M=9: {metrics()}"
+    set_("m", "2")
+    n2, t2 = errs()
+    assert t2[0] > 5 and n2[0] > t2[0], f"two nodes cannot follow the curve: {metrics()}"
+
+
+def check_segmentation_metrics(metrics, set_, zh):
+    v = [first_float(x) for x in metrics().values()]  # pixel accuracy, mIoU, IoU of the smallest class, wrong pixels %
+    assert v[0] > 0.93 and v[1] < 0.55 and v[2] < 0.05, f"default stride 8: high pixel accuracy, collapsed smallest class: {metrics()}"
+    set_("stride", "2")
+    w = [first_float(x) for x in metrics().values()]
+    assert w[0] > 0.98 and w[2] > 0.8, f"stride 2 should recover the small squares: {metrics()}"
+    set_("stride", "8"); set_("up", "bilinear")
+    b = [first_float(x) for x in metrics().values()]
+    assert b[0] > v[0] and b[1] > v[1] and b[2] < 0.05, f"bilinear helps the large classes, not the small squares: {metrics()}"
+
+
+def check_stereo_matching(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # bad-1 all, bad-1 flat patch, disc fattening
+    assert v[0] > 8 and v[1] > 50, f"default 3 x 3 window should be noisy: {metrics()}"
+    set_("win", "9")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[0] < 5 and w[1] < v[1] - 20, f"a 9 x 9 window should be much better: {metrics()}"
+    set_("win", "31")
+    x = [pct(y) for y in list(metrics().values())[:3]]
+    assert x[1] < 1 and x[2] > w[2] + 10 and x[0] > w[0] + 1, f"31 x 31 fixes the flat patch but fattens the disc and loses overall: {metrics()}"
+    set_("win", "9"); set_("lr", "on")
+    y = list(metrics().values())
+    assert pct(y[3]) > 1 and pct(y[0]) < w[0] - 1, f"the check should invalidate some pixels and lower bad-1: {metrics()}"
+
+
+def check_adversarial(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # clean, FGSM, random-sign accuracy (%)
+    assert v[0] > 95 and v[1] < 10 and v[2] > 95, f"default (32 x 32, eps 8): FGSM should collapse accuracy, random signs should not: {metrics()}"
+    set_("dim", "64")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[1] > 90 and w[2] > 95, f"the same eps on 8 x 8 should barely hurt: {metrics()}"
+    set_("eps", "0")
+    z = [pct(x) for x in list(metrics().values())[:3]]
+    assert z[0] == z[1] == z[2], f"eps 0 changes nothing: {metrics()}"
+
+
+def check_ctc(metrics, set_, zh):
+    v = list(metrics().values())  # decoded text, double letter kept, greedy path p, p(decoded), p(correct), loss
+    assert v[0] == "BOK" and first_float(v[4]) > first_float(v[3]), f"default greedy decoding drops one O although BOOK is the likelier text: {v}"
+    set_("decoder", "beam")
+    assert list(metrics().values())[0] == "BOOK", metrics()
+    set_("decoder", "greedy"); set_("q", "0.5")
+    assert list(metrics().values())[0] == "BOOK", metrics()
+
+
+def check_heatmap_decoding(metrics, set_, zh):
+    def floats(s):
+        return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
+    v = list(metrics().values())  # selected decoder at this stride, argmax at 1/2/4/8, Taylor at 1/2/4/8, the example keypoint
+    am, ta = floats(v[1]), floats(v[2])
+    assert len(am) == 4 and am[3] > 6 * am[0] and am == sorted(am), f"argmax error should grow with the stride: {v}"
+    assert 1.4 < first_float(v[0]) < 1.8 and abs(first_float(v[0]) - am[2]) < 0.006, f"default is argmax at stride 4 (about 1.6 px): {v}"
+    assert ta[3] < 0.2 * am[3] and ta[2] < 0.2 * am[2], f"the Taylor step should remove most of the error: {v}"
+    set_("decoder", "taylor")
+    assert first_float(list(metrics().values())[0]) < 0.3, metrics()
+    set_("stride", "8")
+    assert first_float(list(metrics().values())[0]) < 0.6, metrics()
+    set_("decoder", "argmax")
+    assert first_float(list(metrics().values())[0]) > 2.5, metrics()
+
+
+def check_bev_iou(metrics, set_, zh):
+    v = list(metrics().values())  # rotated IoU, IoU of the enclosing rectangles, centre distance, yaw error that gives IoU < 0.7
+    assert 0.6 < first_float(v[0]) < 0.7 and first_float(v[2]) == 0 and first_float(v[3]) == 8.5, f"a bus with a 10 degree error: IoU well below 1 at distance 0: {v}"
+    set_("yaw", "0")
+    assert first_float(list(metrics().values())[0]) == 1, metrics()
+    set_("shape", "pedestrian"); set_("yaw", "45")
+    w = list(metrics().values())
+    assert abs(first_float(w[0]) - 0.707) < 0.001 and w[3] in ("never", "從不"), w
+    set_("shape", "car"); set_("yaw", "10"); set_("offset", "1")
+    x = list(metrics().values())
+    assert first_float(x[2]) == 1 and first_float(x[0]) < 0.7, x
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -200,7 +298,10 @@ EXPECT = {
     "transform-coding": check_transform_coding, "inverse-regularization": check_inverse_regularization, "morphology-shapes": check_morphology_shapes,
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
-    "bagging-trees": check_bagging, "tracking-association": check_tracking, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "bagging-trees": check_bagging, "tracking-association": check_tracking, "image-fusion": check_image_fusion, "lut-trilinear": check_lut_trilinear, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "segmentation-metrics": check_segmentation_metrics, "stereo-matching": check_stereo_matching,
+    "adversarial-budget": check_adversarial, "ctc-decoding": check_ctc,
+    "heatmap-decoding": check_heatmap_decoding, "bev-iou": check_bev_iou,
 }
 
 

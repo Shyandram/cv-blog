@@ -9,6 +9,7 @@
 | 10 | [DLCV 01 · Deep Learning for Image Processing and Computer Vision](#dl-01-deep-learning-for-image-processing) | intermediate | ML 02, IP 03 | `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` |
 | 15 | [DLCV 01A · Training Deep Vision Models in Practice](#dl-01a-training-practice) | advanced | DLCV 01 | `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` |
 | 17 | [DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks](#dl-01b-building-blocks) | advanced | DLCV 01, ML 04 | `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` |
+| 18 | [DLCV 01C · Model Compression and Efficient Inference](#dl-01c-model-compression) | advanced | DLCV 01A, DLCV 01B | `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` |
 | 20 | [DLCV 02 · Deep Image Classification](#dl-02-image-classification) | advanced | DLCV 01, IP 13 | `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` |
 | 25 | [DLCV 02A · Face Recognition and Metric Learning](#dl-02a-face-metric-learning) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` |
 | 30 | [DLCV 03 · Object Detection: From R-CNN to DETR](#dl-03-object-detection) | advanced | DLCV 02, IP 12 | `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` |
@@ -19,7 +20,7 @@
 | 46 | [DLCV 04B · Video Super-Resolution: Using Time to Recover Detail](#dl-04b-video-super-resolution) | advanced | DLCV 04, DLCV 04A | `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` |
 | 47 | [DLCV 04C · Generative Image Restoration: Sampling a Plausible Answer](#dl-04c-generative-restoration) | advanced | DLCV 04, ML 06 | `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` |
 | 50 | [DLCV 05 · Low-Light Image Enhancement](#dl-05-low-light-enhancement) | advanced | DLCV 04, IP 03, IP 06 | `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` |
-| 55 | [DLCV 05A · Lightweight Image Enhancement: Curves, Bilateral Grids and Lookup Tables](#dl-05a-lightweight-enhancement) | advanced | DLCV 05, IP 03 | `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` |
+| 55 | [DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables](#dl-05a-lightweight-enhancement) | advanced | DLCV 05, IP 03 | `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` |
 | 57 | [DLCV 05B · Image Fusion: Infrared–Visible, Multi-Focus and Multi-Exposure](#dl-05b-image-fusion) | advanced | DLCV 04, IP 07 | `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` |
 | 60 | [DLCV 06 · Object Tracking: From Single-Object to Multi-Object](#dl-06-object-tracking) | advanced | DLCV 03, IP 10, IP 12 | `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` |
 | 65 | [DLCV 06A · Human Pose and Keypoint Estimation](#dl-06a-pose-keypoints) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` |
@@ -203,6 +204,74 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 - [Simple Baselines for Image Restoration (NAFNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#simple-baselines-for-image-restoration-nafnet) `simple-baselines-for-image-restoration-nafnet`
 - [Designing Network Design Spaces (RegNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#designing-network-design-spaces-regnet) `designing-network-design-spaces-regnet`
 - [A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer) `a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer`
+
+## dl-01c-model-compression
+
+**DLCV 01C · Model Compression and Efficient Inference** · DLCV 01C・模型壓縮與高效推論  
+How to make a trained vision model smaller and faster without fooling yourself: what cost means and how to measure it, pruning, quantization, knowledge distillation, low-rank factorization, designing and searching for small architectures, and why a paper's speed-up is not your device's speed-up.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-01c-model-compression.mdx`
+- Pages: `/en/learn/deep-learning/dl-01c-model-compression/`, `/en/learn/deep-learning/dl-01c-model-compression/notes/`, `/en/learn/deep-learning/dl-01c-model-compression/papers/`
+- Level advanced · order 18 · needs: `deep-learning/dl-01a-training-practice`, `deep-learning/dl-01b-building-blocks` · tags: deep-learning, model-compression, pruning, quantization, knowledge-distillation, efficient-inference, low-rank, neural-architecture-search
+- Figures: 3 (script `scripts/figures/dl_01c_model_compression.py`) · references: 72
+
+- [What you'll learn](/en/learn/deep-learning/dl-01c-model-compression/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/dl-01c-model-compression/#the-big-picture) `the-big-picture`
+- [What "cost" means](/en/learn/deep-learning/dl-01c-model-compression/#what-cost-means) `what-cost-means`
+  - [Six numbers that are not the same](/en/learn/deep-learning/dl-01c-model-compression/#six-numbers-that-are-not-the-same) `six-numbers-that-are-not-the-same`
+  - [Arithmetic intensity and the roofline](/en/learn/deep-learning/dl-01c-model-compression/#arithmetic-intensity-and-the-roofline) `arithmetic-intensity-and-the-roofline`
+  - [Measuring honestly](/en/learn/deep-learning/dl-01c-model-compression/#measuring-honestly) `measuring-honestly`
+- [Pruning](/en/learn/deep-learning/dl-01c-model-compression/#pruning) `pruning`
+  - [What gets removed](/en/learn/deep-learning/dl-01c-model-compression/#what-gets-removed) `what-gets-removed`
+  - [Which weights: magnitude and other criteria](/en/learn/deep-learning/dl-01c-model-compression/#which-weights-magnitude-and-other-criteria) `which-weights-magnitude-and-other-criteria`
+  - [Prune, fine-tune, repeat](/en/learn/deep-learning/dl-01c-model-compression/#prune-fine-tune-repeat) `prune-fine-tune-repeat`
+  - [Code: unstructured and structured pruning of a small MLP](/en/learn/deep-learning/dl-01c-model-compression/#code-unstructured-and-structured-pruning-of-a-small-mlp) `code-unstructured-and-structured-pruning-of-a-small-mlp`
+  - [The lottery ticket hypothesis](/en/learn/deep-learning/dl-01c-model-compression/#the-lottery-ticket-hypothesis) `the-lottery-ticket-hypothesis`
+- [Quantization](/en/learn/deep-learning/dl-01c-model-compression/#quantization) `quantization`
+  - [Uniform affine quantization](/en/learn/deep-learning/dl-01c-model-compression/#uniform-affine-quantization) `uniform-affine-quantization`
+  - [Why integer kernels can factor out the scales](/en/learn/deep-learning/dl-01c-model-compression/#why-integer-kernels-can-factor-out-the-scales) `why-integer-kernels-can-factor-out-the-scales`
+  - [Granularity and range setting](/en/learn/deep-learning/dl-01c-model-compression/#granularity-and-range-setting) `granularity-and-range-setting`
+  - [What breaks: outliers, folded batch norm and activations](/en/learn/deep-learning/dl-01c-model-compression/#what-breaks-outliers-folded-batch-norm-and-activations) `what-breaks-outliers-folded-batch-norm-and-activations`
+  - [Post-training quantization and quantization-aware training](/en/learn/deep-learning/dl-01c-model-compression/#post-training-quantization-and-quantization-aware-training) `post-training-quantization-and-quantization-aware-training`
+  - [Mixed precision and other number formats](/en/learn/deep-learning/dl-01c-model-compression/#mixed-precision-and-other-number-formats) `mixed-precision-and-other-number-formats`
+- [Knowledge distillation](/en/learn/deep-learning/dl-01c-model-compression/#knowledge-distillation) `knowledge-distillation`
+  - [Code: distilling the toy MLP into an 8-unit student](/en/learn/deep-learning/dl-01c-model-compression/#code-distilling-the-toy-mlp-into-an-8-unit-student) `code-distilling-the-toy-mlp-into-an-8-unit-student`
+  - [Feature and attention distillation](/en/learn/deep-learning/dl-01c-model-compression/#feature-and-attention-distillation) `feature-and-attention-distillation`
+  - [What decides whether distillation helps](/en/learn/deep-learning/dl-01c-model-compression/#what-decides-whether-distillation-helps) `what-decides-whether-distillation-helps`
+- [Low-rank factorization](/en/learn/deep-learning/dl-01c-model-compression/#low-rank-factorization) `low-rank-factorization`
+  - [The three toys side by side](/en/learn/deep-learning/dl-01c-model-compression/#the-three-toys-side-by-side) `the-three-toys-side-by-side`
+- [Designing small from the start](/en/learn/deep-learning/dl-01c-model-compression/#designing-small-from-the-start) `designing-small-from-the-start`
+  - [Re-parameterization: train rich, deploy plain](/en/learn/deep-learning/dl-01c-model-compression/#re-parameterization-train-rich-deploy-plain) `re-parameterization-train-rich-deploy-plain`
+  - [Neural architecture search](/en/learn/deep-learning/dl-01c-model-compression/#neural-architecture-search) `neural-architecture-search`
+- [Deployment: from a small model to a fast one](/en/learn/deep-learning/dl-01c-model-compression/#deployment-from-a-small-model-to-a-fast-one) `deployment-from-a-small-model-to-a-fast-one`
+  - [Operator fusion and batch-norm folding](/en/learn/deep-learning/dl-01c-model-compression/#operator-fusion-and-batch-norm-folding) `operator-fusion-and-batch-norm-folding`
+  - [Integer kernels and runtime support](/en/learn/deep-learning/dl-01c-model-compression/#integer-kernels-and-runtime-support) `integer-kernels-and-runtime-support`
+  - [Why paper speed-ups shrink on devices](/en/learn/deep-learning/dl-01c-model-compression/#why-paper-speed-ups-shrink-on-devices) `why-paper-speed-ups-shrink-on-devices`
+- [Compressing vision models: what is sensitive](/en/learn/deep-learning/dl-01c-model-compression/#compressing-vision-models-what-is-sensitive) `compressing-vision-models-what-is-sensitive`
+  - [Classification backbones](/en/learn/deep-learning/dl-01c-model-compression/#classification-backbones) `classification-backbones`
+  - [Detectors](/en/learn/deep-learning/dl-01c-model-compression/#detectors) `detectors`
+  - [Dense prediction and restoration](/en/learn/deep-learning/dl-01c-model-compression/#dense-prediction-and-restoration) `dense-prediction-and-restoration`
+  - [Vision Transformers and diffusion models](/en/learn/deep-learning/dl-01c-model-compression/#vision-transformers-and-diffusion-models) `vision-transformers-and-diffusion-models`
+- [Modern view](/en/learn/deep-learning/dl-01c-model-compression/#modern-view) `modern-view`
+  - [What the surveys say](/en/learn/deep-learning/dl-01c-model-compression/#what-the-surveys-say) `what-the-surveys-say`
+  - [The state of the art, 2023–2026](/en/learn/deep-learning/dl-01c-model-compression/#the-state-of-the-art-20232026) `the-state-of-the-art-20232026`
+  - [Open problems](/en/learn/deep-learning/dl-01c-model-compression/#open-problems) `open-problems`
+- [Key takeaways](/en/learn/deep-learning/dl-01c-model-compression/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/dl-01c-model-compression/#exercises) `exercises`
+
+*Supplementary notes (`notes/` page):*
+
+- [N:M semi-structured sparsity](/en/learn/deep-learning/dl-01c-model-compression/notes/#nm-semi-structured-sparsity) `nm-semi-structured-sparsity`
+- [Pruning coupled channels](/en/learn/deep-learning/dl-01c-model-compression/notes/#pruning-coupled-channels) `pruning-coupled-channels`
+- [The gradual pruning schedule](/en/learn/deep-learning/dl-01c-model-compression/notes/#the-gradual-pruning-schedule) `the-gradual-pruning-schedule`
+- [Requantization with a fixed-point multiplier](/en/learn/deep-learning/dl-01c-model-compression/notes/#requantization-with-a-fixed-point-multiplier) `requantization-with-a-fixed-point-multiplier`
+- [Choosing the clipping range: min-max, percentile and MSE](/en/learn/deep-learning/dl-01c-model-compression/notes/#choosing-the-clipping-range-min-max-percentile-and-mse) `choosing-the-clipping-range-min-max-percentile-and-mse`
+- [Beyond round-to-nearest: AdaRound, BRECQ and LSQ](/en/learn/deep-learning/dl-01c-model-compression/notes/#beyond-round-to-nearest-adaround-brecq-and-lsq) `beyond-round-to-nearest-adaround-brecq-and-lsq`
+
+*Paper guides (`papers/` page):*
+
+- [The Lottery Ticket Hypothesis (Frankle and Carbin, ICLR 2019)](/en/learn/deep-learning/dl-01c-model-compression/papers/#the-lottery-ticket-hypothesis-frankle-and-carbin-iclr-2019) `the-lottery-ticket-hypothesis-frankle-and-carbin-iclr-2019`
+- [A White Paper on Neural Network Quantization (Nagel et al., 2021)](/en/learn/deep-learning/dl-01c-model-compression/papers/#a-white-paper-on-neural-network-quantization-nagel-et-al-2021) `a-white-paper-on-neural-network-quantization-nagel-et-al-2021`
 
 ## dl-02-image-classification
 
@@ -463,7 +532,7 @@ How deep networks label every pixel: the three segmentation tasks, fully convolu
 - Files: `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-03b-image-segmentation.mdx`
 - Pages: `/en/learn/deep-learning/dl-03b-image-segmentation/`, `/en/learn/deep-learning/dl-03b-image-segmentation/notes/`, `/en/learn/deep-learning/dl-03b-image-segmentation/papers/`
 - Level advanced · order 38 · needs: `deep-learning/dl-03-object-detection`, `image-processing/dip-10-segmentation` · tags: semantic-segmentation, instance-segmentation, panoptic-segmentation, deeplab, mask2former, mean-iou, panoptic-quality
-- Figures: 5 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41
+- Figures: 5 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41 · experiments: segmentation-metrics
 
 - [What you'll learn](/en/learn/deep-learning/dl-03b-image-segmentation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-03b-image-segmentation/#the-big-picture) `the-big-picture`
@@ -836,29 +905,30 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 ## dl-05a-lightweight-enhancement
 
-**DLCV 05A · Lightweight Image Enhancement: Curves, Bilateral Grids and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、雙邊網格與查找表  
-How enhancement models stay small and fast enough for phones and 4K video: what to count, why predicting a transform beats predicting an image, and how curves, bilateral grids, learnable 3D lookup tables and tiny networks do it.
+**DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、Retinex、小型網路與查找表  
+How enhancement models stay small and fast enough for phones and 4K video, organized the way the field organizes them: curve estimation, Retinex-style illumination estimation, lightweight end-to-end networks, and real-time retouching transforms such as bilateral grids and learnable 3D lookup tables.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05a-lightweight-enhancement.mdx`
 - Pages: `/en/learn/deep-learning/dl-05a-lightweight-enhancement/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/notes/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/`
-- Level advanced · order 55 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, bilateral-grid, lookup-tables, hdrnet, low-light-enhancement, quantization
-- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 29 · experiments: lowlight-photons
+- Level advanced · order 55 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, low-light-enhancement, curve-estimation, retinex, bilateral-grid, lookup-tables, hdrnet
+- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 37 · experiments: lowlight-photons, lut-trilinear
 
 - [What you'll learn](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#the-big-picture) `the-big-picture`
 - [What "lightweight" means](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#what-lightweight-means) `what-lightweight-means`
-- [Why enhancement suits tiny models](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-tiny-models) `why-enhancement-suits-tiny-models`
-- [Family 1: curves and tone mapping](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-1-curves-and-tone-mapping) `family-1-curves-and-tone-mapping`
-- [Family 2: bilateral grids and guided upsampling](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-2-bilateral-grids-and-guided-upsampling) `family-2-bilateral-grids-and-guided-upsampling`
-  - [Code: fit a grid at low resolution, slice at full resolution](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution) `code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
-- [Family 3: learnable 3D lookup tables](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-3-learnable-3d-lookup-tables) `family-3-learnable-3d-lookup-tables`
-- [Family 4: very small enhancement networks](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-4-very-small-enhancement-networks) `family-4-very-small-enhancement-networks`
-- [Efficiency techniques](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#efficiency-techniques) `efficiency-techniques`
-  - [Run at low resolution, upsample the transform](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#run-at-low-resolution-upsample-the-transform) `run-at-low-resolution-upsample-the-transform`
-  - [Separable and depthwise layers](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#separable-and-depthwise-layers) `separable-and-depthwise-layers`
+- [Why enhancement suits small models](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-small-models) `why-enhancement-suits-small-models`
+- [A map of lightweight enhancement](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#a-map-of-lightweight-enhancement) `a-map-of-lightweight-enhancement`
+- [Curve and mapping estimation](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#curve-and-mapping-estimation) `curve-and-mapping-estimation`
+- [Retinex and illumination estimation](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#retinex-and-illumination-estimation) `retinex-and-illumination-estimation`
+- [Lightweight end-to-end networks and Transformers](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#lightweight-end-to-end-networks-and-transformers) `lightweight-end-to-end-networks-and-transformers`
+  - [Depthwise separable convolutions](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#depthwise-separable-convolutions) `depthwise-separable-convolutions`
   - [Structural re-parameterization](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#structural-re-parameterization) `structural-re-parameterization`
-  - [Quantization](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#quantization) `quantization`
-  - [Other recurring tricks](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-tricks) `other-recurring-tricks`
+  - [Other recurring design choices](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-design-choices) `other-recurring-design-choices`
+- [Real-time retouching transforms: bilateral grids and 3D LUTs](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#real-time-retouching-transforms-bilateral-grids-and-3d-luts) `real-time-retouching-transforms-bilateral-grids-and-3d-luts`
+  - [Bilateral grids and guided upsampling](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#bilateral-grids-and-guided-upsampling) `bilateral-grids-and-guided-upsampling`
+  - [Code: fit a grid at low resolution, slice at full resolution](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution) `code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
+  - [Learnable 3D lookup tables](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#learnable-3d-lookup-tables) `learnable-3d-lookup-tables`
+  - [From retouching to low light](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#from-retouching-to-low-light) `from-retouching-to-low-light`
 - [Measuring efficiency honestly](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#measuring-efficiency-honestly) `measuring-efficiency-honestly`
 - [Failure modes](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#failure-modes) `failure-modes`
 - [Modern view](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#modern-view) `modern-view`
@@ -873,6 +943,7 @@ How enhancement models stay small and fast enough for phones and 4K video: what 
 
 *Paper guides (`papers/` page):*
 
+- [The Li et al. low-light survey (TPAMI 2022)](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#the-li-et-al-low-light-survey-tpami-2022) `the-li-et-al-low-light-survey-tpami-2022`
 - [HDRNet: deep bilateral learning for real-time image enhancement](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#hdrnet-deep-bilateral-learning-for-real-time-image-enhancement) `hdrnet-deep-bilateral-learning-for-real-time-image-enhancement`
 - [Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#image-adaptive-3d-luts-zeng-et-al-tpami-2022) `image-adaptive-3d-luts-zeng-et-al-tpami-2022`
 - [NTIRE 2026 efficient low-light image enhancement challenge report](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#ntire-2026-efficient-low-light-image-enhancement-challenge-report) `ntire-2026-efficient-low-light-image-enhancement-challenge-report`
@@ -885,7 +956,7 @@ How to combine several images of one scene into a single better image: what infr
 - Files: `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05b-image-fusion.mdx`
 - Pages: `/en/learn/deep-learning/dl-05b-image-fusion/`, `/en/learn/deep-learning/dl-05b-image-fusion/notes/`, `/en/learn/deep-learning/dl-05b-image-fusion/papers/`
 - Level advanced · order 57 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-07-wavelets-transforms` · tags: image-fusion, infrared-visible-fusion, multi-focus-fusion, multi-exposure-fusion, laplacian-pyramid, exposure-fusion, unsupervised-learning, evaluation
-- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 53
+- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 53 · experiments: image-fusion
 
 - [What you'll learn](/en/learn/deep-learning/dl-05b-image-fusion/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-05b-image-fusion/#the-big-picture) `the-big-picture`
@@ -1001,7 +1072,7 @@ How deep networks find the joints of every person in an image: skeletons and vis
 - Files: `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-06a-pose-keypoints.mdx`
 - Pages: `/en/learn/deep-learning/dl-06a-pose-keypoints/`, `/en/learn/deep-learning/dl-06a-pose-keypoints/notes/`, `/en/learn/deep-learning/dl-06a-pose-keypoints/papers/`
 - Level advanced · order 65 · needs: `deep-learning/dl-03-object-detection` · tags: pose-estimation, keypoints, heatmaps, hrnet, openpose, object-keypoint-similarity, 3d-human-pose
-- Figures: 5 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43
+- Figures: 5 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43 · experiments: heatmap-decoding
 
 - [What you'll learn](/en/learn/deep-learning/dl-06a-pose-keypoints/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-06a-pose-keypoints/#the-big-picture) `the-big-picture`
@@ -1236,7 +1307,7 @@ Dense correspondence for depth and motion: rectified stereo and disparity, match
 - Files: `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-08a-depth-optical-flow.mdx`
 - Pages: `/en/learn/deep-learning/dl-08a-depth-optical-flow/`, `/en/learn/deep-learning/dl-08a-depth-optical-flow/notes/`, `/en/learn/deep-learning/dl-08a-depth-optical-flow/papers/`
 - Level advanced · order 85 · needs: `deep-learning/dl-08-3d-reconstruction` · tags: depth-estimation, stereo-matching, monocular-depth, optical-flow, scene-flow, raft, self-supervised-learning
-- Figures: 6 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56
+- Figures: 6 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56 · experiments: stereo-matching
 
 - [What you'll learn](/en/learn/deep-learning/dl-08a-depth-optical-flow/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-08a-depth-optical-flow/#the-big-picture) `the-big-picture`
@@ -1301,7 +1372,7 @@ How machines find cars, people and cyclists in 3D: point clouds and coordinate f
 - Files: `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-09-3d-object-detection.mdx`
 - Pages: `/en/learn/deep-learning/dl-09-3d-object-detection/`, `/en/learn/deep-learning/dl-09-3d-object-detection/notes/`, `/en/learn/deep-learning/dl-09-3d-object-detection/papers/`
 - Level advanced · order 90 · needs: `deep-learning/dl-03-object-detection`, `deep-learning/dl-08-3d-reconstruction` · tags: 3d-object-detection, lidar, point-clouds, birds-eye-view, sensor-fusion, autonomous-driving
-- Figures: 7 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61
+- Figures: 7 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61 · experiments: bev-iou
 
 - [What you'll learn](/en/learn/deep-learning/dl-09-3d-object-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-09-3d-object-detection/#the-big-picture) `the-big-picture`
@@ -1481,7 +1552,7 @@ Why vision models fail outside their test set and what to do about it: kinds of 
 - Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11-robustness.mdx`
 - Pages: `/en/learn/deep-learning/dl-11-robustness/`, `/en/learn/deep-learning/dl-11-robustness/notes/`, `/en/learn/deep-learning/dl-11-robustness/papers/`
 - Level advanced · order 110 · needs: `deep-learning/dl-02-image-classification` · tags: robustness, distribution-shift, adversarial-examples, adversarial-training, out-of-distribution-detection, anomaly-detection, test-time-adaptation, domain-adaptation
-- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50
+- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50 · experiments: adversarial-budget
 
 - [What you'll learn](/en/learn/deep-learning/dl-11-robustness/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-11-robustness/#the-big-picture) `the-big-picture`
@@ -1537,7 +1608,7 @@ How machines read text in photos, scans and screenshots: the detection, recognit
 - Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11a-text-in-images.mdx`
 - Pages: `/en/learn/deep-learning/dl-11a-text-in-images/`, `/en/learn/deep-learning/dl-11a-text-in-images/notes/`, `/en/learn/deep-learning/dl-11a-text-in-images/papers/`
 - Level advanced · order 115 · needs: `deep-learning/dl-03-object-detection` · tags: ocr, scene-text, text-detection, text-recognition, ctc, document-understanding, layout-analysis, ocr-free, evaluation-metrics
-- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51
+- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51 · experiments: ctc-decoding
 
 - [What you'll learn](/en/learn/deep-learning/dl-11a-text-in-images/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-11a-text-in-images/#the-big-picture) `the-big-picture`
