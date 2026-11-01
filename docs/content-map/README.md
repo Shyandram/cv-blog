@@ -33,7 +33,7 @@ renaming a tutorial or heading (CI runs it with `--check`). Rules for editing li
 | Optimization (OPT) | 8 | [optimization.md](optimization.md) |
 | Information Theory (IT) | 8 | [information-theory.md](information-theory.md) |
 
-Total: 93 tutorials (91 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
+Total: 93 tutorials (92 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
 
 ## Where things are in the repo
 

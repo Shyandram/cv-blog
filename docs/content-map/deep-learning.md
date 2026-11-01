@@ -150,10 +150,10 @@ A practical workflow for training vision networks: data pipelines and augmentati
 
 ## dl-01b-building-blocks
 
-**DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks**  
+**DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks** · DLCV 01B・網路的積木與組合：分類與影像復原網路  
 A catalogue of the blocks deep vision networks are built from, the rules for composing them into classifiers and into image-restoration networks, side-by-side comparisons of matched models, and how to explore a design space without fooling yourself.
 
-- Files: `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` (no zh-tw twin)
+- Files: `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-01b-building-blocks.mdx`
 - Pages: `/en/learn/deep-learning/dl-01b-building-blocks/`, `/en/learn/deep-learning/dl-01b-building-blocks/notes/`, `/en/learn/deep-learning/dl-01b-building-blocks/papers/`
 - Level advanced · order 17 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `ml/ml-04-vision-transformers` · tags: architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces
 - Figures: 5 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 53
