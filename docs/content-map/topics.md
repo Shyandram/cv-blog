@@ -196,6 +196,7 @@
 - A reproducible serving contract — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/nlp-09-language-modeling-transformers/#a-reproducible-serving-contract`
 - A reverse-water-filling allocation — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/it-06-rate-distortion/#a-reverse-water-filling-allocation`
 - A robust example: DCT-domain watermark — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/dip-08-compression-watermarking/#a-robust-example-dct-domain-watermark`
+- A robustness evaluation plan — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#a-robustness-evaluation-plan`
 - A runnable experiment: pretrain, then fine-tune — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/nlp-11-classification-bert/#a-runnable-experiment-pretrain-then-fine-tune`
 - A scalar example with a changing bound — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#a-scalar-example-with-a-changing-bound`
 - A sequence of small milestones — Start Here · `src/content/tutorials/en/foundations/getting-started.mdx` · `/en/learn/foundations/getting-started/#a-sequence-of-small-milestones`
@@ -235,7 +236,9 @@
 - Add an escape branch to make the catalog lossless — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/it-02-typicality-entropy-rates/#add-an-escape-branch-to-make-the-catalog-lossless`
 - Adjacency, connectivity, regions and boundaries — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/dip-02-fundamentals/#adjacency-connectivity-regions-and-boundaries`
 - Adversarial and perceptual losses — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#adversarial-and-perceptual-losses`
+- Adversarial examples — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#adversarial-examples`
 - Adversarial examples: FGSM — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#adversarial-examples-fgsm`
+- Adversarial training — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#adversarial-training`
 - Affine and convex sets — OPT 01 · `src/content/tutorials/en/optimization/opt-01-modeling-convex-sets.mdx` · `/en/learn/optimization/opt-01-modeling-convex-sets/#affine-and-convex-sets`
 - After RAFT — DLCV 08A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/dl-08a-depth-optical-flow/#after-raft`
 - After RT-DETR — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/#after-rt-detr`
@@ -284,8 +287,10 @@
 - Association: cost matrices and the Hungarian algorithm — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/dl-06-object-tracking/#association-cost-matrices-and-the-hungarian-algorithm`
 - Asymmetric and symmetric hypothesis exponents — IT 07 · `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx` · `/en/learn/information-theory/it-07-statistics-decision-growth/#asymmetric-and-symmetric-hypothesis-exponents`
 - Asymmetric channels need asymmetric signaling — IT 04 · `src/content/tutorials/en/information-theory/it-04-channel-capacity.mdx` · `/en/learn/information-theory/it-04-channel-capacity/#asymmetric-channels-need-asymmetric-signaling`
+- Athalye et al., "Obfuscated Gradients Give a False Sense of Security" (ICML 2018) — DLCV 11 (papers) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/papers/#athalye-et-al-obfuscated-gradients-give-a-false-sense-of-security-icml-2018`
 - Atrous (dilated) convolution — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/dl-03b-image-segmentation/#atrous-dilated-convolution`
 - Attachment ambiguity reveals a model's inductive bias — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#attachment-ambiguity-reveals-a-models-inductive-bias`
+- Attack settings that decide an evaluation — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#attack-settings-that-decide-an-evaluation`
 - Attention and transformers — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#attention-and-transformers`
 - Attention and transformers — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#attention-and-transformers`
 - Attention as context — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/dl-03b-image-segmentation/#attention-as-context`
@@ -350,6 +355,7 @@
 - Benchmark suites and human evaluation — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#benchmark-suites-and-human-evaluation`
 - Benchmarks — ML 09 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/ml-09-foundation-models/#benchmarks`
 - Benchmarks and metrics — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/dl-06-object-tracking/#benchmarks-and-metrics`
+- Benchmarks that measure robustness to shift — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#benchmarks-that-measure-robustness-to-shift`
 - Benchmarks that probe shift — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#benchmarks-that-probe-shift`
 - Benchmarks: GLUE and SuperGLUE — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/nlp-11-classification-bert/#benchmarks-glue-and-superglue`
 - Bernoulli — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/ml-01b-probability-information/#bernoulli`
@@ -429,6 +435,7 @@
 - Categorical (multinoulli) — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/ml-01b-probability-information/#categorical-multinoulli`
 - Causal 3D convolutions and the 1 + T frame layout — DLCV 10A (notes) · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/notes/#causal-3d-convolutions-and-the-1--t-frame-layout`
 - Centre-based heads: CenterPoint — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#centre-based-heads-centerpoint`
+- Certified robustness — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#certified-robustness`
 - Chain codes — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/#chain-codes`
 - Challenges — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#challenges`
 - Challenges — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/dl-06-object-tracking/#challenges`
@@ -507,6 +514,7 @@
 - Code: a linear autoencoder rediscovers the PCA subspace — ML 05A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/ml-05a-factor-models-autoencoders/#code-a-linear-autoencoder-rediscovers-the-pca-subspace`
 - Code: a low-rank update with a frozen base — ML 09 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/ml-09-foundation-models/#code-a-low-rank-update-with-a-frozen-base`
 - Code: a minimal autoregressive model — ML 08 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/ml-08-autoregressive-vision/#code-a-minimal-autoregressive-model`
+- Code: a patch memory bank on a brick wall — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#code-a-patch-memory-bank-on-a-brick-wall`
 - Code: a planner exploiting a learned model — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#code-a-planner-exploiting-a-learned-model`
 - Code: a positive allocation in log coordinates — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/opt-03-convex-programs/#code-a-positive-allocation-in-log-coordinates`
 - Code: a recurrent classifier that generalizes to fresh sequences — ML 03A · `src/content/tutorials/en/ml/ml-03a-recurrent-recursive-networks.mdx` · `/en/learn/ml/ml-03a-recurrent-recursive-networks/#code-a-recurrent-classifier-that-generalizes-to-fresh-sequences`
@@ -536,6 +544,7 @@
 - Code: compare linear classifiers on digits — PR 03 · `src/content/tutorials/en/pattern-recognition/pr-03-linear-models.mdx` · `/en/learn/pattern-recognition/pr-03-linear-models/#code-compare-linear-classifiers-on-digits`
 - Code: compare with exact binary curves — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/it-06-rate-distortion/#code-compare-with-exact-binary-curves`
 - Code: coordinate units and quantized entropy — IT 05 · `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx` · `/en/learn/information-theory/it-05-continuous-gaussian-channels/#code-coordinate-units-and-quantized-entropy`
+- Code: corruptions, augmentation and test-time normalization — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#code-corruptions-augmentation-and-test-time-normalization`
 - Code: DDPM on a two-dimensional distribution — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#code-ddpm-on-a-two-dimensional-distribution`
 - Code: distance concentration — PR 02 · `src/content/tutorials/en/pattern-recognition/pr-02-density-estimation.mdx` · `/en/learn/pattern-recognition/pr-02-density-estimation/#code-distance-concentration`
 - Code: distinguish matrix and entrywise order — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/opt-03-convex-programs/#code-distinguish-matrix-and-entrywise-order`
@@ -545,12 +554,14 @@
 - Code: exact finite-table checks — IT 01 · `src/content/tutorials/en/information-theory/it-01-entropy-mutual-information.mdx` · `/en/learn/information-theory/it-01-entropy-mutual-information/#code-exact-finite-table-checks`
 - Code: exact typical probability and finite counts — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/it-02-typicality-entropy-rates/#code-exact-typical-probability-and-finite-counts`
 - Code: exhaustive finite decoding and full-block error — IT 08 · `src/content/tutorials/en/information-theory/it-08-networks-information-learning.mdx` · `/en/learn/information-theory/it-08-networks-information-learning/#code-exhaustive-finite-decoding-and-full-block-error`
+- Code: FGSM, PGD and adversarial training on digits — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#code-fgsm-pgd-and-adversarial-training-on-digits`
 - Code: Fisher's direction — PR 03 · `src/content/tutorials/en/pattern-recognition/pr-03-linear-models.mdx` · `/en/learn/pattern-recognition/pr-03-linear-models/#code-fishers-direction`
 - Code: fit a grid at low resolution, slice at full resolution — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
 - Code: fit a line with two losses — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/opt-05-fitting-estimation/#code-fit-a-line-with-two-losses`
 - Code: fit a scaling law and extrapolate — ML 09 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/ml-09-foundation-models/#code-fit-a-scaling-law-and-extrapolate`
 - Code: flicker, sticking and freezing — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#code-flicker-sticking-and-freezing`
 - Code: flow matching on two clusters — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#code-flow-matching-on-two-clusters`
+- Code: four scores, near and far OOD — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#code-four-scores-near-and-far-ood`
 - Code: from scratch, then OpenCV, SciPy and PyTorch — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/ml-03-convolutional-networks/#code-from-scratch-then-opencv-scipy-and-pytorch`
 - Code: Gaussian discriminants from scratch — PR 01 · `src/content/tutorials/en/pattern-recognition/pr-01-bayes-decisions.mdx` · `/en/learn/pattern-recognition/pr-01-bayes-decisions/#code-gaussian-discriminants-from-scratch`
 - Code: Gaussian information and reversible scaling — IT 05 · `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx` · `/en/learn/information-theory/it-05-continuous-gaussian-channels/#code-gaussian-information-and-reversible-scaling`
@@ -648,6 +659,7 @@
 - Conditioning: text-to-video and image-to-video — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#conditioning-text-to-video-and-image-to-video`
 - Cones and matrix inequalities — OPT 01 · `src/content/tutorials/en/optimization/opt-01-modeling-convex-sets.mdx` · `/en/learn/optimization/opt-01-modeling-convex-sets/#cones-and-matrix-inequalities`
 - Cones, saddle points and numerical gaps — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#cones-saddle-points-and-numerical-gaps`
+- Confidence under shift — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#confidence-under-shift`
 - Conjugates and linear lower bounds — OPT 02 · `src/content/tutorials/en/optimization/opt-02-convex-functions.mdx` · `/en/learn/optimization/opt-02-convex-functions/#conjugates-and-linear-lower-bounds`
 - Connected operators and component trees — IP 09 (notes) · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/dip-09-morphology/notes/#connected-operators-and-component-trees`
 - Connectionist temporal classification (CTC) — PR 06 (notes) · `src/content/tutorials/en/pattern-recognition/pr-06-templates-structured-models.mdx` · `/en/learn/pattern-recognition/pr-06-templates-structured-models/notes/#connectionist-temporal-classification-ctc`
@@ -856,6 +868,7 @@
 - Distinguish valid structure from structural generalization — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#distinguish-valid-structure-from-structural-generalization`
 - Distributed source coding: correlation can save rate — IT 08 · `src/content/tutorials/en/information-theory/it-08-networks-information-learning.mdx` · `/en/learn/information-theory/it-08-networks-information-learning/#distributed-source-coding-correlation-can-save-rate`
 - Distribution metrics and their pitfalls — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#distribution-metrics-and-their-pitfalls`
+- Distribution shift — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#distribution-shift`
 - Distribution shift and stress tests — PR 10 · `src/content/tutorials/en/pattern-recognition/pr-10-recognition-capstone.mdx` · `/en/learn/pattern-recognition/pr-10-recognition-capstone/#distribution-shift-and-stress-tests`
 - Distribution shift: ImageNet-C, -R and -A — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#distribution-shift-imagenet-c--r-and--a`
 - Distributional evidence: contexts are observations — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/nlp-04-lexical-semantics-word-embeddings/#distributional-evidence-contexts-are-observations`
@@ -863,6 +876,7 @@
 - Documenting models and data — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#documenting-models-and-data`
 - Does realistic video mean physical understanding? — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#does-realistic-video-mean-physical-understanding`
 - Domain restrictions are part of duality — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#domain-restrictions-are-part-of-duality`
+- Domain-adversarial training and the gradient-reversal layer — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#domain-adversarial-training-and-the-gradient-reversal-layer`
 - Double descent: reading Belkin, Hsu, Ma and Mandal (PNAS 2019) — PR 09 (papers) · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/pr-09-ensembles-validation/papers/#double-descent-reading-belkin-hsu-ma-and-mandal-pnas-2019`
 - Dreamer: learning behavior in imagination — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#dreamer-learning-behavior-in-imagination`
 - Dual assignment, hybrid matching and dense one-to-one — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/#dual-assignment-hybrid-matching-and-dense-one-to-one`
@@ -876,6 +890,7 @@
 - Edge models — IP 10 · `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` · `/en/learn/image-processing/dip-10-segmentation/#edge-models`
 - Edit distance — PR 06 · `src/content/tutorials/en/pattern-recognition/pr-06-templates-structured-models.mdx` · `/en/learn/pattern-recognition/pr-06-templates-structured-models/#edit-distance`
 - Editing and inpainting — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#editing-and-inpainting`
+- Effective robustness and accuracy on the line — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#effective-robustness-and-accuracy-on-the-line`
 - Efficiency — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#efficiency`
 - Efficiency — DLCV 04A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/#efficiency`
 - Efficiency and deployment — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#efficiency-and-deployment`
@@ -929,6 +944,7 @@
 - Evaluating identification — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/dl-02a-face-metric-learning/#evaluating-identification`
 - Evaluating parsers: PARSEVAL, UAS and LAS — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#evaluating-parsers-parseval-uas-and-las`
 - Evaluating reconstructions — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/#evaluating-reconstructions`
+- Evaluating robustness honestly — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#evaluating-robustness-honestly`
 - Evaluating SR — DLCV 04A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/#evaluating-sr`
 - Evaluating text-to-image models — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#evaluating-text-to-image-models`
 - Evaluating verification — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/dl-02a-face-metric-learning/#evaluating-verification`
@@ -1013,6 +1029,7 @@
 - Feed-forward reconstruction — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/#feed-forward-reconstruction`
 - Few-step and one-step generation — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#few-step-and-one-step-generation`
 - Fewer steps: from hundreds to one — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#fewer-steps-from-hundreds-to-one`
+- FGSM and PGD, precisely — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#fgsm-and-pgd-precisely`
 - Fidelity criteria — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/dip-08-compression-watermarking/#fidelity-criteria`
 - Filter methods — PR 05 · `src/content/tutorials/en/pattern-recognition/pr-05-features-dimensionality.mdx` · `/en/learn/pattern-recognition/pr-05-features-dimensionality/#filter-methods`
 - Filtered backprojection with parallel beams — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/dip-05-restoration-reconstruction/#filtered-backprojection-with-parallel-beams`
@@ -1163,6 +1180,7 @@
 - Guide to the Modern view surveys — DLCV 08 (papers) · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/papers/#guide-to-the-modern-view-surveys`
 - Guide to the Modern view surveys — DLCV 08A (papers) · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/dl-08a-depth-optical-flow/papers/#guide-to-the-modern-view-surveys`
 - Guide to the Modern view surveys — DLCV 09 (papers) · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/papers/#guide-to-the-modern-view-surveys`
+- Gulrajani and Lopez-Paz, "In Search of Lost Domain Generalization" (ICLR 2021) — DLCV 11 (papers) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/papers/#gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021`
 
 ## H
 
@@ -1263,6 +1281,7 @@
 - Independent component analysis (ICA) — ML 05A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/ml-05a-factor-models-autoencoders/#independent-component-analysis-ica`
 - Indexing, slicing and views — Images as Arrays · `src/content/tutorials/en/foundations/images-as-arrays.mdx` · `/en/learn/foundations/images-as-arrays/#indexing-slicing-and-views`
 - Inductive bias and the need for scale — DLCV 01 · `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` · `/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#inductive-bias-and-the-need-for-scale`
+- Industrial anomaly detection — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#industrial-anomaly-detection`
 - Infeasibility certificates — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#infeasibility-certificates`
 - Inflating a pretrained image model — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#inflating-a-pretrained-image-model`
 - Inflection, derivation and productive formation — NLP 02 · `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` · `/en/learn/nlp/nlp-02-linguistic-essentials/#inflection-derivation-and-productive-formation`
@@ -1318,6 +1337,7 @@
 - Kernels: the kernel trick and Mercer's condition — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/pr-04-kernels-nonlinear-classifiers/#kernels-the-kernel-trick-and-mercers-condition`
 - Keypoint detection with difference of Gaussians — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/#keypoint-detection-with-difference-of-gaussians`
 - Keypoint localization — IP 12 (notes) · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/notes/#keypoint-localization`
+- Kinds of shift — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#kinds-of-shift`
 - Kinds of watermarks — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/dip-08-compression-watermarking/#kinds-of-watermarks`
 - KITTI: 3D AP with difficulty levels — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#kitti-3d-ap-with-difficulty-levels`
 - KKT optimality conditions — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#kkt-optimality-conditions`
@@ -1434,6 +1454,7 @@
 ## M
 
 - Mach bands, simultaneous contrast and illusions — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/dip-02-fundamentals/#mach-bands-simultaneous-contrast-and-illusions`
+- Madry et al., "Towards Deep Learning Models Resistant to Adversarial Attacks" (ICLR 2018) — DLCV 11 (papers) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/papers/#madry-et-al-towards-deep-learning-models-resistant-to-adversarial-attacks-iclr-2018`
 - MAE: masked image modeling — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#mae-masked-image-modeling`
 - Making it fast: hash grids — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/#making-it-fast-hash-grids`
 - Making runs repeatable — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#making-runs-repeatable`
@@ -1492,6 +1513,7 @@
 - Memory accounting — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#memory-accounting`
 - Meshes from Gaussians — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/#meshes-from-gaussians`
 - Metric-by-metric summary table — DLCV 04 (notes) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/dl-04-image-restoration/notes/#metric-by-metric-summary-table`
+- Metrics — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#metrics`
 - Metrics for 3D pose — DLCV 06A · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/dl-06a-pose-keypoints/#metrics-for-3d-pose`
 - Metrics that compare with the sources — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#metrics-that-compare-with-the-sources`
 - Metrics that look only at the fused image — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#metrics-that-look-only-at-the-fused-image`
@@ -1687,6 +1709,7 @@
 - Other sources of variance — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#other-sources-of-variance`
 - Otsu's optimum global thresholding — IP 10 · `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` · `/en/learn/image-processing/dip-10-segmentation/#otsus-optimum-global-thresholding`
 - Our project and its data card — PR 10 · `src/content/tutorials/en/pattern-recognition/pr-10-recognition-capstone.mdx` · `/en/learn/pattern-recognition/pr-10-recognition-capstone/#our-project-and-its-data-card`
+- Out-of-distribution and anomaly detection — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#out-of-distribution-and-anomaly-detection`
 - Out-of-fold predictions — PR 10 · `src/content/tutorials/en/pattern-recognition/pr-10-recognition-capstone.mdx` · `/en/learn/pattern-recognition/pr-10-recognition-capstone/#out-of-fold-predictions`
 - Overfit one batch first — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/dl-01a-training-practice/#overfit-one-batch-first`
 - Overfitting — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/dip-13-pattern-classification/#overfitting`
@@ -1710,6 +1733,7 @@
 - Part I · Filtering with a fixed kernel — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/ml-03-convolutional-networks/#part-i--filtering-with-a-fixed-kernel`
 - Part II · Convolutional neural networks — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/ml-03-convolutional-networks/#part-ii--convolutional-neural-networks`
 - Parzen windows and kernel density estimation — PR 02 · `src/content/tutorials/en/pattern-recognition/pr-02-density-estimation.mdx` · `/en/learn/pattern-recognition/pr-02-density-estimation/#parzen-windows-and-kernel-density-estimation`
+- PatchCore step by step — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#patchcore-step-by-step`
 - Patchify, embed, attend — DLCV 01 · `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` · `/en/learn/deep-learning/dl-01-deep-learning-for-image-processing/#patchify-embed-attend`
 - Pattern classification by prototype matching — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/dip-13-pattern-classification/#pattern-classification-by-prototype-matching`
 - Pattern vectors — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/dip-13-pattern-classification/#pattern-vectors`
@@ -1732,10 +1756,12 @@
 - Perspectives: normalize a variable without losing convexity — OPT 02 · `src/content/tutorials/en/optimization/opt-02-convex-functions.mdx` · `/en/learn/optimization/opt-02-convex-functions/#perspectives-normalize-a-variable-without-losing-convexity`
 - Phase I has normalized dual prices — OPT 07 · `src/content/tutorials/en/optimization/opt-07-constrained-interior-point.mdx` · `/en/learn/optimization/opt-07-constrained-interior-point/#phase-i-has-normalized-dual-prices`
 - Photo-consistency and plane sweep — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/dl-08-3d-reconstruction/#photo-consistency-and-plane-sweep`
+- Physical and patch attacks — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#physical-and-patch-attacks`
 - Pictures over a telegraph cable — IP 01 · `src/content/tutorials/en/image-processing/dip-01-introduction.mdx` · `/en/learn/image-processing/dip-01-introduction/#pictures-over-a-telegraph-cable`
 - Piecewise-linear transformations — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/dip-03-intensity-spatial-filtering/#piecewise-linear-transformations`
 - Pillar-based: PointPillars — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#pillar-based-pointpillars`
 - PIQE and the Perceptual Index — DLCV 04 (notes) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/dl-04-image-restoration/notes/#piqe-and-the-perceptual-index`
+- Pitfalls in OOD and anomaly evaluation — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#pitfalls-in-ood-and-anomaly-evaluation`
 - Pixel models: PixelRNN and PixelCNN — ML 08 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/ml-08-autoregressive-vision/#pixel-models-pixelrnn-and-pixelcnn`
 - Pixel space, latent space and representation autoencoders — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#pixel-space-latent-space-and-representation-autoencoders`
 - Planning, uncertainty and model exploitation — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#planning-uncertainty-and-model-exploitation`
@@ -1837,6 +1863,7 @@
 - Rain streaks versus raindrops — DLCV 04 · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/dl-04-image-restoration/#rain-streaks-versus-raindrops`
 - Random variables and probability distributions — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/ml-01b-probability-information/#random-variables-and-probability-distributions`
 - Random variables, outcomes and the probability model — IT 01 · `src/content/tutorials/en/information-theory/it-01-entropy-mutual-information.mdx` · `/en/learn/information-theory/it-01-entropy-mutual-information/#random-variables-outcomes-and-the-probability-model`
+- Randomized smoothing in practice — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#randomized-smoothing-in-practice`
 - Ranking evaluation — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/nlp-09-language-modeling-transformers/#ranking-evaluation`
 - RANSAC: fitting a model despite outliers — IP 12 (notes) · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/notes/#ransac-fitting-a-model-despite-outliers`
 - Rate and reliability are operational quantities — IT 04 · `src/content/tutorials/en/information-theory/it-04-channel-capacity.mdx` · `/en/learn/information-theory/it-04-channel-capacity/#rate-and-reliability-are-operational-quantities`
@@ -1967,6 +1994,7 @@
 - Schedules: step, cosine and one-cycle — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/dl-01a-training-practice/#schedules-step-cosine-and-one-cycle`
 - Schur complements expose hidden forms — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/opt-03-convex-programs/#schur-complements-expose-hidden-forms`
 - Scope in semantic representations — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#scope-in-semantic-representations`
+- Scores — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#scores`
 - Scores are not probabilities — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/pr-04-kernels-nonlinear-classifiers/#scores-are-not-probabilities`
 - Search error, model error and a wrong objective — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/nlp-09-language-modeling-transformers/#search-error-model-error-and-a-wrong-objective`
 - Second-order cone programming — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/opt-03-convex-programs/#second-order-cone-programming`
@@ -2173,6 +2201,7 @@
 - Temporal consistency — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#temporal-consistency`
 - Temporal consistency and flicker — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#temporal-consistency-and-flicker`
 - Temporal redundancy — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#temporal-redundancy`
+- Test-time entropy minimization — DLCV 11 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/notes/#test-time-entropy-minimization`
 - Testing errors form a tradeoff — IT 07 · `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx` · `/en/learn/information-theory/it-07-statistics-decision-growth/#testing-errors-form-a-tradeoff`
 - Text encoders: CLIP or a language model — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#text-encoders-clip-or-a-language-model`
 - Text pairs: natural language inference — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/nlp-11-classification-bert/#text-pairs-natural-language-inference`
@@ -2384,6 +2413,7 @@
 - The YOLO lineage — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/#the-yolo-lineage`
 - Thickening — IP 09 (notes) · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/dip-09-morphology/notes/#thickening`
 - Thinning — IP 09 · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/dip-09-morphology/#thinning`
+- Threat models — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#threat-models`
 - Three active-contour losses in detail — IP 11 (notes) · `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` · `/en/learn/image-processing/dip-11-active-contours/notes/#three-active-contour-losses-in-detail`
 - Three demands on every clip — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#three-demands-on-every-clip`
 - Three dense correspondence problems — DLCV 08A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/dl-08a-depth-optical-flow/#three-dense-correspondence-problems`
@@ -2393,6 +2423,7 @@
 - Three meanings of the best constant — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/opt-05-fitting-estimation/#three-meanings-of-the-best-constant`
 - Three parameterizations — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#three-parameterizations`
 - Three questions: fidelity, diversity, alignment — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#three-questions-fidelity-diversity-alignment`
+- Three robustness problems, one map — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#three-robustness-problems-one-map`
 - Three similarity measures — PR 06 · `src/content/tutorials/en/pattern-recognition/pr-06-templates-structured-models.mdx` · `/en/learn/pattern-recognition/pr-06-templates-structured-models/#three-similarity-measures`
 - Three tasks — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#three-tasks`
 - Three tasks, one label map — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/dl-03b-image-segmentation/#three-tasks-one-label-map`
@@ -2548,12 +2579,14 @@
 - What a lossless code must preserve — IT 03 · `src/content/tutorials/en/information-theory/it-03-lossless-universal-coding.mdx` · `/en/learn/information-theory/it-03-lossless-universal-coding/#what-a-lossless-code-must-preserve`
 - What a pose is — DLCV 06A · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/dl-06a-pose-keypoints/#what-a-pose-is`
 - What a rejected step tells us — OPT 06 · `src/content/tutorials/en/optimization/opt-06-gradient-newton.mdx` · `/en/learn/optimization/opt-06-gradient-newton/#what-a-rejected-step-tells-us`
+- What an adversarial example is — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#what-an-adversarial-example-is`
 - What an embedding picture can and cannot prove — PR 05 · `src/content/tutorials/en/pattern-recognition/pr-05-features-dimensionality.mdx` · `/en/learn/pattern-recognition/pr-05-features-dimensionality/#what-an-embedding-picture-can-and-cannot-prove`
 - What an uncertainty ellipsoid actually says — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/opt-05-fitting-estimation/#what-an-uncertainty-ellipsoid-actually-says`
 - What AP does not tell you — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/dl-03-object-detection/#what-ap-does-not-tell-you`
 - What deep learning changed, and what it did not — IP 07 · `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` · `/en/learn/image-processing/dip-07-wavelets-transforms/#what-deep-learning-changed-and-what-it-did-not`
 - What did not change — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/dip-04-frequency-domain/#what-did-not-change`
 - What does not automatically preserve convexity — OPT 02 · `src/content/tutorials/en/optimization/opt-02-convex-functions.mdx` · `/en/learn/optimization/opt-02-convex-functions/#what-does-not-automatically-preserve-convexity`
+- What helps, and what does not — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#what-helps-and-what-does-not`
 - What image fusion is — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#what-image-fusion-is`
 - What is a representation? — ML 05 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/ml-05-representation-learning/#what-is-a-representation`
 - What is a score, and why does denoising estimate it? — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#what-is-a-score-and-why-does-denoising-estimate-it`
@@ -2601,6 +2634,7 @@
 - Where the solution comes from — ML 05A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/ml-05a-factor-models-autoencoders/#where-the-solution-comes-from`
 - Which functions are kernels? Mercer's condition — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/pr-04-kernels-nonlinear-classifiers/#which-functions-are-kernels-mercers-condition`
 - Which KL? Mode seeking versus mass covering — PR 08 · `src/content/tutorials/en/pattern-recognition/pr-08-approximate-inference.mdx` · `/en/learn/pattern-recognition/pr-08-approximate-inference/#which-kl-mode-seeking-versus-mass-covering`
+- Which task are you solving? — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/dl-11-robustness/#which-task-are-you-solving`
 - White balance — IP 06 · `src/content/tutorials/en/image-processing/dip-06-color.mdx` · `/en/learn/image-processing/dip-06-color/#white-balance`
 - Whitening — PR 05 · `src/content/tutorials/en/pattern-recognition/pr-05-features-dimensionality.mdx` · `/en/learn/pattern-recognition/pr-05-features-dimensionality/#whitening`
 - Whole-image features — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/#whole-image-features`

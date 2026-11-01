@@ -29,6 +29,7 @@
 | 90 | [DLCV 09 · 3D Object Detection: LiDAR, Cameras and Bird's-Eye View](#dl-09-3d-object-detection) | advanced | DLCV 03, DLCV 08 | `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` |
 | 100 | [DLCV 10 · Image Generation: From GANs to Text-to-Image Systems](#dl-10-image-generation) | advanced | ML 06, ML 07 | `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` |
 | 105 | [DLCV 10A · Video Generation](#dl-10a-video-generation) | advanced | DLCV 10 | `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` |
+| 110 | [DLCV 11 · Robustness: Distribution Shift, Adversarial Examples and Anomalies](#dl-11-robustness) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` |
 
 ## dl-01-deep-learning-for-image-processing
 
@@ -1414,4 +1415,60 @@ How video generators are built and judged: video autoencoders and tokenizers, fa
 
 - [Blattmann et al., "Stable Video Diffusion: Scaling Latent Video Diffusion Models to Large Datasets" (2023)](/en/learn/deep-learning/dl-10a-video-generation/papers/#blattmann-et-al-stable-video-diffusion-scaling-latent-video-diffusion-models-to-large-datasets-2023) `blattmann-et-al-stable-video-diffusion-scaling-latent-video-diffusion-models-to-large-datasets-2023`
 - [Ge et al., "On the Content Bias in Fréchet Video Distance" (CVPR 2024)](/en/learn/deep-learning/dl-10a-video-generation/papers/#ge-et-al-on-the-content-bias-in-fréchet-video-distance-cvpr-2024) `ge-et-al-on-the-content-bias-in-fréchet-video-distance-cvpr-2024`
+
+## dl-11-robustness
+
+**DLCV 11 · Robustness: Distribution Shift, Adversarial Examples and Anomalies**  
+Why vision models fail outside their test set and what to do about it: kinds of distribution shift and the benchmarks that measure them, augmentation, pre-training, test-time and domain adaptation; adversarial threat models, FGSM, PGD, adversarial training, honest evaluation and certified robustness; out-of-distribution and industrial anomaly detection with their scores, metrics and pitfalls.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` (no zh-tw twin)
+- Pages: `/en/learn/deep-learning/dl-11-robustness/`, `/en/learn/deep-learning/dl-11-robustness/notes/`, `/en/learn/deep-learning/dl-11-robustness/papers/`
+- Level advanced · order 110 · needs: `deep-learning/dl-02-image-classification` · tags: robustness, distribution-shift, adversarial-examples, adversarial-training, out-of-distribution-detection, anomaly-detection, test-time-adaptation, domain-adaptation
+- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50
+
+- [What you'll learn](/en/learn/deep-learning/dl-11-robustness/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/dl-11-robustness/#the-big-picture) `the-big-picture`
+- [Three robustness problems, one map](/en/learn/deep-learning/dl-11-robustness/#three-robustness-problems-one-map) `three-robustness-problems-one-map`
+- [Distribution shift](/en/learn/deep-learning/dl-11-robustness/#distribution-shift) `distribution-shift`
+  - [Kinds of shift](/en/learn/deep-learning/dl-11-robustness/#kinds-of-shift) `kinds-of-shift`
+  - [Benchmarks that measure robustness to shift](/en/learn/deep-learning/dl-11-robustness/#benchmarks-that-measure-robustness-to-shift) `benchmarks-that-measure-robustness-to-shift`
+  - [Code: corruptions, augmentation and test-time normalization](/en/learn/deep-learning/dl-11-robustness/#code-corruptions-augmentation-and-test-time-normalization) `code-corruptions-augmentation-and-test-time-normalization`
+  - [What helps, and what does not](/en/learn/deep-learning/dl-11-robustness/#what-helps-and-what-does-not) `what-helps-and-what-does-not`
+  - [Confidence under shift](/en/learn/deep-learning/dl-11-robustness/#confidence-under-shift) `confidence-under-shift`
+- [Adversarial examples](/en/learn/deep-learning/dl-11-robustness/#adversarial-examples) `adversarial-examples`
+  - [What an adversarial example is](/en/learn/deep-learning/dl-11-robustness/#what-an-adversarial-example-is) `what-an-adversarial-example-is`
+  - [Threat models](/en/learn/deep-learning/dl-11-robustness/#threat-models) `threat-models`
+  - [FGSM and PGD, precisely](/en/learn/deep-learning/dl-11-robustness/#fgsm-and-pgd-precisely) `fgsm-and-pgd-precisely`
+  - [Adversarial training](/en/learn/deep-learning/dl-11-robustness/#adversarial-training) `adversarial-training`
+  - [Code: FGSM, PGD and adversarial training on digits](/en/learn/deep-learning/dl-11-robustness/#code-fgsm-pgd-and-adversarial-training-on-digits) `code-fgsm-pgd-and-adversarial-training-on-digits`
+  - [Evaluating robustness honestly](/en/learn/deep-learning/dl-11-robustness/#evaluating-robustness-honestly) `evaluating-robustness-honestly`
+  - [Certified robustness](/en/learn/deep-learning/dl-11-robustness/#certified-robustness) `certified-robustness`
+  - [Physical and patch attacks](/en/learn/deep-learning/dl-11-robustness/#physical-and-patch-attacks) `physical-and-patch-attacks`
+- [Out-of-distribution and anomaly detection](/en/learn/deep-learning/dl-11-robustness/#out-of-distribution-and-anomaly-detection) `out-of-distribution-and-anomaly-detection`
+  - [Which task are you solving?](/en/learn/deep-learning/dl-11-robustness/#which-task-are-you-solving) `which-task-are-you-solving`
+  - [Scores](/en/learn/deep-learning/dl-11-robustness/#scores) `scores`
+  - [Metrics](/en/learn/deep-learning/dl-11-robustness/#metrics) `metrics`
+  - [Code: four scores, near and far OOD](/en/learn/deep-learning/dl-11-robustness/#code-four-scores-near-and-far-ood) `code-four-scores-near-and-far-ood`
+  - [Industrial anomaly detection](/en/learn/deep-learning/dl-11-robustness/#industrial-anomaly-detection) `industrial-anomaly-detection`
+  - [Code: a patch memory bank on a brick wall](/en/learn/deep-learning/dl-11-robustness/#code-a-patch-memory-bank-on-a-brick-wall) `code-a-patch-memory-bank-on-a-brick-wall`
+  - [Pitfalls in OOD and anomaly evaluation](/en/learn/deep-learning/dl-11-robustness/#pitfalls-in-ood-and-anomaly-evaluation) `pitfalls-in-ood-and-anomaly-evaluation`
+- [A robustness evaluation plan](/en/learn/deep-learning/dl-11-robustness/#a-robustness-evaluation-plan) `a-robustness-evaluation-plan`
+- [Modern view](/en/learn/deep-learning/dl-11-robustness/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/deep-learning/dl-11-robustness/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/dl-11-robustness/#exercises) `exercises`
+
+*Supplementary notes (`notes/` page):*
+
+- [Effective robustness and accuracy on the line](/en/learn/deep-learning/dl-11-robustness/notes/#effective-robustness-and-accuracy-on-the-line) `effective-robustness-and-accuracy-on-the-line`
+- [Test-time entropy minimization](/en/learn/deep-learning/dl-11-robustness/notes/#test-time-entropy-minimization) `test-time-entropy-minimization`
+- [Domain-adversarial training and the gradient-reversal layer](/en/learn/deep-learning/dl-11-robustness/notes/#domain-adversarial-training-and-the-gradient-reversal-layer) `domain-adversarial-training-and-the-gradient-reversal-layer`
+- [Attack settings that decide an evaluation](/en/learn/deep-learning/dl-11-robustness/notes/#attack-settings-that-decide-an-evaluation) `attack-settings-that-decide-an-evaluation`
+- [Randomized smoothing in practice](/en/learn/deep-learning/dl-11-robustness/notes/#randomized-smoothing-in-practice) `randomized-smoothing-in-practice`
+- [PatchCore step by step](/en/learn/deep-learning/dl-11-robustness/notes/#patchcore-step-by-step) `patchcore-step-by-step`
+
+*Paper guides (`papers/` page):*
+
+- [Madry et al., "Towards Deep Learning Models Resistant to Adversarial Attacks" (ICLR 2018)](/en/learn/deep-learning/dl-11-robustness/papers/#madry-et-al-towards-deep-learning-models-resistant-to-adversarial-attacks-iclr-2018) `madry-et-al-towards-deep-learning-models-resistant-to-adversarial-attacks-iclr-2018`
+- [Athalye et al., "Obfuscated Gradients Give a False Sense of Security" (ICML 2018)](/en/learn/deep-learning/dl-11-robustness/papers/#athalye-et-al-obfuscated-gradients-give-a-false-sense-of-security-icml-2018) `athalye-et-al-obfuscated-gradients-give-a-false-sense-of-security-icml-2018`
+- [Gulrajani and Lopez-Paz, "In Search of Lost Domain Generalization" (ICLR 2021)](/en/learn/deep-learning/dl-11-robustness/papers/#gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021) `gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021`
 
