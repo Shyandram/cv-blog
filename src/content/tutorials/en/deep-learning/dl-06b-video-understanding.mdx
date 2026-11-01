@@ -1,0 +1,858 @@
+---
+title: "DLCV 06B · Video Understanding and Action Recognition"
+description: "How deep networks recognize what happens in a video: the tasks (clip classification, temporal and spatio-temporal action localization, retrieval and question answering), why time is hard to learn, two-stream, 3D, (2+1)D, SlowFast, TSN/TSM and video-transformer architectures, masked video pretraining, evaluation protocols, datasets and failure modes such as scene bias."
+track: deep-learning
+order: 67
+level: advanced
+prereqs: [deep-learning/dl-02-image-classification]
+tags: [video-understanding, action-recognition, 3d-convolution, slowfast, video-transformers, videomae, temporal-action-localization, scene-bias, kinetics]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figTasks from '../../../../assets/deep-learning/dl-06b-video-understanding/tasks.png';
+import figFamilies from '../../../../assets/deep-learning/dl-06b-video-understanding/families.png';
+import figBias from '../../../../assets/deep-learning/dl-06b-video-understanding/scene-bias.png';
+import figFact from '../../../../assets/deep-learning/dl-06b-video-understanding/factorization.png';
+import figSampling from '../../../../assets/deep-learning/dl-06b-video-understanding/sampling.png';
+import figTiou from '../../../../assets/deep-learning/dl-06b-video-understanding/tiou-ap.png';
+
+## What you'll learn
+
+- The main video understanding tasks and what each outputs: clip classification, temporal action localization, spatio-temporal action detection, and (briefly) video–text retrieval and video question answering.
+- Why video is hard: a model must use *time*, yet many benchmarks can be solved from a single frame (scene bias), and every extra frame multiplies the compute.
+- How the architecture families add time to an image network, in math and in code: two-stream networks with optical flow, 3D convolutions (C3D, I3D inflation), factorized (2+1)D convolutions, SlowFast, TSN sampling and the temporal shift module, and video transformers (TimeSformer, ViViT, MViT, Video Swin).
+- How video models are pretrained without labels (VideoMAE and its tube masking) and where video–language models fit.
+- How video models are trained and evaluated: frame sampling, multi-view testing (clips × crops), top-1/top-5, temporal IoU and mAP, and the datasets behind the numbers (Kinetics, UCF101, HMDB51, Something-Something V2, AVA, Charades, ActivityNet, EPIC-KITCHENS).
+- The typical failure modes, and simple tests that expose them.
+
+## The big picture
+
+An image classifier looks at one picture and names what is in it. A video model must also understand what *happens*: who does what, in which order, for how long. The extra input is a time axis, and with it come two problems that images do not have. First, time is expensive: a 10-second clip at 30 frames per second is 300 images. Second, time is easy to ignore: a network can often guess "playing tennis" from the court alone, without ever looking at the swing.
+
+<Callout type="tip" title="Explain like I'm five">
+Look at one photo of a door. Is someone opening it or closing it? You cannot tell. Now flip through a few photos taken one after another, like a flip-book, and the answer is obvious. A video model has to learn to read the flip-book, not just one page. The tricky part is that it can often cheat: if every photo of "swimming" shows a pool, it can just look for blue water and never learn what swimming looks like.
+</Callout>
+
+Video understanding matters because most visual data is video: phone recordings, surveillance and traffic cameras, sports broadcasts, robots, cars and medical procedures. Recognizing actions is a building block for searching video archives, analyzing sports, monitoring safety, assisting people at home and controlling robots. The field also produced ideas that spread to the rest of deep learning, such as inflating a pretrained 2D network into 3D, factorizing space and time, and masked pretraining at very high masking ratios.
+
+This tutorial assumes image classification, its training and its evaluation from [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/). It reuses detection metrics from [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#precision-recall-and-ap) and attention from [ML 04](/en/learn/ml/ml-04-vision-transformers/). Five surveys frame the field: Zhu et al. on deep action recognition [1], Kong and Fu on recognition and prediction [2], Selva et al. on video transformers [3], Madan et al. on video foundation models [4] and Tang et al. on video understanding with large language models [5]. We return to them in the Modern view.
+
+**Related chapters.** Following objects over time is [DLCV 06 · Object Tracking](/en/learn/deep-learning/dl-06-object-tracking/); body keypoints, which skeleton-based recognition uses as input, are [DLCV 06A](/en/learn/deep-learning/dl-06a-pose-keypoints/); optical flow is estimated in [DLCV 08A](/en/learn/deep-learning/dl-08a-depth-optical-flow/#optical-flow-as-a-learning-problem); *generating* video with spatiotemporal attention and video autoencoders is [DLCV 10A](/en/learn/deep-learning/dl-10a-video-generation/); and predicting the future of a scene for planning is [DLCV 07 · World Models](/en/learn/deep-learning/dl-07-world-models/).
+
+## Video understanding tasks
+
+**Plain version.** The input is a stack of frames. The output depends on the question: one label for a short clip; the start, end and class of every action in a long video; a box and labels for every person at every moment; or an answer to a question written in words.
+
+**Precise version.** A video is a tensor $V \in \mathbb{R}^{T \times H \times W \times 3}$, where $T$ is the number of frames, $H \times W$ the frame size and 3 the color channels. A model rarely sees all of $V$. It sees a **clip** $x \in \mathbb{R}^{T' \times H' \times W' \times 3}$ of $T' \ll T$ sampled frames, resized and cropped to $H' \times W'$. Figure 1 shows the four task families.
+
+<Figure src={figTasks} alt="Four panels. (a) Five frames of a blue square moving right, with one label 'moving right'. (b) A long timeline with three orange segments labeled jump, throw, jump, with start and end times. (c) Three keyframes with two gray figures, each in a colored box labeled walk, stand or sit. (d) A text query pointing to three ranked clips with similarity scores, and a question box pointing to a short text answer." caption="Figure 1 — The main video tasks: (a) one label per trimmed clip; (b) start, end and class of each action in an untrimmed video; (c) a box and action labels for every person in each keyframe; (d) ranking videos for a text query, or answering a question about a video." />
+
+1. **Clip (action) classification.** Given a *trimmed* clip that contains one action, predict its class $y \in \{1, \dots, K\}$. Trained with cross-entropy and evaluated with top-1 and top-5 accuracy, exactly as in [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#metrics-top-1-top-5-and-beyond). Some datasets are **multi-label** (several actions at once) and are evaluated with mean average precision (mAP) over classes.
+2. **Temporal action localization** (also called temporal action detection). Given an *untrimmed* video, output a set $\{(s_i, e_i, c_i, p_i)\}$ of segments with start time $s_i$, end time $e_i$, class $c_i$ and confidence $p_i$. It is object detection along one dimension, and it is evaluated with mAP at several **temporal IoU** thresholds.
+3. **Spatio-temporal action detection.** Find *who* does *what*, *where* and *when*: a person box in each annotated keyframe, with one or more action labels per box. It is evaluated with frame-level mAP at a box-IoU threshold.
+4. **Video–language tasks.** **Text-to-video retrieval** ranks a collection of videos by their similarity to a sentence, evaluated by Recall@$k$ (the fraction of queries whose correct video is among the top $k$). **Video question answering** produces a short answer, often chosen from multiple choices and scored by accuracy.
+
+Neighboring problems are covered elsewhere. Linking the same object across frames is tracking ([DLCV 06](/en/learn/deep-learning/dl-06-object-tracking/)). Predicting what happens next is action anticipation or world modeling ([DLCV 07](/en/learn/deep-learning/dl-07-world-models/)). Labeling every pixel of every frame is video segmentation.
+
+## Why video is hard
+
+**Plain version.** Three things make video harder than images: the label often depends on *order* and *motion*, the datasets let models skip that work, and the input is huge.
+
+### Time matters, but the data does not always force you to use it
+
+Some actions can only be told apart by their motion: "opening a door" versus "closing a door", "pushing something left" versus "pushing something right", "sitting down" versus "standing up". A single frame of these is ambiguous. Many other actions are recognizable from one frame because of the **scene** and the **objects**: a swimming pool, a horse, a guitar. Datasets collected from the web contain many actions of the second kind.
+
+This was visible early. Karpathy et al. trained CNNs on a dataset of 1 million YouTube videos in 487 sports classes and compared several ways of fusing information over time; their best spatio-temporal network improved only modestly over a single-frame model [6]. Later studies measured the problem directly. Li et al. defined the **representation bias** of a dataset and showed that common action datasets are biased toward static cues (objects, scenes and people); they also built Diving48, a dataset of competitive diving with 48 fine-grained dive classes, to reduce that bias [7]. Sevilla-Lara et al. asked people to recognize actions from videos whose frames had been shuffled, and kept only the classes that became unrecognizable; this "temporal" subset is where a model's ability to use time actually shows [8]. Something-Something was built to capture detailed physical aspects of actions rather than high-level concepts: its 174 classes are caption templates such as "pushing something from left to right" [9], which the VideoMAE authors describe as motion-centric [10].
+
+The general phenomenon, a network solving the training task with the easiest cue available, is the **shortcut learning** of [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#shortcut-learning). In video the easiest cue is usually the scene.
+
+### A dataset where one frame says nothing
+
+The code below makes this concrete with synthetic clips. A small square moves left or right; the label is the direction. The square's position in the middle frame has the same distribution for both labels, so **the middle frame alone carries no information about the label**. We then add a "scene": a background brightness that agrees with the label in 90% of the training clips. Three logistic-regression classifiers see (1) the pixels of the middle frame, (2) a motion feature, and (3) both.
+
+The motion feature is the classical brightness-constancy estimate (see [DLCV 08A](/en/learn/deep-learning/dl-08a-depth-optical-flow/#optical-flow-as-a-learning-problem)). If a pattern shifts by $u$ pixels per frame, then $I_{t+1}(x) \approx I_t(x - u)$, so the temporal difference is $I_{t+1} - I_t \approx -u\, \partial_x I_t$. A least-squares fit of $u$ over the whole frame gives
+
+$$
+\hat{u}_t = -\frac{\sum_{x,y} \big(I_{t+1}(x,y) - I_t(x,y)\big)\, \partial_x I_t(x,y)}{\sum_{x,y} \big(\partial_x I_t(x,y)\big)^2},
+$$
+
+where $I_t(x, y)$ is the brightness of frame $t$ at column $x$ and row $y$, $\partial_x I_t$ its horizontal derivative, and $\hat{u}_t$ the estimated horizontal motion between frames $t$ and $t+1$ (positive means rightward). It is a product of a temporal derivative filter and a spatial derivative filter, which is exactly the kind of pattern a 3D convolution can learn.
+
+```python
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+
+def make_clips(n, T=8, S=20, noise=0.5, scene_bias=0.5, seed=0):
+    """A 3x3 square moves 1 px/frame left (y=0) or right (y=1) on a noisy background.
+    scene_bias = P(background brightness agrees with the label); 0.5 = no bias."""
+    rng = np.random.default_rng(seed)
+    y = rng.integers(0, 2, n)
+    X = noise * rng.standard_normal((n, T, S, S))
+    for i in range(n):
+        step = 1 if y[i] == 1 else -1
+        c_mid = rng.integers(T // 2, S - 3 - T // 2 + 1)   # middle-frame position: same for both labels
+        r = rng.integers(0, S - 3 + 1)
+        agree = rng.random() < scene_bias
+        X[i] += 0.3 * (y[i] if agree else 1 - y[i])       # the "scene": background brightness
+        for t in range(T):
+            c = c_mid + step * (t - T // 2)
+            X[i, t, r:r + 3, c:c + 3] += 1.0
+    return X, y
+
+def frame_features(X):     # appearance only: the pixels of the middle frame
+    return X[:, X.shape[1] // 2].reshape(len(X), -1)
+
+def motion_features(X):    # temporal difference times horizontal gradient, per frame pair
+    dt = X[:, 1:] - X[:, :-1]
+    dx = np.gradient(X[:, :-1], axis=3)
+    u = -(dt * dx).sum(axis=(2, 3)) / ((dx ** 2).sum(axis=(2, 3)) + 1e-6)
+    return u                                            # one motion estimate per frame pair
+
+data = {"train": make_clips(2000, scene_bias=0.9, seed=1),  # scene agrees with the label 90%
+        "same": make_clips(1000, scene_bias=0.9, seed=2),   # test: same distribution
+        "no cue": make_clips(1000, scene_bias=0.5, seed=3), # test: scene says nothing
+        "shift": make_clips(1000, scene_bias=0.1, seed=4)}  # test: scene misleads 90%
+for name, f in [("one frame", frame_features), ("motion", motion_features),
+                ("frame+motion", lambda X: np.c_[frame_features(X), motion_features(X)])]:
+    clf = LogisticRegression(C=0.1, max_iter=5000).fit(f(data["train"][0]), data["train"][1])
+    acc = {k: clf.score(f(X), y) for k, (X, y) in data.items() if k != "train"}
+    print(f"{name:13s}", "  ".join(f"{k} {v:.3f}" for k, v in acc.items()))
+```
+
+```text
+one frame     same 0.867  no cue 0.495  shift 0.131
+motion        same 0.945  no cue 0.929  shift 0.941
+frame+motion  same 0.889  no cue 0.522  shift 0.163
+```
+
+(All numbers in this block and in Figure 2 come from this toy run.) On test data from the training distribution, the single-frame model looks good (0.867), because the scene predicts the label 90% of the time. Remove the scene cue and it drops to chance (0.495); make the scene misleading and it falls to 0.131. The motion model is about 0.93–0.94 in every case, because it uses the cue that actually defines the label. The combined model is the warning: it *has* the motion feature, yet it learned to rely on the hundreds of brightness pixels, and it fails under the shift (0.163). How strongly it leans on the scene depends on feature scaling and regularization (Exercise 1), but a benchmark drawn from the training distribution would never reveal the problem.
+
+<Figure src={figBias} alt="Left: three frames of two synthetic clips, a bright-background training clip and a dark-background test clip, both with a small white square moving right. Right: grouped bars of test accuracy for three classifiers on three test sets. One-frame: 0.87, 0.49, 0.13. Motion: 0.94, 0.93, 0.94. Frame plus motion: 0.89, 0.52, 0.16. A dashed line marks chance at 0.5." caption="Figure 2 — The scene-bias toy. Left: frames of a training clip (bright scene) and a shifted test clip (dark scene); shown with less noise than in the experiment so the square is visible. Right: accuracy of the three classifiers on the three test sets. Only the motion model survives when the scene stops agreeing with the label." />
+
+### Compute and memory
+
+A clip of $T'$ frames costs roughly $T'$ times as much as one image for a per-frame network, and more for models that mix frames. For a convolution with $C_{\text{in}}$ input channels, $C_{\text{out}}$ output channels and a kernel of $k_t \times k_h \times k_w$ (time × height × width), stride 1 and "same" padding on a $T \times H \times W$ input,
+
+$$
+\text{params} = C_{\text{in}}\, C_{\text{out}}\, k_t k_h k_w, \qquad \text{MACs} = \text{params} \times T H W,
+$$
+
+where MACs counts multiply–accumulate operations (one multiplication plus one addition each). A $3 \times 3 \times 3$ kernel therefore has 3 times the parameters and 3 times the work of a $3 \times 3$ kernel applied to the same frames. For a transformer the problem is the number of tokens $N$: self-attention compares $N^2$ query–key pairs, and $N$ grows linearly with the number of frames. The code in the next section puts numbers on both.
+
+## How to add time to an image network
+
+**Plain version.** There are five basic recipes (Figure 3): run an image network on a few frames and average its answers; add a second network that looks only at motion (optical flow); make every filter three-dimensional; run two pathways at different frame rates; or cut the clip into space–time patches and let a transformer attend across them. Most modern models mix these ideas.
+
+<Figure src={figFamilies} alt="Five block diagrams. (a) Three frames each pass through a shared 2D CNN; scores are averaged into a label. (b) One RGB frame goes to a spatial CNN and stacked optical flow to a temporal CNN; late fusion gives the label. (c) A clip passes through a stack of 3D convolutions. (d) A few frames feed a Slow pathway with many channels, many frames feed a Fast pathway with fewer channels; a lateral arrow goes from Fast to Slow; outputs are concatenated. (e) A clip is cut into tubelet tokens that pass through space-time attention." caption="Figure 3 — Five ways to add time to an image network. Families (a)–(d) are convolutional; (e) is attention-based. Real systems combine them, for example two-stream I3D or a transformer that uses SlowFast-style multiscale features." />
+
+### Per-frame networks and late fusion
+
+The simplest video model applies an image classifier $f$ to $K$ frames $x_{t_1}, \dots, x_{t_K}$ and averages the class scores:
+
+$$
+\hat{y} = \operatorname{softmax}\Big(\frac{1}{K} \sum_{k=1}^{K} f(x_{t_k})\Big),
+$$
+
+where $f(x) \in \mathbb{R}^{C}$ is the vector of class scores (logits) for one frame and $C$ the number of classes. This is order-blind: shuffling the frames gives the same answer, so it cannot tell "opening" from "closing". It is still a strong baseline on scene-heavy datasets, and it is cheap and can start from any pretrained image backbone ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#transfer-learning-and-fine-tuning)). A recurrent network such as an LSTM [11] over per-frame features adds order; this design is discussed in [ML 03A](/en/learn/ml/ml-03a-recurrent-recursive-networks/#recurrent-networks-in-vision).
+
+### Two-stream networks: appearance plus optical flow
+
+**Plain version.** Give the network the motion explicitly. One network looks at a single color frame (what is there); a second looks at a stack of optical-flow fields (how things move). Their predictions are combined at the end.
+
+Simonyan and Zisserman's two-stream ConvNet [12] has a **spatial stream**, an image CNN on one RGB frame, and a **temporal stream**, a CNN whose input is the dense optical flow of $L$ consecutive frame pairs. Each flow field $d_t$ has a horizontal component $d_t^x$ and a vertical component $d_t^y$, so the stacked input for frame $\tau$ has $2L$ channels:
+
+$$
+I_\tau(u, v, 2k-1) = d^{x}_{\tau+k-1}(u, v), \qquad I_\tau(u, v, 2k) = d^{y}_{\tau+k-1}(u, v), \qquad k = 1, \dots, L,
+$$
+
+where $(u, v)$ is a pixel position and $d^x_t(u, v)$, $d^y_t(u, v)$ are the horizontal and vertical displacements of that pixel from frame $t$ to frame $t+1$. The two streams are trained separately and fused late, by averaging their softmax scores or with a linear SVM on the stacked scores [12]. The paper showed that a ConvNet on stacked flow performs well despite limited training data, and that the two streams are complementary [12].
+
+The weakness is cost: dense optical flow must be computed (and usually stored) for every frame before training, with a classical solver or a flow network (see [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/#optical-flow) for warping with flow). The flow is also not learned for the recognition task. Temporal Segment Networks [13] and I3D [14] still used a flow stream; SlowFast (below) later learned motion end to end from raw frames, without flow, and its authors found it empirically more effective than the two-stream approach [15].
+
+### 3D convolutions: C3D and I3D inflation
+
+**Plain version.** Make every filter a small cube that slides over time as well as space. Then the network can learn motion detectors, such as "a bright edge that moves right", directly from the pixels.
+
+A 3D convolution with kernel $w \in \mathbb{R}^{k_t \times k_h \times k_w}$ computes, for one input and one output channel,
+
+$$
+y(t, i, j) = \sum_{a=0}^{k_t-1} \sum_{b=0}^{k_h-1} \sum_{c=0}^{k_w-1} w(a, b, c)\, x(t + a, i + b, j + c),
+$$
+
+where $x(t, i, j)$ is the input at frame $t$, row $i$ and column $j$ (in practice summed over all input channels and with padding at the borders). **C3D** [16] trained a network of such layers on a large video dataset and found that a homogeneous architecture with small $3 \times 3 \times 3$ kernels in all layers was among the best; its features with a linear classifier were strong on several benchmarks.
+
+Training 3D networks from scratch needs much more data than existed in 2015. Carreira and Zisserman solved both problems at once in 2017 [14]. They introduced **Kinetics**, a dataset of 400 human action classes with at least 400 YouTube clips per class, each about 10 seconds long [17], and the **Inflated 3D ConvNet (I3D)**: take a successful 2D image architecture and *inflate* every $N \times N$ filter and pooling kernel into $N \times N \times N$. To start from weights pretrained on ImageNet [18], they made the inflated network give the same response on a "boring video" (one image repeated in time) as the 2D network on the image: repeat each 2D filter $N$ times along time and divide by $N$ [14]. With $w_{2D}$ the pretrained filter,
+
+$$
+w_{3D}(a, b, c) = \frac{1}{N}\, w_{2D}(b, c), \qquad a = 0, \dots, N-1,
+$$
+
+so on a constant-in-time input the $N$ temporal taps add up to exactly the 2D response. The check below confirms it numerically.
+
+```python
+import numpy as np
+from scipy.ndimage import correlate
+
+rng = np.random.default_rng(0)
+w2d = rng.standard_normal((3, 3))            # a "pretrained" 2D filter
+N = 3                                        # temporal size of the inflated filter
+w3d = np.repeat(w2d[None] / N, N, axis=0)    # (N, 3, 3): copy N times, divide by N
+
+img = rng.standard_normal((32, 32))
+boring = np.repeat(img[None], 8, axis=0)     # an 8-frame "video" of one still image
+
+r2d = correlate(img, w2d, mode="nearest")
+r3d = correlate(boring, w3d, mode="nearest")  # 3D filtering over (t, y, x)
+print("max |3D response on any frame - 2D response| =", np.abs(r3d - r2d[None]).max())
+```
+
+```text
+max |3D response on any frame - 2D response| = 1.7763568394002505e-15
+```
+
+The difference is at the level of floating-point rounding. Training then moves the filters away from "constant in time" as they learn motion. The paper's final model is **two-stream I3D**, one I3D on RGB and one on flow with predictions averaged, because the authors still found the flow stream valuable [14]. After pretraining on Kinetics, I3D improved considerably on the small UCF101 and HMDB51 benchmarks [14], which helped make "pretrain on Kinetics, fine-tune on the target" the standard video recipe. The same inflation idea reappears in video generators ([DLCV 10A](/en/learn/deep-learning/dl-10a-video-generation/#inflating-a-pretrained-image-model)), and I3D features are the feature network behind the Fréchet Video Distance [19] ([DLCV 10A](/en/learn/deep-learning/dl-10a-video-generation/#fréchet-video-distance)).
+
+*Optional: [Quo Vadis: I3D and the Kinetics dataset](#quo-vadis-i3d-and-the-kinetics-dataset-carreira-and-zisserman-2017) (in the Paper guides). How the paper compares five architecture families and what its transfer experiments show.*
+
+### Factorized (2+1)D convolutions
+
+**Plain version.** A cube-shaped filter can be split into two cheaper steps: first a flat filter that looks within each frame, then a thin filter that looks across frames at each position. With the right width in between, the split has the same number of parameters but an extra nonlinearity, and it trains more easily.
+
+Tran et al. [20] compared several spatiotemporal convolutions inside residual networks: 2D only, 3D everywhere, mixed (3D in early layers only, or late layers only) and a factorized **(2+1)D** block. The (2+1)D block replaces $N_i$ filters of size $N_{i-1} \times t \times d \times d$ with $M_i$ spatial filters of size $N_{i-1} \times 1 \times d \times d$, a ReLU, and $N_i$ temporal filters of size $M_i \times t \times 1 \times 1$. Here $N_{i-1}$ and $N_i$ are the input and output channel counts of layer $i$, $t$ and $d$ the temporal and spatial kernel sizes, and $M_i$ the width of the intermediate space, chosen so that the parameter count matches the 3D layer [20]:
+
+$$
+M_i = \left\lfloor \frac{t\, d^2\, N_{i-1}\, N_i}{d^2\, N_{i-1} + t\, N_i} \right\rfloor .
+$$
+
+The paper names two benefits: the extra ReLU doubles the number of nonlinearities for the same parameter count, and the factorization makes optimization easier, visible as lower *training* error than an equally sized 3D network [20]. It is the video analogue of the depthwise-separable trick in image CNNs ([ML 03](/en/learn/ml/ml-03-convolutional-networks/#efficient-cnns-separate-spatial-filtering-from-channel-mixing)): split one big operation into cheaper ones along different axes.
+
+The code computes parameters and multiply–adds for one 64-to-64-channel layer on a 16-frame clip with $56 \times 56$ feature maps, and the token count of a video transformer for comparison.
+
+```python
+import math
+
+def conv_cost(c_in, c_out, kt, kh, kw, T, H, W):
+    """Parameters and multiply-adds of one convolution (stride 1, 'same' padding, no bias)."""
+    params = c_in * c_out * kt * kh * kw
+    return params, params * T * H * W
+
+c, t, d = 64, 3, 3                           # channels in = out, temporal and spatial kernel size
+T, H, W = 16, 56, 56                         # a 16-frame clip, 56x56 feature maps
+M = math.floor(t * d * d * c * c / (d * d * c + t * c))   # R(2+1)D's matched middle width
+
+layers = {
+    "2D  (1x3x3), per frame": [conv_cost(c, c, 1, d, d, T, H, W)],
+    "3D  (3x3x3)":            [conv_cost(c, c, t, d, d, T, H, W)],
+    f"(2+1)D, M={M}":         [conv_cost(c, M, 1, d, d, T, H, W), conv_cost(M, c, t, 1, 1, T, H, W)],
+}
+for name, parts in layers.items():
+    p = sum(x[0] for x in parts); f = sum(x[1] for x in parts)
+    print(f"{name:24s} params {p:>8,d}   GMACs {f / 1e9:5.2f}")
+
+# a video transformer's token count with 2x16x16 tubelets on a 16x224x224 clip
+n_tok = (16 // 2) * (224 // 16) ** 2
+print(f"tokens {n_tok}, joint attention pairs {n_tok**2:,}, "
+      f"divided (time, then space) pairs {n_tok * 8 + n_tok * 196:,}")
+```
+
+```text
+2D  (1x3x3), per frame   params   36,864   GMACs  1.85
+3D  (3x3x3)              params  110,592   GMACs  5.55
+(2+1)D, M=144            params  110,592   GMACs  5.55
+tokens 1568, joint attention pairs 2,458,624, divided (time, then space) pairs 319,872
+```
+
+With equal input and output widths, $M = 144$ makes the (2+1)D block match the 3D layer exactly in parameters and work; the gain is in expressiveness and optimization, not in cost. A cheaper split is possible by choosing a smaller $M$. Figure 4 draws the factorization.
+
+<Figure src={figFact} alt="Left: a 3 by 3 by 3 kernel drawn as three stacked 3 by 3 slices, labeled space and time at once. Middle: a 1 by 3 by 3 spatial slice, an arrow to a ReLU box, an arrow to three single cells stacked in time labeled t by 1 by 1 temporal, with the note M = 144 intermediate channels. Right: horizontal bars of parameters for one 64-to-64-channel layer: 2D 36.9k, 3D 110.6k, (2+1)D 110.6k." caption="Figure 4 — A 3D convolution and its (2+1)D factorization. With the matched middle width M from the formula above, both have the same parameter count; the (2+1)D block adds a nonlinearity between the spatial and temporal steps." />
+
+*Optional: [Choosing the middle width of a (2+1)D block](#choosing-the-middle-width-of-a-21d-block) (in the Supplementary notes). Where the formula comes from, and what happens when input and output widths differ or when you want a cheaper block.*
+
+### Cheap temporal modeling: TSN sampling and the temporal shift module
+
+**Plain version.** Two tricks let a plain 2D network handle long videos cheaply. TSN looks at a few frames spread over the whole video instead of many frames from one moment. TSM lets neighboring frames swap a few feature channels inside the network, which mixes information across time at almost no cost.
+
+**Temporal Segment Networks (TSN)** [13] divide a video into $K$ equal segments, take one short snippet from each (a random position during training), score every snippet with the same network, and combine the scores with a **segmental consensus** such as averaging before the softmax. The loss is computed on the consensus, so the whole video supervises the network, not just one short window [13]. The paper's default was $K = 3$ segments [13]. This **sparse sampling** covers long-range structure with a fixed, small number of frames (Figure 5).
+
+```python
+import numpy as np
+
+def tsn_indices(n_frames, K, train, rng=None):
+    """TSN-style sparse sampling: split the video into K equal segments, take one frame
+    per segment (random position when training, the segment centre when testing)."""
+    edges = np.linspace(0, n_frames, K + 1)
+    if train:
+        return np.floor(edges[:-1] + rng.random(K) * np.diff(edges)).astype(int)
+    return np.floor((edges[:-1] + edges[1:]) / 2).astype(int)
+
+def dense_clip(n_frames, length, stride, start):
+    """A dense clip: `length` frames, `stride` apart, starting at `start`."""
+    return start + stride * np.arange(length)
+
+rng = np.random.default_rng(0)
+n = 300                                          # a 10-second video at 30 fps
+print("TSN train:", tsn_indices(n, 8, True, rng))
+print("TSN test :", tsn_indices(n, 8, False))
+print("dense 8x8:", dense_clip(n, 8, 8, start=100))   # 8 frames, every 8th frame
+# multi-view testing: 10 clip start positions spread uniformly over the video
+starts = np.linspace(0, n - 8 * 8, 10).astype(int)
+print("10 clip starts:", starts)
+```
+
+```text
+TSN train: [ 23  47  76 113 180 221 247 289]
+TSN test : [ 18  56  93 131 168 206 243 281]
+dense 8x8: [100 108 116 124 132 140 148 156]
+10 clip starts: [  0  26  52  78 104 131 157 183 209 236]
+```
+
+The eight sparse frames span the whole video; the dense clip covers about 2 seconds in detail. (Taking segment centres at test time is a common choice in later implementations; the original TSN paper tested on 25 frames with 10 crops each [13].) Dense clips are what 3D networks and SlowFast consume; the last line, ten clips spread over the video, is the multi-view testing protocol discussed under evaluation below.
+
+<Figure src={figSampling} alt="Four timelines over 300 frames. TSN training: eight blue dots, one at a random position inside each of eight segments marked by dotted lines. TSN testing: eight orange dots at the segment centres. Dense clip: eight green dots, 8 frames apart, between frames 100 and 156. Ten test clips: ten staggered blue bars, each 64 frames long, spread from the start to the end of the video." caption="Figure 5 — Frame sampling, from the code above: TSN-style sampling takes one frame per segment (random when training, centred when testing); a dense clip takes consecutive frames at a fixed stride; multi-view testing averages predictions over several clips spread across the video." />
+
+The **Temporal Shift Module (TSM)** [21] adds real temporal interaction to a 2D network with zero extra parameters and zero extra multiply–adds. Inside each residual block, a fraction of the channels of the feature tensor is shifted by one frame forward in time, another fraction one frame backward, and the rest stay in place; the following 2D convolution then mixes channels that come from three different frames. Shifting most channels hurt both latency (data movement) and accuracy (less spatial information per frame), so the paper shifts 1/4 of the channels (1/8 in each direction) and places the shift on the residual branch [21]. For live video, a uni-directional version shifts only from past to current frames [21].
+
+*Optional: [The temporal shift as a sparse temporal convolution](#the-temporal-shift-as-a-sparse-temporal-convolution) (in the Supplementary notes). A short derivation and a tested snippet showing that shift plus a 1×1 convolution equals a temporal convolution with most weights fixed to zero.*
+
+### SlowFast: two frame rates
+
+**Plain version.** What things are changes slowly; how they move can change fast. So use two pathways: a heavy one that looks at few frames to understand the scene, and a light one that looks at many frames to catch the motion.
+
+**SlowFast networks** [15] have a **Slow pathway** that samples $T$ frames with a large temporal stride $\tau$, and a **Fast pathway** that samples $\alpha T$ frames with stride $\tau / \alpha$, so it is $\alpha$ times denser in time. The Fast pathway has only a fraction $\beta$ of the Slow pathway's channels. Typical values are $\alpha = 8$ and $\beta = 1/8$ [15]. Because the cost of a layer grows roughly with the square of its channel count, the Fast pathway takes only about 20% of the total computation in the paper's instantiations [15]. **Lateral connections** feed Fast features into the Slow pathway at every stage; to match shapes they convert the $\alpha T$ Fast frames to $T$, for example with a time-strided 3D convolution, the paper's default [15].
+
+Two design details carry a general lesson. The Slow pathway uses temporal kernels larger than 1 only in its last two stages, because the authors found that temporal convolutions in early layers *hurt* when the frame stride is large: fast-moving content has little correlation across a large time step unless the spatial receptive field is also large [15]. And SlowFast uses **no optical flow**: it learns motion end to end from raw frames [15]. It reported strong results on Kinetics, Charades and AVA classification and detection [15].
+
+*Optional: [SlowFast networks](#slowfast-networks-feichtenhofer-et-al-2019) (in the Paper guides). How to read its ablations on lateral connections and on the channel ratio β.*
+
+Two related ideas complete the CNN family. **Non-local blocks** [22] compute each position's response as a weighted sum over *all* space–time positions, an attention layer inserted into a 3D CNN to capture long-range dependencies. **X3D** [23] starts from a tiny 2D image network and expands it one axis at a time (in space, time, width and depth) to find accurate networks at low cost; one surprising finding was that networks with high spatiotemporal resolution can be extremely thin [23].
+
+### Video transformers: TimeSformer, ViViT, MViT and Video Swin
+
+**Plain version.** Cut the clip into small space–time patches, turn each into a token, and let a transformer decide which patches should look at which. The hard part is that a clip has thousands of tokens, so the designs differ mainly in *which* tokens each token may attend to.
+
+A Vision Transformer [24] ([ML 04](/en/learn/ml/ml-04-vision-transformers/#the-vision-transformer-vit)) turns an image into patches. A video transformer does the same in space–time. With **tubelet embedding** [25], non-overlapping tubes of $t \times p \times p$ pixels are linearly projected (equivalently, a 3D convolution with stride equal to its kernel), so a $T \times H \times W$ clip becomes
+
+$$
+N = \frac{T}{t} \cdot \frac{H}{p} \cdot \frac{W}{p}
+$$
+
+tokens, where $t$ is the tubelet length in frames and $p$ the patch side in pixels. VideoMAE's ViT-Base, for example, takes a $16 \times 224 \times 224$ clip with $2 \times 16 \times 16$ cubes, giving $8 \times 196 = 1568$ tokens [10]. **Joint** space–time attention compares all $N^2$ pairs, which the code above counted as about 2.46 million per layer. Four designs tame this:
+
+- **TimeSformer** [26] compared several self-attention schemes and found **divided attention** best among those it tried: within each block, a token first attends to the tokens at the same spatial position in other frames (temporal attention) and then to the tokens of its own frame (spatial attention) [26]. In the configuration above that is about 0.32 million pairs instead of 2.46 million. It can also process clips over one minute long [26]. The cost ratio of joint versus divided attention is derived in [DLCV 10A](/en/learn/deep-learning/dl-10a-video-generation/#factorized-or-full-spatiotemporal-attention), which also explains why video *generators* often prefer full attention.
+- **ViViT** [25] proposed four models: joint spatio-temporal attention; a **factorised encoder** (a spatial transformer per frame, then a temporal transformer over the frame embeddings, a form of late fusion); factorised self-attention inside each block; and factorised dot-product attention, where half of the heads attend over space and half over time. It also showed how to regularize these models and initialize them from pretrained image models so they can be trained on comparatively small datasets [25].
+- **MViT** [27] brings back the multiscale hierarchy of CNNs: stages start at high spatiotemporal resolution with few channels and progressively expand channels while reducing resolution, using **pooling attention**, which pools the query, key and value sequences inside attention [27].
+- **Video Swin Transformer** [28] argues for **locality**: attention is computed only inside local 3D windows, which are shifted between consecutive layers so information can cross window borders. It extends the image Swin Transformer [29] ([DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#swin-windows-shifts-and-a-hierarchy)) and starts from pretrained image weights, giving a better speed–accuracy trade-off than global attention [28].
+
+Attention is not the only way to model long clips. **VideoMamba** [30] adapts the Mamba state-space model [31], whose cost grows linearly with the number of tokens, to video; the underlying selective scan is explained in [ML 03A](/en/learn/ml/ml-03a-recurrent-recursive-networks/#mamba-selective-state-spaces-and-scan).
+
+## Learning video representations without labels
+
+**Plain version.** Labeling video is slow and expensive, but unlabeled video is plentiful. So hide most of a clip and train the network to fill it in; to do that well, it must learn how things look and how they move.
+
+**VideoMAE** [10] applies masked autoencoding (MAE [32], see [ML 05](/en/learn/ml/ml-05-representation-learning/#masked-modeling-learn-by-filling-gaps)) to video. It masks space–time cubes, encodes only the visible ones with a ViT, and reconstructs the pixels of the masked ones with a light decoder. Two things are specific to video. First, consecutive frames are highly redundant, so the masking ratio can be extremely high: 90% to 95% still works well [10]. Second, if masks are drawn independently per frame, a masked patch can often be copied from the same position in a neighboring frame, an **information leakage** that makes the task too easy. VideoMAE therefore uses **tube masking**: the same spatial mask in every frame [10]. The snippet measures the leakage.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+T, P, ratio = 8, 196, 0.9               # 8 token frames of 14x14 patches, 90% masked
+
+def leak(mask):
+    """Fraction of masked tokens whose same-position token in a neighbouring frame is visible."""
+    vis = ~mask
+    nb = np.zeros_like(mask)
+    nb[1:] |= vis[:-1]; nb[:-1] |= vis[1:]
+    return (mask & nb).sum() / mask.sum()
+
+random_mask = rng.random((T, P)) < ratio                  # independent per token
+tube_mask = np.repeat((rng.random(P) < ratio)[None], T, 0) # same spatial mask in every frame
+print(f"random masking: {random_mask.mean():.2f} masked, leak {leak(random_mask):.2f}")
+print(f"tube masking  : {tube_mask.mean():.2f} masked, leak {leak(tube_mask):.2f}")
+```
+
+```text
+random masking: 0.90 masked, leak 0.16
+tube masking  : 0.89 masked, leak 0.00
+```
+
+With independent masks, about one masked token in six has a visible twin in an adjacent frame (for interior frames the expected value is $1 - 0.9^2 = 0.19$; the first and last frames have only one neighbor). Tube masking removes that shortcut entirely, which is the point: a pretext task is only useful if its shortcuts are closed. VideoMAE also reported strong results on small datasets of a few thousand videos without extra data, found that data quality matters more than data quantity for this kind of pretraining, and noted that the domain shift between pretraining and target data is an important issue [10]. **VideoMAE V2** [33] scaled the approach to a billion-parameter ViT with **dual masking**, which also masks the decoder's input to save computation.
+
+A second line predicts *features* instead of pixels. **V-JEPA** [34] trains video models only with a feature-prediction objective, without pretrained image encoders, text, negative examples or reconstruction, on about 2 million videos, and evaluates them with a frozen backbone on both motion- and appearance-based tasks [34]. Its successor V-JEPA 2 [35] and the JEPA idea are covered in [ML 05](/en/learn/ml/ml-05-representation-learning/#predicting-features-instead-of-pixels-jepa) and [DLCV 07](/en/learn/deep-learning/dl-07-world-models/#predictive-representations-the-jepa-family).
+
+## Video and language, briefly
+
+**Plain version.** Instead of a fixed list of action names, describe videos with free text. A model that places videos and sentences in the same space can search videos by description; a model that feeds video tokens into a language model can answer questions about them.
+
+**Retrieval.** CLIP-style image–text models [36] ([ML 09](/en/learn/ml/ml-09-foundation-models/#image-and-text-in-a-shared-space-clip-and-siglip)) transfer to video: **CLIP4Clip** [37] transfers CLIP to text–video retrieval end to end and studies whether image features are enough, how post-pretraining on video–text data helps and how to model the dependency between frames, on benchmarks such as **MSR-VTT**, a collection of 10K web video clips with 200K clip–sentence pairs [38]. **Video foundation models** such as **InternVideo2** [39] combine masked video modeling, video–text contrastive learning and next-token prediction in one progressive training scheme, with a video encoder of up to 6 billion parameters [39].
+
+**Question answering.** Multimodal large language models ([ML 09](/en/learn/ml/ml-09-foundation-models/#multimodal-large-language-models)) accept sampled frames as visual tokens. Long videos stress them: **Video-MME** [40] evaluates them on 900 manually annotated videos from 11 seconds to 1 hour long (2,700 question–answer pairs), with subtitles and audio as optional inputs, and found that handling longer sequences remained a weakness [40]. A practical caution, by analogy with scene bias: check whether a question can be answered from a single frame, or from the question text alone, before crediting a model with temporal understanding; a single-frame baseline is a cheap sanity check.
+
+## Localizing actions in time and space
+
+**Plain version.** Real videos are not trimmed. A cooking video contains "cut", "stir" and "pour" with long boring stretches in between. Temporal localization finds where each action starts and ends; spatio-temporal detection also says which person is doing it.
+
+### Temporal action localization
+
+The task mirrors object detection along the time axis ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/)), and so do its methods. A clip-level backbone (often frozen, such as I3D or SlowFast features) produces a feature sequence along time; a localization head turns it into scored segments.
+
+- **Proposal-based (two-stage).** First generate class-agnostic candidate segments, then classify them. **BMN** [41] represents a proposal as a pair of start and end boundaries and scores all densely distributed pairs at once in a **boundary-matching confidence map**; combined with an action classifier it gives detections [41].
+- **Anchor-free, single-stage.** **ActionFormer** [42] classifies *every moment* in time and regresses the distances to the action's start and end, with no proposals and no predefined anchor windows. It uses a multiscale transformer with local self-attention and a light decoder [42], the temporal counterpart of the anchor-free detectors of [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#anchor-free-detectors-points-instead-of-boxes). Duplicate segments are removed with non-maximum suppression in time, as for boxes (ActionFormer uses a soft variant [42]).
+
+**Temporal IoU and mAP.** For a predicted segment $\hat{g} = [\hat{s}, \hat{e}]$ and a ground-truth segment $g = [s, e]$,
+
+$$
+\text{tIoU}(\hat{g}, g) = \frac{\max\big(0, \min(\hat{e}, e) - \max(\hat{s}, s)\big)}{(\hat{e} - \hat{s}) + (e - s) - \max\big(0, \min(\hat{e}, e) - \max(\hat{s}, s)\big)},
+$$
+
+where the numerator is the length of the overlap and the denominator the length of the union. For one class and threshold $\theta$, predictions are sorted by score; a prediction is a true positive if its tIoU with a not-yet-matched ground truth of that class is at least $\theta$. Average precision (AP) is the area under the resulting precision–recall curve, mAP averages AP over classes, and an **average mAP** averages over several thresholds. Two conventions are common: THUMOS14 averages over tIoU $\{0.3, 0.4, \dots, 0.7\}$ and ActivityNet 1.3 over $\{0.5, 0.55, \dots, 0.95\}$ [42]. The code computes AP for one class on synthetic detections (85% of actions found, with boundary errors, plus random false alarms).
+
+```python
+import numpy as np
+
+def tiou(seg, segs):
+    """Temporal IoU of one segment [s, e] with an array of segments (n, 2)."""
+    inter = np.clip(np.minimum(seg[1], segs[:, 1]) - np.maximum(seg[0], segs[:, 0]), 0, None)
+    union = (seg[1] - seg[0]) + (segs[:, 1] - segs[:, 0]) - inter
+    return inter / union
+
+def average_precision(preds, gts, thr):
+    """preds: list of (video, start, end, score); gts: dict video -> (m, 2) array.
+    Greedy matching in score order; each ground truth can be matched once."""
+    n_gt = sum(len(g) for g in gts.values())
+    used = {v: np.zeros(len(g), bool) for v, g in gts.items()}
+    tp = []
+    for v, s, e, _ in sorted(preds, key=lambda p: -p[3]):
+        ious = tiou(np.array([s, e]), gts[v])
+        ious[used[v]] = -1                       # already matched ground truths are off limits
+        j = int(np.argmax(ious))
+        hit = ious[j] >= thr
+        if hit:
+            used[v][j] = True
+        tp.append(hit)
+    tp = np.array(tp, float)
+    recall = np.cumsum(tp) / n_gt
+    precision = np.cumsum(tp) / np.arange(1, len(tp) + 1)
+    precision = np.maximum.accumulate(precision[::-1])[::-1]   # monotone envelope
+    return np.sum(np.diff(np.r_[0, recall]) * precision)
+
+rng = np.random.default_rng(0)
+gts, preds = {}, []
+for v in range(20):                              # 20 untrimmed videos, 1-3 actions each
+    starts = np.sort(rng.uniform(0, 100, rng.integers(1, 4)))
+    g = np.c_[starts, starts + rng.uniform(4, 15, len(starts))]
+    gts[v] = g
+    for s, e in g:
+        if rng.random() < 0.85:                  # the detector finds 85% of actions...
+            j = rng.normal(0, 0.2 * (e - s), 2)  # ...with boundary errors
+            preds.append((v, s + j[0], e + j[1], rng.uniform(0.5, 1.0)))
+    for _ in range(rng.integers(0, 3)):          # plus some false alarms
+        s = rng.uniform(0, 100)
+        preds.append((v, s, s + rng.uniform(3, 12), rng.uniform(0.0, 0.7)))
+
+thrs = [0.3, 0.4, 0.5, 0.6, 0.7]
+aps = [average_precision(preds, gts, t) for t in thrs]
+print("AP at tIoU:", "  ".join(f"{t}: {a:.3f}" for t, a in zip(thrs, aps)))
+print(f"average over [0.3:0.1:0.7]: {np.mean(aps):.3f}")
+```
+
+```text
+AP at tIoU: 0.3: 0.731  0.4: 0.696  0.5: 0.696  0.6: 0.604  0.7: 0.284
+average over [0.3:0.1:0.7]: 0.602
+```
+
+(Toy numbers.) Up to tIoU 0.5 the AP is limited mainly by the 15% missed actions and the false alarms; at 0.7 it collapses because boundary errors of about 20% of the action length are no longer good enough. Boundaries of actions are genuinely ambiguous (when does "pour" start?), which is why strict thresholds are hard even for people, and why benchmarks report several.
+
+<Figure src={figTiou} alt="Left: six timelines of synthetic videos. Gray bars above each line are ground-truth actions; bars below are predictions, green for true positives at tIoU 0.5 and orange hatched for false positives. Right: AP against tIoU threshold, 0.73 at 0.3, 0.70 at 0.4 and 0.5, 0.60 at 0.6, 0.28 at 0.7, with the average 0.602 in the title." caption="Figure 6 — The temporal-AP toy from the code above. Left: ground truth (gray) and predictions on six of the 20 videos, colored by whether they match at tIoU 0.5. Right: AP falls as the tIoU threshold becomes stricter." />
+
+*Optional: [Average precision for temporal localization, step by step](#average-precision-for-temporal-localization-step-by-step) (in the Supplementary notes). A hand-worked example of the matching rule, duplicates and the precision envelope.*
+
+### Spatio-temporal action detection
+
+Here the model must say which person does which action. In **AVA** [43], every person in keyframes sampled at 1 Hz from 15-minute movie clips gets a box and one or more labels from 80 atomic actions (14 pose classes, 49 person–object and 17 person–person interactions) [43]. A common pipeline is detection plus video classification, as in SlowFast's AVA detector [15]: an off-the-shelf person detector ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/)) proposes boxes on the keyframe, a video backbone computes a spatiotemporal feature map for a clip around it, the features inside each box are pooled, and a per-class sigmoid classifier gives multi-label predictions, because one person can "stand", "talk to" and "hold" at once. The metric is **frame-mAP at IoU 0.5**: AP per action class over all keyframe detections, a detection counting only if its box overlaps a ground-truth box of that class with IoU at least 0.5, averaged over classes [43]. Linking detections into tubes over time borrows the association methods of tracking ([DLCV 06](/en/learn/deep-learning/dl-06-object-tracking/#multi-object-tracking)).
+
+### Skeleton-based action recognition
+
+Instead of pixels, a model can read the **pose**: the 2D or 3D coordinates of body joints over time, estimated as in [DLCV 06A](/en/learn/deep-learning/dl-06a-pose-keypoints/#what-a-pose-is) or captured with depth sensors, as in the NTU RGB+D dataset of 60 action classes [44]. **ST-GCN** [45] builds a graph whose nodes are the joints in every frame, with *spatial* edges along the bones and *temporal* edges connecting the same joint in consecutive frames, and applies graph convolutions over it [45]. Skeletons are compact, ignore clothing and background, and are therefore less prone to scene bias: on the **Mimetics** dataset of mimed actions without the usual objects and scenes, a pose-based model held up much better than 3D CNNs [46]. The price is that skeletons miss objects ("drinking" versus "eating") and depend on the pose estimator's errors.
+
+*Optional: [Graph convolution on a skeleton sequence (ST-GCN)](#graph-convolution-on-a-skeleton-sequence-st-gcn) (in the Supplementary notes). The normalized adjacency, the partition of neighbors and how the convolution is implemented.*
+
+## Training and evaluating video classifiers
+
+**Plain version.** How you pick frames, how many views you average at test time and which dataset you report on change the numbers as much as many architecture changes. Read the protocol before comparing two papers.
+
+### Sampling and training
+
+Three choices define the input: the **number of frames** $T'$, the **stride** between them (frame rate), and dense versus sparse (TSN-style) sampling. Motion-centric datasets reward dense, fine-grained sampling; scene-centric datasets tolerate sparse sampling. VideoMAE, for example, uses TSN-style uniform sampling on Something-Something V2 and dense sampling on Kinetics-400 [10]. Spatial augmentation is the same as for images (random resized crops, flips), with one video-specific trap: **horizontal flipping changes the label** of direction-dependent classes such as "pushing something from left to right". Training otherwise follows [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#training-recipes). Initialization usually comes from an image model (inflation, or a pretrained ViT) or from a self-supervised video model.
+
+### Multi-view testing
+
+At test time, one clip rarely covers the whole video, so predictions are averaged over $V_t$ temporal clips and $V_s$ spatial crops:
+
+$$
+\hat{p}(y \mid \text{video}) = \frac{1}{V_t V_s} \sum_{i=1}^{V_t} \sum_{j=1}^{V_s} \operatorname{softmax}\big(f(x_{ij})\big)_y,
+$$
+
+where $x_{ij}$ is the $i$-th clip cropped at the $j$-th spatial position. SlowFast, for example, samples 10 clips uniformly along the video and takes 3 crops of $256 \times 256$ from each, 30 views in total, and reports cost as **GFLOPs per view × number of views**, noting that some earlier works used more than 100 views [15]. VideoMAE evaluated with 2 clips × 3 crops on Something-Something V2 and 5 × 3 on Kinetics-400 [10]. The total inference cost is the per-view cost times the number of views, so a model that looks cheap per view may be expensive in practice. Report both, and compare models only under the same protocol.
+
+### Datasets and benchmarks
+
+| Dataset | Task | Content (as described by its authors) |
+|---|---|---|
+| UCF101 [47] | clip classification | 101 action classes, over 13k clips, 27 hours of user-uploaded video |
+| HMDB51 [48] | clip classification | 51 action classes from movies and web videos; small and deliberately hard |
+| Kinetics-400 [17] | clip classification | 400 human action classes, at least 400 clips each, about 10 s per clip, from YouTube |
+| Something-Something V2 [9], [10] | clip classification | 174 motion-centric classes defined as caption templates; about 169k training and 20k validation videos |
+| Diving48 [7] | clip classification | over 18,000 clips of 48 fine-grained dive classes, built to reduce static bias |
+| Charades [49] | multi-label classification, localization | 9,848 videos of everyday indoor activities recorded by 267 people, 157 action classes |
+| THUMOS14 [50] | temporal localization | untrimmed videos, including background videos without the target actions |
+| ActivityNet [51] | untrimmed classification, localization | a large-scale benchmark of human activities in untrimmed web videos |
+| AVA [43] | spatio-temporal detection | 80 atomic actions in 430 15-minute movie clips, 1.58M action labels |
+| EPIC-KITCHENS-100 [52], [53] | egocentric recognition, detection, anticipation | 100 hours of unscripted head-mounted video in 45 environments, 90K actions |
+| NTU RGB+D [44] | skeleton / RGB-D recognition | over 56 thousand samples, 60 action classes, 40 subjects |
+| MSR-VTT [38] | retrieval, captioning | 10K web clips, 200K clip–sentence pairs |
+| Video-MME [40] | video QA for multimodal LLMs | 900 videos from 11 s to 1 h, 2,700 question–answer pairs |
+
+UCF101 and HMDB51 report average accuracy over **three official train/test splits** [12], [13]; Kinetics and Something-Something report top-1 and top-5 on their validation sets; Charades and AVA report mAP. Two warnings. First, Kinetics and Something-Something reward different things: the VideoMAE authors describe Kinetics videos as mostly stationary and scene-related, while Something-Something V2 is motion-centric [10]. A model's ranking can change between them. Second, the authors of EPIC-KITCHENS-100 built in a "test of time": testing models trained on footage collected in 2018 on new footage collected two years later, and an unsupervised domain adaptation challenge [53]. Benchmarks like these measure robustness that a single held-out split cannot.
+
+## Failure modes
+
+**Plain version.** Video models fail in a few predictable ways. Most of them come from the model using a cue that happened to work on the training data.
+
+1. **Scene and object bias.** The model predicts "playing tennis" from a tennis court. Evidence: representation bias toward static cues in common datasets [7]; models that fail on mimed actions without the usual objects and scenes [46]. Remedies include debiasing losses, such as an adversarial scene classifier and a loss that penalizes confident predictions on videos with the person masked out [54], motion-centric training data [9] and pose input [46].
+2. **Temporal shortcuts.** The model ignores frame order. Test: shuffle or reverse the frames. If accuracy barely moves, the model (or the benchmark) does not use time; Sevilla-Lara et al. built their temporal subset of classes exactly this way [8].
+3. **Short temporal context.** Most clip models see only a few seconds at a time. Actions defined over minutes ("assembling furniture") or questions about a whole film need long-range memory, which remains a weakness even for large multimodal models [40].
+4. **Domain shift.** Third-person YouTube video, egocentric kitchens, surveillance at night and medical endoscopy look very different. Models trained on one transfer imperfectly to another; EPIC-KITCHENS-100 measures this with unseen kitchens and footage recorded later [52], [53]. Distribution-shift tests from [DLCV 02](/en/learn/deep-learning/dl-02-image-classification/#distribution-shift-imagenet-c--r-and--a) apply.
+5. **Ambiguous labels and boundaries.** Actions overlap, have fuzzy starts and ends and depend on intent. Multi-label datasets (Charades, AVA) and several tIoU thresholds acknowledge this; single-label accuracy hides it.
+6. **Unfair comparisons.** Different numbers of views, frame counts, resolutions and pretraining data make reported numbers incomparable [1]. Always check the protocol line of a results table.
+
+Two cheap diagnostics catch most of these: a **single-frame baseline** (how much of the score needs no time at all?) and a **shuffled-frames test** (does order matter to the model?). Run both before trusting a video model.
+
+## Modern view
+
+### What the surveys say
+
+Five surveys cover the field from different angles. **Zhu et al.** [1] review over 200 papers on deep action recognition, introduce 17 datasets, present the models in chronological order (early attempts, two-stream networks, 3D convolutions, compute-efficient models), benchmark popular methods under one protocol with released code, and name the field's main challenges: long-range temporal modeling, compute cost and results made incomparable by different datasets and protocols. **Kong and Fu** [2] cover both recognition (labeling a complete action) and prediction (anticipating an action from its first part), including datasets and evaluation protocols. **Selva et al.** [3] organize video transformers by how they tokenize the input, how they reduce redundancy and reintroduce inductive biases, how they capture long-term dynamics and how they are trained, and find that they outperform 3D CNNs on action classification even at lower computational cost. **Madan et al.** [4] analyze over 200 video foundation models in three groups (image-based models adapted to video, video-based models, and universal models across modalities) and report that image-based models outperform video-based ones on most video understanding tasks, while universal multimodal models do best. **Tang et al.** [5] categorize video understanding with large language models by how the video reaches the language model (video analyzer, video embedder or both) and by the role of the language model (summarizer, manager, text decoder, regressor or hidden layer).
+
+*Optional: [Guide to the Modern view surveys](#guide-to-the-modern-view-surveys) (in the Paper guides). How each survey is organized and what to read first.*
+
+### The state of the art, 2023–2026
+
+- **Self-supervised pretraining is a common starting point.** Masked video modeling (VideoMAE [10], VideoMAE V2 [33]) and feature prediction (V-JEPA [34]) produce encoders that are fine-tuned or probed for downstream tasks; the VideoMAE V2 authors call scale the primary factor for such foundation models [33].
+- **Video foundation models unify tasks.** Models such as InternVideo2 [39] train one encoder with masked modeling, video–text contrast and next-token prediction, and are evaluated across recognition, retrieval and dialogue. The finding of Madan et al. that adapted image models remain very competitive [4] is a reminder that much of video understanding is still appearance.
+- **Multimodal LLMs take over open-ended understanding.** Video question answering, captioning and temporal grounding are increasingly handled by language models with visual tokens, evaluated on benchmarks such as Video-MME [40]. The bottleneck is the number of visual tokens for long videos.
+- **Efficient long-range models.** Linear-cost sequence models such as VideoMamba [30] and streaming designs (in the spirit of online TSM [21]) target long and live video.
+- **Localization builds on pretrained encoders.** Temporal localizers run on features from pretrained video models; ActionFormer, for example, uses two-stream I3D features pretrained on Kinetics for THUMOS14 [42], so better encoders and better localization heads improve results together.
+
+### Open problems
+
+1. **Genuine temporal reasoning.** Benchmarks where one frame or the language prior is not enough, and models that use order, causality and duration.
+2. **Long video.** Memory and token budgets for hours of video, and evaluation of long-range understanding.
+3. **Fine-grained and egocentric actions.** Hands, small objects, and intent; transfer across viewpoints and environments.
+4. **Efficient and online recognition.** Low latency on devices, with honest cost reporting (FLOPs × views, real latency).
+5. **Evaluation.** Comparable protocols, contamination of benchmarks by web-scale pretraining data, and metrics that reward temporal understanding rather than appearance.
+
+## Key takeaways
+
+- Video tasks range from one label per trimmed clip to (start, end, class) segments, person-level action boxes and free-text answers; the metrics follow the task (top-1/top-5, mAP at temporal IoU, frame-mAP, Recall@$k$).
+- The central difficulty is that labels often require motion, but many datasets can be solved from appearance; a model will take the scene shortcut if it can, as the toy experiment showed.
+- Two-stream networks add motion through optical flow; 3D CNNs learn it from pixels; I3D inflates a pretrained 2D network by repeating each filter over time and dividing by its length.
+- (2+1)D factorization splits a 3D convolution into spatial and temporal steps with a matched middle width: same parameters, an extra nonlinearity and easier optimization.
+- TSN covers a whole video with a few sparsely sampled frames; TSM mixes neighboring frames with a channel shift at zero extra computation; SlowFast pairs a heavy low-frame-rate pathway with a light high-frame-rate one.
+- Video transformers tokenize clips into tubelets and differ in which tokens attend to which: divided (TimeSformer), factorized (ViViT), pooled and multiscale (MViT) or windowed (Video Swin).
+- VideoMAE pretrains by reconstructing 90–95% masked tubes; tube masking closes the leakage that independent masks leave open.
+- Compare results only under the same protocol (frames, views, resolution, pretraining), and test every model with a single-frame baseline and shuffled frames.
+
+## Exercises
+
+1. **How much does the combined model cheat?** In the scene-bias code, standardize the features (`sklearn.preprocessing.StandardScaler` in a pipeline) and vary `C` over 0.01, 0.1 and 1. How do the "no cue" and "shift" accuracies of the frame+motion model change? Why does standardization help it use the motion feature?
+
+<details>
+<summary>Hint</summary>
+
+The motion features have a small numeric range compared with the 400 pixel features, so with an L2 penalty the model finds it cheaper to spread weight over many pixels. In our runs, standardizing gave the frame+motion model "no cue"/"shift" accuracies of 0.752/0.547 at `C = 0.01`, 0.824/0.685 at `C = 0.1` and 0.842/0.708 at `C = 1`, still well below the motion-only model. Scaling reduces the shortcut but does not remove it while the scene remains predictive in training.
+
+</details>
+
+2. **Inflation by hand.** A 2D filter $w_{2D} = \begin{bmatrix} 1 & 0 & -1 \end{bmatrix}$ (a horizontal derivative) is inflated to $N = 3$ frames. Write $w_{3D}$, and compute its response at one position for (a) a boring video where every frame has the row $[5, 3, 1]$ and (b) a video whose three frames have rows $[5, 3, 1]$, $[3, 1, 0]$ and $[1, 0, 0]$. What does the difference tell you about what training must change?
+
+<details>
+<summary>Hint</summary>
+
+$w_{3D}$ has three temporal slices, each $\frac{1}{3}[1, 0, -1]$. (a) Each slice gives $\frac{1}{3}(5 - 1) = \frac{4}{3}$, total $4$, the same as the 2D response. (b) The slices give $\frac{4}{3}$, $\frac{3}{3}$ and $\frac{1}{3}$, total $\frac{8}{3}$. The inflated filter averages the frames, so it responds to motion only through blurring; to become a motion detector, training must make the temporal slices *different* (for example, opposite signs on the first and last).
+
+</details>
+
+3. **(2+1)D with unequal widths.** For a layer with $N_{i-1} = 64$ input and $N_i = 128$ output channels, $t = 3$, $d = 3$, compute $M_i$, the 3D parameter count and the (2+1)D parameter count. Then choose $M = 64$ and compute the savings.
+
+<details>
+<summary>Hint</summary>
+
+$M_i = \lfloor 3 \cdot 9 \cdot 64 \cdot 128 / (9 \cdot 64 + 3 \cdot 128) \rfloor = \lfloor 221184 / 960 \rfloor = 230$. 3D: $64 \cdot 128 \cdot 27 = 221{,}184$. (2+1)D with $M = 230$: $64 \cdot 230 \cdot 9 + 230 \cdot 128 \cdot 3 = 132{,}480 + 88{,}320 = 220{,}800$ (slightly less, because of the floor). With $M = 64$: $36{,}864 + 24{,}576 = 61{,}440$, about 28% of the 3D layer.
+
+</details>
+
+4. **Views and cost.** Model A costs 36 GFLOPs per view and is tested with 10 × 3 views; model B costs 180 GFLOPs per view and is tested with 1 × 3 views. Which is more expensive per video? Design a fair comparison.
+
+<details>
+<summary>Hint</summary>
+
+A: $36 \times 30 = 1080$ GFLOPs; B: $180 \times 3 = 540$ GFLOPs, so A costs twice as much per video despite being five times cheaper per view. A fair comparison plots accuracy against total inference cost for several view counts of each model, on the same frames and resolution.
+
+</details>
+
+5. **A shuffled-frames test.** Extend the scene-bias code: shuffle the frame order of each test clip, with a new permutation per clip (`rng = np.random.default_rng(5)`, then `np.stack([x[rng.permutation(8)] for x in X])`), and re-evaluate the three models trained on ordered clips. Predict the result before you run it.
+
+<details>
+<summary>Hint</summary>
+
+The one-frame model still reads only the scene, so it barely changes (0.868 / 0.499 / 0.127 on the three test sets in our run). The motion model's per-pair estimates now have random signs, and it drops to chance (0.522 / 0.500 / 0.466). The frame+motion model does not move (0.864 / 0.497 / 0.133), which exposes that it never relied on order. A model whose accuracy survives shuffling is not using time.
+
+</details>
+
+6. **tIoU by hand.** A ground-truth action runs from 10 s to 20 s. Predictions: P1 [12, 22] with score 0.9, P2 [9, 19] with score 0.8, P3 [30, 35] with score 0.7. Compute each tIoU, mark TP/FP at $\theta = 0.5$ and $\theta = 0.75$, and compute AP at both thresholds.
+
+<details>
+<summary>Hint</summary>
+
+P1: overlap 8, union 12, tIoU 0.667. P2: overlap 9, union 11, tIoU 0.818. P3: 0. At 0.5: P1 is TP (first in score order), P2 is a duplicate (FP), P3 FP; precision at recall 1 is 1, so AP = 1. At 0.75: P1 is FP, P2 is TP (precision 1/2 at recall 1), P3 FP; AP = 0.5. A worse box with a higher score can cost half the AP at a strict threshold.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each takes one point from the main text and treats it in more detail. Nothing in the main text, the code or the exercises depends on them.
+
+### Choosing the middle width of a (2+1)D block
+
+This note derives the R(2+1)D middle width and looks at its edge cases.
+
+**Setup.** A full 3D layer maps $N_{i-1}$ input channels to $N_i$ output channels with kernels of size $t \times d \times d$. Its parameter count (without bias) is
+
+$$
+P_{3D} = N_{i-1}\, N_i\, t\, d^2 .
+$$
+
+The (2+1)D block uses $M$ spatial filters of size $N_{i-1} \times 1 \times d \times d$ and then $N_i$ temporal filters of size $M \times t \times 1 \times 1$:
+
+$$
+P_{2+1}(M) = M\, N_{i-1}\, d^2 + N_i\, M\, t = M \,\big(d^2 N_{i-1} + t N_i\big).
+$$
+
+**Matching.** Setting $P_{2+1}(M) = P_{3D}$ and solving for $M$ gives $M = t d^2 N_{i-1} N_i / (d^2 N_{i-1} + t N_i)$; the floor makes it an integer [20]. Because $P_{2+1}$ is linear in $M$, the floor makes the block slightly *smaller* than the 3D layer whenever the division is not exact (Exercise 3 loses 384 parameters out of 221,184). The multiply–adds follow the same ratio, since both steps run at the same $T \times H \times W$ resolution (with stride 1).
+
+**Edge cases.**
+
+- *Equal widths* $N_{i-1} = N_i = N$: $M = t d^2 N / (d^2 + t)$. For $t = d = 3$, $M = 27N/12 = 2.25N$; the middle layer is *wider* than the input. This is why R(2+1)D is not a compression trick at matched size.
+- *Temporal size 1* ($t = 1$): $M = d^2 N_{i-1} N_i / (d^2 N_{i-1} + N_i)$, which is smaller than $N_i$; the block becomes a spatial convolution followed by a $1 \times 1$ channel mixer, with an extra ReLU. In practice such layers are left as plain 2D convolutions.
+- *Strides.* If the 3D layer downsamples in space or time, the stride is split accordingly: spatial stride in the spatial step, temporal stride in the temporal step [20].
+- *Cheaper blocks.* Choosing $M$ below the matched value trades accuracy for cost. With $M = N$ and $t = d = 3$, the block costs $N^2(9 + 3) = 12N^2$ parameters instead of $27N^2$, about 44% of the 3D layer.
+
+**Why the extra nonlinearity matters.** Two linear maps in a row are equivalent to one linear map, but with a ReLU between them the block can represent functions that a single 3D convolution cannot, in the same way that two stacked $3 \times 3$ convolutions with a ReLU are more expressive than one $5 \times 5$ convolution. R(2+1)D attributes part of its gain to this, and part to easier optimization, visible as lower training error at equal depth [20].
+
+### The temporal shift as a sparse temporal convolution
+
+This note shows why shifting channels in time and then applying a $1 \times 1$ convolution is a temporal convolution in disguise.
+
+**The shift.** Let $x_t \in \mathbb{R}^{C}$ be the feature vector at one spatial position in frame $t$, and split the channels into three groups: $A$ (the first $C/8$), $B$ (the next $C/8$) and $R$ (the rest). The bi-directional shift produces
+
+$$
+\tilde{x}_t[A] = x_{t+1}[A], \qquad \tilde{x}_t[B] = x_{t-1}[B], \qquad \tilde{x}_t[R] = x_t[R],
+$$
+
+with zeros where $t+1$ or $t-1$ falls outside the clip. No multiplications are involved, only data movement.
+
+**The following convolution.** A $1 \times 1$ convolution with weight matrix $W \in \mathbb{R}^{C \times C}$ computes $y_t = W \tilde{x}_t$. Writing $W[:, A]$ for the columns of $W$ that belong to group $A$, and so on,
+
+$$
+y_t = W[:, A]\, x_{t+1}[A] + W[:, B]\, x_{t-1}[B] + W[:, R]\, x_t[R] .
+$$
+
+This is a temporal convolution of kernel size 3, $y_t = K_{+1} x_{t+1} + K_{-1} x_{t-1} + K_0 x_t$, whose three kernels are copies of $W$ with most columns set to zero: $K_{+1}$ keeps only the columns of group $A$, $K_{-1}$ only those of $B$, and $K_0$ only those of $R$ [21]. A full temporal convolution would have $3C^2$ free weights; the shifted version has $C^2$, the cost of the $1 \times 1$ convolution that was already there. The same argument holds for a $3 \times 3$ spatial convolution after the shift, applied position by position.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+T, C = 8, 16
+x = rng.standard_normal((T, C))           # one spatial position: T frames, C channels
+fold = C // 8                             # 1/8 of the channels in each direction
+
+def temporal_shift(x):
+    out = np.zeros_like(x)
+    out[:-1, :fold] = x[1:, :fold]                 # these channels see the next frame
+    out[1:, fold:2 * fold] = x[:-1, fold:2 * fold] # these channels see the previous frame
+    out[:, 2 * fold:] = x[:, 2 * fold:]            # the rest stay in place
+    return out
+
+W = rng.standard_normal((C, C))           # the channel mixing of the following 1x1 convolution
+y_tsm = temporal_shift(x) @ W.T
+
+# the same result written as a temporal convolution with three sparse kernels
+K_next, K_prev, K_now = np.zeros_like(W), np.zeros_like(W), np.zeros_like(W)
+K_next[:, :fold] = W[:, :fold]
+K_prev[:, fold:2 * fold] = W[:, fold:2 * fold]
+K_now[:, 2 * fold:] = W[:, 2 * fold:]
+xp = np.vstack([np.zeros((1, C)), x, np.zeros((1, C))])   # zero padding in time
+y_conv = xp[2:] @ K_next.T + xp[:-2] @ K_prev.T + xp[1:-1] @ K_now.T
+print("max difference:", np.abs(y_tsm - y_conv).max())
+print("nonzero kernel weights:", sum((K != 0).sum() for K in (K_next, K_prev, K_now)),
+      "of", 3 * C * C, "in a full temporal convolution")
+```
+
+```text
+max difference: 3.552713678800501e-15
+nonzero kernel weights: 256 of 768 in a full temporal convolution
+```
+
+**Design choices and pitfalls.** (1) *Proportion.* Too few shifted channels give too little temporal mixing; too many leave each frame with too little of its own information. The paper found 1/4 (1/8 per direction) best for the residual variant [21]. (2) *Residual versus in-place.* Placing the shift on the residual branch keeps the unshifted features available through the skip connection, which worked better than shifting in place [21]. (3) *Online use.* For live video, future frames are not available, so only the backward shift (past to present) is used; the shifted channels of the previous frame can be cached, so each new frame costs one 2D forward pass [21]. (4) *Receptive field.* One shift reaches one frame in each direction; stacking $L$ shifted blocks reaches $L$ frames, so temporal context grows with depth, as with stacked temporal convolutions.
+
+### Average precision for temporal localization, step by step
+
+This note works through the matching rule behind temporal AP on a small example, including the cases that commonly cause bugs.
+
+**Example.** One video, one class, two ground-truth actions $g_1 = [10, 20]$ and $g_2 = [40, 50]$, and four predictions sorted by score:
+
+| rank | segment | score | tIoU with $g_1$ | tIoU with $g_2$ |
+|---|---|---|---|---|
+| 1 | [11, 21] | 0.95 | 0.818 | 0 |
+| 2 | [12, 20] | 0.90 | 0.800 | 0 |
+| 3 | [60, 70] | 0.70 | 0 | 0 |
+| 4 | [42, 54] | 0.60 | 0 | 0.571 |
+
+**Matching at $\theta = 0.5$.** Rank 1 matches $g_1$ (TP). Rank 2 also overlaps $g_1$ well, but $g_1$ is already matched, and its overlap with $g_2$ is 0, so it is a **duplicate** and counts as FP. Rank 3 matches nothing (FP). Rank 4 matches $g_2$ (TP). The cumulative counts after each rank are TP = 1, 1, 1, 2, so precision is $1, \tfrac{1}{2}, \tfrac{1}{3}, \tfrac{1}{2}$ and recall is $\tfrac{1}{2}, \tfrac{1}{2}, \tfrac{1}{2}, 1$.
+
+**The envelope.** Interpolated precision at each rank is the maximum precision at that rank or later: $1, \tfrac{1}{2}, \tfrac{1}{2}, \tfrac{1}{2}$. AP sums precision times the recall increase at each TP: $\tfrac{1}{2} \cdot 1 + \tfrac{1}{2} \cdot \tfrac{1}{2} = 0.75$.
+
+**At $\theta = 0.6$.** Rank 4 now fails ($0.571 \lt 0.6$), so $g_2$ is never found; recall stops at $\tfrac{1}{2}$ and $\text{AP} = \tfrac{1}{2} \cdot 1 = 0.5$. Missed ground truths lower AP through the recall axis; false positives lower it through the precision axis.
+
+**Pitfalls.**
+
+- *Match to the best unmatched ground truth.* The rule in the main-text code takes the highest tIoU among ground truths not yet matched. If an implementation instead takes the best ground truth overall and counts the prediction as FP when that one is already matched, a prediction that also overlaps a second, nearby action is lost. Check which rule a benchmark's official evaluation code uses before comparing numbers.
+- *Ties in score.* Sorting is not unique when scores tie; results can differ slightly between implementations. Use a stable sort.
+- *Classes without ground truth* in the test set are usually skipped in the mean over classes; including them as AP 0 or 1 changes mAP.
+- *NMS.* AP punishes duplicates, so localizers apply (soft) non-maximum suppression in time before evaluation, as detectors do for boxes ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#non-maximum-suppression-nms-and-soft-nms)).
+
+### Graph convolution on a skeleton sequence (ST-GCN)
+
+This note explains the graph convolution used by ST-GCN for skeleton-based recognition.
+
+**The graph.** A skeleton sequence has $V$ joints over $T$ frames. ST-GCN connects joints along the bones within each frame (spatial edges) and each joint to itself in the next frame (temporal edges) [45]. Let $A \in \{0, 1\}^{V \times V}$ be the bone adjacency matrix ($A_{ij} = 1$ if joints $i$ and $j$ share a bone) and $I$ the identity (self-connections).
+
+**One spatial layer.** The paper adopts the standard degree-normalized graph convolution; the single-frame layer with one neighbor group is [45]
+
+$$
+f_{\text{out}} = \Lambda^{-\frac{1}{2}} (A + I)\, \Lambda^{-\frac{1}{2}}\, f_{\text{in}}\, W, \qquad \Lambda_{ii} = \sum_j (A + I)_{ij},
+$$
+
+where $f_{\text{in}} \in \mathbb{R}^{V \times C_{\text{in}}}$ holds one feature vector per joint (initially its coordinates and the pose estimator's confidence [45]), $W \in \mathbb{R}^{C_{\text{in}} \times C_{\text{out}}}$ is the learned weight matrix shared by all joints, and $\Lambda$ is the diagonal degree matrix that normalizes by the number of neighbors. Each joint's output is a degree-normalized average of its own and its neighbors' features, followed by a linear map.
+
+**Partitioning the neighbors.** A single $W$ treats all neighbors alike, which is like a convolution kernel with one weight. ST-GCN splits each joint's neighbors into subsets and gives each subset its own weights, $f_{\text{out}} = \sum_j \Lambda_j^{-1/2} A_j \Lambda_j^{-1/2} f_{\text{in}} W_j$ with $\sum_j A_j = A + I$ [45]. Its **spatial configuration** partition uses three subsets: the joint itself; the neighbors closer to the skeleton's center of gravity (centripetal); and those farther away (centrifugal) [45]. This lets the layer distinguish "the elbow moves toward the body" from "away from it". A learnable mask $M$ multiplies each $A_j$ element-wise to weight the importance of individual edges [45].
+
+**Time.** The temporal edges are handled by an ordinary 1D convolution along the frame axis for each joint (the paper uses a temporal kernel of 9 frames), so one ST-GCN unit is a graph convolution over joints followed by a temporal convolution over frames, the same space-then-time factorization as (2+1)D [45].
+
+**Pitfalls.** Coordinates must be normalized (the paper applies batch normalization to the input skeletons) so that the shared weights see similar scales for all joints [45]; missing joints from the pose estimator must be filled or masked; and two-person actions need a convention for which body comes first.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Quo Vadis: I3D and the Kinetics dataset (Carreira and Zisserman, 2017)
+
+**The problem.** In 2017, video architectures were compared on UCF101 and HMDB51, which are small enough that most methods performed similarly, so it was hard to tell which designs were actually better [14].
+
+**The idea.** Two contributions. First, re-evaluate the main architecture families on the much larger Kinetics dataset [17]: a CNN with an LSTM on top, a C3D-like 3D CNN trained from scratch [16], a two-stream network, a "3D-fused" two-stream network, and the new two-stream I3D. Second, build I3D by inflating an ImageNet-pretrained Inception-V1 [55], bootstrapping its 3D filters from the 2D ones with the boring-video rule described in the main text [14].
+
+**What it showed.** I3D did best on all three datasets with RGB, flow or both; two-stream versions were better than single-stream ones everywhere; and pretraining on Kinetics followed by fine-tuning gave large gains on UCF101 and HMDB51 [14]. Interestingly, flow alone was stronger than RGB on HMDB51 but weaker on Kinetics, which the authors linked to the larger camera motion in Kinetics [14], an early sign that what a benchmark rewards shapes the conclusions.
+
+**How to read it.** Start with the architecture comparison table, which trains and tests each model on each dataset separately, then the transfer table, which compares training from scratch, frozen Kinetics features and fine-tuning. Check what each model was pretrained on (all but the 3D CNN start from ImageNet), how many frames each sees at training and test time, and whether flow was used: these differences explain much of the ranking.
+
+**Limits.** The flow stream still needs precomputed optical flow; Kinetics clips are short, and the authors themselves found the RGB stream more discriminative than flow there [14]; and inflation inherits the image network's design rather than asking what a video network should look like, a question later answered by R(2+1)D, SlowFast and X3D [20], [15], [23].
+
+**Why it matters here.** I3D made "inflate a pretrained image model and pretrain on Kinetics" the standard recipe, and its features became a common video representation, including the feature network of the Fréchet Video Distance discussed in [DLCV 10A](/en/learn/deep-learning/dl-10a-video-generation/#fréchet-video-distance).
+
+### SlowFast networks (Feichtenhofer et al., 2019)
+
+**The problem.** Should a video network treat space and time symmetrically? Two-stream networks used optical flow for motion; 3D CNNs used one frame rate for everything [15].
+
+**The idea.** Use two frame rates. A Slow pathway with many channels and few frames captures spatial semantics; a Fast pathway with few channels (ratio $\beta$) and many frames ($\alpha$ times more) captures motion; lateral connections from Fast to Slow fuse them at every stage. No optical flow is used [15].
+
+**What it showed.** In the ablations on Kinetics, every SlowFast variant beat the Slow-only pathway; the Fast pathway alone was weak, yet adding it improved the Slow pathway, which the authors read as evidence that the two represent largely complementary information [15]. Among lateral connections, a time-strided convolution worked best. Every channel ratio from $\beta = 1/32$ to $1/4$ improved over Slow-only, with $1/6$ and $1/8$ best; even $\beta = 1/32$, adding only about 5% computation, helped [15]. The same backbone gave strong results on Charades and on AVA detection [15].
+
+**How to read it.** Read Table 1 (the instantiation with $\alpha = 8$, $\beta = 1/8$, and where temporal kernels are larger than 1), then the ablation table: lateral connection types, the channel ratio, and the variants that remove or modify pathways. When reading the main results tables, note the "GFLOPs × views" column, which the paper introduced to make inference cost comparable, and its observation that some earlier methods used more than 100 views [15].
+
+**Limits.** Two fixed frame rates are a hand-designed prior; the model still sees only a few seconds; and later transformer models such as MViT, from overlapping authors, revisited the multiscale idea with attention [27].
+
+**Why it matters here.** SlowFast is the clearest example of an architecture built around the asymmetry between "what" and "how it moves", and its evaluation conventions (30 views, FLOPs per view) are still used.
+
+### Guide to the Modern view surveys
+
+This guide expands the short survey summary in the Modern view: what each review covers, how it is organized and what to read it for.
+
+**A Comprehensive Study of Deep Video Action Recognition** (Zhu et al., 2020) [1] is the best entry point for the CNN era. It introduces 17 datasets that influenced model design, then follows the models chronologically: early deep models, two-stream networks, 3D CNNs and compute-efficient models. Its distinctive part is a benchmark of popular methods under a common setting with released code, which addresses the problem it names at the start: results that cannot be compared because of different datasets and protocols. Read its dataset section and its benchmark tables first.
+
+**Human Action Recognition and Prediction: A Survey** (Kong and Fu, *IJCV*, 2022) [2] places recognition next to *prediction*, inferring an action from its incomplete beginning, which matters for driving and surveillance. It covers models, algorithms, technical difficulties, datasets and evaluation protocols for both, and discusses future directions.
+
+**Video Transformers: A Survey** (Selva et al., *IEEE TPAMI*, 2023) [3] analyzes video transformers by design question: how video is handled at the input (tokenization and embedding), architectural changes to reduce redundancy, reintroduce inductive biases and capture long-term dynamics, and training regimes including self-supervision. Its performance comparison on action classification finds transformers ahead of 3D CNNs even at lower computational cost. Read it to understand *why* the attention variants in the main text exist.
+
+**Foundation Models for Video Understanding: A Survey** (Madan et al., 2024) [4] analyzes over 200 video foundation models and benchmarks across 14 video tasks in three categories. Its taxonomy (image-based models adapted to video, video-based models with video-specific encoding, and universal models across modalities) is a useful map, and its main finding is the one to remember: adapted image models outperformed video-based models on most tasks, while universal multimodal models were strongest.
+
+**Video Understanding with Large Language Models: A Survey** (Tang et al., 2023, accepted to *IEEE TCSVT* according to its arXiv record) [5] organizes video LLMs in two ways: by how video information reaches the language model (a video analyzer that produces text, a video embedder that produces tokens, or both) and by the role the language model plays (summarizer, manager, text decoder, regressor, hidden layer). It also surveys tasks, datasets, benchmarks and evaluation methods for these models. Read it after [ML 09](/en/learn/ml/ml-09-foundation-models/#multimodal-large-language-models).
+
+## References
+
+1. Y. Zhu, X. Li, C. Liu, M. Zolfaghari, Y. Xiong, C. Wu, Z. Zhang, J. Tighe et al., "A comprehensive study of deep video action recognition," technical report, arXiv:2012.06567, 2020. [arXiv](https://arxiv.org/abs/2012.06567)
+2. Y. Kong and Y. Fu, "Human action recognition and prediction: A survey," *International Journal of Computer Vision*, vol. 130, no. 5, pp. 1366–1401, 2022. [doi](https://doi.org/10.1007/s11263-022-01594-9)
+3. J. Selva, A. S. Johansen, S. Escalera, K. Nasrollahi, T. B. Moeslund and A. Clapés, "Video transformers: A survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, vol. 45, no. 11, pp. 12922–12943, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3243465)
+4. N. Madan, A. Moegelmose, R. Modi, Y. S. Rawat and T. B. Moeslund, "Foundation models for video understanding: A survey," arXiv:2405.03770, 2024. [arXiv](https://arxiv.org/abs/2405.03770)
+5. Y. Tang, J. Bi, S. Xu, L. Song, S. Liang, T. Wang, D. Zhang, J. An et al., "Video understanding with large language models: A survey," arXiv:2312.17432, 2023 (accepted to *IEEE Transactions on Circuits and Systems for Video Technology* according to the arXiv record). [arXiv](https://arxiv.org/abs/2312.17432)
+6. A. Karpathy, G. Toderici, S. Shetty, T. Leung, R. Sukthankar and L. Fei-Fei, "Large-scale video classification with convolutional neural networks," in *Proc. IEEE CVPR*, pp. 1725–1732, 2014. [CVF](https://openaccess.thecvf.com/content_cvpr_2014/html/Karpathy_Large-scale_Video_Classification_2014_CVPR_paper.html)
+7. Y. Li, Y. Li and N. Vasconcelos, "RESOUND: Towards action recognition without representation bias," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Yingwei_Li_RESOUND_Towards_Action_ECCV_2018_paper.html)
+8. L. Sevilla-Lara, S. Zha, Z. Yan, V. Goswami, M. Feiszli and L. Torresani, "Only time can tell: Discovering temporal data for temporal modeling," in *Proc. IEEE WACV*, 2021. [doi](https://doi.org/10.1109/WACV48630.2021.00058)
+9. R. Goyal, S. Ebrahimi Kahou, V. Michalski, J. Materzyńska, S. Westphal, H. Kim, V. Haenel, I. Fruend et al., "The ‘something something’ video database for learning and evaluating visual common sense," in *Proc. IEEE ICCV*, 2017. [CVF](https://openaccess.thecvf.com/content_iccv_2017/html/Goyal_The_Something_Something_ICCV_2017_paper.html)
+10. Z. Tong, Y. Song, J. Wang and L. Wang, "VideoMAE: Masked autoencoders are data-efficient learners for self-supervised video pre-training," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2022. [NeurIPS](https://papers.nips.cc/paper_files/paper/2022/hash/416f9cb3276121c42eebb86352a4354a-Abstract-Conference.html) · [arXiv](https://arxiv.org/abs/2203.12602)
+11. S. Hochreiter and J. Schmidhuber, "Long short-term memory," *Neural Computation*, vol. 9, no. 8, pp. 1735–1780, 1997. [doi](https://doi.org/10.1162/neco.1997.9.8.1735)
+12. K. Simonyan and A. Zisserman, "Two-stream convolutional networks for action recognition in videos," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2014. [NeurIPS](https://papers.nips.cc/paper_files/paper/2014/hash/ca007296a63f7d1721a2399d56363022-Abstract.html) · [arXiv](https://arxiv.org/abs/1406.2199)
+13. L. Wang, Y. Xiong, Z. Wang, Y. Qiao, D. Lin, X. Tang and L. Van Gool, "Temporal segment networks: Towards good practices for deep action recognition," in *Proc. ECCV*, pp. 20–36, 2016. [doi](https://doi.org/10.1007/978-3-319-46484-8_2) · [arXiv](https://arxiv.org/abs/1608.00859)
+14. J. Carreira and A. Zisserman, "Quo vadis, action recognition? A new model and the Kinetics dataset," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Carreira_Quo_Vadis_Action_CVPR_2017_paper.html) · [arXiv](https://arxiv.org/abs/1705.07750)
+15. C. Feichtenhofer, H. Fan, J. Malik and K. He, "SlowFast networks for video recognition," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Feichtenhofer_SlowFast_Networks_for_Video_Recognition_ICCV_2019_paper.html) · [arXiv](https://arxiv.org/abs/1812.03982)
+16. D. Tran, L. Bourdev, R. Fergus, L. Torresani and M. Paluri, "Learning spatiotemporal features with 3D convolutional networks," in *Proc. IEEE ICCV*, pp. 4489–4497, 2015. [CVF](https://openaccess.thecvf.com/content_iccv_2015/html/Tran_Learning_Spatiotemporal_Features_ICCV_2015_paper.html)
+17. W. Kay, J. Carreira, K. Simonyan, B. Zhang, C. Hillier, S. Vijayanarasimhan, F. Viola, T. Green et al., "The Kinetics human action video dataset," arXiv:1705.06950, 2017. [arXiv](https://arxiv.org/abs/1705.06950)
+18. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A large-scale hierarchical image database," in *Proc. IEEE CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+19. T. Unterthiner, S. van Steenkiste, K. Kurach, R. Marinier, M. Michalski and S. Gelly, "Towards accurate generative models of video: A new metric & challenges," arXiv:1812.01717, 2018. [arXiv](https://arxiv.org/abs/1812.01717)
+20. D. Tran, H. Wang, L. Torresani, J. Ray, Y. LeCun and M. Paluri, "A closer look at spatiotemporal convolutions for action recognition," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Tran_A_Closer_Look_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1711.11248)
+21. J. Lin, C. Gan and S. Han, "TSM: Temporal shift module for efficient video understanding," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Lin_TSM_Temporal_Shift_Module_for_Efficient_Video_Understanding_ICCV_2019_paper.html) · [arXiv](https://arxiv.org/abs/1811.08383)
+22. X. Wang, R. Girshick, A. Gupta and K. He, "Non-local neural networks," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Wang_Non-Local_Neural_Networks_CVPR_2018_paper.html)
+23. C. Feichtenhofer, "X3D: Expanding architectures for efficient video recognition," in *Proc. IEEE/CVF CVPR*, 2020. [CVF](https://openaccess.thecvf.com/content_CVPR_2020/html/Feichtenhofer_X3D_Expanding_Architectures_for_Efficient_Video_Recognition_CVPR_2020_paper.html)
+24. A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer et al., "An image is worth 16x16 words: Transformers for image recognition at scale," in *Proc. ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.11929)
+25. A. Arnab, M. Dehghani, G. Heigold, C. Sun, M. Lučić and C. Schmid, "ViViT: A video vision transformer," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Arnab_ViViT_A_Video_Vision_Transformer_ICCV_2021_paper.html) · [arXiv](https://arxiv.org/abs/2103.15691)
+26. G. Bertasius, H. Wang and L. Torresani, "Is space-time attention all you need for video understanding?," in *Proc. ICML*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/bertasius21a.html) · [arXiv](https://arxiv.org/abs/2102.05095)
+27. H. Fan, B. Xiong, K. Mangalam, Y. Li, Z. Yan, J. Malik and C. Feichtenhofer, "Multiscale vision transformers," in *Proc. IEEE/CVF ICCV*, 2021. [CVF](https://openaccess.thecvf.com/content/ICCV2021/html/Fan_Multiscale_Vision_Transformers_ICCV_2021_paper.html) · [arXiv](https://arxiv.org/abs/2104.11227)
+28. Z. Liu, J. Ning, Y. Cao, Y. Wei, Z. Zhang, S. Lin and H. Hu, "Video Swin Transformer," in *Proc. IEEE/CVF CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Liu_Video_Swin_Transformer_CVPR_2022_paper.html) · [arXiv](https://arxiv.org/abs/2106.13230)
+29. Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin and B. Guo, "Swin Transformer: Hierarchical vision transformer using shifted windows," in *Proc. IEEE/CVF ICCV*, 2021. [doi](https://doi.org/10.1109/ICCV48922.2021.00986)
+30. K. Li, X. Li, Y. Wang, Y. He, Y. Wang, L. Wang and Y. Qiao, "VideoMamba: State space model for efficient video understanding," in *Proc. ECCV*, pp. 237–255, 2024. [doi](https://doi.org/10.1007/978-3-031-73347-5_14) · [arXiv](https://arxiv.org/abs/2403.06977)
+31. A. Gu and T. Dao, "Mamba: Linear-time sequence modeling with selective state spaces," in *Proc. Conference on Language Modeling (COLM)*, 2024. [arXiv](https://arxiv.org/abs/2312.00752)
+32. K. He, X. Chen, S. Xie, Y. Li, P. Dollár and R. Girshick, "Masked autoencoders are scalable vision learners," in *Proc. IEEE/CVF CVPR*, 2022. [doi](https://doi.org/10.1109/CVPR52688.2022.01553)
+33. L. Wang, B. Huang, Z. Zhao, Z. Tong, Y. He, Y. Wang, Y. Wang and Y. Qiao, "VideoMAE V2: Scaling video masked autoencoders with dual masking," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Wang_VideoMAE_V2_Scaling_Video_Masked_Autoencoders_With_Dual_Masking_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2303.16727)
+34. A. Bardes, Q. Garrido, J. Ponce, X. Chen, M. Rabbat, Y. LeCun, M. Assran and N. Ballas, "Revisiting feature prediction for learning visual representations from video," *Transactions on Machine Learning Research (TMLR)*, 2024. [OpenReview](https://openreview.net/forum?id=QaCCuDfBk2) · [arXiv](https://arxiv.org/abs/2404.08471)
+35. M. Assran, A. Bardes, D. Fan, Q. Garrido, R. Howes et al., "V-JEPA 2: Self-supervised video models enable understanding, prediction and planning," arXiv:2506.09985, 2025. [arXiv](https://arxiv.org/abs/2506.09985)
+36. A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal et al., "Learning transferable visual models from natural language supervision," in *Proc. ICML*, PMLR 139, 2021. [PMLR](https://proceedings.mlr.press/v139/radford21a.html)
+37. H. Luo, L. Ji, M. Zhong, Y. Chen, W. Lei, N. Duan and T. Li, "CLIP4Clip: An empirical study of CLIP for end to end video clip retrieval and captioning," *Neurocomputing*, vol. 508, pp. 293–304, 2022. [doi](https://doi.org/10.1016/j.neucom.2022.07.028) · [arXiv](https://arxiv.org/abs/2104.08860)
+38. J. Xu, T. Mei, T. Yao and Y. Rui, "MSR-VTT: A large video description dataset for bridging video and language," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Xu_MSR-VTT_A_Large_CVPR_2016_paper.html)
+39. Y. Wang, K. Li, X. Li, J. Yu, Y. He, G. Chen, B. Pei, R. Zheng et al., "InternVideo2: Scaling foundation models for multimodal video understanding," in *Proc. ECCV*, pp. 396–416, 2024. [doi](https://doi.org/10.1007/978-3-031-73013-9_23) · [arXiv](https://arxiv.org/abs/2403.15377)
+40. C. Fu, Y. Dai, Y. Luo, L. Li, S. Ren, R. Zhang, Z. Wang, C. Zhou et al., "Video-MME: The first-ever comprehensive evaluation benchmark of multi-modal LLMs in video analysis," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Fu_Video-MME_The_First-Ever_Comprehensive_Evaluation_Benchmark_of_Multi-modal_LLMs_in_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2405.21075)
+41. T. Lin, X. Liu, X. Li, E. Ding and S. Wen, "BMN: Boundary-matching network for temporal action proposal generation," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Lin_BMN_Boundary-Matching_Network_for_Temporal_Action_Proposal_Generation_ICCV_2019_paper.html)
+42. C.-L. Zhang, J. Wu and Y. Li, "ActionFormer: Localizing moments of actions with transformers," in *Proc. ECCV*, pp. 492–510, 2022. [doi](https://doi.org/10.1007/978-3-031-19772-7_29) · [arXiv](https://arxiv.org/abs/2202.07925)
+43. C. Gu, C. Sun, D. A. Ross, C. Vondrick, C. Pantofaru, Y. Li, S. Vijayanarasimhan, G. Toderici et al., "AVA: A video dataset of spatio-temporally localized atomic visual actions," in *Proc. IEEE/CVF CVPR*, 2018. [CVF](https://openaccess.thecvf.com/content_cvpr_2018/html/Gu_AVA_A_Video_CVPR_2018_paper.html) · [arXiv](https://arxiv.org/abs/1705.08421)
+44. A. Shahroudy, J. Liu, T.-T. Ng and G. Wang, "NTU RGB+D: A large scale dataset for 3D human activity analysis," in *Proc. IEEE CVPR*, 2016. [doi](https://doi.org/10.1109/CVPR.2016.115) · [arXiv](https://arxiv.org/abs/1604.02808)
+45. S. Yan, Y. Xiong and D. Lin, "Spatial temporal graph convolutional networks for skeleton-based action recognition," in *Proc. AAAI*, vol. 32, no. 1, 2018. [doi](https://doi.org/10.1609/aaai.v32i1.12328) · [arXiv](https://arxiv.org/abs/1801.07455)
+46. P. Weinzaepfel and G. Rogez, "Mimetics: Towards understanding human actions out of context," *International Journal of Computer Vision*, vol. 129, no. 5, pp. 1675–1690, 2021. [doi](https://doi.org/10.1007/s11263-021-01446-y) · [arXiv](https://arxiv.org/abs/1912.07249)
+47. K. Soomro, A. R. Zamir and M. Shah, "UCF101: A dataset of 101 human actions classes from videos in the wild," technical report CRCV-TR-12-01, arXiv:1212.0402, 2012. [arXiv](https://arxiv.org/abs/1212.0402)
+48. H. Kuehne, H. Jhuang, E. Garrote, T. Poggio and T. Serre, "HMDB: A large video database for human motion recognition," in *Proc. IEEE ICCV*, pp. 2556–2563, 2011. [doi](https://doi.org/10.1109/ICCV.2011.6126543)
+49. G. A. Sigurdsson, G. Varol, X. Wang, A. Farhadi, I. Laptev and A. Gupta, "Hollywood in homes: Crowdsourcing data collection for activity understanding," in *Proc. ECCV*, pp. 510–526, 2016. [doi](https://doi.org/10.1007/978-3-319-46448-0_31) · [arXiv](https://arxiv.org/abs/1604.01753)
+50. H. Idrees, A. R. Zamir, Y.-G. Jiang, A. Gorban, I. Laptev, R. Sukthankar and M. Shah, "The THUMOS challenge on action recognition for videos ‘in the wild’," *Computer Vision and Image Understanding*, vol. 155, pp. 1–23, 2017. [doi](https://doi.org/10.1016/j.cviu.2016.10.018)
+51. F. Caba Heilbron, V. Escorcia, B. Ghanem and J. C. Niebles, "ActivityNet: A large-scale video benchmark for human activity understanding," in *Proc. IEEE CVPR*, pp. 961–970, 2015. [CVF](https://openaccess.thecvf.com/content_cvpr_2015/html/Heilbron_ActivityNet_A_Large-Scale_2015_CVPR_paper.html)
+52. D. Damen, H. Doughty, G. M. Farinella, S. Fidler, A. Furnari, E. Kazakos, D. Moltisanti, J. Munro et al., "Scaling egocentric vision: The EPIC-KITCHENS dataset," in *Proc. ECCV*, 2018. [CVF](https://openaccess.thecvf.com/content_ECCV_2018/html/Dima_Damen_Scaling_Egocentric_Vision_ECCV_2018_paper.html)
+53. D. Damen, H. Doughty, G. M. Farinella, A. Furnari, E. Kazakos, J. Ma, D. Moltisanti, J. Munro et al., "Rescaling egocentric vision: Collection, pipeline and challenges for EPIC-KITCHENS-100," *International Journal of Computer Vision*, vol. 130, no. 1, 2022. [doi](https://doi.org/10.1007/s11263-021-01531-2) · [arXiv](https://arxiv.org/abs/2006.13256)
+54. J. Choi, C. Gao, J. C. E. Messou and J.-B. Huang, "Why can't I dance in the mall? Learning to mitigate scene bias in action recognition," in *Advances in Neural Information Processing Systems (NeurIPS)*, 2019. [NeurIPS](https://papers.nips.cc/paper_files/paper/2019/hash/ab817c9349cf9c4f6877e1894a1faa00-Abstract.html) · [arXiv](https://arxiv.org/abs/1912.05534)
+55. C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke and A. Rabinovich, "Going deeper with convolutions," in *Proc. IEEE CVPR*, 2015. [doi](https://doi.org/10.1109/CVPR.2015.7298594)
