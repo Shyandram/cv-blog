@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- |
 | 10 | [DLCV 01 · Deep Learning for Image Processing and Computer Vision](#dl-01-deep-learning-for-image-processing) | intermediate | ML 02, IP 03 | `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` |
 | 15 | [DLCV 01A · Training Deep Vision Models in Practice](#dl-01a-training-practice) | advanced | DLCV 01 | `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` |
+| 17 | [DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks](#dl-01b-building-blocks) | advanced | DLCV 01, ML 04 | `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` |
 | 20 | [DLCV 02 · Deep Image Classification](#dl-02-image-classification) | advanced | DLCV 01, IP 13 | `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` |
 | 25 | [DLCV 02A · Face Recognition and Metric Learning](#dl-02a-face-metric-learning) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` |
 | 30 | [DLCV 03 · Object Detection: From R-CNN to DETR](#dl-03-object-detection) | advanced | DLCV 02, IP 12 | `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` |
@@ -146,6 +147,61 @@ A practical workflow for training vision networks: data pipelines and augmentati
 
 - [Accurate, Large Minibatch SGD (Goyal et al.)](/en/learn/deep-learning/dl-01a-training-practice/papers/#accurate-large-minibatch-sgd-goyal-et-al) `accurate-large-minibatch-sgd-goyal-et-al`
 - [Fine-Tuning can Distort Pretrained Features (Kumar et al.)](/en/learn/deep-learning/dl-01a-training-practice/papers/#fine-tuning-can-distort-pretrained-features-kumar-et-al) `fine-tuning-can-distort-pretrained-features-kumar-et-al`
+
+## dl-01b-building-blocks
+
+**DLCV 01B · Building Blocks and How to Compose Them: Classification and Restoration Networks**  
+A catalogue of the blocks deep vision networks are built from, the rules for composing them into classifiers and into image-restoration networks, side-by-side comparisons of matched models, and how to explore a design space without fooling yourself.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` (no zh-tw twin)
+- Pages: `/en/learn/deep-learning/dl-01b-building-blocks/`, `/en/learn/deep-learning/dl-01b-building-blocks/notes/`, `/en/learn/deep-learning/dl-01b-building-blocks/papers/`
+- Level advanced · order 17 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `ml/ml-04-vision-transformers` · tags: architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces
+- Figures: 5 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 53
+
+- [What you'll learn](/en/learn/deep-learning/dl-01b-building-blocks/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/dl-01b-building-blocks/#the-big-picture) `the-big-picture`
+- [Anatomy of a network](/en/learn/deep-learning/dl-01b-building-blocks/#anatomy-of-a-network) `anatomy-of-a-network`
+- [The block catalogue](/en/learn/deep-learning/dl-01b-building-blocks/#the-block-catalogue) `the-block-catalogue`
+  - [Residual connections and residual scaling](/en/learn/deep-learning/dl-01b-building-blocks/#residual-connections-and-residual-scaling) `residual-connections-and-residual-scaling`
+  - [Bottlenecks, inverted residuals and depthwise separable convolutions](/en/learn/deep-learning/dl-01b-building-blocks/#bottlenecks-inverted-residuals-and-depthwise-separable-convolutions) `bottlenecks-inverted-residuals-and-depthwise-separable-convolutions`
+  - [Attention inside a CNN: SE and CBAM](/en/learn/deep-learning/dl-01b-building-blocks/#attention-inside-a-cnn-se-and-cbam) `attention-inside-a-cnn-se-and-cbam`
+  - [Token mixers: self-, window- and channel attention](/en/learn/deep-learning/dl-01b-building-blocks/#token-mixers-self--window--and-channel-attention) `token-mixers-self--window--and-channel-attention`
+  - [Normalization: BN, LN, GN, and when to leave it out](/en/learn/deep-learning/dl-01b-building-blocks/#normalization-bn-ln-gn-and-when-to-leave-it-out) `normalization-bn-ln-gn-and-when-to-leave-it-out`
+  - [Activations and gates](/en/learn/deep-learning/dl-01b-building-blocks/#activations-and-gates) `activations-and-gates`
+  - [Upsampling: transposed convolution, pixel shuffle and resize-convolution](/en/learn/deep-learning/dl-01b-building-blocks/#upsampling-transposed-convolution-pixel-shuffle-and-resize-convolution) `upsampling-transposed-convolution-pixel-shuffle-and-resize-convolution`
+  - [Skip connections: add or concatenate](/en/learn/deep-learning/dl-01b-building-blocks/#skip-connections-add-or-concatenate) `skip-connections-add-or-concatenate`
+  - [Multi-scale modules: FPN, ASPP and the U-Net](/en/learn/deep-learning/dl-01b-building-blocks/#multi-scale-modules-fpn-aspp-and-the-u-net) `multi-scale-modules-fpn-aspp-and-the-u-net`
+- [Composing for classification](/en/learn/deep-learning/dl-01b-building-blocks/#composing-for-classification) `composing-for-classification`
+- [Composing for restoration](/en/learn/deep-learning/dl-01b-building-blocks/#composing-for-restoration) `composing-for-restoration`
+- [Side by side: what changed and why](/en/learn/deep-learning/dl-01b-building-blocks/#side-by-side-what-changed-and-why) `side-by-side-what-changed-and-why`
+  - [ResNet versus EDSR and NAFNet](/en/learn/deep-learning/dl-01b-building-blocks/#resnet-versus-edsr-and-nafnet) `resnet-versus-edsr-and-nafnet`
+  - [Swin versus SwinIR](/en/learn/deep-learning/dl-01b-building-blocks/#swin-versus-swinir) `swin-versus-swinir`
+  - [ViT versus Restormer](/en/learn/deep-learning/dl-01b-building-blocks/#vit-versus-restormer) `vit-versus-restormer`
+- [Exploring a design space](/en/learn/deep-learning/dl-01b-building-blocks/#exploring-a-design-space) `exploring-a-design-space`
+  - [Reading an ablation](/en/learn/deep-learning/dl-01b-building-blocks/#reading-an-ablation) `reading-an-ablation`
+  - [Comparing populations: design spaces](/en/learn/deep-learning/dl-01b-building-blocks/#comparing-populations-design-spaces) `comparing-populations-design-spaces`
+  - [A practical protocol](/en/learn/deep-learning/dl-01b-building-blocks/#a-practical-protocol) `a-practical-protocol`
+- [Common composition mistakes](/en/learn/deep-learning/dl-01b-building-blocks/#common-composition-mistakes) `common-composition-mistakes`
+- [Modern view](/en/learn/deep-learning/dl-01b-building-blocks/#modern-view) `modern-view`
+  - [What the surveys say](/en/learn/deep-learning/dl-01b-building-blocks/#what-the-surveys-say) `what-the-surveys-say`
+  - [The state of the art, 2023–2026](/en/learn/deep-learning/dl-01b-building-blocks/#the-state-of-the-art-20232026) `the-state-of-the-art-20232026`
+  - [Open problems](/en/learn/deep-learning/dl-01b-building-blocks/#open-problems) `open-problems`
+- [Key takeaways](/en/learn/deep-learning/dl-01b-building-blocks/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/dl-01b-building-blocks/#exercises) `exercises`
+
+*Supplementary notes (`notes/` page):*
+
+- [CBAM's channel and spatial gates](/en/learn/deep-learning/dl-01b-building-blocks/notes/#cbams-channel-and-spatial-gates) `cbams-channel-and-spatial-gates`
+- [Phase sums of a transposed convolution in 1-D](/en/learn/deep-learning/dl-01b-building-blocks/notes/#phase-sums-of-a-transposed-convolution-in-1-d) `phase-sums-of-a-transposed-convolution-in-1-d`
+- [Receptive fields through upsampling and skips](/en/learn/deep-learning/dl-01b-building-blocks/notes/#receptive-fields-through-upsampling-and-skips) `receptive-fields-through-upsampling-and-skips`
+- [The ConvNeXt roadmap step by step](/en/learn/deep-learning/dl-01b-building-blocks/notes/#the-convnext-roadmap-step-by-step) `the-convnext-roadmap-step-by-step`
+- [RegNet's quantized linear widths](/en/learn/deep-learning/dl-01b-building-blocks/notes/#regnets-quantized-linear-widths) `regnets-quantized-linear-widths`
+
+*Paper guides (`papers/` page):*
+
+- [Simple Baselines for Image Restoration (NAFNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#simple-baselines-for-image-restoration-nafnet) `simple-baselines-for-image-restoration-nafnet`
+- [Designing Network Design Spaces (RegNet)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#designing-network-design-spaces-regnet) `designing-network-design-spaces-regnet`
+- [A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)](/en/learn/deep-learning/dl-01b-building-blocks/papers/#a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer) `a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer`
 
 ## dl-02-image-classification
 
