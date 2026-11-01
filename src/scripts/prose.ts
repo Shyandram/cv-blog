@@ -21,3 +21,11 @@ if (equations.length > 0) {
   const ro = new ResizeObserver((entries) => entries.forEach((e) => mark(e.target as HTMLElement)));
   equations.forEach((el) => ro.observe(el));
 }
+
+// Printing: open every hint and collapsed block so the printout has the answers, then restore what the reader had open.
+let closedForPrint: HTMLDetailsElement[] = [];
+window.addEventListener('beforeprint', () => {
+  closedForPrint = [...document.querySelectorAll<HTMLDetailsElement>('main details:not([open])')].filter((d) => !d.classList.contains('rt-mnav'));
+  closedForPrint.forEach((d) => { d.open = true; });
+});
+window.addEventListener('afterprint', () => { closedForPrint.forEach((d) => { d.open = false; }); closedForPrint = []; });

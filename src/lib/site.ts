@@ -103,6 +103,40 @@ export function tutorialMinutes(body: string | undefined, lang: Lang): number {
   return Math.max(1, Math.round(sections.reduce((a, x) => a + x.units, 0)));
 }
 
+/** Heading of a tutorial's exercise section. */
+export const EXERCISES = /^(exercises|練習)$/i;
+
+/** Number of exercises in a tutorial: each exercise has exactly one hint (a <details> block) in the "## Exercises" section. */
+export function exerciseCount(body: string | undefined): number {
+  const section = sectionText(body, EXERCISES);
+  return (section.match(/^\s*<details\b/gm) ?? []).length;
+}
+
+function sectionText(body: string | undefined, title: RegExp): string {
+  if (!body) return '';
+  const out: string[] = [];
+  let on = false, fence = false;
+  for (const line of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (!fence && /^## /.test(line)) { on = title.test(line.slice(3).trim()); continue; }
+    if (on) out.push(line);
+  }
+  return out.join('\n');
+}
+
+/** Short name of a tutorial for compact lists: "IP 03 · Intensity…" → "IP 03"; titles without a code keep their first part. */
+export function shortTitle(title: string): string {
+  return title.split(/\s*[·・]\s*/)[0];
+}
+
+/** "≈ 45 min" / "≈ 8 h" (zh-tw: 「約 45 分鐘」/「約 8 小時」) for a total reading time. */
+export function formatDuration(minutes: number, lang: Lang): string {
+  const zh = lang === 'zh-tw';
+  if (minutes < 60) return zh ? `約 ${minutes} 分鐘` : `≈ ${minutes} min`;
+  const h = Math.round(minutes / 30) / 2;
+  return zh ? `約 ${h} 小時` : `≈ ${h} h`;
+}
+
 export function formatDate(d: Date, lang: Lang) {
   return d.toLocaleDateString(lang === 'zh-tw' ? 'zh-TW' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
