@@ -207,10 +207,10 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 
 ## dl-01c-model-compression
 
-**DLCV 01C · Model Compression and Efficient Inference**  
+**DLCV 01C · Model Compression and Efficient Inference** · DLCV 01C・模型壓縮與高效推論  
 How to make a trained vision model smaller and faster without fooling yourself: what cost means and how to measure it, pruning, quantization, knowledge distillation, low-rank factorization, designing and searching for small architectures, and why a paper's speed-up is not your device's speed-up.
 
-- Files: `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` (no zh-tw twin)
+- Files: `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-01c-model-compression.mdx`
 - Pages: `/en/learn/deep-learning/dl-01c-model-compression/`, `/en/learn/deep-learning/dl-01c-model-compression/notes/`, `/en/learn/deep-learning/dl-01c-model-compression/papers/`
 - Level advanced · order 18 · needs: `deep-learning/dl-01a-training-practice`, `deep-learning/dl-01b-building-blocks` · tags: deep-learning, model-compression, pruning, quantization, knowledge-distillation, efficient-inference, low-rank, neural-architecture-search
 - Figures: 3 (script `scripts/figures/dl_01c_model_compression.py`) · references: 72
