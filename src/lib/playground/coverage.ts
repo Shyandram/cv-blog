@@ -106,6 +106,7 @@ export const readingOnlyChapters = [
     'ml/ml-01-introduction',
     'deep-learning/dl-08-3d-reconstruction',
     'deep-learning/dl-09-3d-object-detection',
+    'deep-learning/dl-10-image-generation',
 ];
 const defaultReason = L('This chapter\u2019s own figures, code and exercises carry its main idea; a separate interactive demo would not add to them.', '本章的圖、程式與練習已經足以說明主要概念；另外加一個互動實驗不會增加理解。');
 const reasons: Record<string, Localized> = {

@@ -1,0 +1,685 @@
+---
+title: "DLCV 10 · Image Generation: From GANs to Text-to-Image Systems"
+description: "How image generators are built and judged as vision systems: the task and what good means, the model families on one map, text encoders, cross-attention and guidance in text-to-image models, control, personalization and editing, autoregressive and unified multimodal generators, evaluation, data, risks and failure modes."
+track: deep-learning
+order: 100
+level: advanced
+prereqs: [ml/ml-06-generative-models, ml/ml-07-diffusion-flow-matching]
+tags: [image-generation, text-to-image, diffusion-models, gan, autoregressive-models, cross-attention, controlnet, image-editing, evaluation, provenance]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figFamily from '../../../../assets/deep-learning/dl-10-image-generation/family-map.png';
+import figPipeline from '../../../../assets/deep-learning/dl-10-image-generation/t2i-pipeline.png';
+import figXattn from '../../../../assets/deep-learning/dl-10-image-generation/cross-attention.png';
+import figComp from '../../../../assets/deep-learning/dl-10-image-generation/compositional-check.png';
+
+## What you'll learn
+
+- The kinds of image generation (unconditional, class-conditional, text-to-image, image-to-image, editing, inpainting) and the three questions behind "good": **fidelity**, **diversity** and **alignment** with the condition.
+- One map of the model families (GANs, VAEs and tokenizers, diffusion, flow matching, autoregressive and unified multimodal models), the key idea of each in plain words, and where the theory is derived on this site.
+- How a text-to-image system is put together: a text encoder (CLIP or T5), **cross-attention** from image features to words, classifier-free guidance as it is used in practice, and a U-Net or transformer backbone.
+- How a pretrained generator is controlled, personalized and used for editing (ControlNet, textual inversion, DreamBooth, LoRA, SDEdit, Prompt-to-Prompt, InstructPix2Pix, RePaint).
+- How text-to-image models are evaluated (FID and its pitfalls, CLIPScore, compositional benchmarks such as GenEval, human-preference models), what data they are trained on, which risks they carry (memorization, bias, deepfakes, provenance) and where they still fail (counting, text, hands, spatial relations, attribute binding).
+
+## The big picture
+
+An image generator turns a request into a new picture. The request can be nothing at all ("any face"), a class label ("a goldfinch"), a sentence ("a red ball on the grass"), or another image plus an instruction ("make it winter"). The answer should look real, should vary from one try to the next, and should actually show what was asked.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a sketch artist who works for the police. You describe a face; the artist starts with a rough smudge and keeps refining it, glancing back at your words after every stroke ("big eyes, short hair"). A generator does the same thing many times per second. The "words" are turned into numbers by a reading model, the "glancing back" is a step called cross-attention, and the "smudge-to-picture" refinement is the generator itself. Some artists work differently, placing one mosaic tile after another, but they all listen to the description while they draw.
+</Callout>
+
+**Why it matters.** Image generation went from small, blurry faces to photorealistic, prompt-following pictures in less than a decade, and it is now part of design tools, photo editors, data pipelines and restoration systems ([DLCV 04C](/en/learn/deep-learning/dl-04c-generative-restoration/) uses the same models to restore damaged photos). As a computer-vision **system**, a modern generator combines a language model, an image compressor, a generative network, a sampler and an evaluation pipeline. Each part can fail on its own, and each part has its own literature.
+
+**Where this chapter sits.** The theory lives in the ML track, and this chapter does not repeat it. [ML 06](/en/learn/ml/ml-06-generative-models/) derives VAEs, GANs, normalizing flows and the classic metrics (Inception Score, FID, precision and recall) with code. [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/) derives diffusion, DDIM, classifier-free guidance, latent diffusion, diffusion transformers, flow matching and few-step samplers. [ML 08](/en/learn/ml/ml-08-autoregressive-vision/) covers autoregressive models over pixels and tokens, and [ML 09](/en/learn/ml/ml-09-foundation-models/) covers CLIP and parameter-efficient fine-tuning. Here we take the **system view**: how these pieces are assembled into text-to-image products, how they are steered, how they are judged, and what can go wrong. The two code examples run in seconds on a CPU with NumPy and scikit-image, and use no network weights.
+
+## The task: what to generate, and what "good" means
+
+**Plain version.** Every generation task is "draw a sample that fits this condition". The tasks differ only in what the condition is. And "good" always means three things at once: realistic, varied and faithful to the request.
+
+### Six kinds of generation
+
+All the tasks below are sampling from a conditional distribution $p(x \mid c)$, where $x$ is an image and $c$ is the condition; the unconditional case uses an empty condition $c = \varnothing$.
+
+| Task | Condition $c$ | Output | Example method in this chapter |
+|---|---|---|---|
+| Unconditional | nothing | an image from the training domain | StyleGAN on faces [1] |
+| Class-conditional | a class label | an image of that class | BigGAN [2], DiT [3] |
+| Text-to-image | a text prompt | an image matching the prompt | Imagen [4], latent diffusion [5] |
+| Image-to-image | an image (often plus text) | a new image that keeps its structure | SDEdit [6], ControlNet [7] |
+| Editing | an image plus an edit request | the edited image | Prompt-to-Prompt [8], InstructPix2Pix [9] |
+| Inpainting / outpainting | an image plus a mask | the image with the masked region filled | RePaint [10] |
+
+Because the form is shared, one trained text-to-image model can serve most rows of the table: edits, masks and control images are extra conditions or a different starting point for the sampler.
+
+### Three questions: fidelity, diversity, alignment
+
+- **Fidelity (quality).** Does each sample look like a real image of the domain, without artifacts?
+- **Diversity (coverage).** Do many samples together cover the variety of real images, or does the model repeat a few favorites (mode collapse)?
+- **Alignment.** Does the sample show what the condition asked for: the right objects, counts, colors, positions and text?
+
+Add a fourth, practical question: **cost**, the number of network evaluations and the seconds per image. The first three questions pull against each other. Most generators expose a dial that trades diversity for fidelity and alignment: the **truncation trick** of BigGAN shrinks the spread of the input noise [2], and **classifier-free guidance** in diffusion models pushes samples toward the condition [11]. Turning such a dial up makes images cleaner and more on-prompt, but more alike. Keep this trade-off in mind whenever you read a single "quality" number. The metrics that measure fidelity and diversity separately are derived in [ML 06](/en/learn/ml/ml-06-generative-models/#evaluating-generative-models); this chapter adds the alignment side in the evaluation section below.
+
+## The model families on one map
+
+**Plain version.** There are only a few ways to turn noise into a picture: in one shot (GANs), by repeated denoising (diffusion), by following a learned flow (flow matching), or by writing the picture piece by piece (autoregressive models). Separately, each of them can work on raw pixels, on a compressed continuous code, or on discrete tokens.
+
+<Figure src={figFamily} alt="A diagram with five generator boxes on top (GAN, diffusion, flow matching or rectified flow, autoregressive, unified multimodal) and three representation boxes below (pixels, continuous latent, discrete tokens), with arrows showing which generator is usually paired with which representation." caption="Figure 1 — The families on one map. The top row is how new content is produced; the bottom row is where the generator works. Arrows show common pairings; the representation is a separate design choice from the generator." />
+
+**GANs: one pass through a generator.** A generator maps random noise to an image, and a discriminator, trained at the same time, tries to tell generated images from real ones; the generator improves by fooling it [12]. Sampling is a single forward pass, so GANs are fast. StyleGAN [1] maps the noise to an intermediate "style" vector and injects it at every resolution of the generator, which separates coarse attributes (pose, identity) from fine ones (freckles, hair) and allows scale-specific control. BigGAN [2] scaled class-conditional GANs on ImageNet and introduced the truncation trick mentioned above. Training is unstable and can miss modes, which made GANs hard to scale to open-ended prompts. Theory and code: [ML 06, GANs](/en/learn/ml/ml-06-generative-models/#gans-learning-with-an-adversary).
+
+**VAEs and tokenizers: compress first.** A variational autoencoder (VAE) learns an encoder to a compact latent code, a decoder back to pixels, and a simple prior over codes [13]. In today's systems the autoencoder's main job is **compression in front of another generator**: latent diffusion runs its denoiser on a continuous latent grid that is several times smaller than the image [5], and token-based models use a **vector-quantized** autoencoder (VQ-VAE [14], VQGAN [15]) that turns an image into a grid of integer indices from a learned codebook, like words from a dictionary. The decoder sets a ceiling: no generator can produce detail the decoder cannot reconstruct. Details: [ML 06, VAEs](/en/learn/ml/ml-06-generative-models/#vaes-a-latent-variable-probability-model) and [ML 08, visual tokens](/en/learn/ml/ml-08-autoregressive-vision/#discrete-visual-tokens-vq-vae-and-vqgan).
+
+**Diffusion: many small denoising steps.** Train a network to remove a little Gaussian noise from a noisy image; to generate, start from pure noise and apply it many times [16]. Training is a stable regression, and with better architectures and classifier guidance diffusion models overtook GANs on ImageNet [17]. Running the same process on an autoencoder's latent grid, **latent diffusion**, made high-resolution text-to-image generation affordable [5]. Theory and code: [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/) and its section on [latent diffusion](/en/learn/ml/ml-07-diffusion-flow-matching/#latent-diffusion).
+
+**Flow matching and rectified flow: follow a velocity field.** Draw a noise sample and a data sample, connect them with a straight line, and train a network to predict the direction of travel along such lines; to generate, start from noise and follow the predicted directions [18], [19]. It is closely related to diffusion (a different path between noise and data) and is now used at scale: Stable Diffusion 3 trains a large latent transformer with a rectified-flow objective [20]. Theory: [ML 07, flow matching](/en/learn/ml/ml-07-diffusion-flow-matching/#flow-matching-learn-a-transport-velocity).
+
+**Autoregressive and unified models: write the picture piece by piece.** Turn the image into a sequence of tokens and predict the next token (or the next group of tokens, or the next, sharper version of the whole token map) given everything generated so far. This is the language-model recipe applied to images, and its newest form is a single transformer that reads and writes both text and images. It gets its own section below.
+
+| Family | How it samples | Sequential network calls | Main strength | Main thing to watch |
+|---|---|---|---|---|
+| GAN | one generator pass | one | speed, smooth editable latent space | training stability, mode coverage |
+| Diffusion | repeated denoising from noise | tens to hundreds; fewer with distillation | quality, coverage, stable training | sampling cost |
+| Flow matching | integrate a learned velocity | tens; fewer with distillation | simple objective, straighter paths | still needs several steps unless distilled |
+| Autoregressive | predict tokens in some order | one per token, group or scale | reuses language-model machinery, exact likelihood of tokens | tokenizer ceiling, error accumulation |
+
+Two points from the map are easy to forget. The generator and the representation are separate choices: a diffusion model can work on pixels (Imagen [4]) or on latents (latent diffusion [5]), and an autoregressive model can use discrete or continuous tokens [21]. And real systems mix families: an adversarial loss trains the tokenizer of VQGAN [15], and adversarial distillation turns a diffusion model into a one-to-four-step generator [22].
+
+## The text-to-image system
+
+**Plain version.** A text-to-image model has three parts that are trained or chosen separately: a **reader** that turns the prompt into a list of vectors, a **painter** that repeatedly refines a noisy image while looking at those vectors, and a **decoder** that turns the painter's compact result into pixels. Most of the engineering is about how the painter looks at the words.
+
+<Figure src={figPipeline} alt="Block diagram: a prompt goes into a frozen text encoder producing token embeddings; Gaussian noise on a latent grid goes into a denoiser network (U-Net or DiT) that attends to the text tokens; a loop arrow marks repeated sampling steps with guidance; an optional control image enters through ControlNet; the clean latent goes to a VAE decoder that outputs the image." caption="Figure 2 — A latent text-to-image pipeline. The text encoder and the autoencoder are usually trained separately and frozen; only the denoiser (or velocity network) is trained on image–caption pairs. Sampling calls the denoiser N times and the decoder once." />
+
+In training, each image of an image–caption pair is encoded to a latent, noised to a random level, and the denoiser learns to undo the noise **given the caption's embeddings**. At sampling time, the denoiser starts from pure noise and runs for $N$ steps, then the decoder produces pixels. The diffusion and sampling equations behind these two sentences are in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#steering-generation-conditioning-and-guidance); below we look at the parts that are specific to text.
+
+### Text encoders: CLIP or a language model
+
+**Plain version.** The text encoder decides what the generator can "understand". A model trained to match images and captions knows visual concepts; a large language model trained on text alone knows grammar, word order and spelling-related structure better. Many systems use both.
+
+Two kinds of encoder dominate:
+
+- **CLIP text encoders** are trained contrastively so that an image and its caption land near each other in a shared embedding space [23] (see [ML 09](/en/learn/ml/ml-09-foundation-models/#image-and-text-in-a-shared-space-clip-and-siglip)). Their embeddings are visually grounded.
+- **Language-model encoders** such as T5 [24] are trained on text only. Imagen's key finding was that a large **frozen** T5 encoder works surprisingly well, and that making the text encoder larger improved both fidelity and image–text alignment much more than making the image diffusion model larger [4].
+
+Recent systems combine them. SDXL adds a second text encoder to the design of earlier Stable Diffusion models [25]. Stable Diffusion 3 uses three frozen encoders, two CLIP models and T5-XXL; its authors report that dropping T5 at inference time costs little on most prompts but clearly hurts prompts with long written text or many details [20]. A related finding concerns spelling: text encoders that see whole word pieces rather than characters ("character-blind") make it hard to draw a word letter by letter, and character-aware encoders render visual text much more accurately [26]. DALL·E 2 takes yet another route: a "prior" network first generates a CLIP **image** embedding from the caption, and a diffusion decoder then generates the image from that embedding [27].
+
+### Cross-attention: how words reach pixels
+
+**Plain version.** At every layer, each position of the image asks a question ("what should be here?") and looks over all the words of the prompt to find the ones that answer it. The answer it collects is a weighted mix of the words, with large weights on the words that match.
+
+Latent diffusion introduced cross-attention layers into the U-Net denoiser for this purpose [5]. Let $\Phi \in \mathbb{R}^{N \times d_\phi}$ be the image features at one layer ($N$ spatial positions, each a vector of width $d_\phi$), and $E \in \mathbb{R}^{L \times d_e}$ the text-encoder outputs ($L$ tokens of width $d_e$). Learned matrices $W_Q \in \mathbb{R}^{d_\phi \times d}$, $W_K, W_V \in \mathbb{R}^{d_e \times d}$ project them to a common width $d$:
+
+$$
+Q = \Phi W_Q,\qquad K = E W_K,\qquad V = E W_V,\qquad
+A = \operatorname{softmax}\!\Big(\frac{Q K^\top}{\sqrt d}\Big),\qquad
+\operatorname{out} = A V .
+$$
+
+Here $Q \in \mathbb{R}^{N \times d}$ holds one **query** per image position, $K, V \in \mathbb{R}^{L \times d}$ hold one **key** and one **value** per text token, the softmax is taken along each row, and $A \in \mathbb{R}^{N \times L}$ is the **attention map**: row $i$ is a probability distribution over the $L$ tokens that says how much position $i$ listens to each word. The output $\operatorname{out} \in \mathbb{R}^{N \times d}$ gives every image position a mix of word values; it is added back to the image features. Queries come from the image and keys and values come from the text, which is exactly what makes it *cross*-attention rather than self-attention (compare [NLP 07](/en/learn/nlp/nlp-07-attention-transformers/#7-self-attention-and-cross-attention)). Reading column $j$ of $A$ as an image gives a heat map of **where word $j$ is being drawn**, a fact that Prompt-to-Prompt turned into an editing method [8].
+
+Transformer backbones offer an alternative. Stable Diffusion 3's MM-DiT concatenates image tokens and text tokens into one sequence and lets them attend to each other in both directions, with separate weights for the two modalities [20]. The text then also "reads" the image, not only the other way round.
+
+The toy below builds a $16 \times 16$ grid of image features in which a disk region resembles the words "red" and "ball" and the background resembles "grass", then runs one cross-attention step. The projection matrices are identities to keep it readable; in a trained model they are learned.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+d = 32                                       # feature width
+words = ["a", "red", "ball", "on", "grass"]  # the prompt, one text token per word
+E = rng.normal(size=(len(words), d))         # text-encoder outputs, one row per word
+
+# A 16 x 16 grid of image tokens: a disk ("the ball") on a background ("the grass").
+yy, xx = np.mgrid[:16, :16]
+ball = ((yy - 6) ** 2 + (xx - 9) ** 2 <= 9).ravel()   # 29 of the 256 positions
+X = 1.0 * rng.normal(size=(256, d))                   # noisy image features
+X[ball] += 0.5 * (E[1] + E[2])                        # ball region looks like "red ball"
+X[~ball] += 0.5 * E[4]                                # background looks like "grass"
+
+# Cross-attention: queries from the image, keys and values from the text.
+# Real models learn W_q, W_k, W_v; identity matrices keep the toy readable.
+Q, K, V = X, E, E
+scores = Q @ K.T / np.sqrt(d)                         # 256 image tokens x 5 words
+A = np.exp(scores - scores.max(axis=1, keepdims=True))
+A /= A.sum(axis=1, keepdims=True)                     # softmax over the words
+out = A @ V                                           # each image token gets a mix of word values
+
+print("each row sums to 1:", np.allclose(A.sum(axis=1), 1), "| output shape:", out.shape)
+for j, w in enumerate(words):
+    print(f"{w:6s} mean weight inside the ball={A[ball, j].mean():.2f}  "
+          f"outside={A[~ball, j].mean():.2f}")
+```
+
+It prints:
+
+```text
+each row sums to 1: True | output shape: (256, 32)
+a      mean weight inside the ball=0.02  outside=0.06
+red    mean weight inside the ball=0.43  outside=0.07
+ball   mean weight inside the ball=0.52  outside=0.04
+on     mean weight inside the ball=0.02  outside=0.08
+grass  mean weight inside the ball=0.01  outside=0.74
+```
+
+(These numbers come from our toy run, not from any trained model.) Inside the disk, almost all the attention goes to "red" and "ball"; outside, three quarters of it goes to "grass". The function words "a" and "on" get little weight anywhere. Figure 3 shows the five maps. Notice what the mechanism does **not** guarantee: "red" and "ball" share the same region because the features say so, and nothing in the attention formula forces a color word to attach to the right object. When two objects are present, a color can attend to the wrong one, which is one root of the attribute-binding failures discussed later [28].
+
+<Figure src={figXattn} alt="Six small 16 by 16 maps: the first shows the disk-shaped ball region on a green background; the next five show attention weights for the words a, red, ball, on and grass. The red and ball maps are bright inside the disk, the grass map is bright outside it, and the a and on maps are dark." caption="Figure 3 — Cross-attention maps in the toy. Each map is one column of the attention matrix A reshaped to the image grid: where each word is being 'drawn'. Prompt-to-Prompt edits images by reusing such maps [8]." />
+
+### Guidance as used in practice
+
+Classifier-free guidance (CFG) is derived and tested in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#classifier-free-guidance-cfg); here is the reminder. During training the caption is dropped (replaced by an empty prompt) for a random fraction of examples, so one network learns both a conditional and an unconditional prediction [11]. At sampling time the two are combined, $\hat\epsilon = \epsilon_\varnothing + w(\epsilon_c - \epsilon_\varnothing)$, where $\epsilon_c$ and $\epsilon_\varnothing$ are the predictions with and without the prompt and $w$ is the guidance scale; $w \gt 1$ moves past the conditional prediction toward the prompt.
+
+For a system builder, four practical facts matter:
+
+- **It is a dial, not a measurement.** Higher $w$ usually gives more prompt-faithful, higher-contrast images with less variety; very high $w$ gives over-saturated, distorted images. Report the value and the convention (some code writes $1 + w$).
+- **It doubles the work per step** unless the two predictions are batched, so a 30-step guided sampler costs about 60 network evaluations.
+- **It also works for token models.** Autoregressive and masked token generators apply the same formula to next-token logits ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#classifier-free-guidance-for-autoregressive-models)).
+- **Distilled models may bake it in.** Some distilled checkpoints are trained to reproduce guided outputs, so the guidance scale becomes an input or disappears; read the release documentation before comparing settings ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#read-the-components-before-running-the-checkpoint)).
+
+### Backbones and some landmark systems
+
+The denoiser was first a **U-Net** [29], a convolutional encoder–decoder with skip connections, with cross-attention layers inserted at several resolutions [5]. The **diffusion transformer (DiT)** replaces it with a Vision Transformer over latent patches and showed steady gains as transformer compute grew [3] (details in [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#diffusion-transformers)). Large recent systems mostly use transformers. The table lists a few systems whose design is documented in papers; it is a map of design choices, not a ranking.
+
+| System | Where it generates | Generator and backbone | Text conditioning |
+|---|---|---|---|
+| Latent diffusion / Stable Diffusion [5] | autoencoder latent | diffusion, U-Net | cross-attention to a text encoder |
+| DALL·E 2 [27] | pixels | diffusion decoder from a CLIP image embedding | a prior maps the caption to a CLIP image embedding |
+| Imagen [4] | pixels, 64 → 256 → 1024 cascade | diffusion | frozen T5-XXL |
+| Parti [30] | discrete tokens (ViT-VQGAN) | autoregressive encoder–decoder transformer | the text is the encoder's input |
+| Muse [31] | discrete tokens | masked parallel decoding, transformer | embeddings from a pretrained language model |
+| SDXL [25] | autoencoder latent | diffusion, larger U-Net, optional refiner | two text encoders |
+| Stable Diffusion 3 [20] | autoencoder latent | rectified flow, MM-DiT transformer | two CLIP encoders and T5-XXL |
+
+The resolutions of the Imagen cascade are from the project page listed with its reference.
+
+*Optional: [Stable Diffusion 3](#esser-et-al-scaling-rectified-flow-transformers-for-high-resolution-image-synthesis-icml-2024) (in the Paper guides). How one paper combines a rectified-flow objective, a joint text–image transformer, three text encoders and curated captions, and how to read its ablations.*
+
+## Control, personalization and editing
+
+**Plain version.** A prompt is a weak steering wheel: words cannot pin down an exact pose, a particular person's dog, or "change only the hat". Three groups of methods add stronger steering: extra **control images** (edges, depth, pose), small **personalization** updates that teach the model a new concept, and **editing** procedures that change a given image while keeping the rest.
+
+### Spatial control: ControlNet
+
+ControlNet adds a spatial condition (an edge map, a depth map, a segmentation, a human pose) to a large pretrained text-to-image model without damaging it [7]. It **locks** the original network, makes a **trainable copy** of its encoding layers that receives the condition, and connects the copy back to the original through **zero convolutions**: $1 \times 1$ convolutions whose weights and biases start at zero. At the first training step the added branch outputs exactly zero, so the model behaves exactly like the original and learning starts from a working generator. The paper reports robust training with both small (under 50k) and large (over 1M) datasets [7].
+
+*Optional: [ControlNet's zero convolutions](#controlnets-zero-convolutions-why-training-starts-from-the-original-model) (in the Supplementary notes). The equation of one controlled block and why gradients still reach the zero-initialized layers.*
+
+### Personalization: teaching the model a new concept
+
+Three methods trade storage, speed and fidelity differently:
+
+- **Textual inversion** keeps the whole model frozen and learns only a new word embedding (a new "pseudo-word") from 3–5 images of a concept, by minimizing the usual denoising loss on those images [32]. The stored result is a single vector, but its expressiveness is limited by what the frozen model can already draw.
+- **DreamBooth** fine-tunes the whole model on a few images of a subject captioned with a rare identifier plus the class name, such as "a [V] dog", and adds a **class-specific prior-preservation loss** that keeps the model able to draw ordinary dogs; without it, the model drifts and loses diversity [33].
+- **LoRA** (low-rank adaptation) freezes each weight matrix $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ and learns an additive update $\Delta W = BA$ with $B \in \mathbb{R}^{d_{\text{out}} \times r}$, $A \in \mathbb{R}^{r \times d_{\text{in}}}$ and a small rank $r$ [34]. It was introduced for language models; the same update can be attached to the attention layers of a text-to-image denoiser, which makes a personalized style or subject a small file that can be switched on and off ([ML 09, PEFT](/en/learn/ml/ml-09-foundation-models/#parameter-efficient-fine-tuning-peft)).
+
+*Optional: [Personalization objectives side by side](#personalization-objectives-side-by-side) (in the Supplementary notes). The exact losses of textual inversion and DreamBooth, and what each method stores.*
+
+### Editing and inpainting
+
+- **SDEdit** adds noise to an input image (for example a rough color sketch) up to an intermediate noise level, then runs the ordinary reverse process [6]. A low starting noise level keeps the input's layout and colors (faithful); a high one gives the model more freedom (realistic). One number sets the balance.
+- **Prompt-to-Prompt** edits a generated image by changing the prompt ("a cat on a bike" → "a dog on a bike") while re-using the original cross-attention maps during sampling, so the layout stays the same and only the changed word's content changes [8]. Editing a *real* photo this way first requires finding a noise that reproduces it, for example with deterministic DDIM inversion ([ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#ddim-same-training-different-sampler)).
+- **InstructPix2Pix** follows written instructions ("make it look like winter"). Its training data was generated automatically by combining a language model (GPT-3) and a text-to-image model (Stable Diffusion) into a large set of before-and-after editing examples; a conditional diffusion model trained on these pairs then edits in a single sampling run, without per-image fine-tuning or inversion [9].
+- **RePaint** inpaints with an unconditional diffusion model: at every reverse step it replaces the known region with a correctly noised copy of the input and lets the model generate only the masked region [10].
+
+A survey by Huang et al. organizes the many diffusion-based editing methods by learning strategy, input condition and task [35].
+
+### Fast sampling, briefly
+
+A text-to-image model is used interactively, so the number of network calls matters. The routes are covered in [ML 07, few-step generation](/en/learn/ml/ml-07-diffusion-flow-matching/#few-step-and-one-step-generation): deterministic samplers such as DDIM need fewer steps with the same network [36]; progressive distillation halves the step count repeatedly [37]; consistency models learn to jump from any point of a trajectory to its end [38]; and adversarial diffusion distillation (ADD) combines a diffusion teacher with an adversarial loss to sample a large model in 1–4 steps [22]. When you compare systems, count every network evaluation (both guidance passes included) plus the decoder.
+
+## Autoregressive and unified multimodal generators
+
+**Plain version.** An autoregressive generator writes an image the way a language model writes a sentence: one token, or one group of tokens, at a time, each conditioned on what came before. The newest step is to use **one** transformer for both text and images, so the same model can describe a picture, answer questions about it and draw a new one.
+
+### The autoregressive line in one paragraph
+
+The theory is in [ML 08](/en/learn/ml/ml-08-autoregressive-vision/); here is the summary. A tokenizer (VQ-VAE or VQGAN, [ML 08](/en/learn/ml/ml-08-autoregressive-vision/#discrete-visual-tokens-vq-vae-and-vqgan)) turns the image into a grid of integers, and a transformer models them with the chain rule, trained by next-token cross-entropy with teacher forcing ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#teacher-forcing-causal-masks-and-exposure-bias)). Raster-order models such as Parti [30] and LlamaGen [39] predict one token per step; masked models such as MaskGIT [40] and Muse [31] predict many tokens in parallel and refine them over a few rounds ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#masked-generative-models-maskgit-and-muse)); VAR predicts a whole, sharper token map per step, coarse to fine [41] ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#next-scale-prediction-var)); and MAR drops the discrete codebook and models each continuous token with a small diffusion head [21] ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#continuous-tokens-and-diffusion-conditionals-mar)). Sampling cost, KV caching and the comparison with diffusion are in [ML 08](/en/learn/ml/ml-08-autoregressive-vision/#autoregressive-versus-diffusion).
+
+### Autoregressive text-to-image in practice
+
+From the system side, four facts are worth knowing.
+
+- **The text enters as context, not through cross-attention to a separate denoiser.** Parti treats text-to-image as translation: a transformer encoder reads the prompt and a decoder writes image tokens; the paper scales this encoder–decoder model to 20 billion parameters and introduces the PartiPrompts benchmark of over 1,600 English prompts [30]. Muse instead feeds a text embedding from a pretrained large language model to a masked token transformer, and it supports inpainting, outpainting and mask-free editing without fine-tuning [31].
+- **Language-model infrastructure transfers.** LlamaGen uses a plain Llama-style decoder; besides class-conditional models from 111M to 3.1B parameters it trains a 775M text-conditional model, and it reports that an LLM serving framework sped up image generation by 326%–414% [39].
+- **The tokenizer is decisive.** MAGVIT-v2 argues that the tokenizer is the key component: with its new "lookup-free" quantizer, which lets the vocabulary grow large, a language model outperformed diffusion models on ImageNet when given the same training data, a similar model size and a similar training budget [42]. Small details such as text and thin lines are typical casualties of a coarse tokenizer ([ML 08](/en/learn/ml/ml-08-autoregressive-vision/#codebook-problems-and-alternatives)).
+- **Guidance and sampling knobs carry over.** CFG on logits, temperature and top-$k$ sampling set the fidelity–diversity balance, and every guided step costs two forward passes.
+
+### Unified multimodal models
+
+**Plain version.** Instead of a text model that hands a prompt to a separate image model, a unified model puts text and image pieces into **one sequence** and trains one transformer on it. The design questions are: are image pieces discrete tokens or continuous vectors, is the image part generated by next-token prediction or by diffusion, and do understanding and generation share one image encoder?
+
+The models below are documented in papers and illustrate the main design choices:
+
+- **Chameleon** puts discrete image tokens and text tokens in one sequence from the start ("early fusion") and handles captioning, question answering and the generation of text, images and mixed documents with one model [43].
+- **Emu3** trains one transformer from scratch with next-token prediction **only**, over discrete tokens of images, text and video [44].
+- **Transfusion** keeps images continuous and trains one transformer with a next-token loss on text and a diffusion loss on image patches; its authors report that this scales better than quantizing images into tokens [45].
+- **Show-o** combines autoregressive text modeling with discrete (masked) diffusion over image tokens [46].
+- **Janus** shares one transformer but uses **separate** visual encoders for understanding and for generation, because the two tasks need different levels of image detail [47].
+
+| Model | Image representation | Image objective | Visual encoders |
+|---|---|---|---|
+| Chameleon [43] | discrete tokens | next token | one, shared |
+| Emu3 [44] | discrete tokens | next token | one, shared |
+| Transfusion [45] | continuous patches | diffusion | one, shared |
+| Show-o [46] | discrete tokens | masked (discrete) diffusion | one, shared |
+| Janus [47] | discrete tokens for generation | next token | separate for understanding and generation |
+
+*Optional: [Unified multimodal models, one by one](#unified-multimodal-models-one-by-one) (in the Supplementary notes). What each paper changes in the transformer, the tokenizer and the training data.*
+
+What is still open: whether one model can be state-of-the-art at both understanding and generation at the same size, how much a shared visual tokenizer costs each task (the motivation for Janus), and how evaluation should compare a unified model with a specialized diffusion system. Claims about scaling in these papers are each paper's own measurements, on its own data; they are not yet a settled law.
+
+## Evaluating text-to-image models
+
+**Plain version.** You need four kinds of evidence: do the images look real and varied (distribution metrics), do they match their prompts overall (alignment scores), do they get the details right (compositional checks), and do people like them (human preference). Each kind catches failures the others miss.
+
+### Distribution metrics and their pitfalls
+
+FID compares feature statistics of generated and real images; precision and recall separate fidelity from coverage. Both are defined and implemented in [ML 06](/en/learn/ml/ml-06-generative-models/#precision-and-recall), and [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#beyond-fid) covers the newer feature spaces. For text-to-image models the common protocol is a **zero-shot COCO FID**: generate images from COCO captions [48] with a model that was not trained on COCO and compare with the real COCO images, as Imagen did [4]. Five pitfalls matter in practice:
+
+- **Finite-sample bias.** FID is biased for finite sample sets, and the bias depends on the model being evaluated, so even equal sample counts do not make a comparison fully fair; Chong and Forsyth propose extrapolating to an infinite sample count [49].
+- **Preprocessing.** The resizing filter and JPEG compression used before feature extraction change FID substantially; Parmar et al. show this and provide a reference implementation [50].
+- **What the features see.** Inception features are so close to ImageNet classes that matching the class histogram of generated images can lower FID without making images better [51].
+- **Agreement with people.** In a large human study no common metric correlated strongly with human judgments, and FID under-rated diffusion models; the authors recommend richer feature extractors such as DINOv2 [52]. CMMD replaces Inception features and the Gaussian assumption with CLIP embeddings and a kernel distance [53].
+- **No alignment.** FID does not look at the prompt at all: a model that ignores every prompt but draws beautiful COCO-like images can score well.
+
+### Prompt alignment: CLIPScore
+
+CLIPScore measures how well an image and a text agree in CLIP's embedding space [54]. With $\mathbf c$ the CLIP embedding of the text and $\mathbf v$ the CLIP embedding of the image,
+
+$$
+\operatorname{CLIP\text{-}S}(\mathbf c, \mathbf v) = w \cdot \max\big(\cos(\mathbf c, \mathbf v),\, 0\big),
+$$
+
+where $\cos$ is the cosine similarity and $w$ is a constant that only rescales the range ($w = 2.5$ in the original paper, which proposed the score for image captioning). For text-to-image evaluation the score is averaged over prompt–image pairs. It is cheap and needs no reference image, but it inherits CLIP's blind spots: an embedding that summarizes the whole image is weak at counts, spatial relations and which attribute belongs to which object. The GenEval study found that its object-level checks agree with human judgments much better than CLIPScore on such compositional tasks [55].
+
+### Compositional benchmarks
+
+**Plain version.** Instead of one overall similarity, ask concrete yes-or-no questions about the image: is there a dog, are there exactly three, is the dog left of the cat, is the car red? A detector or a vision–language model answers them.
+
+**GenEval** generates prompts from templates for six tasks (single object, two objects, counting, colors, position and attribute binding), detects the objects with an instance-segmentation model, classifies object colors with CLIP, and scores each image as correct or not [55]. **T2I-CompBench** provides 6,000 compositional prompts in three categories (attribute binding, object relationships and complex compositions) with metrics tailored to each [56]. Imagen's **DrawBench** [4] and Parti's **PartiPrompts** [30] are prompt sets for side-by-side human comparison. Object detection itself is the subject of [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/); an open-vocabulary detector ([DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#open-vocabulary-and-grounding-detectors)) can check objects outside a fixed class list.
+
+*Optional: [GenEval](#ghosh-et-al-geneval-an-object-focused-framework-for-evaluating-text-to-image-alignment-neurips-2023) (in the Paper guides). How the benchmark is built, how its scores are computed and how to read its tables.*
+
+The toy below shows why object-level checks matter. It draws synthetic "generated images" made of colored disks and squares for the prompt "two red circles and a blue square", detects the shapes with connected components, and compares two scores: a **presence score** that asks which prompt words appear anywhere in the image (a deliberately simple stand-in for a global similarity score, not CLIP itself) and an **exact check** that requires every (color, shape) pair with the right count, as GenEval does.
+
+```python
+import numpy as np
+from skimage.draw import disk, rectangle
+from skimage.measure import label, regionprops
+
+COLORS = {"red": (0.85, 0.1, 0.1), "blue": (0.1, 0.2, 0.85)}
+
+def render(objects, size=96):
+    """Draw (color, shape) objects at fixed slots on a gray canvas: a stand-in for a generated image."""
+    img = np.full((size, size, 3), 0.8)
+    for k, (col, shape) in enumerate(objects):
+        cy, cx = 24 + 48 * (k // 2), 24 + 48 * (k % 2)
+        if shape == "circle":
+            rr, cc = disk((cy, cx), 14)
+        else:
+            rr, cc = rectangle((cy - 12, cx - 12), extent=(24, 24))
+        img[rr, cc] = COLORS[col]
+    return img
+
+def detect(img):
+    """Toy 'detector': connected colored regions -> (color, shape) pairs."""
+    found = []
+    for region in regionprops(label(np.abs(img - 0.8).sum(-1) > 0.3)):
+        r, g, b = img[tuple(region.coords.T)].mean(0)
+        col = "red" if r > b else "blue"
+        shape = "square" if region.extent > 0.9 else "circle"   # filled bbox fraction
+        found.append((col, shape))
+    return found
+
+def presence_score(prompt, img):
+    """Bag-of-words check: which prompt words appear anywhere (ignores counts and binding)."""
+    words = {w for obj in prompt for w in obj}
+    seen = {w for obj in detect(img) for w in obj}
+    return len(words & seen) / len(words)
+
+def exact_check(prompt, img):
+    """GenEval-style check: every (color, shape) pair with the right count."""
+    return sorted(detect(img)) == sorted(prompt)
+
+prompt = [("red", "circle"), ("red", "circle"), ("blue", "square")]   # "two red circles and a blue square"
+candidates = {
+    "correct":          prompt,
+    "wrong count":      prompt + [("red", "circle")],
+    "colors swapped":   [("blue", "circle"), ("blue", "circle"), ("red", "square")],
+    "object missing":   prompt[:2],
+}
+for name, objs in candidates.items():
+    img = render(objs)
+    print(f"{name:15s} presence score={presence_score(prompt, img):.2f}  "
+          f"exact check={'pass' if exact_check(prompt, img) else 'fail'}")
+```
+
+It prints:
+
+```text
+correct         presence score=1.00  exact check=pass
+wrong count     presence score=1.00  exact check=fail
+colors swapped  presence score=1.00  exact check=fail
+object missing  presence score=0.50  exact check=fail
+```
+
+The presence score gives full marks to the wrong count and to the swapped colors, because every word of the prompt is present *somewhere*; only the exact check catches them. Real benchmarks replace our connected-component "detector" with a trained detector and a color classifier, and inherit their errors: the check is only as good as the detector, which is why GenEval reports its agreement with human annotators [55]. Figure 4 shows the four images.
+
+<Figure src={figComp} alt="Four synthetic images for the prompt two red circles and a blue square: the correct image, one with an extra red circle, one with the colors swapped (two blue circles and a red square), and one with the square missing; titles give a presence score of 1.00, 1.00, 1.00 and 0.50 and an exact check of pass, fail, fail, fail." caption="Figure 4 — A word-presence score cannot see counting or binding errors; an object-level check can. Synthetic shapes stand in for generated images." />
+
+### Human preference and holistic evaluation
+
+People remain the reference. Because human studies are slow, several groups trained **preference models** that predict which of two images people prefer for a prompt: ImageReward was trained on 137k expert comparisons [57], and PickScore on Pick-a-Pic, an open dataset of real users' choices collected through a web app [58]. **HEIM** evaluates models along 12 aspects (including alignment, quality, aesthetics, originality, reasoning, knowledge, bias, toxicity, fairness, robustness, multilinguality and efficiency) over 62 scenarios and 26 models, and finds that no single model is best at everything [59]. A learned preference model is itself a model with biases; if a generator is tuned to maximize it, the score can rise faster than real quality.
+
+**A reporting checklist.** For any claim about a text-to-image model, state: the prompts (and how they were sampled), the number of images per prompt and seeds, the sampler, the number of steps and guidance scale, the resolution, the metric implementations and feature extractors, and show uncurated samples. Report distribution, alignment, compositional and preference results side by side, and say which numbers you ran yourself and which were copied from papers.
+
+## Data
+
+**Plain version.** A generator can only learn what its training images and captions show, so the dataset decides its knowledge, its style and many of its biases. Large text-to-image datasets are scraped from the web, which raises questions of quality, copyright and consent.
+
+- **Class-conditional benchmarks** use ImageNet [60]; text-to-image papers often evaluate zero-shot on COCO captions [48]; face generators use datasets such as FFHQ, the high-quality face dataset introduced with StyleGAN [1].
+- **LAION-5B** is an openly released dataset of 5.85 billion CLIP-filtered image–text pairs, of which 2.32 billion have English text [61]. It distributes URLs and alt-text rather than the images themselves, and its datasheet states that LAION releases the metadata under CC-BY-4.0 but does not own the copyright of the images or text, that people depicted in the images may not have consented to their upload, and that the dataset should be used for academic research in its current form; it describes ways to request removal of links [61].
+- **Content audits.** Birhane et al. examined the earlier LAION-400M dataset and found explicit and problematic image–text pairs, including pornography, malign stereotypes and slurs [62].
+- **Captions are data too.** Stable Diffusion 3 trains on a 50/50 mix of original captions and synthetic captions written by a vision–language model, and filters its data for sexual content, low aesthetic scores and near-duplicates (to reduce regurgitation of training images) [20].
+
+## Risks and responsible use
+
+**Plain version.** A model that can draw anything can also copy, stereotype and deceive. The practical responses are to measure these behaviors, to reduce them in the data and the model, and to label generated images so that viewers can check where they came from.
+
+### Memorization and copying
+
+Carlini et al. showed that diffusion models memorize individual training images and can emit them: with a generate-and-filter pipeline they extracted over a thousand training examples, from photos of individual people to trademarked logos, and they found diffusion models less private than GANs in their experiments [63]. Somepalli et al. built image-retrieval tools to compare generated images with training images and found cases where models, including Stable Diffusion, copied content from their training data [64]. Deduplicating training data [20] and checking generated images against the training set are the standard first defenses.
+
+### Bias
+
+Bianchi et al. found that ordinary prompts (traits, occupations, objects) produce and amplify demographic stereotypes, and that neither counter-stereotypical prompts nor system guardrails removed them in their tests [65]. Luccioni et al. proposed a way to measure social bias in generated people by comparing the variation caused by gender and ethnicity words with the variation caused by professions, and found under-representation of marginalized identities in the three systems they tested [66]. Bias evaluation needs its own prompts and analysis; overall quality metrics do not reveal it. See also [ML 09, data provenance, bias and privacy](/en/learn/ml/ml-09-foundation-models/#data-provenance-bias-and-privacy).
+
+### Deepfakes, provenance and watermarks
+
+Two complementary tools exist for labeling generated images:
+
+- **Signed provenance (C2PA).** The C2PA specification defines a "manifest" of provenance claims (who made the asset and how) that is cryptographically signed and bound to the asset, either by a cryptographic hash (a hard binding) or by a fingerprint or invisible watermark (a soft binding) [67]. A valid signature shows that the claims were not altered; it does not prove that the content is true, and a manifest stored in metadata can simply be removed.
+- **Invisible watermarks.** Tree-Ring watermarking hides a pattern in the Fourier transform of the **initial noise** of a diffusion sampler and detects it by inverting the sampler [68]. Stable Signature fine-tunes the latent decoder so that every generated image carries a binary signature that a pretrained extractor can read [69]. Classical watermarking is covered in [IP 08](/en/learn/image-processing/dip-08-compression-watermarking/#digital-image-watermarking).
+
+Neither is a complete answer. Zhao et al. prove and show that pixel-level invisible watermarks can be removed by a "regeneration attack" (add noise, then reconstruct with a generative model) [70], and Saberi et al. show a fundamental trade-off for low-perturbation watermarks between failing to detect watermarked images and falsely flagging real ones, and demonstrate spoofing attacks that make real images look watermarked [71]. Treat provenance and watermarks as evidence to weigh, not as proof.
+
+*Optional: [Hard bindings, soft bindings and watermarks](#hard-bindings-soft-bindings-and-watermarks) (in the Supplementary notes). How each mechanism survives cropping, re-encoding and metadata stripping.*
+
+## Failure modes
+
+**Plain version.** Today's generators are excellent at "a photo of X" and still unreliable at the precise parts of a request: how many, which one has which color, where things are, what the text says. Knowing the typical failures tells you what to test.
+
+- **Counting.** "Four apples" often gives three or five. GenEval's counting task (2, 3 or 4 objects) measures it directly [55].
+- **Spatial relations.** "A cup to the left of a laptop" is often drawn in the wrong arrangement; in GenEval's original study the best model produced the correct position in only 15% of images [55].
+- **Attribute binding and leakage.** In "a red car and a blue bench" the colors can swap between objects or leak onto the background; GenEval's best model at the time got attribute binding right in 35% of images [55]. Attend-and-Excite also documents **catastrophic neglect**, where one of the subjects in the prompt is not drawn at all, and steers the cross-attention maps at sampling time so that every subject token gets attention [28].
+- **Text rendering.** Misspelled signs and labels are common; character-blind text encoders are one documented cause [26], and Stable Diffusion 3's ablation shows that the T5 encoder matters most for prompts with written text [20].
+- **Hands.** Generated hands often have the wrong number of fingers or irregular shapes; HandRefiner repairs them afterwards by inpainting conditioned on a reconstructed hand mesh [72]. Note that object-level benchmarks cannot check this: GenEval's authors point out that their detector can count people but not fingers [55].
+- **Copying of content and style.** A prompt that names a famous image, product or artist can pull out a near-copy of training content [64], [63].
+
+**How to test.** Build a small prompt set per failure type, generate several images per prompt with fixed seeds, check them with an object-level tool where possible and by eye where not, and track the failure rate across model versions.
+
+## Modern view
+
+**Surveys worth reading.**
+
+- **Zhang et al. [73]** (2023) is a self-contained review of text-to-image diffusion models: a short introduction to diffusion, the background of text-conditioned synthesis, the pioneering systems and their improvements, applications beyond images (video, other modalities, text-guided editing) and open challenges.
+- **Croitoru et al. [74]** (IEEE TPAMI 2023) survey diffusion models in vision, grouped by formulation (DDPM, score networks, SDEs) and by application (generation, super-resolution, inpainting, editing, translation, segmentation).
+- **Huang et al. [35]** (IEEE TPAMI 2025) classify diffusion-based image editing by learning strategy, user-input condition and editing task, give special attention to inpainting and outpainting, and propose a benchmark (EditEval) with a metric scored by a large multimodal model.
+- **Xiong et al. [75]** (TMLR 2025) survey autoregressive vision models, split by representation into pixel-based, token-based and scale-based models, and discuss their links to other generative families and their uses in image, video, 3-D and multimodal generation.
+
+**State of the art, 2023–2026.** (1) **Latent transformers with flow objectives and several text encoders** became the standard large-scale recipe, as in Stable Diffusion 3 [20], building on DiT [3]. (2) **Autoregressive models returned** through better tokenizers [42], next-scale prediction [41] and continuous tokens [21]. (3) **Unified multimodal models** that understand and generate with one transformer appeared in quick succession [43], [45], [46], [47], [44]. (4) **Few-step generation** made interactive use practical [22], [38]. (5) **Evaluation moved beyond FID** toward compositional checks [55], [56], learned preference models [57], [58] and holistic benchmarks [59]. Recent work also revisits pixel-space generation and generation in representation spaces; see [ML 07, pixel space, latent space and representation autoencoders](/en/learn/ml/ml-07-diffusion-flow-matching/#pixel-space-latent-space-and-representation-autoencoders).
+
+**Open problems.** Reliable counting, spatial reasoning and attribute binding; legible text in any language; evaluation metrics that agree with people at the level of single images and cannot be gamed; preventing memorization without losing quality; measuring and reducing bias; provenance that survives editing; consent and licensing for training data; and the cost of high-resolution and video generation.
+
+## Key takeaways
+
+- Every generation task samples from $p(x \mid c)$; tasks differ only in the condition $c$, and "good" always means fidelity, diversity and alignment, plus cost.
+- The generator (GAN, diffusion, flow, autoregressive) and the representation (pixels, continuous latent, discrete tokens) are separate design choices, and real systems mix families.
+- A text-to-image model is a frozen text encoder (CLIP and/or T5), a denoiser or token model that reads the text through cross-attention or joint attention, a sampler with guidance, and a decoder.
+- Cross-attention maps show where each word is drawn; they power editing methods such as Prompt-to-Prompt, but nothing in them forces attributes to bind to the right object.
+- ControlNet adds spatial control through a trainable copy joined by zero convolutions; textual inversion, DreamBooth and LoRA personalize at different costs; SDEdit, Prompt-to-Prompt, InstructPix2Pix and RePaint edit.
+- Unified multimodal models put text and image pieces in one sequence; they differ in discrete versus continuous images, next-token versus diffusion objectives, and shared versus separate visual encoders.
+- Evaluate with distribution metrics, alignment scores, object-level compositional checks and human preference together, and report the full protocol; FID alone ignores the prompt.
+- Memorization, bias, deepfakes and data consent are measurable risks; watermarks and signed provenance help but can be removed or spoofed.
+
+## Exercises
+
+1. **Map the tasks.** For each task in the table of six kinds of generation, write down what the condition $c$ is as a tensor (shape and type) for a latent text-to-image model, and which part of the pipeline in Figure 2 receives it.
+
+<details>
+<summary>Hint</summary>
+
+The prompt becomes $L$ token embeddings that enter through cross-attention. A class label can be written as a text prompt or as an embedding added to the time embedding. For image-to-image and editing, the input image is encoded to a latent and either noised to an intermediate level (SDEdit) or concatenated to the denoiser's input channels (InstructPix2Pix); a control image enters through ControlNet's trainable copy; a mask for inpainting decides which latent positions are regenerated.
+
+</details>
+
+2. **Neglect in the toy.** In the cross-attention snippet, add a sixth word "dog" whose embedding is a fresh random vector that no image region resembles. What does its attention map look like, and what does it do to the weights of the other words? Then make the ball region resemble only "ball" (not "red"). Which map changes?
+
+<details>
+<summary>Hint</summary>
+
+The "dog" column gets small, unstructured weights everywhere, because no query matches its key: nothing tells the generator where a dog should go, which is the situation Attend-and-Excite fixes by strengthening a neglected token's attention during sampling. The softmax still sums to one per row, so the other words lose a little weight. Removing "red" from the ball features makes the "red" map dark: a color word attends only where the features already suggest it.
+
+</details>
+
+3. **Break the metric.** Extend the compositional-check snippet with a candidate that has the right objects but in an image where the blue square overlaps one red circle. What does the toy detector report, and what would a real detector-based benchmark need to handle it?
+
+<details>
+<summary>Hint</summary>
+
+Overlapping shapes merge into one connected component, so the toy detector sees fewer objects and the wrong shape; the exact check fails even though a person might accept the image. Real benchmarks use instance segmentation, which can separate overlapping objects, and GenEval adds rules for overlapping boxes when judging positions. Every automatic check has such blind spots, which is why benchmarks report agreement with human annotators.
+
+</details>
+
+4. **Design an evaluation.** You must decide whether a new model is better than the current one at "product photos with a short brand name on the package". Write an evaluation plan: prompts, number of images, automatic metrics, human study, and what result would change your decision.
+
+<details>
+<summary>Hint</summary>
+
+Use a fixed prompt set that varies product type, text length and background; several seeds per prompt; an OCR check of the rendered text against the requested string; an object-level check of the product type; FID or CMMD against real product photos for realism (with a fixed implementation and sample count); and a blind side-by-side human comparison on alignment and quality. Decide in advance which difference you would act on, and include a memorization check against the training set for brand logos.
+
+</details>
+
+5. **Provenance under editing.** An image carries a C2PA manifest with a hard binding and was generated by a model with a Stable Signature watermark. It is then cropped, re-saved as JPEG and uploaded to a site that strips metadata. Which evidence of its origin is likely to survive, and why?
+
+<details>
+<summary>Hint</summary>
+
+The manifest is lost with the metadata, and even if it were kept, the hash of the hard binding would no longer match the cropped, re-encoded pixels. A soft binding or a robust invisible watermark can survive moderate cropping and compression (Stable Signature reports detection after strong cropping), but a regeneration attack can remove pixel-level watermarks. The honest answer is "maybe the watermark, not the manifest", which is why the two are designed to work together.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional background that the main text does not depend on.
+
+### Unified multimodal models, one by one
+
+This note lists, for each unified model in the main text, what it changes relative to a standard language model; all statements are from the papers' abstracts and method descriptions.
+
+- **Chameleon** [43] converts images into discrete tokens and places them in the same sequence as text tokens from the start ("early fusion"), so a single token-based transformer can produce text, images, or documents that interleave both. The paper's contributions include a stable training approach from scratch, an alignment recipe and an architectural parameterization tailored to this early-fusion setting; it evaluates on visual question answering, captioning, text tasks, image generation and long mixed-modal generation judged by people.
+- **Emu3** [44] tokenizes images, text and **video** into one discrete vocabulary and trains a single transformer from scratch on mixtures of such sequences with next-token prediction only, without diffusion and without combining a CLIP-style encoder with a language model. Video generation is then "predict the next token in a video sequence". The journal version appeared in *Nature* in 2026.
+- **Transfusion** [45] trains one transformer on mixed sequences with two losses: next-token cross-entropy on text tokens and a diffusion (denoising) loss on continuous image patches. The paper reports scaling experiments up to 7B parameters and 2T multimodal tokens, finds that this recipe scales better than quantizing images into discrete tokens, and shows that modality-specific encoding and decoding layers let it compress each image to as few as 16 patches.
+- **Show-o** [46] mixes autoregressive prediction (for text) with discrete diffusion, that is masked-token prediction, for image tokens inside one transformer, so the same model handles question answering, text-to-image generation, text-guided inpainting and extrapolation, and mixed-modality generation.
+- **Janus** [47] argues that understanding needs high-level semantic features while generation needs fine detail, so a single visual encoder (as in Chameleon) serves both poorly, especially understanding. It keeps one autoregressive transformer but gives understanding and generation **separate visual encoding pathways** (in the paper, a SigLIP encoder for understanding and a VQ tokenizer that turns images into discrete IDs for generation), which also lets each pathway choose its own encoder.
+
+**How to compare them.** Hold three axes in mind: (a) discrete versus continuous image representation (a discrete tokenizer caps detail; continuous patches need a diffusion-style loss), (b) the image objective (next token, masked tokens or diffusion), and (c) whether understanding and generation share the visual encoder. Then check, for each reported result, the model size, the training tokens and whether the comparison baselines had similar budgets.
+
+### ControlNet's zero convolutions: why training starts from the original model
+
+This note writes out one ControlNet block and explains why zero-initialized layers still learn.
+
+Let $\mathcal F(\cdot;\Theta)$ be a block of the pretrained network with frozen parameters $\Theta$, mapping a feature map $x$ to $y = \mathcal F(x;\Theta)$. ControlNet makes a trainable copy with parameters $\Theta_c$ (initialized from $\Theta$) and two zero convolutions $\mathcal Z(\cdot;\Theta_{z1})$ and $\mathcal Z(\cdot;\Theta_{z2})$: $1 \times 1$ convolutions whose weights and biases are initialized to zero. With a condition feature map $c$, the controlled block computes [7]
+
+$$
+y_c = \mathcal F(x;\Theta) + \mathcal Z\Big(\mathcal F\big(x + \mathcal Z(c;\Theta_{z1});\ \Theta_c\big);\ \Theta_{z2}\Big).
+$$
+
+**At initialization** both zero convolutions output zero, so $y_c = y$: the controlled network is exactly the pretrained one, and no random noise from new layers disturbs it. The trainable copy also receives $x$, so it starts as a full working copy of the block.
+
+**Why the zeros do not stay zero.** For a $1 \times 1$ convolution $\mathcal Z(h) = W h + b$, the gradient of the loss $\mathcal L$ with respect to the weight is $\partial \mathcal L / \partial W = (\partial \mathcal L / \partial \mathcal Z)\, h^\top$, which depends on the input $h$, not on $W$. So even with $W = 0$ the weight receives a nonzero gradient whenever its input $h$ and the upstream gradient are nonzero, and after the first update the branch starts to contribute. (What *is* zero at the first step is the gradient flowing *through* $\mathcal Z$ to earlier layers, because that gradient is multiplied by $W$.) The paper details this gradient argument in its supplementary material.
+
+**Practical consequences.** Training cannot damage the pretrained model at the start, works with modest datasets, and several ControlNets (for example depth and pose) can be added to the same frozen model, each with its own scale.
+
+### Personalization objectives side by side
+
+This note gives the exact training objectives of textual inversion and DreamBooth and compares what the three personalization methods store.
+
+**Textual inversion** [32]. Let $\mathcal E$ be the frozen image encoder of a latent diffusion model, $c_\theta$ the frozen text encoder, $\epsilon_\theta$ the frozen denoiser, and $y$ a prompt that contains a placeholder word $S_*$ whose embedding $v$ is the only trainable quantity. With $z = \mathcal E(x)$ for a training image $x$, a random time $t$, noise $\epsilon \sim \mathcal N(0, I)$ and the noised latent $z_t$,
+
+$$
+v_* = \arg\min_v\ \mathbb E_{z,\, y,\, \epsilon,\, t}\ \big\| \epsilon - \epsilon_\theta\big(z_t,\, t,\, c_\theta(y)\big) \big\|_2^2 ,
+$$
+
+which is the ordinary latent-diffusion loss with everything frozen except the new word's embedding. The paper initializes $v$ from the embedding of a coarse one-word description such as "cat".
+
+**DreamBooth** [33]. Let $\hat x_\theta$ be the (trainable) model's prediction of the clean image, $c$ the conditioning for a prompt with the identifier ("a [V] dog"), $c_{\text{pr}}$ the conditioning for the plain class prompt ("a dog"), and $x_{\text{pr}}$ images generated by the frozen original model from $c_{\text{pr}}$. With noise-schedule coefficients $\alpha_t, \sigma_t$, weights $w_t$, and a weight $\lambda$ for the second term,
+
+$$
+\mathbb E_{x, c, \epsilon, \epsilon', t}\Big[ w_t \big\|\hat x_\theta(\alpha_t x + \sigma_t \epsilon,\, c) - x\big\|_2^2
++ \lambda\, w_{t'} \big\|\hat x_\theta(\alpha_{t'} x_{\text{pr}} + \sigma_{t'} \epsilon',\, c_{\text{pr}}) - x_{\text{pr}}\big\|_2^2 \Big].
+$$
+
+The first term fits the 3–5 subject images; the second, the **prior-preservation** term, asks the model to keep reproducing its own samples of the class, which counters "language drift" (forgetting what an ordinary dog looks like) and loss of diversity. The paper reports good results with about 1,000 iterations and $\lambda = 1$.
+
+**LoRA** [34] can be combined with either objective: instead of updating a weight matrix $W$, it trains $B$ and $A$ in $W + BA$, so only $r(d_{\text{in}} + d_{\text{out}})$ numbers per adapted matrix are stored.
+
+| Method | What is trained | What is stored per concept | Typical weakness |
+|---|---|---|---|
+| Textual inversion | one word embedding | one vector | limited to what the frozen model can draw |
+| DreamBooth | all denoiser weights | a full model copy (or a LoRA, if combined) | overfitting and drift without the prior term |
+| LoRA | low-rank updates of chosen layers | small matrices $A$, $B$ | rank and layer choice need tuning |
+
+### Hard bindings, soft bindings and watermarks
+
+This note explains how each labeling mechanism ties a label to an image and what typical edits do to it.
+
+**Hard binding.** A C2PA manifest can include a cryptographic hash of the asset's bytes (or of parts of it) [67]. Any change to those bytes (cropping, resizing, re-encoding) changes the hash, so validation then reports a mismatch. This is the point: a hard binding detects tampering, it is not meant to survive editing. An editing tool that supports the standard can instead write a **new** manifest that records the edit and refers to the earlier asset as an "ingredient".
+
+**Soft binding.** The specification also allows content identifiers that are not exact hashes: a perceptual **fingerprint** (not statistically unique) or an **invisible watermark** embedded in the pixels [67]. These can survive moderate edits, and they can be used to look up a manifest that was stripped from the file.
+
+**Generation-time watermarks.** Tree-Ring [68] writes a key pattern into the Fourier transform of the sampler's initial noise; detection inverts the diffusion sampler to recover an estimate of that noise and tests for the key, and the Fourier construction makes it invariant to convolutions, crops, dilations, flips and rotations, according to the paper. Stable Signature [69] fine-tunes the latent decoder so that every decoded image carries a fixed binary signature; an extractor reads the bits and a statistical test decides; the paper reports detection of images cropped to 10% of their content with over 90% accuracy at a false-positive rate below $10^{-6}$.
+
+**What breaks them.**
+
+| Edit | Hash (hard binding) | Manifest in metadata | Robust invisible watermark |
+|---|---|---|---|
+| Metadata stripped | not checkable (manifest gone) | lost | survives |
+| Crop or JPEG re-save | mismatch | kept but invalid for the new pixels | usually survives moderate edits |
+| Regeneration (noise, then reconstruct) | mismatch | lost if re-saved without it | pixel-level marks can be removed [70] |
+| Adding a watermark pattern to a real image | — | — | spoofing is possible [71] |
+
+The lesson is the one in the main text: combine mechanisms and treat each as evidence with known failure modes.
+
+## Paper guides
+
+These guides are optional: each walks through one paper the chapter builds on — the problem it poses, the idea, what it showed and what to check when you read it.
+
+### Esser et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis" (ICML 2024)
+
+**The problem.** Rectified flow (straight paths between noise and data) is simple and has attractive properties, but in 2024 it was not established as better than standard diffusion formulations for large text-to-image models, and text-to-image backbones still mostly used a U-Net with one-way cross-attention [20].
+
+**The idea.** Two changes, tested at scale. First, train rectified-flow models with timestep distributions that sample intermediate noise levels more often (for example a logit-normal density), because the endpoints are easy and the middle is where learning happens. Second, a transformer backbone, MM-DiT, in which image tokens and text tokens are concatenated and attend to each other in both directions, with separate weights for each modality. Text comes from three frozen encoders (CLIP-L/14, CLIP-G/14 and T5-XXL).
+
+**What it showed.** In a large comparison of formulations, rectified flow with the tuned timestep sampling performed best for high-resolution text-to-image synthesis. MM-DiT improved over variants with shared weights or with cross-attention only. Validation loss followed predictable scaling trends with model size and correlated with metrics and human ratings; the largest model (8B parameters) was compared with open and proprietary systems in human preference studies and on GenEval. Dropping T5 at inference cost little on most prompts but hurt prompts with written text. The data section describes filtering (sexual content, aesthetics, deduplication) and a 50/50 mix of original and synthetic captions.
+
+**How to read it.** Read Section 2–3 for the time-sampling densities (they replace the "noise schedule" of diffusion), Section 4 with the architecture figure, then Section 5's ablations one table at a time. Check: (a) which comparisons use small models and few training steps (most ablations) and which use the full model; (b) that GenEval and human-preference comparisons involve different prompt sets and protocols; (c) which improvements come from data (captions, filtering) rather than from the architecture or objective.
+
+**Limits.** Many conclusions come from ablations at smaller scale; the human studies compare against specific system versions at one point in time; the paper's training data is not public, so data effects cannot be reproduced exactly.
+
+**Why it matters here.** It is the clearest documented example of the modern text-to-image recipe in this chapter: latent space, rectified-flow objective, joint text–image transformer, several text encoders, curated and recaptioned data, and evaluation by GenEval and human preference.
+
+### Ghosh et al., "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment" (NeurIPS 2023)
+
+**The problem.** FID measures overall image statistics and CLIPScore overall image–text similarity; neither tells you whether a model drew *two* dogs, a *red* car, or a cup *left of* a laptop. Human evaluation does, but it is slow and expensive [55].
+
+**The idea.** Turn alignment into object-level checks performed by existing vision models. Prompts are generated from templates for six tasks: single object (80 prompts), two objects (99), counting (80), colors (94), position (100) and attribute binding (100), with objects drawn from the 80 COCO classes, colors from 11 basic color terms, counts of 2, 3 or 4, and four relative positions. A Mask2Former instance-segmentation model trained on COCO detects objects (confidence threshold 0.3, raised to 0.9 for counting); positions are judged from bounding-box centroids; colors are classified by CLIP ViT-L/14 on the object's crop with the background replaced by gray. Each image is scored correct or incorrect, and four images are generated per prompt.
+
+**What it showed.** In a human study of 6,000 annotations on 1,200 images, GenEval agreed with annotators 83% of the time, against an inter-annotator agreement of 88%, and agreed with humans much better than CLIPScore on the compositional tasks. Single objects were easy for every model tested, but even the best model at the time produced correct relative positions in 15% and correct attribute binding in 35% of images.
+
+**How to read it.** Start with Table 1 (tasks and templates) and Section 3.2 (the scoring pipeline), then the human-agreement analysis, then the benchmark table. Check: (a) that the overall score is an average over tasks, so a model can hide a weak task behind strong easy tasks; read per-task columns; (b) the detector thresholds and their effect on counting; (c) which models were tested (open-source models of 2023); later papers report GenEval for newer models, so compare scores only within one table and one version of the benchmark code.
+
+**Limits.** The authors note that GenEval is bounded by its detector: COCO-trained detectors know a fixed set of classes, cannot check fine details such as the number of fingers, and generalize poorly to artistic styles. Template prompts are short and unlike real user prompts, and once a benchmark is popular, models may be tuned toward it.
+
+**Why it matters here.** It is the model for the object-level checks of the evaluation section and the source of several of the failure-mode numbers; it is now reported by many text-to-image papers, including Stable Diffusion 3 [20].
+
+## References
+
+1. T. Karras, S. Laine and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [arXiv](https://arxiv.org/abs/1812.04948)
+2. A. Brock, J. Donahue and K. Simonyan, "Large Scale GAN Training for High Fidelity Natural Image Synthesis," *ICLR*, 2019. [arXiv](https://arxiv.org/abs/1809.11096)
+3. W. Peebles and S. Xie, "Scalable Diffusion Models with Transformers," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Peebles_Scalable_Diffusion_Models_with_Transformers_ICCV_2023_paper.html)
+4. C. Saharia, W. Chan, S. Saxena et al., "Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2205.11487) · [project page](https://imagen.research.google/)
+5. R. Rombach, A. Blattmann, D. Lorenz, P. Esser and B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Rombach_High-Resolution_Image_Synthesis_With_Latent_Diffusion_Models_CVPR_2022_paper.html)
+6. C. Meng, Y. He, Y. Song et al., "SDEdit: Guided Image Synthesis and Editing with Stochastic Differential Equations," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2108.01073)
+7. L. Zhang, A. Rao and M. Agrawala, "Adding Conditional Control to Text-to-Image Diffusion Models," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Zhang_Adding_Conditional_Control_to_Text-to-Image_Diffusion_Models_ICCV_2023_paper.html)
+8. A. Hertz, R. Mokady, J. Tenenbaum et al., "Prompt-to-Prompt Image Editing with Cross-Attention Control," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2208.01626)
+9. T. Brooks, A. Holynski and A. A. Efros, "InstructPix2Pix: Learning to Follow Image Editing Instructions," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Brooks_InstructPix2Pix_Learning_To_Follow_Image_Editing_Instructions_CVPR_2023_paper.html)
+10. A. Lugmayr, M. Danelljan, A. Romero et al., "RePaint: Inpainting using Denoising Diffusion Probabilistic Models," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Lugmayr_RePaint_Inpainting_Using_Denoising_Diffusion_Probabilistic_Models_CVPR_2022_paper.html)
+11. J. Ho and T. Salimans, "Classifier-Free Diffusion Guidance," NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications; arXiv:2207.12598, 2022. [arXiv](https://arxiv.org/abs/2207.12598)
+12. I. J. Goodfellow, J. Pouget-Abadie, M. Mirza et al., "Generative Adversarial Nets," *NeurIPS*, 2014. [arXiv](https://arxiv.org/abs/1406.2661)
+13. D. P. Kingma and M. Welling, "Auto-Encoding Variational Bayes," *ICLR*, 2014. [arXiv](https://arxiv.org/abs/1312.6114)
+14. A. van den Oord, O. Vinyals and K. Kavukcuoglu, "Neural Discrete Representation Learning," *NeurIPS*, 2017. [arXiv](https://arxiv.org/abs/1711.00937)
+15. P. Esser, R. Rombach and B. Ommer, "Taming Transformers for High-Resolution Image Synthesis," *CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Esser_Taming_Transformers_for_High-Resolution_Image_Synthesis_CVPR_2021_paper.html)
+16. J. Ho, A. Jain and P. Abbeel, "Denoising Diffusion Probabilistic Models," *NeurIPS*, 2020. [arXiv](https://arxiv.org/abs/2006.11239)
+17. P. Dhariwal and A. Nichol, "Diffusion Models Beat GANs on Image Synthesis," *NeurIPS*, 2021. [arXiv](https://arxiv.org/abs/2105.05233)
+18. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel and M. Le, "Flow Matching for Generative Modeling," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2210.02747)
+19. X. Liu, C. Gong and Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.03003)
+20. P. Esser, S. Kulal, A. Blattmann et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, PMLR 235, 2024. [arXiv](https://arxiv.org/abs/2403.03206)
+21. T. Li, Y. Tian, H. Li, M. Deng and K. He, "Autoregressive Image Generation without Vector Quantization," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2406.11838)
+22. A. Sauer, D. Lorenz, A. Blattmann and R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, LNCS, pp. 87–103, 2024. [doi](https://doi.org/10.1007/978-3-031-73016-0_6) · [arXiv](https://arxiv.org/abs/2311.17042)
+23. A. Radford, J. W. Kim, C. Hallacy et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, PMLR 139, 2021. [arXiv](https://arxiv.org/abs/2103.00020)
+24. C. Raffel, N. Shazeer, A. Roberts et al., "Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer," *Journal of Machine Learning Research*, vol. 21, 2020. [arXiv](https://arxiv.org/abs/1910.10683)
+25. D. Podell, Z. English, K. Lacey et al., "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2307.01952)
+26. R. Liu, D. Garrette, C. Saharia et al., "Character-Aware Models Improve Visual Text Rendering," *ACL*, 2023. [ACL Anthology](https://aclanthology.org/2023.acl-long.900/)
+27. A. Ramesh, P. Dhariwal, A. Nichol, C. Chu and M. Chen, "Hierarchical Text-Conditional Image Generation with CLIP Latents," arXiv:2204.06125, 2022. [arXiv](https://arxiv.org/abs/2204.06125)
+28. H. Chefer, Y. Alaluf, Y. Vinker, L. Wolf and D. Cohen-Or, "Attend-and-Excite: Attention-Based Semantic Guidance for Text-to-Image Diffusion Models," *ACM Transactions on Graphics*, vol. 42, no. 4 (SIGGRAPH), 2023. [doi](https://doi.org/10.1145/3592116) · [arXiv](https://arxiv.org/abs/2301.13826)
+29. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," *MICCAI*, 2015. [arXiv](https://arxiv.org/abs/1505.04597)
+30. J. Yu, Y. Xu, J. Y. Koh et al., "Scaling Autoregressive Models for Content-Rich Text-to-Image Generation," *Transactions on Machine Learning Research*, 2022. [arXiv](https://arxiv.org/abs/2206.10789)
+31. H. Chang, H. Zhang, J. Barber et al., "Muse: Text-To-Image Generation via Masked Generative Transformers," *ICML*, PMLR 202, 2023. [arXiv](https://arxiv.org/abs/2301.00704)
+32. R. Gal, Y. Alaluf, Y. Atzmon et al., "An Image is Worth One Word: Personalizing Text-to-Image Generation using Textual Inversion," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2208.01618)
+33. N. Ruiz, Y. Li, V. Jampani, Y. Pritch, M. Rubinstein and K. Aberman, "DreamBooth: Fine Tuning Text-to-Image Diffusion Models for Subject-Driven Generation," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Ruiz_DreamBooth_Fine_Tuning_Text-to-Image_Diffusion_Models_for_Subject-Driven_Generation_CVPR_2023_paper.html)
+34. E. J. Hu, Y. Shen, P. Wallis et al., "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2106.09685)
+35. Y. Huang, J. Huang, Y. Liu et al., "Diffusion Model-Based Image Editing: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2025. [doi](https://doi.org/10.1109/TPAMI.2025.3541625) · [arXiv](https://arxiv.org/abs/2402.17525)
+36. J. Song, C. Meng and S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.02502)
+37. T. Salimans and J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2202.00512)
+38. Y. Song, P. Dhariwal, M. Chen and I. Sutskever, "Consistency Models," *ICML*, PMLR 202, 2023. [arXiv](https://arxiv.org/abs/2303.01469)
+39. P. Sun, Y. Jiang, S. Chen et al., "Autoregressive Model Beats Diffusion: Llama for Scalable Image Generation," arXiv:2406.06525, 2024. [arXiv](https://arxiv.org/abs/2406.06525)
+40. H. Chang, H. Zhang, L. Jiang, C. Liu and W. T. Freeman, "MaskGIT: Masked Generative Image Transformer," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Chang_MaskGIT_Masked_Generative_Image_Transformer_CVPR_2022_paper.html)
+41. K. Tian, Y. Jiang, Z. Yuan, B. Peng and L. Wang, "Visual Autoregressive Modeling: Scalable Image Generation via Next-Scale Prediction," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2404.02905)
+42. L. Yu, J. Lezama, N. B. Gundavarapu et al., "Language Model Beats Diffusion — Tokenizer is Key to Visual Generation," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2310.05737)
+43. Chameleon Team, "Chameleon: Mixed-Modal Early-Fusion Foundation Models," arXiv:2405.09818, 2024. [arXiv](https://arxiv.org/abs/2405.09818)
+44. X. Wang, Y. Cui, J. Wang et al., "Multimodal learning with next-token prediction for large multimodal models," *Nature*, vol. 650, pp. 327–333, 2026 (preprint "Emu3: Next-Token Prediction is All You Need," 2024). [doi](https://doi.org/10.1038/s41586-025-10041-x) · [arXiv](https://arxiv.org/abs/2409.18869)
+45. C. Zhou, L. Yu, A. Babu et al., "Transfusion: Predict the Next Token and Diffuse Images with One Multi-Modal Model," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2408.11039)
+46. J. Xie, W. Mao, Z. Bai et al., "Show-o: One Single Transformer to Unify Multimodal Understanding and Generation," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2408.12528)
+47. C. Wu, X. Chen, Z. Wu et al., "Janus: Decoupling Visual Encoding for Unified Multimodal Understanding and Generation," *CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wu_Janus_Decoupling_Visual_Encoding_for_Unified_Multimodal_Understanding_and_Generation_CVPR_2025_paper.html)
+48. T.-Y. Lin, M. Maire, S. Belongie et al., "Microsoft COCO: Common Objects in Context," *ECCV*, 2014. [arXiv](https://arxiv.org/abs/1405.0312)
+49. M. J. Chong and D. Forsyth, "Effectively Unbiased FID and Inception Score and Where to Find Them," *CVPR*, 2020. [arXiv](https://arxiv.org/abs/1911.07023)
+50. G. Parmar, R. Zhang and J.-Y. Zhu, "On Aliased Resizing and Surprising Subtleties in GAN Evaluation," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Parmar_On_Aliased_Resizing_and_Surprising_Subtleties_in_GAN_Evaluation_CVPR_2022_paper.html)
+51. T. Kynkäänniemi, T. Karras, M. Aittala, T. Aila and J. Lehtinen, "The Role of ImageNet Classes in Fréchet Inception Distance," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2203.06026)
+52. G. Stein, J. C. Cresswell, R. Hosseinzadeh et al., "Exposing Flaws of Generative Model Evaluation Metrics and Their Unfair Treatment of Diffusion Models," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2306.04675)
+53. S. Jayasumana, S. Ramalingam, A. Veit, D. Glasner, A. Chakrabarti and S. Kumar, "Rethinking FID: Towards a Better Evaluation Metric for Image Generation," *CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Jayasumana_Rethinking_FID_Towards_a_Better_Evaluation_Metric_for_Image_Generation_CVPR_2024_paper.html)
+54. J. Hessel, A. Holtzman, M. Forbes, R. Le Bras and Y. Choi, "CLIPScore: A Reference-free Evaluation Metric for Image Captioning," *EMNLP*, 2021. [ACL Anthology](https://aclanthology.org/2021.emnlp-main.595/)
+55. D. Ghosh, H. Hajishirzi and L. Schmidt, "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2310.11513)
+56. K. Huang, K. Sun, E. Xie, Z. Li and X. Liu, "T2I-CompBench: A Comprehensive Benchmark for Open-world Compositional Text-to-image Generation," *NeurIPS Datasets and Benchmarks Track*, 2023. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2023/hash/f8ad010cdd9143dbb0e9308c093aff24-Abstract-Datasets_and_Benchmarks.html)
+57. J. Xu, X. Liu, Y. Wu et al., "ImageReward: Learning and Evaluating Human Preferences for Text-to-Image Generation," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2304.05977)
+58. Y. Kirstain, A. Polyak, U. Singer et al., "Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2305.01569)
+59. T. Lee, M. Yasunaga, C. Meng et al., "Holistic Evaluation of Text-To-Image Models," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2311.04287)
+60. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A Large-Scale Hierarchical Image Database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+61. C. Schuhmann, R. Beaumont, R. Vencu et al., "LAION-5B: An Open Large-Scale Dataset for Training Next Generation Image-Text Models," *NeurIPS Datasets and Benchmarks Track*, 2022. [arXiv](https://arxiv.org/abs/2210.08402)
+62. A. Birhane, V. U. Prabhu and E. Kahembwe, "Multimodal datasets: misogyny, pornography, and malignant stereotypes," arXiv:2110.01963, 2021. [arXiv](https://arxiv.org/abs/2110.01963)
+63. N. Carlini, J. Hayes, M. Nasr et al., "Extracting Training Data from Diffusion Models," *USENIX Security Symposium*, 2023. [USENIX](https://www.usenix.org/conference/usenixsecurity23/presentation/carlini) · [arXiv](https://arxiv.org/abs/2301.13188)
+64. G. Somepalli, V. Singla, M. Goldblum, J. Geiping and T. Goldstein, "Diffusion Art or Digital Forgery? Investigating Data Replication in Diffusion Models," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Somepalli_Diffusion_Art_or_Digital_Forgery_Investigating_Data_Replication_in_Diffusion_CVPR_2023_paper.html)
+65. F. Bianchi, P. Kalluri, E. Durmus et al., "Easily Accessible Text-to-Image Generation Amplifies Demographic Stereotypes at Large Scale," *ACM FAccT*, 2023. [doi](https://doi.org/10.1145/3593013.3594095)
+66. A. S. Luccioni, C. Akiki, M. Mitchell and Y. Jernite, "Stable Bias: Analyzing Societal Representations in Diffusion Models," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2303.11408)
+67. Coalition for Content Provenance and Authenticity (C2PA), "C2PA Technical Specification," version 2.1, 2024. [specification](https://c2pa.org/specifications/specifications/2.1/specs/C2PA_Specification.html)
+68. Y. Wen, J. Kirchenbauer, J. Geiping and T. Goldstein, "Tree-Ring Watermarks: Fingerprints for Diffusion Images that are Invisible and Robust," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2305.20030)
+69. P. Fernandez, G. Couairon, H. Jégou, M. Douze and T. Furon, "The Stable Signature: Rooting Watermarks in Latent Diffusion Models," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Fernandez_The_Stable_Signature_Rooting_Watermarks_in_Latent_Diffusion_Models_ICCV_2023_paper.html)
+70. X. Zhao, K. Zhang, Z. Su et al., "Invisible Image Watermarks Are Provably Removable Using Generative AI," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2306.01953)
+71. M. Saberi, V. S. Sadasivan, K. Rezaei et al., "Robustness of AI-Image Detectors: Fundamental Limits and Practical Attacks," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2310.00076)
+72. W. Lu, Y. Xu, J. Zhang, C. Wang and D. Tao, "HandRefiner: Refining Malformed Hands in Generated Images by Diffusion-based Conditional Inpainting," *ACM Multimedia*, 2024, pp. 7085–7093. [doi](https://doi.org/10.1145/3664647.3680693)
+73. C. Zhang, C. Zhang, M. Zhang, I. S. Kweon and J. Kim, "Text-to-image Diffusion Models in Generative AI: A Survey," arXiv:2303.07909, 2023. [arXiv](https://arxiv.org/abs/2303.07909)
+74. F.-A. Croitoru, V. Hondru, R. T. Ionescu and M. Shah, "Diffusion Models in Vision: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3261988)
+75. J. Xiong, G. Liu, L. Huang et al., "Autoregressive Models in Vision: A Survey," *Transactions on Machine Learning Research*, 2025. [arXiv](https://arxiv.org/abs/2411.05902)
