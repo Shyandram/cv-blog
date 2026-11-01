@@ -663,12 +663,12 @@ One degradation model, many tasks: how deep networks undo blur, noise, low resol
 ## dl-04a-super-resolution
 
 **DLCV 04A · Image Super-Resolution** · DLCV 04A・影像超解析度  
-Why super-resolution is ill-posed, how degradation models, sub-pixel convolution, residual, GAN, transformer and diffusion networks attack it, and how to evaluate the results honestly.
+Non-blind single-image super-resolution: why it is ill-posed, why pixel losses give blur, the design decisions behind SRCNN, ESPCN, EDSR, RCAN, SwinIR and HAT, perceptual and diffusion SR, and how to evaluate the results honestly.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-04a-super-resolution.mdx`
-- Pages: `/en/learn/deep-learning/dl-04a-super-resolution/`, `/en/learn/deep-learning/dl-04a-super-resolution/notes/`, `/en/learn/deep-learning/dl-04a-super-resolution/papers/`
-- Level advanced · order 45 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-02-fundamentals`, `image-processing/dip-04-frequency-domain` · tags: super-resolution, image-restoration, low-level-vision, pixel-shuffle, perception-distortion, diffusion-models, blind-super-resolution
-- Figures: 10 (script `scripts/figures/dl_04a_super_resolution.py`) · references: 72 · experiments: restoration-ambiguity, pixel-sampling
+- Pages: `/en/learn/deep-learning/dl-04a-super-resolution/`, `/en/learn/deep-learning/dl-04a-super-resolution/notes/`
+- Level advanced · order 45 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-02-fundamentals`, `image-processing/dip-04-frequency-domain` · tags: super-resolution, image-restoration, low-level-vision, pixel-shuffle, residual-learning, attention, perception-distortion, diffusion-models
+- Figures: 10 (script `scripts/figures/dl_04a_super_resolution.py`) · references: 57 · experiments: restoration-ambiguity, pixel-sampling
 
 - [What you'll learn](/en/learn/deep-learning/dl-04a-super-resolution/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-04a-super-resolution/#the-big-picture) `the-big-picture`
@@ -676,36 +676,30 @@ Why super-resolution is ill-posed, how degradation models, sub-pixel convolution
   - [Setup and notation](/en/learn/deep-learning/dl-04a-super-resolution/#setup-and-notation) `setup-and-notation`
   - [Why the problem is ill-posed](/en/learn/deep-learning/dl-04a-super-resolution/#why-the-problem-is-ill-posed) `why-the-problem-is-ill-posed`
   - [The posterior-mean blur](/en/learn/deep-learning/dl-04a-super-resolution/#the-posterior-mean-blur) `the-posterior-mean-blur`
-- [Degradation models](/en/learn/deep-learning/dl-04a-super-resolution/#degradation-models) `degradation-models`
-  - [The bicubic benchmark setting](/en/learn/deep-learning/dl-04a-super-resolution/#the-bicubic-benchmark-setting) `the-bicubic-benchmark-setting`
-  - [Blur, downsample, noise, compression](/en/learn/deep-learning/dl-04a-super-resolution/#blur-downsample-noise-compression) `blur-downsample-noise-compression`
-  - [Why bicubic-trained models fail on real photos](/en/learn/deep-learning/dl-04a-super-resolution/#why-bicubic-trained-models-fail-on-real-photos) `why-bicubic-trained-models-fail-on-real-photos`
-  - [Aliasing and the frequency view](/en/learn/deep-learning/dl-04a-super-resolution/#aliasing-and-the-frequency-view) `aliasing-and-the-frequency-view`
-- [Classical super-resolution](/en/learn/deep-learning/dl-04a-super-resolution/#classical-super-resolution) `classical-super-resolution`
-  - [Interpolation as a fixed linear filter](/en/learn/deep-learning/dl-04a-super-resolution/#interpolation-as-a-fixed-linear-filter) `interpolation-as-a-fixed-linear-filter`
-  - [Example-based SR, self-similarity and sparse coding](/en/learn/deep-learning/dl-04a-super-resolution/#example-based-sr-self-similarity-and-sparse-coding) `example-based-sr-self-similarity-and-sparse-coding`
-  - [Learned linear regressors](/en/learn/deep-learning/dl-04a-super-resolution/#learned-linear-regressors) `learned-linear-regressors`
-- [CNN super-resolution](/en/learn/deep-learning/dl-04a-super-resolution/#cnn-super-resolution) `cnn-super-resolution`
-  - [Pre-upsampling: SRCNN and VDSR](/en/learn/deep-learning/dl-04a-super-resolution/#pre-upsampling-srcnn-and-vdsr) `pre-upsampling-srcnn-and-vdsr`
-  - [Post-upsampling and sub-pixel convolution](/en/learn/deep-learning/dl-04a-super-resolution/#post-upsampling-and-sub-pixel-convolution) `post-upsampling-and-sub-pixel-convolution`
-  - [Deep residual and attention networks](/en/learn/deep-learning/dl-04a-super-resolution/#deep-residual-and-attention-networks) `deep-residual-and-attention-networks`
+  - [What the low-resolution image has lost: the frequency view](/en/learn/deep-learning/dl-04a-super-resolution/#what-the-low-resolution-image-has-lost-the-frequency-view) `what-the-low-resolution-image-has-lost-the-frequency-view`
+- [The benchmark setting: a known degradation](/en/learn/deep-learning/dl-04a-super-resolution/#the-benchmark-setting-a-known-degradation) `the-benchmark-setting-a-known-degradation`
+- [Classical baselines](/en/learn/deep-learning/dl-04a-super-resolution/#classical-baselines) `classical-baselines`
+  - [Interpolation: a fixed linear filter](/en/learn/deep-learning/dl-04a-super-resolution/#interpolation-a-fixed-linear-filter) `interpolation-a-fixed-linear-filter`
+  - [Learning from examples: from patch pairs to linear filters](/en/learn/deep-learning/dl-04a-super-resolution/#learning-from-examples-from-patch-pairs-to-linear-filters) `learning-from-examples-from-patch-pairs-to-linear-filters`
+- [Deep SR networks: a story of design decisions](/en/learn/deep-learning/dl-04a-super-resolution/#deep-sr-networks-a-story-of-design-decisions) `deep-sr-networks-a-story-of-design-decisions`
+  - [Decision 1: where to upsample](/en/learn/deep-learning/dl-04a-super-resolution/#decision-1-where-to-upsample) `decision-1-where-to-upsample`
+  - [Decision 2: how to upsample: transposed or sub-pixel convolution](/en/learn/deep-learning/dl-04a-super-resolution/#decision-2-how-to-upsample-transposed-or-sub-pixel-convolution) `decision-2-how-to-upsample-transposed-or-sub-pixel-convolution`
+  - [Decision 3: how deep, and why predict a residual](/en/learn/deep-learning/dl-04a-super-resolution/#decision-3-how-deep-and-why-predict-a-residual) `decision-3-how-deep-and-why-predict-a-residual`
+  - [Decision 4: remove batch normalization](/en/learn/deep-learning/dl-04a-super-resolution/#decision-4-remove-batch-normalization) `decision-4-remove-batch-normalization`
+  - [Decision 5: reweight channels (RCAN)](/en/learn/deep-learning/dl-04a-super-resolution/#decision-5-reweight-channels-rcan) `decision-5-reweight-channels-rcan`
+  - [Decision 6: let pixels attend to content far away (SwinIR, HAT)](/en/learn/deep-learning/dl-04a-super-resolution/#decision-6-let-pixels-attend-to-content-far-away-swinir-hat) `decision-6-let-pixels-attend-to-content-far-away-swinir-hat`
 - [Perceptual and adversarial SR](/en/learn/deep-learning/dl-04a-super-resolution/#perceptual-and-adversarial-sr) `perceptual-and-adversarial-sr`
   - [Perceptual losses and GANs](/en/learn/deep-learning/dl-04a-super-resolution/#perceptual-losses-and-gans) `perceptual-losses-and-gans`
   - [The perception–distortion trade-off](/en/learn/deep-learning/dl-04a-super-resolution/#the-perceptiondistortion-trade-off) `the-perceptiondistortion-trade-off`
-- [Transformer SR](/en/learn/deep-learning/dl-04a-super-resolution/#transformer-sr) `transformer-sr`
-- [Diffusion-based SR](/en/learn/deep-learning/dl-04a-super-resolution/#diffusion-based-sr) `diffusion-based-sr`
-- [Blind and real-world SR](/en/learn/deep-learning/dl-04a-super-resolution/#blind-and-real-world-sr) `blind-and-real-world-sr`
-  - [Degradation synthesis pipelines](/en/learn/deep-learning/dl-04a-super-resolution/#degradation-synthesis-pipelines) `degradation-synthesis-pipelines`
-  - [Kernel estimation](/en/learn/deep-learning/dl-04a-super-resolution/#kernel-estimation) `kernel-estimation`
-  - [Real captured pairs](/en/learn/deep-learning/dl-04a-super-resolution/#real-captured-pairs) `real-captured-pairs`
+- [Diffusion SR for a known degradation](/en/learn/deep-learning/dl-04a-super-resolution/#diffusion-sr-for-a-known-degradation) `diffusion-sr-for-a-known-degradation`
+- [When the degradation is unknown: blind and real-world SR](/en/learn/deep-learning/dl-04a-super-resolution/#when-the-degradation-is-unknown-blind-and-real-world-sr) `when-the-degradation-is-unknown-blind-and-real-world-sr`
 - [Arbitrary-scale SR](/en/learn/deep-learning/dl-04a-super-resolution/#arbitrary-scale-sr) `arbitrary-scale-sr`
-- [Video and reference-based SR (brief)](/en/learn/deep-learning/dl-04a-super-resolution/#video-and-reference-based-sr-brief) `video-and-reference-based-sr-brief`
 - [Efficiency](/en/learn/deep-learning/dl-04a-super-resolution/#efficiency) `efficiency`
 - [Evaluating SR](/en/learn/deep-learning/dl-04a-super-resolution/#evaluating-sr) `evaluating-sr`
   - [Y-channel PSNR and SSIM with border shaving](/en/learn/deep-learning/dl-04a-super-resolution/#y-channel-psnr-and-ssim-with-border-shaving) `y-channel-psnr-and-ssim-with-border-shaving`
   - [The standard test sets](/en/learn/deep-learning/dl-04a-super-resolution/#the-standard-test-sets) `the-standard-test-sets`
   - [Why PSNR and perceptual rankings disagree](/en/learn/deep-learning/dl-04a-super-resolution/#why-psnr-and-perceptual-rankings-disagree) `why-psnr-and-perceptual-rankings-disagree`
-- [Datasets, benchmarks and NTIRE challenges](/en/learn/deep-learning/dl-04a-super-resolution/#datasets-benchmarks-and-ntire-challenges) `datasets-benchmarks-and-ntire-challenges`
+- [Datasets and benchmarks](/en/learn/deep-learning/dl-04a-super-resolution/#datasets-and-benchmarks) `datasets-and-benchmarks`
 - [Failure modes](/en/learn/deep-learning/dl-04a-super-resolution/#failure-modes) `failure-modes`
 - [Modern view](/en/learn/deep-learning/dl-04a-super-resolution/#modern-view) `modern-view`
   - [Survey papers](/en/learn/deep-learning/dl-04a-super-resolution/#survey-papers) `survey-papers`
@@ -717,16 +711,11 @@ Why super-resolution is ill-posed, how degradation models, sub-pixel convolution
 *Supplementary notes (`notes/` page):*
 
 - [Example-based SR and sparse coding in detail](/en/learn/deep-learning/dl-04a-super-resolution/notes/#example-based-sr-and-sparse-coding-in-detail) `example-based-sr-and-sparse-coding-in-detail`
-- [Three kernel-aware methods](/en/learn/deep-learning/dl-04a-super-resolution/notes/#three-kernel-aware-methods) `three-kernel-aware-methods`
-- [LIIF's three refinements](/en/learn/deep-learning/dl-04a-super-resolution/notes/#liifs-three-refinements) `liifs-three-refinements`
+- [Aliasing in the LR spectrum](/en/learn/deep-learning/dl-04a-super-resolution/notes/#aliasing-in-the-lr-spectrum) `aliasing-in-the-lr-spectrum`
+- [Adjustable gradient clipping](/en/learn/deep-learning/dl-04a-super-resolution/notes/#adjustable-gradient-clipping) `adjustable-gradient-clipping`
 - [Why a posterior sample costs twice the MMSE](/en/learn/deep-learning/dl-04a-super-resolution/notes/#why-a-posterior-sample-costs-twice-the-mmse) `why-a-posterior-sample-costs-twice-the-mmse`
-
-*Paper guides (`papers/` page):*
-
-- [Wang, Chen and Hoi: Deep Learning for Image Super-Resolution (TPAMI 2021)](/en/learn/deep-learning/dl-04a-super-resolution/papers/#wang-chen-and-hoi-deep-learning-for-image-super-resolution-tpami-2021) `wang-chen-and-hoi-deep-learning-for-image-super-resolution-tpami-2021`
-- [Liu et al.: Blind Image Super-Resolution, a Survey and Beyond (TPAMI 2022)](/en/learn/deep-learning/dl-04a-super-resolution/papers/#liu-et-al-blind-image-super-resolution-a-survey-and-beyond-tpami-2022) `liu-et-al-blind-image-super-resolution-a-survey-and-beyond-tpami-2022`
-- [Chen et al.: Real-World Single Image Super-Resolution, a Brief Review (Information Fusion 2022)](/en/learn/deep-learning/dl-04a-super-resolution/papers/#chen-et-al-real-world-single-image-super-resolution-a-brief-review-information-fusion-2022) `chen-et-al-real-world-single-image-super-resolution-a-brief-review-information-fusion-2022`
-- [Moser et al.: Diffusion Models, Image Super-Resolution, and Everything (TNNLS 2025)](/en/learn/deep-learning/dl-04a-super-resolution/papers/#moser-et-al-diffusion-models-image-super-resolution-and-everything-tnnls-2025) `moser-et-al-diffusion-models-image-super-resolution-and-everything-tnnls-2025`
+- [ESRGAN's changes in detail](/en/learn/deep-learning/dl-04a-super-resolution/notes/#esrgans-changes-in-detail) `esrgans-changes-in-detail`
+- [LIIF's three refinements](/en/learn/deep-learning/dl-04a-super-resolution/notes/#liifs-three-refinements) `liifs-three-refinements`
 
 ## dl-04b-video-super-resolution
 
