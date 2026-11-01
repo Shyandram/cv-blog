@@ -1,0 +1,686 @@
+---
+title: "DLCV 10・影像生成：從 GAN 到文字生成影像系統"
+description: "把影像生成器當成視覺系統來建構與評估：任務與「好」的意義、各模型家族的一張地圖、文字生成影像模型中的文字編碼器、交叉注意力與引導，以及控制、個人化與編輯、自迴歸與統一多模態生成器、評估、資料、風險與失效模式。"
+track: deep-learning
+order: 100
+level: advanced
+prereqs: [ml/ml-06-generative-models, ml/ml-07-diffusion-flow-matching]
+tags: [image-generation, text-to-image, diffusion-models, gan, autoregressive-models, cross-attention, controlnet, image-editing, evaluation, provenance]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import figFamily from '../../../../assets/deep-learning/dl-10-image-generation/family-map.png';
+import figPipeline from '../../../../assets/deep-learning/dl-10-image-generation/t2i-pipeline.png';
+import figXattn from '../../../../assets/deep-learning/dl-10-image-generation/cross-attention.png';
+import figComp from '../../../../assets/deep-learning/dl-10-image-generation/compositional-check.png';
+
+## 你將學到
+
+- 影像生成有哪幾類任務（無條件生成、類別條件生成、文字生成影像、影像轉影像、編輯、影像修補），以及「好」背後的三個問題：**保真度**（fidelity）、**多樣性**（diversity），以及與條件的**對齊**（alignment）。
+- 一張涵蓋各模型家族（GAN、VAE 與 tokenizer、擴散、流匹配、自迴歸與統一多模態模型）的地圖：每個家族的核心想法用白話說明，以及本站在哪裡推導它們的理論。
+- 文字生成影像系統怎麼組成：文字編碼器（CLIP 或 T5）、從影像特徵看向文字的**交叉注意力**（cross-attention）、實務上使用的無分類器引導，以及 U-Net 或 Transformer 骨幹。
+- 怎麼控制、個人化預訓練好的生成器，並用它做編輯（ControlNet、textual inversion、DreamBooth、LoRA、SDEdit、Prompt-to-Prompt、InstructPix2Pix、RePaint）。
+- 文字生成影像模型怎麼評估（FID 及其陷阱、CLIPScore、GenEval 等組合式基準、人類偏好模型）、用什麼資料訓練、帶有哪些風險（記憶、偏見、深偽、出處溯源），以及哪裡仍會失敗（計數、文字、手、空間關係、屬性綁定）。
+
+## 先看全貌
+
+影像生成器把一個需求變成一張新的圖片。這個需求可以什麼都沒有（「隨便一張臉」），可以是一個類別標籤（「一隻金翅雀」），可以是一句話（「草地上的一顆紅球」），也可以是另一張影像加上一道指令（「把它變成冬天」）。結果應該看起來真實、每次嘗試都有變化，而且確實畫出了被要求的內容。
+
+<Callout type="tip" title="用最簡單的話說">
+想像一位替警方工作的肖像畫家。你描述一張臉，畫家先畫出一團粗略的模糊輪廓，然後不斷修飾，每畫一筆就回頭看一眼你說的話（「大眼睛、短頭髮」）。生成器做的就是同一件事，而且每秒做很多次。「話」由一個閱讀模型轉成數字，「回頭看」是一個叫交叉注意力的步驟，「從模糊輪廓修成圖片」的修飾則由生成器本身負責。有些畫家的做法不同，是一片一片地貼上馬賽克磚，但他們畫的時候都在聽那段描述。
+</Callout>
+
+**為什麼重要。** 影像生成不到十年，就從又小又模糊的臉進步到逼真、能聽懂提示的圖片，現在已經是設計工具、照片編輯器、資料管線與復原系統的一部分（[DLCV 04C](/zh-tw/learn/deep-learning/dl-04c-generative-restoration/) 就用同樣的模型來修復受損的照片）。作為電腦視覺**系統**，現代生成器結合了語言模型、影像壓縮器、生成網路、取樣器與評估流程。每個部分都可能單獨出錯，也都有各自的文獻。
+
+**本篇的位置。** 理論放在 ML 學習路線，本篇不重複。[ML 06](/zh-tw/learn/ml/ml-06-generative-models/) 以程式推導 VAE、GAN、正規化流與經典指標（Inception Score、FID、精確率與召回率）。[ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/) 推導擴散、DDIM、無分類器引導、潛在擴散、擴散 Transformer、流匹配與少步取樣器。[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/) 談像素與 token 上的自迴歸模型，[ML 09](/zh-tw/learn/ml/ml-09-foundation-models/) 談 CLIP 與參數高效微調。這裡採取的是**系統觀點**：這些元件怎麼組裝成文字生成影像的產品、怎麼操控、怎麼評判，以及可能出什麼問題。兩段程式範例只用 NumPy 與 scikit-image，在 CPU 上幾秒內就能跑完，也不需要網路上的權重。
+
+## 任務：要生成什麼，以及「好」是什麼意思
+
+**白話版。** 每個生成任務都是「畫出一個符合這個條件的樣本」。任務的差別只在於條件是什麼。而「好」永遠同時包含三件事：真實、多樣，以及忠於需求。
+
+### 六種生成任務
+
+下面所有任務，都是從條件分布 $p(x \mid c)$ 取樣，其中 $x$ 是影像，$c$ 是條件；無條件生成使用空條件 $c = \varnothing$。
+
+| 任務 | 條件 $c$ | 輸出 | 本篇中的範例方法 |
+|---|---|---|---|
+| 無條件生成 | 無 | 訓練領域內的一張影像 | 人臉上的 StyleGAN [1] |
+| 類別條件生成 | 一個類別標籤 | 該類別的一張影像 | BigGAN [2]、DiT [3] |
+| 文字生成影像 | 一段文字提示 | 符合提示的一張影像 | Imagen [4]、潛在擴散 [5] |
+| 影像轉影像 | 一張影像（常加上文字） | 保留其結構的新影像 | SDEdit [6]、ControlNet [7] |
+| 編輯 | 一張影像加上編輯需求 | 編輯後的影像 | Prompt-to-Prompt [8]、InstructPix2Pix [9] |
+| 影像修補／外擴 | 一張影像加上遮罩 | 遮罩區域被填補的影像 | RePaint [10] |
+
+因為形式相同，一個訓練好的文字生成影像模型就能涵蓋表中的大部分列：編輯、遮罩與控制影像，都只是額外的條件，或是取樣器不同的起點。
+
+### 三個問題：保真度、多樣性、對齊
+
+- **保真度（品質）。** 每個樣本看起來像該領域的真實影像嗎？有沒有瑕疵？
+- **多樣性（涵蓋度）。** 許多樣本合起來，涵蓋了真實影像的變化嗎？還是模型一直重複幾個偏愛的結果（模式崩塌，mode collapse）？
+- **對齊。** 樣本畫出了條件所要求的內容嗎：正確的物體、數量、顏色、位置與文字？
+
+再加上第四個實務問題：**成本**，也就是網路的評估次數，以及每張影像要花幾秒。前三個問題彼此拉扯。多數生成器都有一個旋鈕，用多樣性換取保真度與對齊：BigGAN 的**截斷技巧**（truncation trick）縮小輸入雜訊的範圍 [2]，擴散模型中的**無分類器引導**則把樣本推向條件 [11]。把這種旋鈕調高，影像會更乾淨、更符合提示，但也更相似。每次讀到單一的「品質」數字，都要記得這個取捨。分別量測保真度與多樣性的指標，推導在 [ML 06](/zh-tw/learn/ml/ml-06-generative-models/#評估生成模型)；本篇在後面的評估一節補上對齊這一面。
+
+## 各模型家族的一張地圖
+
+**白話版。** 把雜訊變成圖片的方法只有幾種：一次到位（GAN）、反覆去雜訊（擴散）、沿著學到的流前進（流匹配），或是一片一片地把圖寫出來（自迴歸模型）。另一方面，它們每一種都可以在原始像素、壓縮後的連續編碼或離散 token 上運作。
+
+<Figure src={figFamily} alt="一張圖：上方有五個生成器方框（GAN、擴散、流匹配或整流流、自迴歸、統一多模態），下方有三個表示方式方框（像素、連續潛在、離散 token），箭頭表示哪種生成器通常搭配哪種表示方式。" caption="圖 1 — 一張地圖上的各個家族。上排是新內容怎麼產生；下排是生成器在哪裡運作。箭頭表示常見的搭配；表示方式與生成器是各自獨立的設計選擇。" />
+
+**GAN：通過生成器一次。** 生成器把隨機雜訊對應成影像，同時訓練的判別器則試著分辨生成影像與真實影像；生成器靠騙過它來進步 [12]。取樣只要一次前向傳遞，所以 GAN 很快。StyleGAN [1] 把雜訊對應成一個中間的「風格」向量，並把它注入生成器的每個解析度，這把粗略的屬性（姿勢、身分）和細緻的屬性（雀斑、頭髮）分開，也讓各尺度可以分別控制。BigGAN [2] 在 ImageNet 上擴大類別條件 GAN 的規模，並提出上面提到的截斷技巧。GAN 的訓練不穩定，也可能漏掉某些模式，這讓它們很難擴展到開放式的提示。理論與程式：[ML 06，GAN](/zh-tw/learn/ml/ml-06-generative-models/#gan與對手一起學習)。
+
+**VAE 與 tokenizer：先壓縮。** 變分自編碼器（VAE）學習一個編碼器把影像編成緊湊的潛在編碼，一個解碼器把它還原成像素，以及編碼上的一個簡單先驗 [13]。在今天的系統裡，自編碼器的主要工作是**為另一個生成器做前置壓縮**：潛在擴散在比影像小好幾倍的連續潛在網格上執行去雜訊網路 [5]；以 token 為基礎的模型則使用**向量量化**（vector-quantized）自編碼器（VQ-VAE [14]、VQGAN [15]），把影像變成由學到的碼本（codebook）中整數索引組成的網格，就像字典裡的字。解碼器設下了上限：解碼器重建不出來的細節，沒有任何生成器能產生。細節見 [ML 06，VAE](/zh-tw/learn/ml/ml-06-generative-models/#vae潛在變數機率模型) 與 [ML 08，視覺 token](/zh-tw/learn/ml/ml-08-autoregressive-vision/#離散視覺-tokenvq-vae-與-vqgan)。
+
+**擴散：許多小步的去雜訊。** 訓練一個網路，從帶雜訊的影像中去掉一點 Gaussian 雜訊；要生成時，從純雜訊出發，反覆套用許多次 [16]。訓練是穩定的迴歸問題，加上更好的架構與分類器引導後，擴散模型在 ImageNet 上超越了 GAN [17]。把同樣的過程放在自編碼器的潛在網格上執行，也就是**潛在擴散**，讓高解析度的文字生成影像變得負擔得起 [5]。理論與程式：[ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/)，以及其中的[潛在擴散](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#潛在擴散)一節。
+
+**流匹配與整流流：沿著速度場前進。** 取一個雜訊樣本和一個資料樣本，用直線連起來，訓練網路預測沿著這類直線的行進方向；要生成時，從雜訊出發，沿著預測的方向前進 [18], [19]。它與擴散關係密切（只是雜訊與資料之間走的路徑不同），現在已用在大規模系統：Stable Diffusion 3 以整流流（rectified flow）目標訓練一個大型潛在 Transformer [20]。理論：[ML 07，流匹配](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#流匹配學習一個傳輸速度)。
+
+**自迴歸與統一模型：一片一片地寫出圖片。** 把影像變成 token 序列，在已生成的所有內容的條件下，預測下一個 token（或下一組 token，或整張 token 圖下一個更清晰的版本）。這就是把語言模型的做法用在影像上，最新的形式是用單一個 Transformer 同時讀寫文字與影像。後面有專屬的一節。
+
+| 家族 | 如何取樣 | 循序的網路呼叫次數 | 主要優點 | 主要注意事項 |
+|---|---|---|---|---|
+| GAN | 通過生成器一次 | 一次 | 速度快、平滑可編輯的潛在空間 | 訓練穩定性、模式涵蓋 |
+| 擴散 | 從雜訊反覆去雜訊 | 數十到數百次；蒸餾後更少 | 品質、涵蓋度、訓練穩定 | 取樣成本 |
+| 流匹配 | 對學到的速度做積分 | 數十次；蒸餾後更少 | 目標簡單、路徑更直 | 沒蒸餾還是需要好幾步 |
+| 自迴歸 | 依某種順序預測 token | 每個 token、每組或每個尺度一次 | 重用語言模型的機制、token 有精確概似 | tokenizer 的上限、誤差累積 |
+
+地圖上有兩點容易忘記。生成器與表示方式是各自獨立的選擇：擴散模型可以在像素上運作（Imagen [4]），也可以在潛在上運作（潛在擴散 [5]），自迴歸模型可以使用離散或連續的 token [21]。而且實際的系統會混合各家族：VQGAN 的 tokenizer 是用對抗損失訓練的 [15]，對抗式蒸餾則把擴散模型變成只要一到四步的生成器 [22]。
+
+## 文字生成影像系統
+
+**白話版。** 文字生成影像模型有三個分開訓練或選擇的部分：一個**閱讀器**，把提示變成一串向量；一個**畫家**，一邊看著這些向量，一邊反覆修飾帶雜訊的影像；以及一個**解碼器**，把畫家緊湊的結果變成像素。大部分的工程工作，都在於畫家怎麼看這些文字。
+
+<Figure src={figPipeline} alt="方塊圖：提示進入凍結的文字編碼器，產生 token 嵌入；潛在網格上的 Gaussian 雜訊進入去雜訊網路（U-Net 或 DiT），它會注意文字 token；一條迴圈箭頭標示帶引導的重複取樣步驟；可選的控制影像經由 ControlNet 進入；乾淨的潛在表徵送到 VAE 解碼器，輸出影像。" caption="圖 2 — 潛在文字生成影像流程。文字編碼器與自編碼器通常分開訓練並凍結；只有去雜訊網路（或速度網路）在影像與標題的配對上訓練。取樣時呼叫去雜訊網路 N 次、解碼器一次。" />
+
+訓練時，影像與標題配對中的每張影像會被編碼成潛在表徵、加上隨機強度的雜訊，去雜訊網路學習在**給定標題嵌入**的條件下還原雜訊。取樣時，去雜訊網路從純雜訊出發，執行 $N$ 步，再由解碼器產生像素。這兩句話背後的擴散與取樣公式，在 [ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#操控生成條件與引導)；下面我們看與文字有關的部分。
+
+### 文字編碼器：CLIP 或語言模型
+
+**白話版。** 文字編碼器決定生成器能「理解」什麼。一個訓練來配對影像與標題的模型，懂得視覺概念；只用文字訓練的大型語言模型，則更懂文法、詞序，以及和拼字有關的結構。許多系統兩種都用。
+
+主要有兩類編碼器：
+
+- **CLIP 文字編碼器**以對比方式訓練，讓影像與它的標題在共享的嵌入空間中彼此靠近 [23]（見 [ML 09](/zh-tw/learn/ml/ml-09-foundation-models/#影像與文字的共享空間clip-與-siglip)）。它們的嵌入有視覺上的依據。
+- **語言模型編碼器**，例如 T5 [24]，只用文字訓練。Imagen 的關鍵發現是：一個大型**凍結**的 T5 編碼器出乎意料地好用，而把文字編碼器加大，對保真度與影像–文字對齊的改善，遠大於把影像擴散模型加大 [4]。
+
+近期的系統會把兩者結合。SDXL 在先前 Stable Diffusion 模型的設計上加了第二個文字編碼器 [25]。Stable Diffusion 3 使用三個凍結的編碼器：兩個 CLIP 模型和 T5-XXL；作者報告指出，推論時拿掉 T5，對大多數提示損失不大，但對含有長篇文字或許多細節的提示明顯有害 [20]。有一個相關的發現與拼字有關：文字編碼器若看到的是整個詞片段而不是字元（「對字元視而不見」，character-blind），就很難一個字母一個字母地畫出一個字，而能辨識字元的編碼器，繪製視覺文字的準確度高得多 [26]。DALL·E 2 走的是另一條路：先由一個「先驗」（prior）網路從標題生成 CLIP **影像**嵌入，再由擴散解碼器根據這個嵌入生成影像 [27]。
+
+### 交叉注意力：文字如何抵達像素
+
+**白話版。** 在每一層，影像的每個位置都先問一個問題（「這裡該放什麼？」），再掃過提示的所有字，找出能回答的那些字。它收集到的答案，是這些字的加權混合，匹配的字權重大。
+
+潛在擴散為此在 U-Net 去雜訊網路中加入了交叉注意力層 [5]。令 $\Phi \in \mathbb{R}^{N \times d_\phi}$ 為某一層的影像特徵（$N$ 個空間位置，每個是寬度 $d_\phi$ 的向量），$E \in \mathbb{R}^{L \times d_e}$ 為文字編碼器的輸出（$L$ 個寬度 $d_e$ 的 token）。學到的矩陣 $W_Q \in \mathbb{R}^{d_\phi \times d}$、$W_K, W_V \in \mathbb{R}^{d_e \times d}$ 把它們投影到共同的寬度 $d$：
+
+$$
+Q = \Phi W_Q,\qquad K = E W_K,\qquad V = E W_V,\qquad
+A = \operatorname{softmax}\!\Big(\frac{Q K^\top}{\sqrt d}\Big),\qquad
+\operatorname{out} = A V .
+$$
+
+這裡 $Q \in \mathbb{R}^{N \times d}$ 為每個影像位置存放一個**查詢**（query），$K, V \in \mathbb{R}^{L \times d}$ 為每個文字 token 存放一個**鍵**（key）與一個**值**（value），softmax 沿著每一列計算，而 $A \in \mathbb{R}^{N \times L}$ 是**注意力圖**：第 $i$ 列是 $L$ 個 token 上的機率分布，說明位置 $i$ 對每個字聽多少。輸出 $\operatorname{out} \in \mathbb{R}^{N \times d}$ 給每個影像位置一份字的值的混合，並加回影像特徵。查詢來自影像，鍵與值來自文字，這正是它稱為*交叉*注意力而不是自注意力的原因（比較 [NLP 07](/zh-tw/learn/nlp/nlp-07-attention-transformers/#7-自注意力與交叉注意力)）。把 $A$ 的第 $j$ 行當成影像來看，就得到**第 $j$ 個字被畫在哪裡**的熱度圖，Prompt-to-Prompt 就把這個事實變成一種編輯方法 [8]。
+
+Transformer 骨幹提供了另一種做法。Stable Diffusion 3 的 MM-DiT 把影像 token 與文字 token 串成一個序列，讓它們雙向互相注意，兩種模態各有各自的權重 [20]。於是文字也會「讀」影像，而不只是影像讀文字。
+
+下面的玩具範例建立一個 $16 \times 16$ 的影像特徵網格，其中一塊圓盤區域像是「red」和「ball」這兩個字，背景像是「grass」，然後執行一次交叉注意力。為了易讀，投影矩陣用單位矩陣；在訓練好的模型中它們是學出來的。
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+d = 32                                       # feature width
+words = ["a", "red", "ball", "on", "grass"]  # the prompt, one text token per word
+E = rng.normal(size=(len(words), d))         # text-encoder outputs, one row per word
+
+# A 16 x 16 grid of image tokens: a disk ("the ball") on a background ("the grass").
+yy, xx = np.mgrid[:16, :16]
+ball = ((yy - 6) ** 2 + (xx - 9) ** 2 <= 9).ravel()   # 29 of the 256 positions
+X = 1.0 * rng.normal(size=(256, d))                   # noisy image features
+X[ball] += 0.5 * (E[1] + E[2])                        # ball region looks like "red ball"
+X[~ball] += 0.5 * E[4]                                # background looks like "grass"
+
+# Cross-attention: queries from the image, keys and values from the text.
+# Real models learn W_q, W_k, W_v; identity matrices keep the toy readable.
+Q, K, V = X, E, E
+scores = Q @ K.T / np.sqrt(d)                         # 256 image tokens x 5 words
+A = np.exp(scores - scores.max(axis=1, keepdims=True))
+A /= A.sum(axis=1, keepdims=True)                     # softmax over the words
+out = A @ V                                           # each image token gets a mix of word values
+
+print("each row sums to 1:", np.allclose(A.sum(axis=1), 1), "| output shape:", out.shape)
+for j, w in enumerate(words):
+    print(f"{w:6s} mean weight inside the ball={A[ball, j].mean():.2f}  "
+          f"outside={A[~ball, j].mean():.2f}")
+```
+
+輸出如下：
+
+```text
+each row sums to 1: True | output shape: (256, 32)
+a      mean weight inside the ball=0.02  outside=0.06
+red    mean weight inside the ball=0.43  outside=0.07
+ball   mean weight inside the ball=0.52  outside=0.04
+on     mean weight inside the ball=0.02  outside=0.08
+grass  mean weight inside the ball=0.01  outside=0.74
+```
+
+（這些數字來自我們的玩具實驗，不是任何訓練好的模型。）在圓盤內，幾乎所有注意力都給了「red」和「ball」；在圓盤外，四分之三給了「grass」。虛詞「a」和「on」在任何地方權重都很小。圖 3 畫出這五張圖。請注意這個機制**不**保證的事：「red」和「ball」位在同一區，是因為特徵這樣設定；注意力公式裡沒有任何東西，會強迫顏色字附著到正確的物體上。當畫面上有兩個物體時，顏色可能注意到錯的那一個，這是後面要談的屬性綁定失敗的根源之一 [28]。
+
+<Figure src={figXattn} alt="六張 16 × 16 的小圖：第一張顯示綠色背景上的圓盤形球區；後五張顯示 a、red、ball、on、grass 這五個字的注意力權重。red 和 ball 的圖在圓盤內部很亮，grass 的圖在圓盤外面很亮，a 和 on 的圖很暗。" caption="圖 3 — 玩具範例中的交叉注意力圖。每張圖都是注意力矩陣 A 的一行，重新排成影像網格：每個字被「畫」在哪裡。Prompt-to-Prompt 就是重複使用這類圖來編輯影像 [8]。" />
+
+### 實務上的引導
+
+無分類器引導（classifier-free guidance，CFG）的推導與測試在 [ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#無分類器引導cfg)；這裡只做提醒。訓練時，對隨機一部分的樣本把標題丟掉（換成空提示），讓同一個網路同時學會條件預測與無條件預測 [11]。取樣時把兩者結合：$\hat\epsilon = \epsilon_\varnothing + w(\epsilon_c - \epsilon_\varnothing)$，其中 $\epsilon_c$ 與 $\epsilon_\varnothing$ 是有提示與沒有提示的預測，$w$ 是引導尺度；$w \gt 1$ 會越過條件預測，朝提示的方向再移動。
+
+對系統建構者而言，有四件實務上的事很重要：
+
+- **它是旋鈕，不是量測值。** 較高的 $w$ 通常讓影像更忠於提示、對比更高，但變化更少；$w$ 非常高時，影像會過飽和而扭曲。要報告它的數值與慣例（有些程式碼寫成 $1 + w$）。
+- **除非把兩個預測合成一個批次，否則每一步的工作量會加倍**，所以 30 步的引導取樣器大約要做 60 次網路評估。
+- **它也適用於 token 模型。** 自迴歸與遮罩 token 生成器，會對下一個 token 的 logits 套用同樣的公式（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#自迴歸模型的-classifier-free-guidance)）。
+- **蒸餾模型可能把它內建進去。** 有些蒸餾後的檢查點，被訓練成重現有引導的輸出，所以引導尺度變成輸入或乾脆消失；比較設定之前，要先讀發布文件（[ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#執行檢查點前先閱讀元件)）。
+
+### 骨幹與幾個代表性系統
+
+去雜訊網路最早是 **U-Net** [29]，一種有跳接的卷積編碼器–解碼器，並在數個解析度上插入交叉注意力層 [5]。**擴散 Transformer（DiT）**則用作用在潛在小塊上的 Vision Transformer 取代它，並且隨著 Transformer 的運算量增加，表現穩定進步 [3]（細節見 [ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#擴散-transformer)）。近期的大型系統多半使用 Transformer。下表列出幾個設計已有論文記載的系統；它是設計選擇的地圖，不是排名。
+
+| 系統 | 在哪裡生成 | 生成器與骨幹 | 文字條件化 |
+|---|---|---|---|
+| 潛在擴散／Stable Diffusion [5] | 自編碼器潛在空間 | 擴散，U-Net | 對文字編碼器做交叉注意力 |
+| DALL·E 2 [27] | 像素 | 以 CLIP 影像嵌入為條件的擴散解碼器 | 由先驗把標題對應成 CLIP 影像嵌入 |
+| Imagen [4] | 像素，64 → 256 → 1024 級聯 | 擴散 | 凍結的 T5-XXL |
+| Parti [30] | 離散 token（ViT-VQGAN） | 自迴歸編碼器–解碼器 Transformer | 文字是編碼器的輸入 |
+| Muse [31] | 離散 token | 遮罩平行解碼，Transformer | 來自預訓練語言模型的嵌入 |
+| SDXL [25] | 自編碼器潛在空間 | 擴散，更大的 U-Net，可選的精修器 | 兩個文字編碼器 |
+| Stable Diffusion 3 [20] | 自編碼器潛在空間 | 整流流，MM-DiT Transformer | 兩個 CLIP 編碼器與 T5-XXL |
+
+Imagen 級聯的解析度，來自其參考文獻所列的專案頁面。
+
+*選讀：[Stable Diffusion 3](#esser-等人scaling-rectified-flow-transformers-for-high-resolution-image-synthesisicml-2024)（見「論文導讀」頁）。一篇論文如何結合整流流目標、文字與影像聯合的 Transformer、三個文字編碼器與精選的標題，以及怎麼讀它的消融實驗。*
+
+## 控制、個人化與編輯
+
+**白話版。** 提示是很弱的方向盤：文字無法釘死確切的姿勢、某個人的狗，或「只改帽子」。有三類方法提供更強的操控：額外的**控制影像**（邊緣、深度、姿勢）、教模型新概念的小型**個人化**更新，以及改動給定影像、同時保留其餘部分的**編輯**流程。
+
+### 空間控制：ControlNet
+
+ControlNet 把空間條件（邊緣圖、深度圖、分割圖、人體姿勢）加到大型預訓練的文字生成影像模型上，又不損壞它 [7]。它把原始網路**鎖住**，為它的編碼層做一份接收條件的**可訓練副本**，再透過**零卷積**（zero convolution）把副本接回原始網路：零卷積是權重與偏差都從零開始的 $1 \times 1$ 卷積。在第一個訓練步，新加的分支輸出剛好是零，所以模型的行為與原始模型完全相同，學習從一個能運作的生成器出發。論文報告，不論資料集小（少於 5 萬）或大（超過 100 萬），訓練都很穩健 [7]。
+
+*選讀：[ControlNet 的零卷積](#controlnet-的零卷積為什麼訓練從原始模型開始)（見「補充資料」頁）。一個受控區塊的方程式，以及為什麼梯度仍然能傳到零初始化的層。*
+
+### 個人化：教模型一個新概念
+
+三種方法在儲存量、速度與保真度之間各有取捨：
+
+- **Textual inversion** 讓整個模型保持凍結，只從某個概念的 3–5 張影像學習一個新的詞嵌入（一個新的「偽詞」），做法是在這些影像上最小化一般的去雜訊損失 [32]。儲存下來的結果只是一個向量，但它的表達能力受限於凍結的模型本來就畫得出來的東西。
+- **DreamBooth** 用某個主體的幾張影像微調整個模型，影像的標題包含一個罕見的識別字加上類別名稱，例如 "a [V] dog"，並加上一項**類別專屬的先驗保留損失**（prior-preservation loss），讓模型仍然畫得出一般的狗；沒有它，模型會漂移而失去多樣性 [33]。
+- **LoRA**（低秩適配，low-rank adaptation）凍結每個權重矩陣 $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$，只學習加性更新 $\Delta W = BA$，其中 $B \in \mathbb{R}^{d_{\text{out}} \times r}$、$A \in \mathbb{R}^{r \times d_{\text{in}}}$，且秩 $r$ 很小 [34]。它原本是為語言模型提出的；同樣的更新可以接在文字生成影像去雜訊網路的注意力層上，讓個人化的風格或主體變成一個可以開關的小檔案（[ML 09，PEFT](/zh-tw/learn/ml/ml-09-foundation-models/#參數高效微調peft)）。
+
+*選讀：[個人化目標函數並排比較](#個人化目標函數並排比較)（見「補充資料」頁）。textual inversion 與 DreamBooth 的精確損失，以及這三種方法各儲存什麼。*
+
+### 編輯與影像修補
+
+- **SDEdit** 對輸入影像（例如一張粗略的彩色草圖）加雜訊，加到某個中間的雜訊強度，再執行一般的反向過程 [6]。起始雜訊強度低，會保留輸入的版面與顏色（忠實）；強度高，則給模型更多自由（真實）。一個數字就決定了這個平衡。
+- **Prompt-to-Prompt** 透過更改提示（"a cat on a bike" → "a dog on a bike"）來編輯生成的影像，同時在取樣時重複使用原本的交叉注意力圖，所以版面維持不變，只有被改動的字的內容會變 [8]。要用這種方式編輯*真實*照片，必須先找到一個能重現它的雜訊，例如用確定性的 DDIM 反轉（[ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#ddim同樣的訓練不同的取樣器)）。
+- **InstructPix2Pix** 依照書面指令（"make it look like winter"）行動。它的訓練資料是自動產生的：結合語言模型（GPT-3）與文字生成影像模型（Stable Diffusion），做出大量編輯前後的範例；用這些配對訓練的條件擴散模型，只要一次取樣就能完成編輯，不需要對每張影像微調或反轉 [9]。
+- **RePaint** 用無條件擴散模型做影像修補：在每個反向步驟，它把已知區域換成輸入影像加上正確強度雜訊的副本，讓模型只生成被遮住的區域 [10]。
+
+Huang 等人的一篇綜述，依學習策略、輸入條件與任務，整理了許多以擴散為基礎的編輯方法 [35]。
+
+### 快速取樣簡述
+
+文字生成影像模型是互動使用的，所以網路呼叫的次數很重要。各條路線在 [ML 07，少步生成](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#少步與一步生成) 都談過：DDIM 這類確定性取樣器，用同一個網路就需要較少的步數 [36]；漸進式蒸餾（progressive distillation）反覆把步數減半 [37]；一致性模型（consistency models）學習從軌跡上任何一點直接跳到終點 [38]；對抗式擴散蒸餾（adversarial diffusion distillation，ADD）把擴散教師與對抗損失結合，讓大型模型只用 1–4 步就能取樣 [22]。比較系統時，要算每一次網路評估（包含兩次引導傳遞），再加上解碼器。
+
+## 自迴歸與統一多模態生成器
+
+**白話版。** 自迴歸生成器寫影像的方式，就像語言模型寫句子：一次一個 token，或一次一組 token，每次都以前面寫的為條件。最新的一步，是用**一個** Transformer 同時處理文字與影像，讓同一個模型既能描述圖片、回答關於圖片的問題，也能畫新的圖。
+
+### 一段話看自迴歸這條路線
+
+理論在 [ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/)；這裡只做摘要。tokenizer（VQ-VAE 或 VQGAN，[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#離散視覺-tokenvq-vae-與-vqgan)）把影像變成整數網格，Transformer 用鏈鎖法則為它們建模，以 teacher forcing 的下一個 token 交叉熵訓練（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#teacher-forcing因果遮罩與曝光偏差)）。Parti [30] 與 LlamaGen [39] 這類逐行掃描（raster-order）模型，每步預測一個 token；MaskGIT [40] 與 Muse [31] 這類遮罩模型一次平行預測許多 token，並在幾輪中逐步修正（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#遮罩生成模型maskgit-與-muse)）；VAR 每步預測整張更清晰的 token 圖，由粗到細 [41]（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#next-scale-預測var)）；MAR 則放棄離散碼本，用一個小型擴散頭為每個連續 token 建模 [21]（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#連續-token-與擴散條件分布mar)）。取樣成本、KV 快取以及與擴散的比較，在 [ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#自迴歸與擴散的比較)。
+
+### 實務上的自迴歸文字生成影像
+
+從系統面來看，有四件事值得知道。
+
+- **文字是以上下文的形式進來，而不是透過對另一個去雜訊網路的交叉注意力。** Parti 把文字生成影像當成翻譯：Transformer 編碼器讀提示，解碼器寫出影像 token；論文把這個編碼器–解碼器模型擴大到 200 億個參數，並提出 PartiPrompts 基準，包含超過 1,600 個英文提示 [30]。Muse 則把預訓練大型語言模型的文字嵌入餵給遮罩 token Transformer，不需微調就支援影像修補、外擴與不用遮罩的編輯 [31]。
+- **語言模型的基礎設施可以直接轉用。** LlamaGen 使用單純的 Llama 式解碼器；除了 111M 到 3.1B 參數的類別條件模型，它還訓練了一個 775M 的文字條件模型，並報告 LLM 服務框架讓影像生成加速 326%–414% [39]。
+- **tokenizer 具有決定性。** MAGVIT-v2 主張 tokenizer 是關鍵元件：配上它新的「免查表」（lookup-free）量化器，詞彙量可以變得很大，在相同訓練資料、相近模型大小與相近訓練預算下，語言模型在 ImageNet 上勝過擴散模型 [42]。文字和細線這類小細節，是粗糙 tokenizer 的典型犧牲品（[ML 08](/zh-tw/learn/ml/ml-08-autoregressive-vision/#codebook-的問題與替代方案)）。
+- **引導與取樣的旋鈕可以沿用。** 在 logits 上做 CFG、temperature 與 top-$k$ 取樣，決定保真度與多樣性的平衡，而且每個有引導的步驟要做兩次前向傳遞。
+
+### 統一多模態模型
+
+**白話版。** 與其用一個文字模型把提示交給另一個獨立的影像模型，統一模型把文字與影像片段放進**同一個序列**，用一個 Transformer 訓練。設計上的問題是：影像片段是離散 token 還是連續向量、影像部分用下一個 token 預測還是擴散生成，以及理解與生成是否共用同一個影像編碼器？
+
+下面這些模型都有論文記載，並說明了主要的設計選擇：
+
+- **Chameleon** 從一開始就把離散的影像 token 與文字 token 放在同一個序列（「早期融合」，early fusion），用一個模型處理圖說生成、問答，以及文字、影像與混合文件的生成 [43]。
+- **Emu3** 從頭訓練一個 Transformer，**只**用下一個 token 預測，處理影像、文字與影片的離散 token [44]。
+- **Transfusion** 讓影像保持連續，用一個 Transformer 同時訓練文字上的下一個 token 損失與影像小塊上的擴散損失；作者報告這樣的擴展性比把影像量化成 token 更好 [45]。
+- **Show-o** 把文字的自迴歸建模，與影像 token 上的離散（遮罩）擴散結合起來 [46]。
+- **Janus** 共用一個 Transformer，但為理解與生成使用**不同的**視覺編碼器，因為這兩個任務需要不同程度的影像細節 [47]。
+
+| 模型 | 影像表示 | 影像目標 | 視覺編碼器 |
+|---|---|---|---|
+| Chameleon [43] | 離散 token | 下一個 token | 一個，共用 |
+| Emu3 [44] | 離散 token | 下一個 token | 一個，共用 |
+| Transfusion [45] | 連續小塊 | 擴散 | 一個，共用 |
+| Show-o [46] | 離散 token | 遮罩（離散）擴散 | 一個，共用 |
+| Janus [47] | 生成用離散 token | 下一個 token | 理解與生成各自獨立 |
+
+*選讀：[統一多模態模型逐一介紹](#統一多模態模型逐一介紹)（見「補充資料」頁）。每篇論文在 Transformer、tokenizer 與訓練資料上改了什麼。*
+
+目前仍未解決的是：一個模型能否在相同大小下，同時在理解與生成上都達到最先進；共用的視覺 tokenizer 讓每個任務付出多少代價（這是 Janus 的動機）；以及評估該如何比較統一模型與專門的擴散系統。這些論文中關於擴展的主張，都是各篇論文在自己資料上的量測，還不是定論。
+
+## 評估文字生成影像模型
+
+**白話版。** 你需要四種證據：影像看起來真實又多樣嗎（分布指標）、整體上符合提示嗎（對齊分數）、細節對嗎（組合式檢查），以及人喜歡嗎（人類偏好）。每一種都能抓到其他幾種漏掉的失敗。
+
+### 分布指標及其陷阱
+
+FID 比較生成影像與真實影像的特徵統計；精確率與召回率把保真度與涵蓋度分開。兩者的定義與實作都在 [ML 06](/zh-tw/learn/ml/ml-06-generative-models/#精確率與召回率)，[ML 07](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#fid-之外) 則談較新的特徵空間。對文字生成影像模型，常見的協定是**零樣本 COCO FID**：用沒有在 COCO 上訓練的模型，根據 COCO 標題 [48] 生成影像，再與真實的 COCO 影像比較，Imagen 就是這麼做的 [4]。實務上有五個陷阱：
+
+- **有限樣本偏差。** FID 在有限的樣本集上有偏差，且偏差取決於被評估的模型，所以即使樣本數相同，比較也不完全公平；Chong 與 Forsyth 提議外插到無限樣本數 [49]。
+- **前處理。** 特徵擷取之前所用的縮放濾波器與 JPEG 壓縮，會大幅改變 FID；Parmar 等人展示了這點，並提供參考實作 [50]。
+- **特徵看到什麼。** Inception 特徵與 ImageNet 類別非常接近，因此讓生成影像的類別直方圖吻合，就可以降低 FID，卻不代表影像變好 [51]。
+- **與人的一致性。** 在一項大型人類研究中，沒有任何常見指標與人類判斷高度相關，且 FID 低估了擴散模型；作者建議使用 DINOv2 這類更豐富的特徵擷取器 [52]。CMMD 則以 CLIP 嵌入和核距離，取代 Inception 特徵與 Gaussian 假設 [53]。
+- **沒有對齊。** FID 完全不看提示：一個無視所有提示、卻畫出漂亮的類 COCO 影像的模型，也可能得到好分數。
+
+### 提示對齊：CLIPScore
+
+CLIPScore 衡量影像與文字在 CLIP 嵌入空間中有多一致 [54]。令 $\mathbf c$ 為文字的 CLIP 嵌入，$\mathbf v$ 為影像的 CLIP 嵌入，
+
+$$
+\operatorname{CLIP\text{-}S}(\mathbf c, \mathbf v) = w \cdot \max\big(\cos(\mathbf c, \mathbf v),\, 0\big),
+$$
+
+其中 $\cos$ 是餘弦相似度，$w$ 是只用來重新縮放範圍的常數（原論文中 $w = 2.5$，該論文是為影像圖說提出這個分數的）。用於文字生成影像的評估時，要對提示–影像配對取平均。它便宜，也不需要參考影像，但它繼承了 CLIP 的盲點：一個概括整張影像的嵌入，不擅長處理數量、空間關係，以及哪個屬性屬於哪個物體。GenEval 的研究發現，在這類組合式任務上，它的物件層級檢查與人類判斷的一致程度遠高於 CLIPScore [55]。
+
+### 組合式基準
+
+**白話版。** 與其用一個整體相似度，不如對影像提出具體的是非題：有狗嗎、剛好三隻嗎、狗在貓的左邊嗎、車是紅的嗎？由偵測器或視覺–語言模型來回答。
+
+**GenEval** 用模板為六種任務（單一物體、兩個物體、計數、顏色、位置與屬性綁定）產生提示，用實例分割模型偵測物體，用 CLIP 分類物體顏色，再把每張影像評為正確或不正確 [55]。**T2I-CompBench** 提供 6,000 個組合式提示，分三類（屬性綁定、物體關係與複雜組合），並為每類設計專屬的指標 [56]。Imagen 的 **DrawBench** [4] 與 Parti 的 **PartiPrompts** [30] 是供人類並排比較的提示集。物件偵測本身是 [DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/) 的主題；開放詞彙偵測器（[DLCV 03](/zh-tw/learn/deep-learning/dl-03-object-detection/#開放詞彙與定位偵測器)）可以檢查固定類別清單以外的物體。
+
+*選讀：[GenEval](#ghosh-等人geneval-an-object-focused-framework-for-evaluating-text-to-image-alignmentneurips-2023)（見「論文導讀」頁）。這個基準怎麼建構、分數怎麼計算，以及怎麼讀它的表格。*
+
+下面的玩具範例說明為什麼物件層級的檢查很重要。它為提示 "two red circles and a blue square" 畫出由彩色圓盤與方塊組成的合成「生成影像」，用連通元件偵測形狀，並比較兩種分數：一個是**出現分數**（presence score），只問提示裡的哪些字出現在影像的任何地方（刻意設計成整體相似度分數的簡單替身，不是 CLIP 本身）；另一個是**精確檢查**（exact check），要求每個（顏色、形狀）配對都有正確的數量，像 GenEval 那樣。
+
+```python
+import numpy as np
+from skimage.draw import disk, rectangle
+from skimage.measure import label, regionprops
+
+COLORS = {"red": (0.85, 0.1, 0.1), "blue": (0.1, 0.2, 0.85)}
+
+def render(objects, size=96):
+    """Draw (color, shape) objects at fixed slots on a gray canvas: a stand-in for a generated image."""
+    img = np.full((size, size, 3), 0.8)
+    for k, (col, shape) in enumerate(objects):
+        cy, cx = 24 + 48 * (k // 2), 24 + 48 * (k % 2)
+        if shape == "circle":
+            rr, cc = disk((cy, cx), 14)
+        else:
+            rr, cc = rectangle((cy - 12, cx - 12), extent=(24, 24))
+        img[rr, cc] = COLORS[col]
+    return img
+
+def detect(img):
+    """Toy 'detector': connected colored regions -> (color, shape) pairs."""
+    found = []
+    for region in regionprops(label(np.abs(img - 0.8).sum(-1) > 0.3)):
+        r, g, b = img[tuple(region.coords.T)].mean(0)
+        col = "red" if r > b else "blue"
+        shape = "square" if region.extent > 0.9 else "circle"   # filled bbox fraction
+        found.append((col, shape))
+    return found
+
+def presence_score(prompt, img):
+    """Bag-of-words check: which prompt words appear anywhere (ignores counts and binding)."""
+    words = {w for obj in prompt for w in obj}
+    seen = {w for obj in detect(img) for w in obj}
+    return len(words & seen) / len(words)
+
+def exact_check(prompt, img):
+    """GenEval-style check: every (color, shape) pair with the right count."""
+    return sorted(detect(img)) == sorted(prompt)
+
+prompt = [("red", "circle"), ("red", "circle"), ("blue", "square")]   # "two red circles and a blue square"
+candidates = {
+    "correct":          prompt,
+    "wrong count":      prompt + [("red", "circle")],
+    "colors swapped":   [("blue", "circle"), ("blue", "circle"), ("red", "square")],
+    "object missing":   prompt[:2],
+}
+for name, objs in candidates.items():
+    img = render(objs)
+    print(f"{name:15s} presence score={presence_score(prompt, img):.2f}  "
+          f"exact check={'pass' if exact_check(prompt, img) else 'fail'}")
+```
+
+輸出如下：
+
+```text
+correct         presence score=1.00  exact check=pass
+wrong count     presence score=1.00  exact check=fail
+colors swapped  presence score=1.00  exact check=fail
+object missing  presence score=0.50  exact check=fail
+```
+
+出現分數給數量錯誤和顏色互換的影像滿分，因為提示裡的每個字都出現在*某個地方*；只有精確檢查抓得到它們。真實的基準會用訓練好的偵測器與顏色分類器，取代我們的連通元件「偵測器」，並承襲它們的錯誤：檢查的好壞只取決於偵測器，這也是 GenEval 要報告它與人類標註者一致程度的原因 [55]。圖 4 畫出這四張影像。
+
+<Figure src={figComp} alt="為提示 two red circles and a blue square 合成的四張影像：正確的影像、多了一個紅圓的影像、顏色互換（兩個藍圓和一個紅方塊）的影像，以及缺了方塊的影像；標題給出的出現分數是 1.00、1.00、1.00 和 0.50，精確檢查是通過、失敗、失敗、失敗。" caption="圖 4 — 字詞出現分數看不到計數與綁定錯誤；物件層級的檢查則看得到。這裡用合成的形狀代替生成影像。" />
+
+### 人類偏好與整體評估
+
+人仍然是最終的參考標準。因為人類研究很慢，有幾個團隊訓練了**偏好模型**，預測人們針對某個提示會偏好兩張影像中的哪一張：ImageReward 以 13.7 萬筆專家比較訓練 [57]，PickScore 則以 Pick-a-Pic 訓練，這是透過網頁應用程式收集真實使用者選擇的開放資料集 [58]。**HEIM** 沿著 12 個面向（包括對齊、品質、美感、原創性、推理、知識、偏見、毒性、公平性、穩健性、多語言與效率）評估模型，涵蓋 62 個情境與 26 個模型，並發現沒有單一模型在所有面向都最好 [59]。學習出來的偏好模型本身也是帶有偏見的模型；如果把生成器調整成最大化它，分數可能比真實品質上升得更快。
+
+**報告檢查清單。** 對文字生成影像模型的任何主張，都要說明：提示（以及如何取樣）、每個提示的影像數與隨機種子、取樣器、步數與引導尺度、解析度、指標的實作與特徵擷取器，並展示未經挑選的樣本。把分布、對齊、組合式與偏好的結果並列報告，並說明哪些數字是自己跑的，哪些是從論文抄來的。
+
+## 資料
+
+**白話版。** 生成器只能學到訓練影像和標題所呈現的東西，所以資料集決定了它的知識、風格與許多偏見。大型文字生成影像資料集是從網路上爬取的，這帶來品質、著作權與同意權的問題。
+
+- **類別條件基準**使用 ImageNet [60]；文字生成影像論文常在 COCO 標題上做零樣本評估 [48]；人臉生成器則使用 FFHQ 這類資料集，也就是隨 StyleGAN 一起提出的高品質人臉資料集 [1]。
+- **LAION-5B** 是公開釋出的資料集，包含 58.5 億個經 CLIP 過濾的影像–文字配對，其中 23.2 億個的文字是英文 [61]。它發布的是 URL 與替代文字，而不是影像本身；它的資料集說明（datasheet）寫明，LAION 以 CC-BY-4.0 釋出中介資料，但不擁有影像或文字的著作權，影像中出現的人可能並未同意上傳，且資料集目前的形式應該用於學術研究；它也說明了申請移除連結的方法 [61]。
+- **內容稽核。** Birhane 等人檢視了較早的 LAION-400M 資料集，發現其中有露骨且有問題的影像–文字配對，包括色情內容、惡意刻板印象與辱罵字眼 [62]。
+- **標題也是資料。** Stable Diffusion 3 以各半的原始標題與視覺–語言模型寫的合成標題混合訓練，並過濾資料中的色情內容、低美感分數與近似重複（以減少訓練影像被原樣吐出）[20]。
+
+## 風險與負責任的使用
+
+**白話版。** 能畫出任何東西的模型，也能抄襲、強化刻板印象與欺騙。實務上的對策是量測這些行為，在資料與模型中減少它們，並為生成的影像加上標示，讓觀看的人可以查驗它們從哪裡來。
+
+### 記憶與抄襲
+
+Carlini 等人顯示，擴散模型會記住個別的訓練影像，並且可能把它們吐出來：他們用「生成後過濾」的流程，取出超過一千個訓練樣本，從個人的照片到有商標的標誌都有，並且在實驗中發現擴散模型的隱私性比 GAN 差 [63]。Somepalli 等人建立影像檢索工具，把生成影像與訓練影像做比較，發現包含 Stable Diffusion 在內的模型，有些案例複製了訓練資料的內容 [64]。對訓練資料去重 [20]，以及把生成影像與訓練集比對，是標準的第一道防線。
+
+### 偏見
+
+Bianchi 等人發現，普通的提示（特質、職業、物件）會產生並放大人口統計上的刻板印象，而且在他們的測試中，反刻板印象的提示與系統的防護措施都無法消除它們 [65]。Luccioni 等人提出一種量測生成人物之社會偏見的方法：比較性別與族群字詞造成的變化，與職業造成的變化，並發現在他們測試的三個系統中，邊緣化身分的代表性不足 [66]。偏見評估需要它自己的提示與分析；整體的品質指標看不出來。另見 [ML 09，資料來源、偏誤與隱私](/zh-tw/learn/ml/ml-09-foundation-models/#資料來源偏誤與隱私)。
+
+### 深偽、出處與浮水印
+
+標示生成影像有兩種互補的工具：
+
+- **簽章式出處證明（C2PA）。** C2PA 規格定義了出處聲明的「清單」（manifest，誰、如何製作了這份素材），它經過密碼學簽章，並綁定到素材上，綁定方式是密碼學雜湊（硬綁定），或指紋、隱形浮水印（軟綁定）[67]。有效的簽章只能證明聲明沒有被竄改；並不證明內容為真，而且存在中介資料裡的清單可以直接被移除。
+- **隱形浮水印。** Tree-Ring 浮水印把一個圖樣藏在擴散取樣器**初始雜訊**的傅立葉轉換中，並透過反轉取樣器來偵測 [68]。Stable Signature 微調潛在解碼器，讓每張生成影像都帶有一組二元簽章，由預訓練的擷取器讀出 [69]。傳統浮水印見 [IP 08](/zh-tw/learn/image-processing/dip-08-compression-watermarking/#數位影像浮水印)。
+
+兩者都不是完整的答案。Zhao 等人證明並展示，像素層級的隱形浮水印可以被「再生攻擊」（regeneration attack，先加雜訊，再用生成模型重建）移除 [70]；Saberi 等人則指出，低擾動浮水印在「偵測不到有浮水印的影像」與「誤把真實影像標為有浮水印」之間存在根本的取捨，並展示了偽造攻擊，能讓真實影像看起來像有浮水印 [71]。要把出處證明與浮水印當成需要權衡的證據，而不是證明。
+
+*選讀：[硬綁定、軟綁定與浮水印](#硬綁定軟綁定與浮水印)（見「補充資料」頁）。每種機制在裁切、重新編碼與中介資料被剝除之後，各自還能留下什麼。*
+
+## 失效模式
+
+**白話版。** 今天的生成器很擅長 "a photo of X"，但在需求中精確的部分仍然不可靠：有幾個、哪個是什麼顏色、東西在哪裡、文字寫了什麼。知道典型的失敗，就知道該測什麼。
+
+- **計數。** "Four apples" 常常得到三個或五個。GenEval 的計數任務（2、3 或 4 個物體）直接量測這點 [55]。
+- **空間關係。** "A cup to the left of a laptop" 常被畫成錯誤的排列；在 GenEval 原始的研究中，最好的模型只在 15% 的影像中畫出正確的位置 [55]。
+- **屬性綁定與洩漏。** 在 "a red car and a blue bench" 中，顏色可能在物體之間互換，或洩漏到背景；當時 GenEval 中最好的模型，只在 35% 的影像中把屬性綁定對 [55]。Attend-and-Excite 也記載了**災難性忽略**（catastrophic neglect），也就是提示中的某個主體完全沒被畫出來，並在取樣時調整交叉注意力圖，讓每個主體 token 都得到注意力 [28]。
+- **文字渲染。** 拼錯的招牌與標籤很常見；對字元視而不見的文字編碼器是已有記載的原因之一 [26]，而 Stable Diffusion 3 的消融實驗顯示，T5 編碼器對含有書面文字的提示最重要 [20]。
+- **手。** 生成的手常有錯誤的手指數量或不規則的形狀；HandRefiner 事後用以重建的手部網格為條件的影像修補來修復 [72]。請注意，物件層級的基準檢查不了這點：GenEval 的作者指出，他們的偵測器數得出人，卻數不出手指 [55]。
+- **內容與風格的複製。** 點出著名影像、產品或藝術家的提示，可能引出近乎複製的訓練內容 [64], [63]。
+
+**怎麼測試。** 為每種失敗類型建立一小組提示，每個提示用固定的隨機種子生成數張影像，盡量用物件層級的工具檢查，做不到的就用眼睛看，並追蹤各模型版本之間的失敗率。
+
+## 現代觀點
+
+**值得一讀的綜述。**
+
+- **Zhang 等人 [73]**（2023）是對文字生成影像擴散模型的完整回顧：簡短介紹擴散、文字條件合成的背景、開創性系統及其改進、影像以外的應用（影片、其他模態、文字引導的編輯），以及開放的挑戰。
+- **Croitoru 等人 [74]**（IEEE TPAMI 2023）綜述視覺中的擴散模型，依公式（DDPM、分數網路、SDE）與應用（生成、超解析度、影像修補、編輯、轉換、分割）分組。
+- **Huang 等人 [35]**（IEEE TPAMI 2025）依學習策略、使用者輸入條件與編輯任務，為以擴散為基礎的影像編輯分類，特別關注影像修補與外擴，並提出一個基準（EditEval），搭配由大型多模態模型評分的指標。
+- **Xiong 等人 [75]**（TMLR 2025）綜述視覺中的自迴歸模型，依表示方式分成以像素、以 token 與以尺度為基礎的模型，並討論它們與其他生成家族的關聯，以及在影像、影片、3-D 與多模態生成上的用途。
+
+**2023–2026 年的最新進展。** (1) **採用流目標與多個文字編碼器的潛在 Transformer**，成為大規模的標準做法，如 Stable Diffusion 3 [20]，建立在 DiT [3] 之上。(2) **自迴歸模型回歸**，靠的是更好的 tokenizer [42]、next-scale 預測 [41] 與連續 token [21]。(3) 以一個 Transformer 同時理解與生成的**統一多模態模型**接連出現 [43], [45], [46], [47], [44]。(4) **少步生成**讓互動使用變得實際可行 [22], [38]。(5) **評估超越了 FID**，走向組合式檢查 [55], [56]、學習式偏好模型 [57], [58] 與整體性基準 [59]。近期的研究也重新檢視像素空間中的生成，以及在表徵空間中的生成；見 [ML 07，像素空間、潛在空間與表徵自編碼器](/zh-tw/learn/ml/ml-07-diffusion-flow-matching/#像素空間潛在空間與表徵自編碼器)。
+
+**尚待解決的問題。** 可靠的計數、空間推理與屬性綁定；任何語言中都清晰可讀的文字；在單張影像層級上與人一致、又不能被取巧操弄的評估指標；在不損失品質的前提下防止記憶；量測並減少偏見；能撐過編輯的出處證明；訓練資料的同意與授權；以及高解析度與影片生成的成本。
+
+## 重點整理
+
+- 每個生成任務都是從 $p(x \mid c)$ 取樣；任務的差別只在條件 $c$，而「好」永遠意味著保真度、多樣性與對齊，再加上成本。
+- 生成器（GAN、擴散、流、自迴歸）與表示方式（像素、連續潛在、離散 token）是各自獨立的設計選擇，而真實的系統會混合各家族。
+- 文字生成影像模型包含：凍結的文字編碼器（CLIP 和／或 T5）、透過交叉注意力或聯合注意力讀取文字的去雜訊網路或 token 模型、帶引導的取樣器，以及解碼器。
+- 交叉注意力圖顯示每個字被畫在哪裡；它們支撐了 Prompt-to-Prompt 這類編輯方法，但其中沒有任何機制強迫屬性綁定到正確的物體上。
+- ControlNet 靠由零卷積接起來的可訓練副本加入空間控制；textual inversion、DreamBooth 與 LoRA 以不同的成本做個人化；SDEdit、Prompt-to-Prompt、InstructPix2Pix 與 RePaint 做編輯。
+- 統一多模態模型把文字與影像片段放進同一個序列；它們的差異在於離散或連續的影像、下一個 token 或擴散目標，以及共用或獨立的視覺編碼器。
+- 評估時要同時使用分布指標、對齊分數、物件層級的組合式檢查與人類偏好，並報告完整的協定；單看 FID 會忽略提示。
+- 記憶、偏見、深偽與資料同意，都是可量測的風險；浮水印與簽章式出處證明有幫助，但可能被移除或偽造。
+
+## 練習
+
+1. **對應任務。** 對六種生成任務表中的每個任務，寫出對潛在文字生成影像模型而言，條件 $c$ 是什麼樣的張量（形狀與型別），以及它由圖 2 流程中的哪個部分接收。
+
+<details>
+<summary>提示</summary>
+
+提示會變成 $L$ 個 token 嵌入，經由交叉注意力進入。類別標籤可以寫成文字提示，或是加到時間嵌入上的嵌入。對於影像轉影像與編輯，輸入影像會被編碼成潛在表徵，然後加雜訊到中間強度（SDEdit），或串接到去雜訊網路的輸入通道（InstructPix2Pix）；控制影像經由 ControlNet 的可訓練副本進入；影像修補用的遮罩，決定哪些潛在位置要重新生成。
+
+</details>
+
+2. **玩具範例中的忽略。** 在交叉注意力程式中，加入第六個字 "dog"，它的嵌入是一個新的隨機向量，沒有任何影像區域與它相似。它的注意力圖長什麼樣子？它對其他字的權重有什麼影響？接著讓球區只像 "ball"（不像 "red"）。哪一張圖會改變？
+
+<details>
+<summary>提示</summary>
+
+"dog" 那一行在各處都得到小而無結構的權重，因為沒有任何查詢與它的鍵匹配：沒有任何東西告訴生成器狗該放在哪裡，這正是 Attend-and-Excite 修正的情況，它在取樣時加強被忽略 token 的注意力。softmax 在每一列仍然加總為 1，所以其他字的權重會少一點。把 "red" 從球的特徵中拿掉，會讓 "red" 的圖變暗：顏色字只會注意特徵已經暗示它的地方。
+
+</details>
+
+3. **打破指標。** 擴充組合式檢查的程式，加入一個候選影像：物體正確，但藍色方塊與其中一個紅圓重疊。玩具偵測器會回報什麼？真實的偵測器式基準需要什麼才能處理它？
+
+<details>
+<summary>提示</summary>
+
+重疊的形狀會合併成一個連通元件，所以玩具偵測器看到的物體變少，形狀也不對；即使人可能接受這張影像，精確檢查仍然會失敗。真實的基準使用實例分割，可以把重疊的物體分開，GenEval 在判斷位置時也加入了處理重疊邊界框的規則。每一種自動檢查都有這樣的盲點，這就是基準要報告與人類標註者一致程度的原因。
+
+</details>
+
+4. **設計評估。** 你必須判斷一個新模型，在「包裝上有簡短品牌名稱的產品照片」上，是否比目前的模型更好。寫出評估計畫：提示、影像數、自動指標、人類研究，以及什麼樣的結果會改變你的決定。
+
+<details>
+<summary>提示</summary>
+
+使用固定的提示集，涵蓋不同的產品類型、文字長度與背景；每個提示用多個隨機種子；對渲染出來的文字與要求的字串做 OCR 檢查；對產品類型做物件層級檢查；用 FID 或 CMMD 對照真實產品照片來衡量真實感（固定實作與樣本數）；並做盲測的並排人類比較，評估對齊與品質。事先決定你願意為多大的差異採取行動，並且針對品牌標誌，對訓練集做記憶檢查。
+
+</details>
+
+5. **編輯後的出處證明。** 一張影像帶有硬綁定的 C2PA 清單，並由帶有 Stable Signature 浮水印的模型生成。之後它被裁切、重新存成 JPEG，並上傳到一個會剝除中介資料的網站。哪些關於它來源的證據可能留下來？為什麼？
+
+<details>
+<summary>提示</summary>
+
+清單會隨中介資料一起消失；即使保留下來，硬綁定的雜湊也不再符合裁切並重新編碼後的像素。軟綁定或穩健的隱形浮水印可以撐過適度的裁切與壓縮（Stable Signature 報告在強烈裁切之後仍能偵測），但再生攻擊可以移除像素層級的浮水印。誠實的答案是「也許浮水印還在，但清單不在」，這就是兩者被設計成配合使用的原因。
+
+</details>
+
+## 補充資料
+
+這些補充資料是選讀的背景知識，正文並不依賴它們。
+
+### 統一多模態模型逐一介紹
+
+這則補充資料針對正文中的每個統一模型，列出它相對於標準語言模型改了什麼；所有說法都來自論文的摘要與方法描述。
+
+- **Chameleon** [43] 把影像轉成離散 token，並從一開始就和文字 token 放在同一個序列中（「早期融合」），所以單一個以 token 為基礎的 Transformer 就能產生文字、影像，或兩者交錯的文件。論文的貢獻包括從頭訓練的穩定做法、一套對齊配方，以及為這種早期融合設定量身訂做的架構參數化；它在視覺問答、圖說生成、文字任務、影像生成，以及由人評判的長篇混合模態生成上做了評估。
+- **Emu3** [44] 把影像、文字與**影片**都 token 化成同一個離散詞彙表，並在這類序列的混合資料上，從頭訓練單一個 Transformer，只用下一個 token 預測，不用擴散，也不必把 CLIP 式編碼器與語言模型結合。於是影片生成就是「預測影片序列中的下一個 token」。期刊版本於 2026 年刊登在 *Nature*。
+- **Transfusion** [45] 在混合序列上以兩種損失訓練同一個 Transformer：文字 token 上的下一個 token 交叉熵，以及連續影像小塊上的擴散（去雜訊）損失。論文報告了最高 7B 參數與 2T 多模態 token 的擴展實驗，發現這種做法的擴展性比把影像量化成離散 token 更好，並顯示依模態而異的編碼與解碼層，能把每張影像壓縮到只剩 16 個小塊。
+- **Show-o** [46] 在同一個 Transformer 裡，對文字使用自迴歸預測，對影像 token 使用離散擴散（也就是遮罩 token 預測），所以同一個模型能處理問答、文字生成影像、文字引導的影像修補與外推，以及混合模態生成。
+- **Janus** [47] 主張理解需要高層的語意特徵，而生成需要精細的細節，因此單一的視覺編碼器（如 Chameleon）對兩者的效果都不好，尤其是理解。它保留一個自迴歸 Transformer，但為理解與生成提供**各自獨立的視覺編碼路徑**（論文中是用 SigLIP 編碼器做理解，用把影像變成離散 ID 的 VQ tokenizer 做生成），這也讓每條路徑可以選自己的編碼器。
+
+**怎麼比較它們。** 記住三個軸：(a) 離散對連續的影像表示（離散 tokenizer 會限制細節；連續小塊需要擴散式的損失）、(b) 影像目標（下一個 token、遮罩 token 或擴散），以及 (c) 理解與生成是否共用視覺編碼器。然後對每個報告的結果，檢查模型大小、訓練 token 數，以及比較的基準線是否有相近的預算。
+
+### ControlNet 的零卷積：為什麼訓練從原始模型開始
+
+這則補充資料寫出一個 ControlNet 區塊，並解釋為什麼零初始化的層仍然學得動。
+
+令 $\mathcal F(\cdot;\Theta)$ 為預訓練網路中的一個區塊，參數 $\Theta$ 被凍結，把特徵圖 $x$ 對應成 $y = \mathcal F(x;\Theta)$。ControlNet 做一份有可訓練參數 $\Theta_c$ 的副本（由 $\Theta$ 初始化），以及兩個零卷積 $\mathcal Z(\cdot;\Theta_{z1})$ 與 $\mathcal Z(\cdot;\Theta_{z2})$：權重與偏差都初始化為零的 $1 \times 1$ 卷積。給定條件特徵圖 $c$，受控區塊的計算為 [7]
+
+$$
+y_c = \mathcal F(x;\Theta) + \mathcal Z\Big(\mathcal F\big(x + \mathcal Z(c;\Theta_{z1});\ \Theta_c\big);\ \Theta_{z2}\Big).
+$$
+
+**在初始化時**，兩個零卷積的輸出都是零，所以 $y_c = y$：受控網路與預訓練網路完全相同，新層不會帶來任何隨機雜訊干擾它。可訓練副本同樣會接收 $x$，因此一開始它就是這個區塊完整可用的副本。
+
+**為什麼零不會一直是零。** 對 $1 \times 1$ 卷積 $\mathcal Z(h) = W h + b$，損失 $\mathcal L$ 對權重的梯度是 $\partial \mathcal L / \partial W = (\partial \mathcal L / \partial \mathcal Z)\, h^\top$，它取決於輸入 $h$，而不是 $W$。所以即使 $W = 0$，只要輸入 $h$ 與上游梯度不為零，權重就會得到非零的梯度，第一次更新之後，這個分支就開始有貢獻。（第一步為零的，是**通過** $\mathcal Z$ 傳回更早層的梯度，因為那個梯度會乘上 $W$。）論文在補充材料中詳細說明了這個梯度論證。
+
+**實務上的結果。** 訓練一開始不可能破壞預訓練模型，在資料量不大時也能運作，而且可以把多個 ControlNet（例如深度與姿勢）加到同一個凍結模型上，每個各有自己的強度。
+
+### 個人化目標函數並排比較
+
+這則補充資料給出 textual inversion 與 DreamBooth 的精確訓練目標，並比較這三種個人化方法各儲存什麼。
+
+**Textual inversion** [32]。令 $\mathcal E$ 為潛在擴散模型中凍結的影像編碼器，$c_\theta$ 為凍結的文字編碼器，$\epsilon_\theta$ 為凍結的去雜訊網路，$y$ 為包含佔位字 $S_*$ 的提示，其嵌入 $v$ 是唯一可訓練的量。對訓練影像 $x$，令 $z = \mathcal E(x)$，再取隨機時間 $t$、雜訊 $\epsilon \sim \mathcal N(0, I)$ 與加雜訊後的潛在表徵 $z_t$，
+
+$$
+v_* = \arg\min_v\ \mathbb E_{z,\, y,\, \epsilon,\, t}\ \big\| \epsilon - \epsilon_\theta\big(z_t,\, t,\, c_\theta(y)\big) \big\|_2^2 ,
+$$
+
+這就是一般的潛在擴散損失，只是除了新字的嵌入之外，其他全部凍結。論文用像 "cat" 這樣粗略的單字描述的嵌入，來初始化 $v$。
+
+**DreamBooth** [33]。令 $\hat x_\theta$ 為（可訓練的）模型對乾淨影像的預測，$c$ 為含有識別字的提示（"a [V] dog"）的條件，$c_{\text{pr}}$ 為單純類別提示（"a dog"）的條件，$x_{\text{pr}}$ 為凍結的原始模型根據 $c_{\text{pr}}$ 生成的影像。設雜訊排程係數為 $\alpha_t, \sigma_t$，權重為 $w_t$，第二項的權重為 $\lambda$，
+
+$$
+\mathbb E_{x, c, \epsilon, \epsilon', t}\Big[ w_t \big\|\hat x_\theta(\alpha_t x + \sigma_t \epsilon,\, c) - x\big\|_2^2
++ \lambda\, w_{t'} \big\|\hat x_\theta(\alpha_{t'} x_{\text{pr}} + \sigma_{t'} \epsilon',\, c_{\text{pr}}) - x_{\text{pr}}\big\|_2^2 \Big].
+$$
+
+第一項擬合 3–5 張主體影像；第二項是**先驗保留**項，要求模型持續重現它自己對該類別的樣本，藉此對抗「語言漂移」（language drift，忘記一般的狗長什麼樣子）與多樣性的喪失。論文報告，大約 1,000 次迭代與 $\lambda = 1$ 就有不錯的結果。
+
+**LoRA** [34] 可以和任一個目標結合：它不更新權重矩陣 $W$，而是訓練 $W + BA$ 中的 $B$ 與 $A$，所以每個被適配的矩陣只需儲存 $r(d_{\text{in}} + d_{\text{out}})$ 個數字。
+
+| 方法 | 訓練什麼 | 每個概念儲存什麼 | 典型弱點 |
+|---|---|---|---|
+| Textual inversion | 一個詞嵌入 | 一個向量 | 受限於凍結模型畫得出來的東西 |
+| DreamBooth | 去雜訊網路的所有權重 | 完整的模型副本（若結合則是 LoRA） | 沒有先驗項就會過擬合與漂移 |
+| LoRA | 所選層的低秩更新 | 小矩陣 $A$、$B$ | 秩與層的選擇需要調整 |
+
+### 硬綁定、軟綁定與浮水印
+
+這則補充資料說明每種標示機制如何把標示綁在影像上，以及典型的編輯會對它造成什麼影響。
+
+**硬綁定。** C2PA 清單可以包含素材位元組（或其中一部分）的密碼學雜湊 [67]。這些位元組的任何改變（裁切、縮放、重新編碼）都會改變雜湊，於是驗證時會回報不符。這正是重點：硬綁定是用來偵測竄改的，並不是要撐過編輯。支援這個標準的編輯工具，可以改為寫入一份記錄這次編輯的**新**清單，並把先前的素材當成「成分」（ingredient）來引用。
+
+**軟綁定。** 規格也允許不是精確雜湊的內容識別碼：感知式**指紋**（並非在統計上獨一無二），或嵌在像素中的**隱形浮水印** [67]。它們可以撐過適度的編輯，也可以用來查詢已從檔案中被剝除的清單。
+
+**生成時的浮水印。** Tree-Ring [68] 把一個金鑰圖樣寫進取樣器初始雜訊的傅立葉轉換；偵測時反轉擴散取樣器，取回該雜訊的估計，再檢驗是否含有金鑰，根據論文，這種傅立葉式的建構使它對卷積、裁切、膨脹、翻轉與旋轉保持不變。Stable Signature [69] 微調潛在解碼器，讓每張解碼出來的影像都帶有固定的二元簽章；擷取器讀出位元，再由統計檢定做決定；論文報告，對裁切到只剩 10% 內容的影像，在誤報率低於 $10^{-6}$ 時，偵測準確率超過 90%。
+
+**什麼會破壞它們。**
+
+| 編輯 | 雜湊（硬綁定） | 中介資料中的清單 | 穩健的隱形浮水印 |
+|---|---|---|---|
+| 中介資料被剝除 | 無法檢查（清單已不在） | 遺失 | 保留 |
+| 裁切或重新存成 JPEG | 不符 | 還在，但對新的像素無效 | 通常能撐過適度的編輯 |
+| 再生（加雜訊，再重建） | 不符 | 若存檔時沒帶上就遺失 | 像素層級的標記可被移除 [70] |
+| 對真實影像加上浮水印圖樣 | — | — | 可以偽造 [71] |
+
+結論與正文相同：結合多種機制，並把每一種都當成有已知失效模式的證據。
+
+## 論文導讀
+
+這些導讀是選讀內容：每篇帶你讀一篇本篇依據的論文——它要解決的問題、核心想法、它呈現了什麼，以及閱讀時該檢查什麼。
+
+### Esser 等人：Scaling Rectified Flow Transformers for High-Resolution Image Synthesis（ICML 2024）
+
+**要解決的問題。** 整流流（在雜訊與資料之間走直線路徑）很簡單，也有吸引人的性質，但在 2024 年，它還沒有被確立為對大型文字生成影像模型比標準擴散公式更好，而且文字生成影像的骨幹多半仍是使用單向交叉注意力的 U-Net [20]。
+
+**核心想法。** 兩項改變，並在大規模上檢驗。第一，用較常取樣中間雜訊強度的時間步分布（例如 logit-normal 密度）來訓練整流流模型，因為兩端容易，學習主要發生在中間。第二，使用 Transformer 骨幹 MM-DiT，其中影像 token 與文字 token 串接在一起，雙向互相注意，兩種模態各有各自的權重。文字來自三個凍結的編碼器（CLIP-L/14、CLIP-G/14 與 T5-XXL）。
+
+**它呈現了什麼。** 在一項大規模的公式比較中，搭配調整後時間步取樣的整流流，在高解析度文字生成影像上表現最好。MM-DiT 比共用權重或只用交叉注意力的變體更好。驗證損失隨模型大小呈現可預測的擴展趨勢，並與指標和人類評分相關；最大的模型（8B 參數）在人類偏好研究與 GenEval 上，與開放及專有的系統做了比較。推論時拿掉 T5，對大多數提示損失不大，但會傷害含有書面文字的提示。資料部分描述了過濾（色情內容、美感、去重）與各半的原始及合成標題。
+
+**閱讀時要檢查什麼。** 先讀第 2–3 節的時間取樣密度（它們取代了擴散的「雜訊排程」），再讀第 4 節與架構圖，然後一次一張表地讀第 5 節的消融實驗。要檢查：(a) 哪些比較用的是小模型與少量訓練步數（大多數消融實驗），哪些用的是完整模型；(b) GenEval 與人類偏好的比較，使用的是不同的提示集與協定；(c) 哪些改進來自資料（標題、過濾），而不是來自架構或目標。
+
+**限制。** 許多結論來自較小規模的消融實驗；人類研究是和特定時間點的特定系統版本比較；論文的訓練資料沒有公開，所以資料的影響無法精確重現。
+
+**為什麼與本篇有關。** 它是本篇所談的現代文字生成影像做法，記載得最清楚的一個例子：潛在空間、整流流目標、文字與影像聯合的 Transformer、多個文字編碼器、精選並重新撰寫標題的資料，以及用 GenEval 與人類偏好做評估。
+
+### Ghosh 等人：GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment（NeurIPS 2023）
+
+**要解決的問題。** FID 衡量整體的影像統計，CLIPScore 衡量整體的影像–文字相似度；兩者都無法告訴你模型是否畫了*兩*隻狗、一輛*紅*車，或在筆電*左邊*的杯子。人類評估可以，但又慢又貴 [55]。
+
+**核心想法。** 把對齊變成由現有視覺模型執行的物件層級檢查。提示由模板為六種任務產生：單一物體（80 個提示）、兩個物體（99）、計數（80）、顏色（94）、位置（100）與屬性綁定（100），物體取自 80 個 COCO 類別，顏色取自 11 個基本色彩詞，數量為 2、3 或 4，另有四種相對位置。用在 COCO 上訓練的 Mask2Former 實例分割模型偵測物體（信心門檻 0.3，計數時提高到 0.9）；位置由邊界框的質心判斷；顏色則由 CLIP ViT-L/14 對物體裁切圖（背景換成灰色）分類。每張影像被評為正確或不正確，每個提示生成四張影像。
+
+**它呈現了什麼。** 在一項涵蓋 1,200 張影像、6,000 筆標註的人類研究中，GenEval 與標註者有 83% 的時間一致，而標註者之間的一致率是 88%，且在組合式任務上，與人類的一致程度遠高於 CLIPScore。所有受測模型都能輕鬆處理單一物體，但即使是當時最好的模型，也只在 15% 的影像中畫出正確的相對位置，在 35% 的影像中把屬性綁定對。
+
+**閱讀時要檢查什麼。** 先看表 1（任務與模板）與第 3.2 節（評分流程），再看人類一致性分析，最後看基準表。要檢查：(a) 總分是各任務的平均，所以模型可以用強的簡單任務遮住弱的任務；要讀每個任務各自的欄位；(b) 偵測器的門檻，以及它們對計數的影響；(c) 測試了哪些模型（2023 年的開源模型）；後來的論文會為更新的模型報告 GenEval，所以只在同一張表、同一版基準程式碼之內比較分數。
+
+**限制。** 作者指出，GenEval 受限於它的偵測器：在 COCO 上訓練的偵測器只認得固定的類別集合，檢查不了手指數量這類細節，而且對藝術風格的泛化也很差。模板提示很短，與真實使用者的提示不同；而一旦基準流行起來，模型也可能被針對它調整。
+
+**為什麼與本篇有關。** 它是評估一節中物件層級檢查的範本，也是幾個失效模式數字的來源；現在許多文字生成影像論文都會報告它，包括 Stable Diffusion 3 [20]。
+
+## 參考文獻
+
+
+1. T. Karras, S. Laine and T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [arXiv](https://arxiv.org/abs/1812.04948)
+2. A. Brock, J. Donahue and K. Simonyan, "Large Scale GAN Training for High Fidelity Natural Image Synthesis," *ICLR*, 2019. [arXiv](https://arxiv.org/abs/1809.11096)
+3. W. Peebles and S. Xie, "Scalable Diffusion Models with Transformers," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Peebles_Scalable_Diffusion_Models_with_Transformers_ICCV_2023_paper.html)
+4. C. Saharia, W. Chan, S. Saxena et al., "Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding," *NeurIPS*, 2022. [arXiv](https://arxiv.org/abs/2205.11487) · [project page](https://imagen.research.google/)
+5. R. Rombach, A. Blattmann, D. Lorenz, P. Esser and B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Rombach_High-Resolution_Image_Synthesis_With_Latent_Diffusion_Models_CVPR_2022_paper.html)
+6. C. Meng, Y. He, Y. Song et al., "SDEdit: Guided Image Synthesis and Editing with Stochastic Differential Equations," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2108.01073)
+7. L. Zhang, A. Rao and M. Agrawala, "Adding Conditional Control to Text-to-Image Diffusion Models," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Zhang_Adding_Conditional_Control_to_Text-to-Image_Diffusion_Models_ICCV_2023_paper.html)
+8. A. Hertz, R. Mokady, J. Tenenbaum et al., "Prompt-to-Prompt Image Editing with Cross-Attention Control," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2208.01626)
+9. T. Brooks, A. Holynski and A. A. Efros, "InstructPix2Pix: Learning to Follow Image Editing Instructions," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Brooks_InstructPix2Pix_Learning_To_Follow_Image_Editing_Instructions_CVPR_2023_paper.html)
+10. A. Lugmayr, M. Danelljan, A. Romero et al., "RePaint: Inpainting using Denoising Diffusion Probabilistic Models," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Lugmayr_RePaint_Inpainting_Using_Denoising_Diffusion_Probabilistic_Models_CVPR_2022_paper.html)
+11. J. Ho and T. Salimans, "Classifier-Free Diffusion Guidance," NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications; arXiv:2207.12598, 2022. [arXiv](https://arxiv.org/abs/2207.12598)
+12. I. J. Goodfellow, J. Pouget-Abadie, M. Mirza et al., "Generative Adversarial Nets," *NeurIPS*, 2014. [arXiv](https://arxiv.org/abs/1406.2661)
+13. D. P. Kingma and M. Welling, "Auto-Encoding Variational Bayes," *ICLR*, 2014. [arXiv](https://arxiv.org/abs/1312.6114)
+14. A. van den Oord, O. Vinyals and K. Kavukcuoglu, "Neural Discrete Representation Learning," *NeurIPS*, 2017. [arXiv](https://arxiv.org/abs/1711.00937)
+15. P. Esser, R. Rombach and B. Ommer, "Taming Transformers for High-Resolution Image Synthesis," *CVPR*, 2021. [CVF](https://openaccess.thecvf.com/content/CVPR2021/html/Esser_Taming_Transformers_for_High-Resolution_Image_Synthesis_CVPR_2021_paper.html)
+16. J. Ho, A. Jain and P. Abbeel, "Denoising Diffusion Probabilistic Models," *NeurIPS*, 2020. [arXiv](https://arxiv.org/abs/2006.11239)
+17. P. Dhariwal and A. Nichol, "Diffusion Models Beat GANs on Image Synthesis," *NeurIPS*, 2021. [arXiv](https://arxiv.org/abs/2105.05233)
+18. Y. Lipman, R. T. Q. Chen, H. Ben-Hamu, M. Nickel and M. Le, "Flow Matching for Generative Modeling," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2210.02747)
+19. X. Liu, C. Gong and Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2209.03003)
+20. P. Esser, S. Kulal, A. Blattmann et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, PMLR 235, 2024. [arXiv](https://arxiv.org/abs/2403.03206)
+21. T. Li, Y. Tian, H. Li, M. Deng and K. He, "Autoregressive Image Generation without Vector Quantization," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2406.11838)
+22. A. Sauer, D. Lorenz, A. Blattmann and R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, LNCS, pp. 87–103, 2024. [doi](https://doi.org/10.1007/978-3-031-73016-0_6) · [arXiv](https://arxiv.org/abs/2311.17042)
+23. A. Radford, J. W. Kim, C. Hallacy et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, PMLR 139, 2021. [arXiv](https://arxiv.org/abs/2103.00020)
+24. C. Raffel, N. Shazeer, A. Roberts et al., "Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer," *Journal of Machine Learning Research*, vol. 21, 2020. [arXiv](https://arxiv.org/abs/1910.10683)
+25. D. Podell, Z. English, K. Lacey et al., "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2307.01952)
+26. R. Liu, D. Garrette, C. Saharia et al., "Character-Aware Models Improve Visual Text Rendering," *ACL*, 2023. [ACL Anthology](https://aclanthology.org/2023.acl-long.900/)
+27. A. Ramesh, P. Dhariwal, A. Nichol, C. Chu and M. Chen, "Hierarchical Text-Conditional Image Generation with CLIP Latents," arXiv:2204.06125, 2022. [arXiv](https://arxiv.org/abs/2204.06125)
+28. H. Chefer, Y. Alaluf, Y. Vinker, L. Wolf and D. Cohen-Or, "Attend-and-Excite: Attention-Based Semantic Guidance for Text-to-Image Diffusion Models," *ACM Transactions on Graphics*, vol. 42, no. 4 (SIGGRAPH), 2023. [doi](https://doi.org/10.1145/3592116) · [arXiv](https://arxiv.org/abs/2301.13826)
+29. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," *MICCAI*, 2015. [arXiv](https://arxiv.org/abs/1505.04597)
+30. J. Yu, Y. Xu, J. Y. Koh et al., "Scaling Autoregressive Models for Content-Rich Text-to-Image Generation," *Transactions on Machine Learning Research*, 2022. [arXiv](https://arxiv.org/abs/2206.10789)
+31. H. Chang, H. Zhang, J. Barber et al., "Muse: Text-To-Image Generation via Masked Generative Transformers," *ICML*, PMLR 202, 2023. [arXiv](https://arxiv.org/abs/2301.00704)
+32. R. Gal, Y. Alaluf, Y. Atzmon et al., "An Image is Worth One Word: Personalizing Text-to-Image Generation using Textual Inversion," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2208.01618)
+33. N. Ruiz, Y. Li, V. Jampani, Y. Pritch, M. Rubinstein and K. Aberman, "DreamBooth: Fine Tuning Text-to-Image Diffusion Models for Subject-Driven Generation," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Ruiz_DreamBooth_Fine_Tuning_Text-to-Image_Diffusion_Models_for_Subject-Driven_Generation_CVPR_2023_paper.html)
+34. E. J. Hu, Y. Shen, P. Wallis et al., "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2106.09685)
+35. Y. Huang, J. Huang, Y. Liu et al., "Diffusion Model-Based Image Editing: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2025. [doi](https://doi.org/10.1109/TPAMI.2025.3541625) · [arXiv](https://arxiv.org/abs/2402.17525)
+36. J. Song, C. Meng and S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [arXiv](https://arxiv.org/abs/2010.02502)
+37. T. Salimans and J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [arXiv](https://arxiv.org/abs/2202.00512)
+38. Y. Song, P. Dhariwal, M. Chen and I. Sutskever, "Consistency Models," *ICML*, PMLR 202, 2023. [arXiv](https://arxiv.org/abs/2303.01469)
+39. P. Sun, Y. Jiang, S. Chen et al., "Autoregressive Model Beats Diffusion: Llama for Scalable Image Generation," arXiv:2406.06525, 2024. [arXiv](https://arxiv.org/abs/2406.06525)
+40. H. Chang, H. Zhang, L. Jiang, C. Liu and W. T. Freeman, "MaskGIT: Masked Generative Image Transformer," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Chang_MaskGIT_Masked_Generative_Image_Transformer_CVPR_2022_paper.html)
+41. K. Tian, Y. Jiang, Z. Yuan, B. Peng and L. Wang, "Visual Autoregressive Modeling: Scalable Image Generation via Next-Scale Prediction," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2404.02905)
+42. L. Yu, J. Lezama, N. B. Gundavarapu et al., "Language Model Beats Diffusion — Tokenizer is Key to Visual Generation," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2310.05737)
+43. Chameleon Team, "Chameleon: Mixed-Modal Early-Fusion Foundation Models," arXiv:2405.09818, 2024. [arXiv](https://arxiv.org/abs/2405.09818)
+44. X. Wang, Y. Cui, J. Wang et al., "Multimodal learning with next-token prediction for large multimodal models," *Nature*, vol. 650, pp. 327–333, 2026 (preprint "Emu3: Next-Token Prediction is All You Need," 2024). [doi](https://doi.org/10.1038/s41586-025-10041-x) · [arXiv](https://arxiv.org/abs/2409.18869)
+45. C. Zhou, L. Yu, A. Babu et al., "Transfusion: Predict the Next Token and Diffuse Images with One Multi-Modal Model," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2408.11039)
+46. J. Xie, W. Mao, Z. Bai et al., "Show-o: One Single Transformer to Unify Multimodal Understanding and Generation," *ICLR*, 2025. [arXiv](https://arxiv.org/abs/2408.12528)
+47. C. Wu, X. Chen, Z. Wu et al., "Janus: Decoupling Visual Encoding for Unified Multimodal Understanding and Generation," *CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Wu_Janus_Decoupling_Visual_Encoding_for_Unified_Multimodal_Understanding_and_Generation_CVPR_2025_paper.html)
+48. T.-Y. Lin, M. Maire, S. Belongie et al., "Microsoft COCO: Common Objects in Context," *ECCV*, 2014. [arXiv](https://arxiv.org/abs/1405.0312)
+49. M. J. Chong and D. Forsyth, "Effectively Unbiased FID and Inception Score and Where to Find Them," *CVPR*, 2020. [arXiv](https://arxiv.org/abs/1911.07023)
+50. G. Parmar, R. Zhang and J.-Y. Zhu, "On Aliased Resizing and Surprising Subtleties in GAN Evaluation," *CVPR*, 2022. [CVF](https://openaccess.thecvf.com/content/CVPR2022/html/Parmar_On_Aliased_Resizing_and_Surprising_Subtleties_in_GAN_Evaluation_CVPR_2022_paper.html)
+51. T. Kynkäänniemi, T. Karras, M. Aittala, T. Aila and J. Lehtinen, "The Role of ImageNet Classes in Fréchet Inception Distance," *ICLR*, 2023. [arXiv](https://arxiv.org/abs/2203.06026)
+52. G. Stein, J. C. Cresswell, R. Hosseinzadeh et al., "Exposing Flaws of Generative Model Evaluation Metrics and Their Unfair Treatment of Diffusion Models," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2306.04675)
+53. S. Jayasumana, S. Ramalingam, A. Veit, D. Glasner, A. Chakrabarti and S. Kumar, "Rethinking FID: Towards a Better Evaluation Metric for Image Generation," *CVPR*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024/html/Jayasumana_Rethinking_FID_Towards_a_Better_Evaluation_Metric_for_Image_Generation_CVPR_2024_paper.html)
+54. J. Hessel, A. Holtzman, M. Forbes, R. Le Bras and Y. Choi, "CLIPScore: A Reference-free Evaluation Metric for Image Captioning," *EMNLP*, 2021. [ACL Anthology](https://aclanthology.org/2021.emnlp-main.595/)
+55. D. Ghosh, H. Hajishirzi and L. Schmidt, "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2310.11513)
+56. K. Huang, K. Sun, E. Xie, Z. Li and X. Liu, "T2I-CompBench: A Comprehensive Benchmark for Open-world Compositional Text-to-image Generation," *NeurIPS Datasets and Benchmarks Track*, 2023. [proceedings](https://proceedings.neurips.cc/paper_files/paper/2023/hash/f8ad010cdd9143dbb0e9308c093aff24-Abstract-Datasets_and_Benchmarks.html)
+57. J. Xu, X. Liu, Y. Wu et al., "ImageReward: Learning and Evaluating Human Preferences for Text-to-Image Generation," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2304.05977)
+58. Y. Kirstain, A. Polyak, U. Singer et al., "Pick-a-Pic: An Open Dataset of User Preferences for Text-to-Image Generation," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2305.01569)
+59. T. Lee, M. Yasunaga, C. Meng et al., "Holistic Evaluation of Text-To-Image Models," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2311.04287)
+60. J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li and L. Fei-Fei, "ImageNet: A Large-Scale Hierarchical Image Database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+61. C. Schuhmann, R. Beaumont, R. Vencu et al., "LAION-5B: An Open Large-Scale Dataset for Training Next Generation Image-Text Models," *NeurIPS Datasets and Benchmarks Track*, 2022. [arXiv](https://arxiv.org/abs/2210.08402)
+62. A. Birhane, V. U. Prabhu and E. Kahembwe, "Multimodal datasets: misogyny, pornography, and malignant stereotypes," arXiv:2110.01963, 2021. [arXiv](https://arxiv.org/abs/2110.01963)
+63. N. Carlini, J. Hayes, M. Nasr et al., "Extracting Training Data from Diffusion Models," *USENIX Security Symposium*, 2023. [USENIX](https://www.usenix.org/conference/usenixsecurity23/presentation/carlini) · [arXiv](https://arxiv.org/abs/2301.13188)
+64. G. Somepalli, V. Singla, M. Goldblum, J. Geiping and T. Goldstein, "Diffusion Art or Digital Forgery? Investigating Data Replication in Diffusion Models," *CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Somepalli_Diffusion_Art_or_Digital_Forgery_Investigating_Data_Replication_in_Diffusion_CVPR_2023_paper.html)
+65. F. Bianchi, P. Kalluri, E. Durmus et al., "Easily Accessible Text-to-Image Generation Amplifies Demographic Stereotypes at Large Scale," *ACM FAccT*, 2023. [doi](https://doi.org/10.1145/3593013.3594095)
+66. A. S. Luccioni, C. Akiki, M. Mitchell and Y. Jernite, "Stable Bias: Analyzing Societal Representations in Diffusion Models," *NeurIPS Datasets and Benchmarks Track*, 2023. [arXiv](https://arxiv.org/abs/2303.11408)
+67. Coalition for Content Provenance and Authenticity (C2PA), "C2PA Technical Specification," version 2.1, 2024. [specification](https://c2pa.org/specifications/specifications/2.1/specs/C2PA_Specification.html)
+68. Y. Wen, J. Kirchenbauer, J. Geiping and T. Goldstein, "Tree-Ring Watermarks: Fingerprints for Diffusion Images that are Invisible and Robust," *NeurIPS*, 2023. [arXiv](https://arxiv.org/abs/2305.20030)
+69. P. Fernandez, G. Couairon, H. Jégou, M. Douze and T. Furon, "The Stable Signature: Rooting Watermarks in Latent Diffusion Models," *ICCV*, 2023. [CVF](https://openaccess.thecvf.com/content/ICCV2023/html/Fernandez_The_Stable_Signature_Rooting_Watermarks_in_Latent_Diffusion_Models_ICCV_2023_paper.html)
+70. X. Zhao, K. Zhang, Z. Su et al., "Invisible Image Watermarks Are Provably Removable Using Generative AI," *NeurIPS*, 2024. [arXiv](https://arxiv.org/abs/2306.01953)
+71. M. Saberi, V. S. Sadasivan, K. Rezaei et al., "Robustness of AI-Image Detectors: Fundamental Limits and Practical Attacks," *ICLR*, 2024. [arXiv](https://arxiv.org/abs/2310.00076)
+72. W. Lu, Y. Xu, J. Zhang, C. Wang and D. Tao, "HandRefiner: Refining Malformed Hands in Generated Images by Diffusion-based Conditional Inpainting," *ACM Multimedia*, 2024, pp. 7085–7093. [doi](https://doi.org/10.1145/3664647.3680693)
+73. C. Zhang, C. Zhang, M. Zhang, I. S. Kweon and J. Kim, "Text-to-image Diffusion Models in Generative AI: A Survey," arXiv:2303.07909, 2023. [arXiv](https://arxiv.org/abs/2303.07909)
+74. F.-A. Croitoru, V. Hondru, R. T. Ionescu and M. Shah, "Diffusion Models in Vision: A Survey," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2023. [doi](https://doi.org/10.1109/TPAMI.2023.3261988)
+75. J. Xiong, G. Liu, L. Huang et al., "Autoregressive Models in Vision: A Survey," *Transactions on Machine Learning Research*, 2025. [arXiv](https://arxiv.org/abs/2411.05902)
