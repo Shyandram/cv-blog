@@ -1,5 +1,6 @@
 // Builds a retrieval corpus (for RAG and for agents) from the course source: every tutorial (en and zh-tw) and blog post is split
-// into section-sized chunks with their place in the course, the site URL with anchor, and the source file and line range.
+// into section-sized chunks with their place in the course, the site URL with anchor (a note or paper guide: its own page,
+// …/notes/<id>/ or …/papers/<id>/), and the source file and line range.
 //
 // Usage: node scripts/rag/build.mjs [--out .rag] [--max-words 700]
 // Output: <out>/chunks.jsonl (one JSON object per line, schema in docs/rag.md) and <out>/manifest.json.
@@ -54,6 +55,8 @@ function chunkFile(file, meta) {
   const chunks = [];
   let h2 = '', h3 = '', zone = 'main', start = 0, buf = [], inFence = false;
   const pageUrl = meta.url;
+  // Tutorials: the displayed title from the course tree (number + title text); posts: their own title.
+  const title = meta.tutorial ? (meta.lang === 'en' ? meta.tutorial.title : meta.tutorial.titleZh || meta.tutorial.title) : fm.title ?? '';
   const flush = (end) => {
     const text = clean(buf.join('\n'));
     if (text && size(text) > 3) {
@@ -70,7 +73,7 @@ function chunkFile(file, meta) {
       const url = (heading && anchorFor(meta.tutorial, meta.lang, heading)) || (zone === 'notes' ? pageUrl + 'notes/' : zone === 'papers' ? pageUrl + 'papers/' : pageUrl);
       pieces.forEach((p, k) => chunks.push({
         id: `${meta.id}#${chunks.length}`, kind: meta.kind, lang: meta.lang, track: meta.track ?? null, slug: meta.slug ?? null,
-        title: fm.title ?? '', section: [h2, h3].filter(Boolean).map(plain), zone, url,
+        title, parent: meta.tutorial?.parent ?? null, section: [h2, h3].filter(Boolean).map(plain), zone, url,
         file: relative(root, file), lines: [start + offset + 1, end + offset], part: pieces.length > 1 ? `${k + 1}/${pieces.length}` : null,
         text: p,
       }));
@@ -94,9 +97,9 @@ function chunkFile(file, meta) {
   if (meta.kind === 'tutorial' && meta.tutorial) {
     const t = meta.tutorial;
     chunks.unshift({
-      id: `${meta.id}#summary`, kind: 'summary', lang: meta.lang, track: t.track, slug: t.slug, title: fm.title ?? '', section: [], zone: 'main',
+      id: `${meta.id}#summary`, kind: 'summary', lang: meta.lang, track: t.track, slug: t.slug, title, parent: t.parent ?? null, section: [], zone: 'main',
       url: pageUrl, file: relative(root, file), lines: [1, offset], part: null,
-      text: `${fm.title ?? ''}. ${fm.description ?? ''} Prerequisites: ${t.prereqs.join(', ') || 'none'}. Sections: ${t.sections.filter((s) => s.depth === 2 && s.zone === 'main').map((s) => (meta.lang === 'en' ? s.text : s.textZh ?? s.text)).join('; ')}.`,
+      text: `${title}. ${fm.description ?? ''} Prerequisites: ${t.prereqs.join(', ') || 'none'}. Sections: ${t.sections.filter((s) => s.depth === 2 && s.zone === 'main').map((s) => (meta.lang === 'en' ? s.text : s.textZh ?? s.text)).join('; ')}.`,
     });
   }
   return chunks;

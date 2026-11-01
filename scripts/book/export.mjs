@@ -10,7 +10,10 @@ import remarkMath from 'remark-math';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import { parse as yaml } from 'yaml';
+import GithubSlugger from 'github-slugger';
 import { volumes, stem as volumeStem } from './volumes.mjs';
+import { curriculum } from '../../src/content/curriculum.ts';
+import { placesOf, displayTitle } from '../../src/lib/curriculum.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const out = path.resolve(process.env.BOOK_OUTPUT || path.join(root, 'book-output'));
@@ -29,7 +32,14 @@ const tex = s => String(s).replace(/[\\{}$&#%_~^]/g, c => ({'\\':'\\textbackslas
 const text = value => ({ type: 'text', value });
 const para = children => ({ type: 'paragraph', children });
 const strong = value => ({ type: 'strong', children: [text(value)] });
-const absolute = href => href.startsWith('/') ? `https://blog.shyandram.dev${href}` : href;
+const SITE = 'https://blog.shyandram.dev';
+const absolute = href => href.startsWith('/') ? `${SITE}${href}` : href;
+// The course tree (src/content/curriculum.ts) orders the tutorials, nests sub-chapters under their main chapter and gives
+// the displayed numbers. The optional sections (Supplementary notes, Paper guides) are online only: they are left out of
+// the book, and main-text links to them point at their pages on the site.
+const places = placesOf(curriculum);
+const OPTIONAL = /^(supplementary notes|補充資料|paper guides|論文導讀)$/i;
+const plain = node => node.type === 'text' || node.type === 'inlineCode' ? node.value : (node.children ?? []).map(plain).join('');
 const label = (kind, slug) => `book-${kind}-${slug.replaceAll('/', '-')}`;
 fs.mkdirSync(path.join(out, 'assets/fonts'), { recursive: true });
 if (!fontDir) throw new Error('Set BOOK_FONTS to a directory containing the Noto CJK OTF files and licenses.');
@@ -54,11 +64,14 @@ for (const lang of langs) {
    const data = yaml(fm[1]);
    if (data.draft) continue;
    const slug = rel.replace(/\.(md|mdx)$/, '');
-   allEntries.push({ file, rel, kind, slug, data, body: source.slice(fm[0].length) });
+   const place = kind === 'tutorials' ? places.get(slug) : undefined;
+   if (kind === 'tutorials' && !place) throw new Error(`${slug} is not in src/content/curriculum.ts (run node scripts/curriculum.mjs)`);
+   if (place) data.title = displayTitle(data.title, place.number, lang);
+   allEntries.push({ file, rel, kind, slug, data, place, body: source.slice(fm[0].length) });
   }
  }
  allEntries.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'tutorials' ? -1 : 1) ||
-  (a.kind === 'tutorials' ? tracks.indexOf(a.data.track) - tracks.indexOf(b.data.track) || a.data.order - b.data.order : new Date(a.data.published) - new Date(b.data.published)) || a.slug.localeCompare(b.slug));
+  (a.kind === 'tutorials' ? a.place.index - b.place.index : new Date(a.data.published) - new Date(b.data.published)) || a.slug.localeCompare(b.slug));
  for (const volume of volumes) {
   const entries = allEntries.filter(e => e.kind === 'posts' ? volume.posts : volume.tracks.includes(e.data.track));
   const stats = { tutorials: entries.filter(e => e.kind === 'tutorials').length, posts: entries.filter(e => e.kind === 'posts').length, figures: 0, comparisons: 0, interactiveLinks: 0, codeBlocks: 0, displayEquations: 0, chapters: [] };
@@ -73,10 +86,54 @@ for (const lang of langs) {
     content.push(`\\part{${tex(title)}}`); lastPart = current;
    }
    const online = `https://blog.shyandram.dev/${lang}/${kind === 'tutorials' ? 'learn' : 'blog'}/${slug}/`;
-   content.push(`\\bookchapter{${tex(data.title)}}{${label(kind, slug)}}\n\n${tex(data.description)}\n\n\\booksource{${zh ? '網站版本' : 'Online edition'}}{${online}}\n\n`);
+   // A main chapter is a book chapter; a sub-chapter (tree depth 2, 3, …) is a section (subsection, …) under it in the
+   // contents and the PDF bookmarks, and its own headings move down by as many levels.
+   const depth = entry.place?.depth ?? 1;
+   const shift = Math.min(depth - 1, 2);
+   const opening = depth === 1 ? `\\bookchapter{${tex(data.title)}}{${label(kind, slug)}}`
+     : `\\booksubchapter{${tex(data.title)}}{${label(kind, slug)}}{${['section', 'subsection', 'subsubsection'][Math.min(depth, 4) - 2]}}{${Math.min(depth, 4) - 1}}`;
+   content.push(`${opening}\n\n${tex(data.description)}\n\n\\booksource{${zh ? '網站版本' : 'Online edition'}}{${online}}\n\n`);
    if (data.notebook) content.push(`\\booksource{${zh ? '筆記本' : 'Notebook'}}{https://github.com/Shyandram/cv-blog/blob/${revision}/${data.notebook}}\n\n`);
    const parser = createProcessor({ format: file.endsWith('.mdx') ? 'mdx' : 'md', remarkPlugins: [remarkMath, remarkGfm, remarkCjkFriendly] });
    const ast = parser.parse(entry.body), imports = new Map();
+   // Leave out the optional sections; remember which page on the site holds each of their ids (an item is a ### and
+   // everything under it; the ids follow the site's heading slugs).
+   const onlineOnly = new Map();
+   {
+    const slugger = new GithubSlugger();
+    let zone = null, item = null;
+    const kept = [];
+    for (const node of ast.children) {
+     if (node.type === 'heading') {
+      const text = plain(node).trim(), id = slugger.slug(text);
+      if (node.depth === 2) { const m = text.match(OPTIONAL); zone = m ? (/^(paper guides|論文導讀)$/i.test(text) ? 'papers' : 'notes') : null; item = null; if (zone) { onlineOnly.set(id, { title: text, url: `${online}${zone}/` }); continue; } }
+      else if (zone && node.depth === 3) item = { title: text, url: `${online}${zone}/${id}/` };
+      if (zone && item) onlineOnly.set(id, node.depth === 3 ? item : { title: text, url: `${item.url}#${id}` });
+     }
+     if (!zone) kept.push(node);
+    }
+    ast.children = kept;
+   }
+   // A main-text pointer line to an optional item ("*Optional: [X](#x) (in the Supplementary notes). …*") becomes
+   // "Online only: X — <URL of its page>"; any other link to such an item keeps its text and shows the URL.
+   const isPointer = p => p.type === 'paragraph' && p.children.length === 1 && p.children[0].type === 'emphasis' && /^\s*(Optional:|選讀：)/.test(plain(p.children[0]));
+   const targets = n => n.type === 'link' && n.url.startsWith('#') && onlineOnly.has(decodeURIComponent(n.url.slice(1))) ? [onlineOnly.get(decodeURIComponent(n.url.slice(1)))] : (n.children ?? []).flatMap(targets);
+   const fixLinks = n => {
+    if (!n.children) return;
+    n.children = n.children.flatMap(c => {
+     if (isPointer(c)) {
+      const found = targets(c);
+      if (found.length) return [para([{ type: 'emphasis', children: [text(zh ? '僅線上版：' : 'Online only: '), ...found.flatMap((x, i) => [...(i ? [text(zh ? '；' : '; ')] : []), text(`${x.title} — `), { type: 'link', url: x.url, children: [text(x.url)] }])] }])];
+     }
+     if (c.type === 'link' && c.url.startsWith('#') && onlineOnly.has(decodeURIComponent(c.url.slice(1)))) {
+      const x = onlineOnly.get(decodeURIComponent(c.url.slice(1)));
+      return [...c.children, text(' ('), { type: 'link', url: x.url, children: [text(x.url)] }, text(')')];
+     }
+     fixLinks(c);
+     return [c];
+    });
+   };
+   fixLinks(ast);
    for (const node of ast.children.filter(n => n.type === 'mdxjsEsm')) {
     for (const match of node.value.matchAll(/import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g)) imports.set(match[1], path.resolve(path.dirname(file), match[2]));
    }
@@ -113,7 +170,7 @@ for (const lang of langs) {
      }
      throw new Error(`Unsupported component ${node.name} in ${file}`);
     }
-    if (node.type === 'heading') return [{ ...node, depth: Math.max(1, node.depth - 1), children: node.children.flatMap(convert) }];
+    if (node.type === 'heading') return [{ ...node, depth: Math.min(6, Math.max(1, node.depth - 1) + shift), children: node.children.flatMap(convert) }];
     if (node.type === 'link') {
      const base = node.url.split('#')[0];
      // Chapter links stay inside the PDF; section links keep the precise web destination.

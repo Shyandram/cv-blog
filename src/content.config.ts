@@ -12,7 +12,7 @@ const tutorials = defineCollection({
       title: z.string(),
       description: z.string(),
       track: z.enum(TRACKS),
-      order: z.number().int(),
+      order: z.number().int().optional(), // legacy: order, nesting and numbers come from src/content/curriculum.ts
       level: z.enum(LEVELS),
       prereqs: z.array(z.string()).default([]), // "<track>/<slug>", language-independent
       tags: z.array(z.string()).default([]),

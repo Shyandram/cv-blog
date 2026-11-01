@@ -123,17 +123,20 @@ reference; in the notes' own words, never copied from the abstract); a primer on
 a variant, a historical note or a longer derivation; detail that crowds the main line (long derivations, extra variants,
 historical surveys, long method lists) belongs here too. It goes in a final `## Supplementary notes` / `## 補充資料`
 section, placed after `## Exercises` and before `## References`, one `###` per item, opening with one sentence saying the
-notes are optional. The site shows that section on a **separate page** (`/<lang>/learn/<track>/<slug>/notes/`, built by
+notes are optional. The site shows each note on a **page of its own** (`/<lang>/learn/<track>/<slug>/notes/<note-slug>/`,
+where `<note-slug>` is the `###` heading's id; the section's intro and a list of the notes are at `…/<slug>/notes/`; built by
 `src/lib/rehypeSupplementZones.mjs`); the main page shows a short card that lists the notes. Write links normally: an
-in-page `[…](#note-slug)` in the main text is rewritten to `notes/#note-slug` at build time (and a note's link to the main
-text to `../#slug`); a link from another page to a note must point to `…/<slug>/notes/#note-slug`. The PDF keeps the notes
-at the end of the chapter.
+in-page `[…](#note-slug)` or `[…](#id-inside-a-note)` is rewritten at build time to the page that holds the target
+(`notes/<note-slug>/` or `notes/<note-slug>/#id` from the main text, `../../#slug` from a note to the main text, `../<other-note>/#id`
+between notes); a link from another page to a note must point to `…/<slug>/notes/<note-slug>/` (or `…/notes/<note-slug>/#id` for an
+id inside it). The PDF keeps the notes at the end of the chapter.
 
 **Paper guides** are kept apart from the notes: a reading guide to a single paper or survey (the problem it poses, the idea,
 what it showed, how to read its tables and comparisons, its limits, why it matters here; grounded in the paper, in the guide's
 own words) goes in its own final section `## Paper guides` / `## 論文導讀`, placed after `## Supplementary notes` and before
 `## References`, one `###` per paper, opening with one sentence saying the guides are optional. The site shows it on its own
-page (`…/<slug>/papers/`); the pointer line reads `*Optional: [U-Net](#u-net-...) (in the Paper guides). …*` / zh-tw
+pages, one per guide (`…/<slug>/papers/<guide-slug>/`, index `…/<slug>/papers/`; link to them from another page the same way as
+to notes); the pointer line reads `*Optional: [U-Net](#u-net-...) (in the Paper guides). …*` / zh-tw
 `*選讀：[…](#…)（見「論文導讀」頁）。…*`. Concept details, algorithms and sub-field background stay in the Supplementary notes;
 a section may be absent when a chapter has nothing of that kind. Where the main text touches the topic it leaves a single italic pointer line with a link to
 the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One sentence on what it adds.*`; zh-tw

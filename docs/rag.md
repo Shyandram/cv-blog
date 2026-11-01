@@ -33,9 +33,10 @@ One JSON object per line:
 | `lang` | `en` or `zh-tw` (the zh-tw twin of a tutorial has the same slug, sections and reference numbers) |
 | `track`, `slug` | course location, e.g. `deep-learning`, `deep-learning/dl-03b-image-segmentation` (null for posts) |
 | `title` | the tutorial or post title, e.g. `DLCV 03B · Image Segmentation: …` |
+| `parent` | the slug of the chapter this tutorial sits under in the course tree (`src/content/curriculum.ts`), e.g. `deep-learning/dl-03-object-detection` for DLCV 03B; null for a main chapter and for posts |
 | `section` | heading path inside the page, e.g. `["Panoptic segmentation", "The task and its metric"]` |
-| `zone` | `main`, `notes` (Supplementary notes, served at `…/notes/`), `papers` (Paper guides, `…/papers/`) or `references` |
-| `url` | site path with the exact anchor, e.g. `/en/learn/…/notes/#ransac-fitting-a-model-despite-outliers` |
+| `zone` | `main`, `notes` (Supplementary notes, one page per note at `…/notes/<note-id>/`), `papers` (Paper guides, `…/papers/<guide-id>/`) or `references` |
+| `url` | site path with the exact anchor, e.g. `/en/learn/…/#section-id`, or the page of a note, e.g. `/en/learn/…/notes/ransac-fitting-a-model-despite-outliers/` |
 | `file`, `lines` | source file and 1-based line range of the section in that file |
 | `part` | `"k/n"` when a long section was split at paragraph boundaries, else null |
 | `text` | the section text: MDX imports and JSX tags removed (figure captions and alt text kept as `[Figure: …]`), Markdown, KaTeX `$…$` and code blocks kept |

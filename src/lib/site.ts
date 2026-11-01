@@ -1,6 +1,8 @@
-import { getCollection, type CollectionEntry } from 'astro:content';
+import { getCollection, render, type CollectionEntry } from 'astro:content';
 import { LANGS, DEFAULT_LANG, type Lang } from '../i18n/ui';
-import { TRACKS } from './taxonomy';
+import { curriculum } from '../content/curriculum';
+import { placesOf, displayTitle, validateCurriculum, type Place } from './curriculum';
+import { zonesOf, type Zones } from './zones';
 
 // GitHub repo for "Edit on GitHub" and "Open in Colab" links.
 export const REPO = 'Shyandram/cv-blog';
@@ -27,11 +29,25 @@ type Post = CollectionEntry<'posts'>;
 
 const visible = (e: { data: { draft: boolean } }) => import.meta.env.DEV || !e.data.draft;
 
+const PLACES = placesOf(curriculum);
+let treeChecked = false;
+/** Fails the build with a message naming each slug when src/content/curriculum.ts and the tutorial files disagree. */
+async function checkTree() {
+  if (treeChecked) return;
+  const files = (await getCollection('tutorials')).map((e) => ({ ...splitId(e.id), track: e.data.track }));
+  const errors = validateCurriculum(curriculum, files);
+  if (errors.length) throw new Error(`The course tree (src/content/curriculum.ts) does not match the tutorials:\n- ${errors.join('\n- ')}`);
+  treeChecked = true;
+}
+
 /**
- * Tutorials for a language. A tutorial missing in `lang` falls back to the English
- * version, flagged with `fallback: true` so the page can show a notice.
+ * Tutorials for a language, in course order (the tree in src/content/curriculum.ts), each with its place in the tree and
+ * its displayed title (the tree's number + the frontmatter title text; `entry.data.title` is replaced by it, so every page
+ * shows the computed title). A tutorial missing in `lang` falls back to the English version, flagged with
+ * `fallback: true` so the page can show a notice.
  */
 export async function tutorialsFor(lang: Lang) {
+  await checkTree();
   const all = (await getCollection('tutorials')).filter(visible);
   const bySlug = new Map<string, { entry: Tut; fallback: boolean }>();
   for (const e of all) {
@@ -45,8 +61,39 @@ export async function tutorialsFor(lang: Lang) {
     }
   }
   return [...bySlug.entries()]
-    .map(([slug, v]) => ({ slug, ...v }))
-    .sort((a, b) => TRACKS.indexOf(a.entry.data.track) - TRACKS.indexOf(b.entry.data.track) || a.entry.data.order - b.entry.data.order);
+    .map(([slug, v]) => {
+      const place = PLACES.get(slug)!;
+      const title = displayTitle(v.entry.data.title, place.number, v.fallback ? DEFAULT_LANG : lang);
+      return { slug, ...v, entry: { ...v.entry, data: { ...v.entry.data, title } } as Tut, place };
+    })
+    .sort((a, b) => a.place.index - b.place.index);
+}
+export type TutorialItem = Awaited<ReturnType<typeof tutorialsFor>>[number];
+
+/** A tutorial with the tutorials nested under it (children of a hidden draft move up to the nearest shown ancestor). */
+export type TutorialNode<T> = { item: T; children: TutorialNode<T>[]; depth: number };
+export function nestTutorials<T extends { slug: string; place: Place }>(list: T[]): TutorialNode<T>[] {
+  const shown = new Map(list.map((x) => [x.slug, { item: x, children: [] as TutorialNode<T>[], depth: 1 }]));
+  const roots: TutorialNode<T>[] = [];
+  for (const x of list) {
+    const node = shown.get(x.slug)!;
+    const up = [...x.place.ancestors].reverse().find((a) => shown.has(a));
+    if (up) { const parent = shown.get(up)!; node.depth = parent.depth + 1; parent.children.push(node); } else roots.push(node);
+  }
+  return roots;
+}
+
+/** The Supplementary notes and Paper guides of a tutorial (each item is a page of its own), from its rendered headings. */
+const zoneCache = new Map<string, Promise<Zones>>();
+export function zonesFor(entry: Tut): Promise<Zones> {
+  if (!zoneCache.has(entry.id)) zoneCache.set(entry.id, render(entry).then((r) => zonesOf(r.headings)));
+  return zoneCache.get(entry.id)!;
+}
+
+/** The chain of tutorials above `slug` (top-level first) among those shown. */
+export function ancestorsOf<T extends { slug: string; place: Place }>(list: T[], slug: string): T[] {
+  const bySlug = new Map(list.map((x) => [x.slug, x]));
+  return (bySlug.get(slug)?.place.ancestors ?? []).map((a) => bySlug.get(a)).filter((x): x is T => !!x);
 }
 
 /**
