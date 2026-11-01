@@ -178,6 +178,7 @@
 - A latency protocol — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#a-latency-protocol`
 - A local evidence-backed answerer — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/nlp-11-classification-bert/#a-local-evidence-backed-answerer`
 - A map of landmark systems — DLCV 10A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/dl-10a-video-generation/#a-map-of-landmark-systems`
+- A map of lightweight enhancement — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#a-map-of-lightweight-enhancement`
 - A metric that ranks systems is not automatically an output gate — NLP 08 · `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` · `/en/learn/nlp/nlp-08-seq2seq-transformers/#a-metric-that-ranks-systems-is-not-automatically-an-output-gate`
 - A model of low-light capture — DLCV 05 · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/dl-05-low-light-enhancement/#a-model-of-low-light-capture`
 - A model of the image degradation/restoration process — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/dip-05-restoration-reconstruction/#a-model-of-the-image-degradationrestoration-process`
@@ -377,6 +378,7 @@
 - Bias, variance and noise — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/pr-09-ensembles-validation/#bias-variance-and-noise`
 - BIC and AIC for mixtures — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/pr-07-clustering-mixtures/#bic-and-aic-for-mixtures`
 - Bidirectional recurrent — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#bidirectional-recurrent`
+- Bilateral grids and guided upsampling — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#bilateral-grids-and-guided-upsampling`
 - BiLSTM-CRF: scoring the whole label sequence — NLP 06 · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/nlp-06-sequence-labeling/#bilstm-crf-scoring-the-whole-label-sequence`
 - Binary sources with Hamming error — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/it-06-rate-distortion/#binary-sources-with-hamming-error`
 - Biorthogonal bases — IP 07 · `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` · `/en/learn/image-processing/dip-07-wavelets-transforms/#biorthogonal-bases`
@@ -742,6 +744,7 @@
 - CTC prefix beam search, step by step — DLCV 11A (notes) · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/dl-11a-text-in-images/notes/#ctc-prefix-beam-search-step-by-step`
 - CTC: training without alignments — DLCV 11A · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/dl-11a-text-in-images/#ctc-training-without-alignments`
 - Curvature: the second-order test — OPT 02 · `src/content/tutorials/en/optimization/opt-02-convex-functions.mdx` · `/en/learn/optimization/opt-02-convex-functions/#curvature-the-second-order-test`
+- Curve and mapping estimation — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#curve-and-mapping-estimation`
 
 ## D
 
@@ -818,6 +821,7 @@
 - Dependency structure and grammatical roles — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/nlp-12-syntactic-semantic-tasks/#dependency-structure-and-grammatical-roles`
 - Deployment: export, compression and runtimes — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#deployment-export-compression-and-runtimes`
 - Depth metrics — DLCV 08A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/dl-08a-depth-optical-flow/#depth-metrics`
+- Depthwise separable convolutions — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#depthwise-separable-convolutions`
 - Deraining — DLCV 04 · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/dl-04-image-restoration/#deraining`
 - Derivation — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/dip-13-pattern-classification/#derivation`
 - Derivation — PR 05 · `src/content/tutorials/en/pattern-recognition/pr-05-features-dimensionality.mdx` · `/en/learn/pattern-recognition/pr-05-features-dimensionality/#derivation`
@@ -919,7 +923,6 @@
 - Efficiency — DLCV 04A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/#efficiency`
 - Efficiency and deployment — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#efficiency-and-deployment`
 - Efficiency and streaming — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#efficiency-and-streaming`
-- Efficiency techniques — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#efficiency-techniques`
 - Efficiency: FLOPs, memory and latency — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#efficiency-flops-memory-and-latency`
 - Efficient CNNs separate spatial filtering from channel mixing — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/ml-03-convolutional-networks/#efficient-cnns-separate-spatial-filtering-from-channel-mixing`
 - EfficientNet: scale depth, width and resolution together — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/dl-02-image-classification/#efficientnet-scale-depth-width-and-resolution-together`
@@ -1036,14 +1039,10 @@
 - Failure modes and when NOT to use generative restoration — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#failure-modes-and-when-not-to-use-generative-restoration`
 - Fairness and demographic differentials — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/dl-02a-face-metric-learning/#fairness-and-demographic-differentials`
 - Families of deep fusion networks — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#families-of-deep-fusion-networks`
-- Family 1: curves and tone mapping — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-1-curves-and-tone-mapping`
 - Family 1: GAN-based restoration and GAN priors — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#family-1-gan-based-restoration-and-gan-priors`
-- Family 2: bilateral grids and guided upsampling — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-2-bilateral-grids-and-guided-upsampling`
 - Family 2: diffusion models as priors — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#family-2-diffusion-models-as-priors`
 - Family 3: latent-diffusion and foundation-model restorers — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#family-3-latent-diffusion-and-foundation-model-restorers`
-- Family 3: learnable 3D lookup tables — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-3-learnable-3d-lookup-tables`
 - Family 4: flow matching and rectified flow restorers — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#family-4-flow-matching-and-rectified-flow-restorers`
-- Family 4: very small enhancement networks — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-4-very-small-enhancement-networks`
 - Fan-beam filtered backprojection — IP 05 (notes) · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#fan-beam-filtered-backprojection`
 - Fano's inequality limits what a receiver can infer — IT 04 · `src/content/tutorials/en/information-theory/it-04-channel-capacity.mdx` · `/en/learn/information-theory/it-04-channel-capacity/#fanos-inequality-limits-what-a-receiver-can-infer`
 - Fast sampling, briefly — DLCV 10 · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/dl-10-image-generation/#fast-sampling-briefly`
@@ -1117,6 +1116,7 @@
 - From one-step decrease to a convergence rate — OPT 06 · `src/content/tutorials/en/optimization/opt-06-gradient-newton.mdx` · `/en/learn/optimization/opt-06-gradient-newton/#from-one-step-decrease-to-a-convergence-rate`
 - From pixels to tokens — ML 08 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/ml-08-autoregressive-vision/#from-pixels-to-tokens`
 - From relative to metric foundation models — DLCV 08A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/dl-08a-depth-optical-flow/#from-relative-to-metric-foundation-models`
+- From retouching to low light — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#from-retouching-to-low-light`
 - From scratch in NumPy, with a gradient check — ML 02 · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/ml-02-neural-networks/#from-scratch-in-numpy-with-a-gradient-check`
 - From softmax to normalized softmax — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/dl-02a-face-metric-learning/#from-softmax-to-normalized-softmax`
 - From the bound to the simplified loss — ML 07 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/ml-07-diffusion-flow-matching/#from-the-bound-to-the-simplified-loss`
@@ -1402,6 +1402,7 @@
 - Latent dynamics: from PlaNet to the Dreamer line — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#latent-dynamics-from-planet-to-the-dreamer-line`
 - Layout analysis and reading order — DLCV 11A · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/dl-11a-text-in-images/#layout-analysis-and-reading-order`
 - Leakage: the most common way to fool yourself — PR 10 · `src/content/tutorials/en/pattern-recognition/pr-10-recognition-capstone.mdx` · `/en/learn/pattern-recognition/pr-10-recognition-capstone/#leakage-the-most-common-way-to-fool-yourself`
+- Learnable 3D lookup tables — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#learnable-3d-lookup-tables`
 - Learnable LUT variants in detail — DLCV 05A (notes) · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/notes/#learnable-lut-variants-in-detail`
 - Learnable morphological layers — IP 09 (notes) · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/dip-09-morphology/notes/#learnable-morphological-layers`
 - Learned features in more detail — IP 12 (notes) · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/dip-12-feature-extraction/notes/#learned-features-in-more-detail`
@@ -1436,6 +1437,7 @@
 - Lifting the data — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/pr-04-kernels-nonlinear-classifiers/#lifting-the-data`
 - Light and the electromagnetic spectrum — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/dip-02-fundamentals/#light-and-the-electromagnetic-spectrum`
 - Light, cones and trichromacy — IP 06 · `src/content/tutorials/en/image-processing/dip-06-color.mdx` · `/en/learn/image-processing/dip-06-color/#light-cones-and-trichromacy`
+- Lightweight end-to-end networks and Transformers — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#lightweight-end-to-end-networks-and-transformers`
 - LIIF's three refinements — DLCV 04A (notes) · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/notes/#liifs-three-refinements`
 - Likelihood — ML 06 · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/ml-06-generative-models/#likelihood`
 - Likelihood and convex parameterizations — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/opt-05-fitting-estimation/#likelihood-and-convex-parameterizations`
@@ -1747,7 +1749,7 @@
 - Other heuristics — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/pr-07-clustering-mixtures/#other-heuristics`
 - Other imaging modalities — IP 01 · `src/content/tutorials/en/image-processing/dip-01-introduction.mdx` · `/en/learn/image-processing/dip-01-introduction/#other-imaging-modalities`
 - Other output representations — DLCV 06A · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/dl-06a-pose-keypoints/#other-output-representations`
-- Other recurring tricks — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-tricks`
+- Other recurring design choices — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-design-choices`
 - Other region models — IP 11 (notes) · `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` · `/en/learn/image-processing/dip-11-active-contours/notes/#other-region-models`
 - Other sources of variance — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#other-sources-of-variance`
 - Otsu's optimum global thresholding — IP 10 · `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` · `/en/learn/image-processing/dip-10-segmentation/#otsus-optimum-global-thresholding`
@@ -1889,7 +1891,6 @@
 - Quadratic programming and convex QCQPs — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/opt-03-convex-programs/#quadratic-programming-and-convex-qcqps`
 - Quantifier scope changes what is required — NLP 02 · `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` · `/en/learn/nlp/nlp-02-linguistic-essentials/#quantifier-scope-changes-what-is-required`
 - Quantization — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#quantization`
-- Quantization — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#quantization`
 - Quantization explains the relationship to actual symbols — IT 05 · `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx` · `/en/learn/information-theory/it-05-continuous-gaussian-channels/#quantization-explains-the-relationship-to-actual-symbols`
 - Quantizer design — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/dip-08-compression-watermarking/#quantizer-design`
 - Quasi-Newton methods and L-BFGS — ML 01C · `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx` · `/en/learn/ml/ml-01c-numerical-computation/#quasi-newton-methods-and-l-bfgs`
@@ -1930,6 +1931,7 @@
 - Real captured pairs — DLCV 04A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/#real-captured-pairs`
 - Real-time DETRs — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/#real-time-detrs`
 - Real-time DETRs after RT-DETR, in detail — DLCV 03A (notes) · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/notes/#real-time-detrs-after-rt-detr-in-detail`
+- Real-time retouching transforms: bilateral grids and 3D LUTs — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#real-time-retouching-transforms-bilateral-grids-and-3d-luts`
 - Real-world and blind degradations — DLCV 04 · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/dl-04-image-restoration/#real-world-and-blind-degradations`
 - Real-world video and compression — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#real-world-video-and-compression`
 - Real-world VSR: RealBasicVSR — DLCV 04B · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/dl-04b-video-super-resolution/#real-world-vsr-realbasicvsr`
@@ -1999,6 +2001,7 @@
 - Resource constraints and different channel assumptions — IT 04 · `src/content/tutorials/en/information-theory/it-04-channel-capacity.mdx` · `/en/learn/information-theory/it-04-channel-capacity/#resource-constraints-and-different-channel-assumptions`
 - Restoration in the presence of noise only — spatial filtering — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/dip-05-restoration-reconstruction/#restoration-in-the-presence-of-noise-only--spatial-filtering`
 - Restoration versus enhancement — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/dip-05-restoration-reconstruction/#restoration-versus-enhancement`
+- Retinex and illumination estimation — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#retinex-and-illumination-estimation`
 - Retinex theory — DLCV 05 · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/dl-05-low-light-enhancement/#retinex-theory`
 - Retinex-based networks — DLCV 05 · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/dl-05-low-light-enhancement/#retinex-based-networks`
 - Retinex-inspired unrolling — DLCV 05 · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/dl-05-low-light-enhancement/#retinex-inspired-unrolling`
@@ -2022,7 +2025,6 @@
 - Route B: zero-shot posterior sampling with a pretrained model — DLCV 04C · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/dl-04c-generative-restoration/#route-b-zero-shot-posterior-sampling-with-a-pretrained-model`
 - RT-DETR — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/dl-03a-real-time-detection/#rt-detr`
 - Rules against leakage — ML 05 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/ml-05-representation-learning/#rules-against-leakage`
-- Run at low resolution, upsample the transform — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#run-at-low-resolution-upsample-the-transform`
 - Run the code — Start Here · `src/content/tutorials/en/foundations/getting-started.mdx` · `/en/learn/foundations/getting-started/#run-the-code`
 - Run-length coding — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/dip-08-compression-watermarking/#run-length-coding`
 - Running a code block — Start Here · `src/content/tutorials/en/foundations/getting-started.mdx` · `/en/learn/foundations/getting-started/#running-a-code-block`
@@ -2079,7 +2081,6 @@
 - Sensitivity and the value of a constraint — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/opt-04-duality-kkt/#sensitivity-and-the-value-of-a-constraint`
 - Sensors and coordinate frames — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/dl-09-3d-object-detection/#sensors-and-coordinate-frames`
 - Separability — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/dip-04-frequency-domain/#separability`
-- Separable and depthwise layers — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#separable-and-depthwise-layers`
 - Separable kernels — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/dip-03-intensity-spatial-filtering/#separable-kernels`
 - Sequence classification and text-pair decisions — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/nlp-11-classification-bert/#sequence-classification-and-text-pair-decisions`
 - Sequence labels and span prediction — NLP 06 · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/nlp-06-sequence-labeling/#sequence-labels-and-span-prediction`
@@ -2366,6 +2367,7 @@
 - The learning paradigms — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/ml-01-introduction/#the-learning-paradigms`
 - The learning-rate range test — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/dl-01a-training-practice/#the-learning-rate-range-test`
 - The level-set equation — IP 11 · `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` · `/en/learn/image-processing/dip-11-active-contours/#the-level-set-equation`
+- The Li et al. low-light survey (TPAMI 2022) — DLCV 05A (papers) · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#the-li-et-al-low-light-survey-tpami-2022`
 - The loss defines the answer — DLCV 05B · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/dl-05b-image-fusion/#the-loss-defines-the-answer`
 - The manifold view — ML 05A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/ml-05a-factor-models-autoencoders/#the-manifold-view`
 - The many faces of leakage — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#the-many-faces-of-leakage`
@@ -2720,7 +2722,7 @@
 - Why bicubic-trained models fail on real photos — DLCV 04A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/dl-04a-super-resolution/#why-bicubic-trained-models-fail-on-real-photos`
 - Why covering differs from channel packing — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/it-06-rate-distortion/#why-covering-differs-from-channel-packing`
 - Why EM never decreases the likelihood — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/pr-07-clustering-mixtures/#why-em-never-decreases-the-likelihood`
-- Why enhancement suits tiny models — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-tiny-models`
+- Why enhancement suits small models — DLCV 05A · `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` · `/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-small-models`
 - Why errors compound — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/dl-07-world-models/#why-errors-compound`
 - Why exact inference is hard — PR 08 · `src/content/tutorials/en/pattern-recognition/pr-08-approximate-inference.mdx` · `/en/learn/pattern-recognition/pr-08-approximate-inference/#why-exact-inference-is-hard`
 - Why FLOPs do not equal speed — ML 10 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/ml-10-evaluation-deployment/#why-flops-do-not-equal-speed`

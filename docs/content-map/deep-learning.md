@@ -19,7 +19,7 @@
 | 46 | [DLCV 04B · Video Super-Resolution: Using Time to Recover Detail](#dl-04b-video-super-resolution) | advanced | DLCV 04, DLCV 04A | `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` |
 | 47 | [DLCV 04C · Generative Image Restoration: Sampling a Plausible Answer](#dl-04c-generative-restoration) | advanced | DLCV 04, ML 06 | `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` |
 | 50 | [DLCV 05 · Low-Light Image Enhancement](#dl-05-low-light-enhancement) | advanced | DLCV 04, IP 03, IP 06 | `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` |
-| 55 | [DLCV 05A · Lightweight Image Enhancement: Curves, Bilateral Grids and Lookup Tables](#dl-05a-lightweight-enhancement) | advanced | DLCV 05, IP 03 | `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` |
+| 55 | [DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables](#dl-05a-lightweight-enhancement) | advanced | DLCV 05, IP 03 | `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` |
 | 57 | [DLCV 05B · Image Fusion: Infrared–Visible, Multi-Focus and Multi-Exposure](#dl-05b-image-fusion) | advanced | DLCV 04, IP 07 | `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` |
 | 60 | [DLCV 06 · Object Tracking: From Single-Object to Multi-Object](#dl-06-object-tracking) | advanced | DLCV 03, IP 10, IP 12 | `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` |
 | 65 | [DLCV 06A · Human Pose and Keypoint Estimation](#dl-06a-pose-keypoints) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` |
@@ -836,29 +836,30 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 ## dl-05a-lightweight-enhancement
 
-**DLCV 05A · Lightweight Image Enhancement: Curves, Bilateral Grids and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、雙邊網格與查找表  
-How enhancement models stay small and fast enough for phones and 4K video: what to count, why predicting a transform beats predicting an image, and how curves, bilateral grids, learnable 3D lookup tables and tiny networks do it.
+**DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、雙邊網格與查找表  
+How enhancement models stay small and fast enough for phones and 4K video, organized the way the field organizes them: curve estimation, Retinex-style illumination estimation, lightweight end-to-end networks, and real-time retouching transforms such as bilateral grids and learnable 3D lookup tables.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05a-lightweight-enhancement.mdx`
 - Pages: `/en/learn/deep-learning/dl-05a-lightweight-enhancement/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/notes/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/`
-- Level advanced · order 55 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, bilateral-grid, lookup-tables, hdrnet, low-light-enhancement, quantization
-- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 29 · experiments: lowlight-photons, lut-trilinear
+- Level advanced · order 55 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, low-light-enhancement, curve-estimation, retinex, bilateral-grid, lookup-tables, hdrnet
+- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 37 · experiments: lowlight-photons, lut-trilinear
 
 - [What you'll learn](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#the-big-picture) `the-big-picture`
 - [What "lightweight" means](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#what-lightweight-means) `what-lightweight-means`
-- [Why enhancement suits tiny models](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-tiny-models) `why-enhancement-suits-tiny-models`
-- [Family 1: curves and tone mapping](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-1-curves-and-tone-mapping) `family-1-curves-and-tone-mapping`
-- [Family 2: bilateral grids and guided upsampling](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-2-bilateral-grids-and-guided-upsampling) `family-2-bilateral-grids-and-guided-upsampling`
-  - [Code: fit a grid at low resolution, slice at full resolution](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution) `code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
-- [Family 3: learnable 3D lookup tables](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-3-learnable-3d-lookup-tables) `family-3-learnable-3d-lookup-tables`
-- [Family 4: very small enhancement networks](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#family-4-very-small-enhancement-networks) `family-4-very-small-enhancement-networks`
-- [Efficiency techniques](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#efficiency-techniques) `efficiency-techniques`
-  - [Run at low resolution, upsample the transform](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#run-at-low-resolution-upsample-the-transform) `run-at-low-resolution-upsample-the-transform`
-  - [Separable and depthwise layers](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#separable-and-depthwise-layers) `separable-and-depthwise-layers`
+- [Why enhancement suits small models](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#why-enhancement-suits-small-models) `why-enhancement-suits-small-models`
+- [A map of lightweight enhancement](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#a-map-of-lightweight-enhancement) `a-map-of-lightweight-enhancement`
+- [Curve and mapping estimation](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#curve-and-mapping-estimation) `curve-and-mapping-estimation`
+- [Retinex and illumination estimation](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#retinex-and-illumination-estimation) `retinex-and-illumination-estimation`
+- [Lightweight end-to-end networks and Transformers](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#lightweight-end-to-end-networks-and-transformers) `lightweight-end-to-end-networks-and-transformers`
+  - [Depthwise separable convolutions](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#depthwise-separable-convolutions) `depthwise-separable-convolutions`
   - [Structural re-parameterization](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#structural-re-parameterization) `structural-re-parameterization`
-  - [Quantization](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#quantization) `quantization`
-  - [Other recurring tricks](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-tricks) `other-recurring-tricks`
+  - [Other recurring design choices](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#other-recurring-design-choices) `other-recurring-design-choices`
+- [Real-time retouching transforms: bilateral grids and 3D LUTs](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#real-time-retouching-transforms-bilateral-grids-and-3d-luts) `real-time-retouching-transforms-bilateral-grids-and-3d-luts`
+  - [Bilateral grids and guided upsampling](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#bilateral-grids-and-guided-upsampling) `bilateral-grids-and-guided-upsampling`
+  - [Code: fit a grid at low resolution, slice at full resolution](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution) `code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
+  - [Learnable 3D lookup tables](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#learnable-3d-lookup-tables) `learnable-3d-lookup-tables`
+  - [From retouching to low light](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#from-retouching-to-low-light) `from-retouching-to-low-light`
 - [Measuring efficiency honestly](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#measuring-efficiency-honestly) `measuring-efficiency-honestly`
 - [Failure modes](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#failure-modes) `failure-modes`
 - [Modern view](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#modern-view) `modern-view`
@@ -873,6 +874,7 @@ How enhancement models stay small and fast enough for phones and 4K video: what 
 
 *Paper guides (`papers/` page):*
 
+- [The Li et al. low-light survey (TPAMI 2022)](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#the-li-et-al-low-light-survey-tpami-2022) `the-li-et-al-low-light-survey-tpami-2022`
 - [HDRNet: deep bilateral learning for real-time image enhancement](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#hdrnet-deep-bilateral-learning-for-real-time-image-enhancement) `hdrnet-deep-bilateral-learning-for-real-time-image-enhancement`
 - [Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#image-adaptive-3d-luts-zeng-et-al-tpami-2022) `image-adaptive-3d-luts-zeng-et-al-tpami-2022`
 - [NTIRE 2026 efficient low-light image enhancement challenge report](/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/#ntire-2026-efficient-low-light-image-enhancement-challenge-report) `ntire-2026-efficient-low-light-image-enhancement-challenge-report`
