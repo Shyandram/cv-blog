@@ -23,4 +23,6 @@ import { lab as imageFusion } from './image-fusion.ts';
 import { lab as lutTrilinear } from './lut-trilinear.ts';
 import { lab as segmentationMetrics } from './segmentation-metrics.ts';
 import { lab as stereoMatching } from './stereo-matching.ts';
-export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining, trackingAssociation, imageFusion, lutTrilinear, segmentationMetrics, stereoMatching];
+import { lab as adversarialBudget } from './adversarial-budget.ts';
+import { lab as ctcDecoding } from './ctc-decoding.ts';
+export const labs: LabDef[] = [frequencyFilter, segmentationThreshold, lowlightPhotons, transformCoding, inverseRegularization, morphologyShapes, arrayDtype, pixelSampling, colorClipping, cornerTensor, receptiveField, neighborGeometry, diffusionTargets, baggingTrees, linearTransform, contourEnergy, mlpTraining, trackingAssociation, imageFusion, lutTrilinear, segmentationMetrics, stereoMatching, adversarialBudget, ctcDecoding];

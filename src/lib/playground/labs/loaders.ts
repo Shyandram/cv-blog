@@ -24,4 +24,6 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'lut-trilinear': () => import('./lut-trilinear.ts'),
   'segmentation-metrics': () => import('./segmentation-metrics.ts'),
   'stereo-matching': () => import('./stereo-matching.ts'),
+  'adversarial-budget': () => import('./adversarial-budget.ts'),
+  'ctc-decoding': () => import('./ctc-decoding.ts'),
 };
