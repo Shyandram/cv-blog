@@ -22,4 +22,6 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'tracking-association': () => import('./tracking-association.ts'),
   'image-fusion': () => import('./image-fusion.ts'),
   'lut-trilinear': () => import('./lut-trilinear.ts'),
+  'segmentation-metrics': () => import('./segmentation-metrics.ts'),
+  'stereo-matching': () => import('./stereo-matching.ts'),
 };

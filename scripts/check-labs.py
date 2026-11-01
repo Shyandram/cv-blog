@@ -215,6 +215,31 @@ def check_lut_trilinear(metrics, set_, zh):
     assert t2[0] > 5 and n2[0] > t2[0], f"two nodes cannot follow the curve: {metrics()}"
 
 
+def check_segmentation_metrics(metrics, set_, zh):
+    v = [first_float(x) for x in metrics().values()]  # pixel accuracy, mIoU, IoU of the smallest class, wrong pixels %
+    assert v[0] > 0.93 and v[1] < 0.55 and v[2] < 0.05, f"default stride 8: high pixel accuracy, collapsed smallest class: {metrics()}"
+    set_("stride", "2")
+    w = [first_float(x) for x in metrics().values()]
+    assert w[0] > 0.98 and w[2] > 0.8, f"stride 2 should recover the small squares: {metrics()}"
+    set_("stride", "8"); set_("up", "bilinear")
+    b = [first_float(x) for x in metrics().values()]
+    assert b[0] > v[0] and b[1] > v[1] and b[2] < 0.05, f"bilinear helps the large classes, not the small squares: {metrics()}"
+
+
+def check_stereo_matching(metrics, set_, zh):
+    v = [pct(x) for x in list(metrics().values())[:3]]  # bad-1 all, bad-1 flat patch, disc fattening
+    assert v[0] > 8 and v[1] > 50, f"default 3 x 3 window should be noisy: {metrics()}"
+    set_("win", "9")
+    w = [pct(x) for x in list(metrics().values())[:3]]
+    assert w[0] < 5 and w[1] < v[1] - 20, f"a 9 x 9 window should be much better: {metrics()}"
+    set_("win", "31")
+    x = [pct(y) for y in list(metrics().values())[:3]]
+    assert x[1] < 1 and x[2] > w[2] + 10 and x[0] > w[0] + 1, f"31 x 31 fixes the flat patch but fattens the disc and loses overall: {metrics()}"
+    set_("win", "9"); set_("lr", "on")
+    y = list(metrics().values())
+    assert pct(y[3]) > 1 and pct(y[0]) < w[0] - 1, f"the check should invalidate some pixels and lower bad-1: {metrics()}"
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -225,6 +250,7 @@ EXPECT = {
     "array-dtype": check_array_dtype, "pixel-sampling": check_pixel_sampling, "color-clipping": check_color_clipping,
     "corner-tensor": check_corner_tensor, "receptive-field": check_receptive_field, "neighbor-geometry": check_neighbor, "diffusion-targets": check_diffusion,
     "bagging-trees": check_bagging, "tracking-association": check_tracking, "image-fusion": check_image_fusion, "lut-trilinear": check_lut_trilinear, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
+    "segmentation-metrics": check_segmentation_metrics, "stereo-matching": check_stereo_matching,
 }
 
 
