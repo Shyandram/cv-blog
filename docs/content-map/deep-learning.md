@@ -1001,7 +1001,7 @@ How deep networks find the joints of every person in an image: skeletons and vis
 - Files: `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-06a-pose-keypoints.mdx`
 - Pages: `/en/learn/deep-learning/dl-06a-pose-keypoints/`, `/en/learn/deep-learning/dl-06a-pose-keypoints/notes/`, `/en/learn/deep-learning/dl-06a-pose-keypoints/papers/`
 - Level advanced · order 65 · needs: `deep-learning/dl-03-object-detection` · tags: pose-estimation, keypoints, heatmaps, hrnet, openpose, object-keypoint-similarity, 3d-human-pose
-- Figures: 5 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43
+- Figures: 5 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43 · experiments: heatmap-decoding
 
 - [What you'll learn](/en/learn/deep-learning/dl-06a-pose-keypoints/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-06a-pose-keypoints/#the-big-picture) `the-big-picture`
@@ -1301,7 +1301,7 @@ How machines find cars, people and cyclists in 3D: point clouds and coordinate f
 - Files: `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-09-3d-object-detection.mdx`
 - Pages: `/en/learn/deep-learning/dl-09-3d-object-detection/`, `/en/learn/deep-learning/dl-09-3d-object-detection/notes/`, `/en/learn/deep-learning/dl-09-3d-object-detection/papers/`
 - Level advanced · order 90 · needs: `deep-learning/dl-03-object-detection`, `deep-learning/dl-08-3d-reconstruction` · tags: 3d-object-detection, lidar, point-clouds, birds-eye-view, sensor-fusion, autonomous-driving
-- Figures: 7 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61
+- Figures: 7 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61 · experiments: bev-iou
 
 - [What you'll learn](/en/learn/deep-learning/dl-09-3d-object-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-09-3d-object-detection/#the-big-picture) `the-big-picture`
