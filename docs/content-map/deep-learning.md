@@ -836,7 +836,7 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 ## dl-05a-lightweight-enhancement
 
-**DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、雙邊網格與查找表  
+**DLCV 05A · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables** · DLCV 05A・輕量影像增強：曲線、Retinex、小型網路與查找表  
 How enhancement models stay small and fast enough for phones and 4K video, organized the way the field organizes them: curve estimation, Retinex-style illumination estimation, lightweight end-to-end networks, and real-time retouching transforms such as bilateral grids and learnable 3D lookup tables.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05a-lightweight-enhancement.mdx`
