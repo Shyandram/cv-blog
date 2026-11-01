@@ -111,6 +111,7 @@ export const readingOnlyChapters = [
     'deep-learning/dl-03b-image-segmentation',
     'deep-learning/dl-10a-video-generation',
     'deep-learning/dl-08a-depth-optical-flow',
+    'deep-learning/dl-06a-pose-keypoints',
 ];
 const defaultReason = L('This chapter\u2019s own figures, code and exercises carry its main idea; a separate interactive demo would not add to them.', '本章的圖、程式與練習已經足以說明主要概念；另外加一個互動實驗不會增加理解。');
 const reasons: Record<string, Localized> = {
