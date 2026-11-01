@@ -26,4 +26,6 @@ export const labLoaders: Record<string, () => Promise<{ lab: LabDef }>> = {
   'stereo-matching': () => import('./stereo-matching.ts'),
   'adversarial-budget': () => import('./adversarial-budget.ts'),
   'ctc-decoding': () => import('./ctc-decoding.ts'),
+  'heatmap-decoding': () => import('./heatmap-decoding.ts'),
+  'bev-iou': () => import('./bev-iou.ts'),
 };

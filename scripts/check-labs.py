@@ -260,6 +260,35 @@ def check_ctc(metrics, set_, zh):
     assert list(metrics().values())[0] == "BOOK", metrics()
 
 
+def check_heatmap_decoding(metrics, set_, zh):
+    def floats(s):
+        return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
+    v = list(metrics().values())  # selected decoder at this stride, argmax at 1/2/4/8, Taylor at 1/2/4/8, the example keypoint
+    am, ta = floats(v[1]), floats(v[2])
+    assert len(am) == 4 and am[3] > 6 * am[0] and am == sorted(am), f"argmax error should grow with the stride: {v}"
+    assert 1.4 < first_float(v[0]) < 1.8 and abs(first_float(v[0]) - am[2]) < 0.006, f"default is argmax at stride 4 (about 1.6 px): {v}"
+    assert ta[3] < 0.2 * am[3] and ta[2] < 0.2 * am[2], f"the Taylor step should remove most of the error: {v}"
+    set_("decoder", "taylor")
+    assert first_float(list(metrics().values())[0]) < 0.3, metrics()
+    set_("stride", "8")
+    assert first_float(list(metrics().values())[0]) < 0.6, metrics()
+    set_("decoder", "argmax")
+    assert first_float(list(metrics().values())[0]) > 2.5, metrics()
+
+
+def check_bev_iou(metrics, set_, zh):
+    v = list(metrics().values())  # rotated IoU, IoU of the enclosing rectangles, centre distance, yaw error that gives IoU < 0.7
+    assert 0.6 < first_float(v[0]) < 0.7 and first_float(v[2]) == 0 and first_float(v[3]) == 8.5, f"a bus with a 10 degree error: IoU well below 1 at distance 0: {v}"
+    set_("yaw", "0")
+    assert first_float(list(metrics().values())[0]) == 1, metrics()
+    set_("shape", "pedestrian"); set_("yaw", "45")
+    w = list(metrics().values())
+    assert abs(first_float(w[0]) - 0.707) < 0.001 and w[3] in ("never", "從不"), w
+    set_("shape", "car"); set_("yaw", "10"); set_("offset", "1")
+    x = list(metrics().values())
+    assert first_float(x[2]) == 1 and first_float(x[0]) < 0.7, x
+
+
 def check_generic(metrics, set_, zh):
     assert metrics(), "metrics should be filled"
 
@@ -272,6 +301,7 @@ EXPECT = {
     "bagging-trees": check_bagging, "tracking-association": check_tracking, "image-fusion": check_image_fusion, "lut-trilinear": check_lut_trilinear, "mlp-training": check_mlp, "contour-energy": check_contour_energy, "linear-transform": check_linear_transform,
     "segmentation-metrics": check_segmentation_metrics, "stereo-matching": check_stereo_matching,
     "adversarial-budget": check_adversarial, "ctc-decoding": check_ctc,
+    "heatmap-decoding": check_heatmap_decoding, "bev-iou": check_bev_iou,
 }
 
 
