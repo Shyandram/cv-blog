@@ -1474,10 +1474,10 @@ How video generators are built and judged: video autoencoders and tokenizers, fa
 
 ## dl-11-robustness
 
-**DLCV 11 · Robustness: Distribution Shift, Adversarial Examples and Anomalies**  
+**DLCV 11 · Robustness: Distribution Shift, Adversarial Examples and Anomalies** · DLCV 11・穩健性：分布偏移、對抗樣本與異常  
 Why vision models fail outside their test set and what to do about it: kinds of distribution shift and the benchmarks that measure them, augmentation, pre-training, test-time and domain adaptation; adversarial threat models, FGSM, PGD, adversarial training, honest evaluation and certified robustness; out-of-distribution and industrial anomaly detection with their scores, metrics and pitfalls.
 
-- Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` (no zh-tw twin)
+- Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11-robustness.mdx`
 - Pages: `/en/learn/deep-learning/dl-11-robustness/`, `/en/learn/deep-learning/dl-11-robustness/notes/`, `/en/learn/deep-learning/dl-11-robustness/papers/`
 - Level advanced · order 110 · needs: `deep-learning/dl-02-image-classification` · tags: robustness, distribution-shift, adversarial-examples, adversarial-training, out-of-distribution-detection, anomaly-detection, test-time-adaptation, domain-adaptation
 - Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50
