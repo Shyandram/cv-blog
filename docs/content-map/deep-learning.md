@@ -842,7 +842,7 @@ How enhancement models stay small and fast enough for phones and 4K video: what 
 - Files: `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05a-lightweight-enhancement.mdx`
 - Pages: `/en/learn/deep-learning/dl-05a-lightweight-enhancement/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/notes/`, `/en/learn/deep-learning/dl-05a-lightweight-enhancement/papers/`
 - Level advanced · order 55 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, bilateral-grid, lookup-tables, hdrnet, low-light-enhancement, quantization
-- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 29 · experiments: lowlight-photons
+- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 29 · experiments: lowlight-photons, lut-trilinear
 
 - [What you'll learn](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-05a-lightweight-enhancement/#the-big-picture) `the-big-picture`
@@ -885,7 +885,7 @@ How to combine several images of one scene into a single better image: what infr
 - Files: `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05b-image-fusion.mdx`
 - Pages: `/en/learn/deep-learning/dl-05b-image-fusion/`, `/en/learn/deep-learning/dl-05b-image-fusion/notes/`, `/en/learn/deep-learning/dl-05b-image-fusion/papers/`
 - Level advanced · order 57 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-07-wavelets-transforms` · tags: image-fusion, infrared-visible-fusion, multi-focus-fusion, multi-exposure-fusion, laplacian-pyramid, exposure-fusion, unsupervised-learning, evaluation
-- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 53
+- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 53 · experiments: image-fusion
 
 - [What you'll learn](/en/learn/deep-learning/dl-05b-image-fusion/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/dl-05b-image-fusion/#the-big-picture) `the-big-picture`
