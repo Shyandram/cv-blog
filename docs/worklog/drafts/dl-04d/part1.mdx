@@ -1,0 +1,87 @@
+---
+title: "DLCV 04D · Blind and Real-World Image Super-Resolution"
+description: "How super-resolution copes with damage nobody measured: estimating or conditioning on the blur kernel, learning degradation embeddings, synthesizing realistic training data, capturing real pairs, and borrowing generative priors, with honest evaluation when there is no ground truth."
+track: deep-learning
+order: 48
+level: advanced
+prereqs: [deep-learning/dl-04a-super-resolution, deep-learning/dl-04c-generative-restoration]
+tags: [super-resolution, blind-super-resolution, real-world-super-resolution, degradation-model, kernel-estimation, diffusion-models, image-quality-assessment]
+published: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import mismatchFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/kernel-mismatch.png';
+import samplesFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/degradation-samples.png';
+import metricFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/metric-disagreement.png';
+import sincFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/sinc-ringing.png';
+
+## What you'll learn
+
+- What **blind** and **real-world** super-resolution (SR) mean, and why a network trained on one fixed way of shrinking images fails on real photos.
+- A **map** of the field built on two survey taxonomies: explicit versus implicit modelling of the degradation, external data versus the single input image, plus the newer generative-prior family.
+- The **explicit** route: networks that are told the blur kernel (SRMD), that estimate and correct it (IKC, DAN), or that estimate it from the test image alone (KernelGAN), and what a wrong kernel does to the output, reproduced in a small NumPy experiment.
+- The **implicit** routes: contrastive degradation embeddings (DASR), synthetic degradation pipelines (BSRGAN's random shuffle, Real-ESRGAN's second-order pipeline with sinc filters), captured real pairs and unpaired domain translation.
+- How pretrained **diffusion priors** are attached to SR (StableSR, DiffBIR, PASD, SeeSR, SUPIR, ResShift), what each conditions on, and where fidelity and hallucination trade off.
+- How to **evaluate** when there is no ground truth: full-reference metrics on synthetic sets, no-reference metrics, user studies and the real-world SR challenges, and why their rankings disagree.
+
+## The big picture
+
+[DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/) treats super-resolution with a known degradation: we shrink HR images in a fixed way, train a network to undo exactly that, and measure the result against the original. Real photos do not come with a recipe. Their blur depends on the lens, the focus and a shaking hand; their noise depends on the sensor and the light; they were sharpened, resized and compressed by software we never saw. Blind and real-world SR is about making SR work anyway.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a friend sends you a smudged, shrunken photo and asks you to make it big and sharp. If you knew *exactly* how it got smudged (wet thumb, cheap printer, coffee spill), you could undo that one thing carefully. But you were not there. So you can (1) guess what happened and undo your guess, (2) practise on thousands of photos you smudged yourself in every way you can think of, so that you get good at fixing any smudge, or (3) ask a talented painter who knows what photos usually look like to repaint the missing parts. This chapter is about those three strategies, and about how to check the work when you have no clean copy to compare with.
+</Callout>
+
+Why it matters: almost every SR model people actually use (phone zoom, old-photo restoration, upscaling of web images and video frames) faces unknown degradations. A model that is excellent on a bicubic benchmark can be useless on a real JPEG, and a model that looks excellent on a real JPEG can be inventing details. Knowing which family a method belongs to tells you what it assumes, what it can repair, and how it will fail.
+
+**Where this chapter sits.** The degradation model, the perception–distortion trade-off and the standard benchmarks are introduced in [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#degradation-models); generic diffusion-based restoration (posterior sampling, latent diffusion, hallucination) is in [DLCV 04C](/en/learn/deep-learning/dl-04c-generative-restoration/); no-reference quality metrics are defined in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#no-reference-metrics). We link to them instead of repeating them. One-step and few-step diffusion SR has its own chapter, [DLCV 04E](/en/learn/deep-learning/dl-04e-one-step-diffusion-super-resolution/). Each method named here has a detailed introduction in the Paper guides; the main text gives the idea and the one thing to remember. All code uses NumPy, SciPy, scikit-image and OpenCV, runs on a CPU in seconds, and uses images from `skimage.data`.
+
+## The problem: damage nobody measured
+
+**Plain version.** Super-resolution undoes a damage process. When you know the process, the problem is hard but well defined. When you do not, you have two unknowns, the sharp image and the damage, and only one observation.
+
+### The degradation model, briefly
+
+The classical model, introduced in [DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#degradation-models), writes the low-resolution (LR) image $y$ as
+
+$$
+y = (x \circledast k)\downarrow_s + n,
+$$
+
+where $x$ is the high-resolution (HR) image, $k$ a blur kernel (lens, defocus, motion, pixel integration or an anti-aliasing filter), $\circledast$ 2-D convolution applied per color channel, $\downarrow_s$ downsampling by the scale factor $s$ (keeping one pixel per $s \times s$ block, or a bicubic resize), and $n$ additive noise. Real photos add steps that this model leaves out, most importantly JPEG compression $\mathcal C_q$ at quality $q$, which is applied after everything else, and camera processing (demosaicking, denoising, sharpening, tone curves) that makes the noise signal-dependent and spatially varying. A more complete but still simplified chain is $y = \mathcal C_q\bigl((x \circledast k)\downarrow_s + n\bigr)$.
+
+### What "blind" and "real-world" mean
+
+The words are used loosely, so it helps to fix them:
+
+- **Non-blind SR**: $k$, $s$ and the noise level are known at test time and given to the method. The bicubic benchmark is the special case where they are the same for every image.
+- **Blind SR**: at least one of them, usually $k$ and the noise level, is unknown and differs from image to image. Most blind-SR papers still assume the classical model with a Gaussian-like kernel and Gaussian noise; only the parameters are unknown.
+- **Real-world SR** (often written Real-ISR): the input is a real photo whose degradation is not only unknown but also *not of the assumed form*: compression, processing, spatially varying blur and noise. There is usually no ground-truth HR image at all.
+
+The distinction matters because methods that are excellent at blind SR in the narrow sense (the right family, unknown parameters) can fail completely in the real-world sense (the wrong family).
+
+### Why bicubic-trained models fail on real photos
+
+**Plain version.** A network trained on one shrinking recipe learns to undo that recipe and nothing else. Feed it a different recipe and it applies the wrong correction with full confidence.
+
+[DLCV 04A](/en/learn/deep-learning/dl-04a-super-resolution/#degradation-models) shows the effect with a tiny linear model: trained on sharp inputs and tested on blurry ones it under-corrects; trained on blurry inputs and tested on sharp ones it over-sharpens. Two classical observations explain why this matters so much. Efrat et al. showed that an accurate blur model matters more for SR than a sophisticated image prior [@efrat]. And a model trained without noise treats sensor noise and JPEG blocks as fine detail and amplifies them. The SRMD paper states the sign of the blur error precisely: if the assumed kernel is smoother (wider) than the true one, the result shows ringing; if it is sharper (narrower), the result is over-smoothed [@srmd]. We reproduce both cases in the explicit-modelling section below.
+
+## A map of the field
+
+**Plain version.** Every blind or real-world method answers two questions: *does it write the degradation down* (explicit) or *let a network absorb it from data* (implicit)? And *where does it get its knowledge*: from a large external dataset, or only from the one image it is given?
+
+Liu et al. organize blind SR along exactly these two axes: explicit modelling (the classical kernel-and-noise model or a variant, with or without kernel estimation) versus implicit modelling (a degradation learned from data distributions), and external datasets versus a single input image; they note that the fourth cell, implicit modelling from a single image, was empty at the time [@liu_survey]. Chen et al. group real-world SR into four families: degradation-modelling-based, image-pairs-based (captured data), domain-translation-based and self-learning-based (the test image itself) [@chen_review]. Both surveys predate the diffusion era, so the last row of the table adds the generative-prior family that has dominated since 2023 [@moser].
+
+| Family | What is estimated or learned | Representative methods | Strengths | Typical failure modes |
+| --- | --- | --- | --- | --- |
+| Explicit, kernel given (non-blind conditioning) | Nothing at test time; the network is conditioned on a supplied kernel and noise level | SRMD [@srmd], UDVD [@udvd], USRNet [@usrnet] | One model for many known degradations; interpretable controls | Needs the kernel from somewhere; a wrong one gives ringing or blur |
+| Explicit, kernel estimated with external data | A kernel code, then the SR image, often in alternation | IKC [@ikc], DAN [@dan], DCLS [@dcls] | Accurate when the degradation really is Gaussian-like blur plus noise | Breaks on JPEG, camera processing and spatially varying blur |
+| Explicit, single image (internal statistics) | The image's own kernel, from recurrence of patches across scales | Michaeli–Irani [@michaeli], KernelGAN [@kernelgan], ZSSR [@zssr] | No training data; adapts to each image | Slow (training per image); weak prior; struggles with noise |
+| Degradation representation learning | An abstract embedding that tells degradations apart | DASR [@dasr], KDSR [@kdsr] | No kernel labels; one fast forward pass | Embedding only covers the training degradation family |
+| Implicit, synthetic degradation pipelines | Nothing explicit; one network trained on a very wide random degradation distribution | BSRGAN [@bsrgan], Real-ESRGAN [@realesrgan], Liang et al.'s DASR [@liang_dasr] | Works on many real photos with one model | Over-smoothing or GAN artifacts; out-of-distribution damage is amplified |
+| Implicit, captured real pairs | The mapping of one specific camera pair | RealSR [@realsr], DRealSR [@drealsr], City100 [@city100] | Truly realistic training and test data | Small, camera-specific, alignment errors |
+| Implicit, unpaired domain translation | A degradation generator or a real-to-clean translator learned with GANs | CinCGAN [@cincgan], Bulat et al. [@bulat], FSSR [@fssr], Ji et al. [@ji_kernel_noise] | Learns from real LR images without HR partners | Unstable GAN training, fake textures |
+| Generative priors (2023–2026) | A pretrained text-to-image diffusion prior steered by the LR image | StableSR [@stablesr], DiffBIR [@diffbir], PASD [@pasd], SeeSR [@seesr], SUPIR [@supir], ResShift [@resshift] | Realistic texture on severely degraded photos | Hallucinated content, low PSNR, slow sampling, color shifts |
+
+Two warnings about the map. First, the boundaries are porous: DAN is explicit but learns its estimator from external data; BSRGAN is "implicit" yet its pipeline is a hand-written explicit model, used only for training. Second, the name **DASR** belongs to two different papers: Wang et al.'s degradation-aware SR with contrastive embeddings [@dasr], and Liang et al.'s efficient degradation-adaptive network [@liang_dasr]. Always check which one a comparison table means.
+

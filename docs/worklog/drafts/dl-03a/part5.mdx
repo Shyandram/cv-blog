@@ -1,0 +1,503 @@
+### YOLOX: anchor-free YOLO with SimOTA
+
+*Paper:* Z. Ge, S. Liu, F. Wang, Z. Li and J. Sun, "YOLOX: Exceeding YOLO series in 2021," arXiv, 2021 [@yolox]. *Related part of YOLOv4:* [the YOLOv3 head and box decoding](#head-the-yolov3-head-and-box-decoding) and [label assignment](#label-assignment-several-anchors-per-object).
+
+#### Challenge
+
+By 2021, detection research had moved to anchor-free detectors, prediction-aware label assignment and end-to-end (NMS-free) training, but YOLOv4 and YOLOv5 [@yolov5] still used anchors and hand-crafted assignment rules [@yolox]. The YOLOX report brings those advances into a YOLO. It deliberately starts from YOLOv3 with SPP rather than YOLOv4, because it considers YOLOv4 and YOLOv5 "a little over-optimized for the anchor-based pipeline" [@yolox].
+
+#### Method
+
+**A strong baseline.** YOLOv3 with a Darknet-53 backbone and an SPP layer, trained with EMA weight averaging, a cosine learning-rate schedule, an IoU loss with an IoU-aware branch, and BCE for the class and objectness branches; 300 epochs with 5 warm-up epochs, SGD with momentum 0.9, learning rate $0.01 \times \text{BatchSize}/64$, batch 128, inputs drawn from 448 to 832 pixels; only flips, colour jitter and multi-scale inputs for augmentation at this stage [@yolox].
+
+**Decoupled head.** YOLO heads were coupled: one convolution produced class scores, objectness and box numbers together. YOLOX uses a light decoupled head per FPN level: a $1 \times 1$ convolution reduces the channels to 256, followed by two parallel branches with two $3 \times 3$ convolutions each, one for classification and one for regression (with an IoU branch on the regression side) [@yolox]. The motivation is the known conflict between classification and regression features. Figure 4 shows the resulting anatomy, which most later YOLOs share.
+
+<Figure src={figAnatomy} alt="Block diagram. A 640 by 640 input feeds a backbone with stages C3, C4 and C5 at strides 8, 16 and 32. A neck turns them into P3, P4 and P5 with orange top-down arrows (FPN) and pink bottom-up arrows (PAN). Each level feeds a decoupled head with a class branch and a box branch, producing 80 by 80, 40 by 40 and 20 by 20 grids, which together give 8,400 candidates. A note says a one-to-many head needs threshold plus NMS, while a one-to-one head uses top-k without NMS." caption="Figure 4 — The backbone–neck–head design of anchor-free YOLOs after YOLOX, for a 640 × 640 input: an FPN–PAN neck and a decoupled head on strides 8, 16 and 32. Each cell of each grid makes one prediction, giving 8,400 candidates per image (YOLOv4 makes three per cell)." />
+
+**Strong augmentation.** Mosaic and MixUp [@mixup], switched off for the last 15 epochs so that training ends on images that look like test images; with this augmentation, ImageNet pre-training was "no more beneficial" and all later models are trained from scratch [@yolox].
+
+**Anchor-free.** Predictions per location drop from 3 to 1, and the head directly predicts two offsets from the cell's top-left corner plus the box's height and width; the centre location of each object is its positive and a scale range assigns objects to FPN levels, as in FCOS [@yolox]. The report gives two reasons against anchors: clustered anchors are domain-specific, and they multiply the number of predictions, which can become a latency bottleneck when moving outputs between devices [@yolox]. A common way to write the anchor-free decoding, used by the YOLOs after YOLOX, predicts four distances $(\hat{l}, \hat{t}, \hat{r}, \hat{b})$ from the cell centre $(x, y)$ in units of the stride $s$, $x_1 = x - s\hat{l}$, $y_1 = y - s\hat{t}$, $x_2 = x + s\hat{r}$, $y_2 = y + s\hat{b}$, the parameterization of [FCOS](#fcos-per-pixel-anchor-free-detection). The snippet builds the 8,400 cell centres of a $640 \times 640$ input and decodes one planted prediction this way.
+
+```python
+import numpy as np
+
+def make_grid(img_size=640, strides=(8, 16, 32)):
+    """Centre (x, y) in pixels and stride of every prediction, level by level."""
+    centres, st = [], []
+    for s in strides:
+        n = img_size // s
+        ys, xs = np.mgrid[0:n, 0:n]
+        centres.append(np.stack([(xs.ravel() + 0.5) * s, (ys.ravel() + 0.5) * s], axis=1))
+        st.append(np.full(n * n, s))
+    return np.concatenate(centres).astype(float), np.concatenate(st).astype(float)
+
+def decode(raw, centres, strides, conf=0.25):
+    """raw: (N, 4 + K) = distances (l, t, r, b) in stride units, then K class logits."""
+    ltrb = raw[:, :4] * strides[:, None]                     # back to pixels
+    boxes = np.concatenate([centres - ltrb[:, :2], centres + ltrb[:, 2:]], axis=1)
+    scores = 1 / (1 + np.exp(-raw[:, 4:]))                   # one sigmoid per class
+    cls, best = scores.argmax(axis=1), scores.max(axis=1)
+    keep = best > conf                                       # confidence threshold
+    return boxes[keep], cls[keep], best[keep]
+
+centres, strides = make_grid()
+print("predictions per 640x640 image:", len(centres))
+
+rng = np.random.default_rng(0)
+K = 3                                                        # three classes
+raw = np.concatenate([rng.uniform(0, 4, (len(centres), 4)),  # random distances
+                      rng.normal(-6, 1, (len(centres), K))], axis=1)  # background logits
+# plant one confident object (class 1) at the stride-16 cell centred on (296, 200)
+i = np.flatnonzero((strides == 16) & (centres[:, 0] == 296) & (centres[:, 1] == 200))[0]
+raw[i, :4] = [5.0, 3.0, 4.0, 2.5]
+raw[i, 4 + 1] = 4.0
+boxes, cls, score = decode(raw, centres, strides)
+print("kept:", len(boxes), "| box:", boxes[0], "| class:", cls[0], "| score:", round(float(score[0]), 3))
+```
+
+```text
+predictions per 640x640 image: 8400
+kept: 1 | box: [216. 152. 360. 240.] | class: 1 | score: 0.982
+```
+
+The planted distances $(5, 3, 4, 2.5)$ at stride 16 become $(80, 48, 64, 40)$ pixels, giving the box from $(216, 152)$ to $(360, 240)$; YOLOv4 would have made three times as many predictions at this resolution.
+
+**Multi positives.** One positive per object (the centre cell) wastes good predictions, so YOLOX makes the centre $3 \times 3$ area positive ("centre sampling" in FCOS) [@yolox].
+
+**SimOTA.** OTA [@ota] treats label assignment as optimal transport between ground truths and predictions, solved with the Sinkhorn–Knopp algorithm, which adds about 25% training time. SimOTA keeps OTA's four insights (loss-aware, centre prior, a dynamic number of positives per object, a global view) and approximates the solution: for each pair of ground truth $g_i$ and prediction $p_j$ it computes the cost
+
+$$
+c_{ij} = L^{\text{cls}}_{ij} + \lambda L^{\text{reg}}_{ij},
+$$
+
+where $L^{\text{cls}}_{ij}$ and $L^{\text{reg}}_{ij}$ are the classification and regression losses between them and $\lambda$ a balancing coefficient, and selects for each ground truth the $k$ lowest-cost predictions within a fixed centre region as positives, with $k$ chosen per object by OTA's dynamic-$k$ estimation [@yolox].
+
+**Optional end-to-end variant.** Two extra convolutional layers, one-to-one label assignment and a stop-gradient make the detector NMS-free, but slightly less accurate and slower, so it is left out of the final models [@yolox].
+
+#### Results
+
+All latencies are measured with FP16 precision and batch 1 on a single Tesla V100, and the roadmap table excludes post-processing [@yolox]. On COCO test-dev, YOLOX-L reaches 50.0% AP at 69.0 FPS and YOLOX-DarkNet53 47.4% AP at 90.1 FPS; in the same table, YOLOv4-CSP is listed at 47.5% AP and 73.0 FPS and YOLOv5-L at 48.2% AP and 73.0 FPS [@yolox]. At the small end, YOLOX-Nano with 0.91 M parameters and 1.08 GFLOPs reaches 25.3% AP on COCO val [@yolox]. YOLOX won the Streaming Perception Challenge at the CVPR 2021 autonomous-driving workshop with a single YOLOX-L model [@yolox].
+
+#### Ablations
+
+Table 2, the roadmap of YOLOX-DarkNet53 on COCO val at 640 × 640 [@yolox]:
+
+| Step | AP | Latency (V100, FP16, batch 1, no post-processing) |
+| --- | --- | --- |
+| YOLOv3 baseline | 38.5 | 10.5 ms |
+| + decoupled head | 39.6 | 11.6 ms |
+| + strong augmentation | 42.0 | 11.6 ms |
+| + anchor-free | 42.9 | 11.1 ms |
+| + multi positives | 45.0 | 11.1 ms |
+| + SimOTA | 47.3 | 11.1 ms |
+| + NMS-free (optional) | 46.5 | 13.5 ms |
+
+Table 1 shows that the decoupled head matters even more for the end-to-end version: with a coupled head, going end to end costs 4.2 AP (38.5 → 34.3), with a decoupled head only 0.8 AP (39.6 → 38.8) [@yolox]. The decoupled head also converges much faster (the training curves of Figure 3). Table 5 shows that strong augmentation should scale with model size: removing MixUp and weakening Mosaic's scale range improves YOLOX-Nano from 24.0% to 25.3% AP, while scale-jittered MixUp improves YOLOX-L from 48.6% to 49.5% [@yolox].
+
+#### Conclusion
+
+YOLOX shows that the anchor-based head YOLOv4 kept is not necessary for a fast YOLO: an anchor-free decoupled head with centre sampling and SimOTA, trained with strong augmentation from scratch, adds about 9 AP to a YOLOv3 baseline at nearly the same latency.
+
+#### Problems
+
+It is an arXiv report; its NMS-free variant loses accuracy and speed, so YOLOX still depends on NMS; SimOTA's dynamic $k$ adds training cost and, according to the YOLOv6 report, can slow training and make it unstable [@yolov6]. Its latencies exclude post-processing. [YOLOv6](#yolov6-a-re-parameterized-industrial-detector) replaced SimOTA with task-aligned assignment; [YOLOv10](#yolov10-nms-free-training-with-dual-assignments) made the NMS-free head competitive.
+
+### YOLOv6: a re-parameterized industrial detector
+
+*Paper:* C. Li, L. Li, H. Jiang, K. Weng, Y. Geng et al. (Meituan), "YOLOv6: A single-stage object detection framework for industrial applications," tech. report, arXiv, 2022 [@yolov6]. *Related part of YOLOv4:* [the backbone](#backbone-cspdarknet53) and [export and re-parameterization](#export-reduced-precision-and-re-parameterization).
+
+#### Challenge
+
+Industrial deployment cares about measured speed on real hardware, about throughput at larger batches as well as latency, and about quantized (INT8) models. Multi-branch networks such as CSPDarknet53 are accurate but less parallel on GPUs, re-parameterized models are hard to quantize, and the many recent assignment and loss choices had not been compared within one YOLO [@yolov6]. YOLOv6 is an engineering study that makes those choices systematically.
+
+#### Method
+
+**EfficientRep backbone and Rep-PAN neck.** RepVGG [@repvgg] showed that a multi-branch block used during training ($3 \times 3$ convolution, $1 \times 1$ convolution and identity, each with batch normalization) can be folded into a single $3 \times 3$ convolution for inference (the folding is derived in the [Supplementary notes](#folding-a-re-parameterized-block-into-one-convolution)). Small YOLOv6 models build their backbone from such RepBlocks, which become stacks of $3 \times 3$ convolutions with ReLU at inference; for medium and large models, whose parameters would grow too quickly with plain stacks, YOLOv6 uses a CSPStackRep block: three $1 \times 1$ convolutions, a stack of sub-blocks of two RepVGG blocks with a residual connection, and a cross-stage partial connection [@yolov6]. The neck keeps the PAN topology of YOLOv4 and YOLOv5 with the same blocks (Rep-PAN) [@yolov6].
+
+**Efficient decoupled head.** Following YOLOX's decoupled head but with only one $3 \times 3$ convolution per branch ("hybrid channels"), and anchor-free, anchor-point-based box prediction (distances from the anchor point to the box sides) [@yolov6].
+
+**Label assignment.** SimOTA was used in an early version but slowed training and was "not rare to fall into unstable training"; YOLOv6 adopts task-alignment learning (TAL) from TOOD [@tood], which assigns positives by a metric that combines the classification score and the IoU of the predicted box [@yolov6]. [YOLOv10](#yolov10-nms-free-training-with-dual-assignments) writes this metric out.
+
+**Losses.** Varifocal loss (VFL) [@vfl] for classification, which weights positives by their IoU and down-weights easy negatives; SIoU [@siou] box loss for the smallest models and GIoU [@giou] for the others; the distribution focal loss (DFL) [@gfl] for the medium and large models only, because it outputs many more regression values; and no objectness loss, which did not help [@yolov6].
+
+**Industry-handy improvements.** Training for 400 instead of 300 epochs for small models; **self-distillation**, in which a pre-trained copy of the same model is the teacher, with
+
+$$
+\mathcal{L}_{\text{KD}} = \text{KL}(p^{\text{cls}}_t \,\|\, p^{\text{cls}}_s) + \text{KL}(p^{\text{reg}}_t \,\|\, p^{\text{reg}}_s), \qquad \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{det}} + \alpha\, \mathcal{L}_{\text{KD}},
+$$
+
+where $p_t$ and $p_s$ are the teacher's and student's class predictions and DFL box distributions, KL is the Kullback–Leibler divergence and $\alpha$ is decayed with a cosine schedule so that the student relies on the teacher's soft labels early and on the hard labels later [@yolov6]; and a fix for the accuracy loss when evaluating without the extra grey borders that Mosaic training leaves around images ("Mosaic fading" and 3-pixel grey borders around a $634 \times 634$ image) [@yolov6].
+
+**Quantization.** Re-parameterized models quantize poorly after training. YOLOv6 trains with RepOptimizer [@repopt], which re-parameterizes the gradients instead of the architecture and yields weights that are friendlier to post-training quantization, and applies quantization-aware training with channel-wise distillation and graph optimization [@yolov6].
+
+#### Results
+
+Speeds are measured on a Tesla T4 with TensorRT 7.2 in FP16, at batch 1 (FPS and latency) and batch 32 (throughput); accuracy is COCO val2017 at 640 × 640, all models trained 300 epochs without pre-training or extra data [@yolov6]. The report does not say whether NMS is inside the timing. YOLOv6-N reaches 35.9% AP at 1.2 ms (802 FPS at batch 1, 1,234 at batch 32), YOLOv6-S 43.5% AP at 2.8 ms, and YOLOv6-L 52.5% AP at 10.2 ms [@yolov6]. In the same table YOLOv5-S is listed at 37.4% AP and 2.7 ms and YOLOX-S at 40.5% AP and 3.0 ms [@yolov6]. The quantized YOLOv6-S reaches 42.3% AP at 869 FPS (batch 32) [@yolov6].
+
+#### Ablations
+
+Table 5 builds YOLOv6-N step by step (FPS at batch 32 on T4) [@yolov6]: baseline 28.0% AP; + decoupled head 29.4%; + anchor-free 30.7% (and much faster, 637 → 962 FPS); + EfficientRep backbone and Rep-PAN neck 34.3%; + hybrid channels in the head 34.5% at 1,242 FPS. For assignment, on YOLOv6-N, ATSS [@atss] gives 32.5% AP, SimOTA 34.5% and TAL 35.0% [@yolov6]. Self-distillation on YOLOv6-L adds 0.4 AP on the classification branch alone, 0.3 more with box distillation and 0.6 more with the decayed weighting [@yolov6]. For quantization, plain post-training INT8 quantization drops YOLOv6-S (v1.0) from 42.4% to 35.0% AP; with RepOptimizer training it drops only to 40.9% [@yolov6]. Table 2 shows that single-path RepBlocks are best for the smallest model but multi-branch CSPStackRep blocks are better from the medium size up [@yolov6].
+
+#### Conclusion
+
+YOLOv6 shows that, for deployment on GPUs, re-parameterized single-path blocks, a lighter decoupled anchor-free head and task-aligned assignment give a better speed–accuracy trade-off than YOLOv4's design, and that quantization must be considered during training when re-parameterization is used.
+
+#### Problems
+
+It is a technical report, never peer reviewed; its tables mix released models re-evaluated by the authors (marked in the table) with reported numbers; the gains rely on many engineering details (longer training, self-distillation, grey borders) that are not part of the detector itself; and it still uses NMS. Later versions of YOLOv6 appeared as further releases. [YOLOv7](#yolov7-a-trainable-bag-of-freebies), released weeks earlier, took a different route to re-parameterization.
+
+### YOLOv7: a trainable bag of freebies
+
+*Paper:* C.-Y. Wang, A. Bochkovskiy and H.-Y. M. Liao, "YOLOv7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors," CVPR 2023 [@yolov7]. *Related part of YOLOv4:* [the complete recipe](#the-complete-recipe); two of its authors wrote YOLOv4.
+
+#### Challenge
+
+YOLOv4's bag of freebies improved training without changing inference. Two newer training tools raised new questions, according to the paper: re-parameterized modules (which fold several branches into one at inference) did not work everywhere they were inserted, and dynamic label assignment became unclear once a network has several output heads (a lead head and auxiliary heads) [@yolov7]. YOLOv7 also wants a scaling method for concatenation-based architectures, for which the usual width/depth scaling rules do not hold.
+
+#### Method
+
+**E-ELAN.** ELAN [@elan] designs a network by controlling the shortest and longest gradient paths. Stacking more of its blocks eventually destroys this balance. Extended ELAN (E-ELAN) changes only the computational blocks: it uses group convolution to expand their channels and cardinality, shuffles the resulting feature maps into $g$ groups, concatenates them, and adds the $g$ groups back together ("merge cardinality"), so that different groups learn more diverse features while the transition layers and the gradient paths stay unchanged [@yolov7].
+
+**Compound scaling for concatenation-based models.** In a concatenation-based block, scaling the depth (more layers in the block) also increases the block's output width, which changes the input width of the next transition layer. YOLOv7 therefore scales the depth of the computational blocks and, by the same factor of output-width change, the width of the transition layers [@yolov7].
+
+**Planned re-parameterized convolution.** RepConv combines a $3 \times 3$ convolution, a $1 \times 1$ convolution and an identity branch. The paper finds that the identity branch destroys the residual connection of ResNet-style and the concatenation of DenseNet-style layers, which provide diverse gradients. It therefore uses **RepConvN**, RepConv without the identity branch, wherever a layer already has a residual or concatenation connection [@yolov7].
+
+**Coarse for auxiliary, fine for lead.** With deep supervision, auxiliary heads in middle layers are trained alongside the final "lead" head. Instead of assigning labels to each head independently, YOLOv7's assigner uses the lead head's predictions together with the ground truth to generate soft labels for both heads: fine labels for the lead head, and coarser labels with more positive grid cells for the auxiliary head, which should favour recall; a constraint in the decoder keeps the extra coarse positives from producing perfect soft labels, so the fine labels always have the higher upper bound [@yolov7].
+
+**Other freebies.** Batch normalization folded into the convolution at inference, YOLOR-style implicit knowledge folded into the convolution weights, and an EMA model used as the final inference model [@yolov7]. All models are trained from scratch on COCO.
+
+#### Results
+
+Table 2 of the CVPR paper compares on COCO with a V100, without TensorRT and without extra training data [@yolov7]. YOLOv7 reaches 51.4% AP on test-dev (51.2% on val) at 118 FPS with 36.9 M parameters; YOLOv7-X 53.1% at 98 FPS; YOLOv7-E6E, at 1280 pixels, 56.8% at 35 FPS [@yolov7]. In the same table YOLOX-L is listed at 50.1% AP and 69 FPS [@yolov7]. Against a YOLOv4 trained in the same setting, YOLOv7 reaches 51.2% instead of 49.7% AP on val with 43% fewer parameters and 15% less computation (Table 1) [@yolov7].
+
+#### Ablations
+
+All on COCO val [@yolov7]:
+
+- **Compound scaling** (Table 3): scaling only the width of a base model to 1.25 gives 52.4% AP, only the depth to 2.0 gives 52.7%, the compound method 52.9%.
+- **Planned re-parameterization** (Tables 4 and 5): replacing convolutions in different positions of a 3-stacked ELAN with RepConv changes AP only slightly (52.17% to 52.33% against a 52.26% base); in residual models, a reversed CSP block with RepConvN improves AP slightly, while the plain variant without re-parameterization does not.
+- **Auxiliary head** (Table 6, YOLOv7-E6 at 1280): base 55.6% AP; independent assignment 55.8%; lead-guided 55.9%; coarse-to-fine lead-guided 55.9% (AP75 61.1 against 61.0).
+- **Partial auxiliary head** (Table 8, YOLOv7-E6E): base 56.3%; auxiliary head 56.5%; partial auxiliary head 56.8%.
+
+The gains of each component are a few tenths of AP; the full models' advantage comes from their sum and from the architecture.
+
+#### Conclusion
+
+YOLOv7 extends the YOLOv4 philosophy to "trainable" freebies: re-parameterization planned around the network's residual and concatenation paths, and label assignment shared between lead and auxiliary heads, together with E-ELAN and a compound scaling rule. It reached the best speed–accuracy trade-off among the V100 detectors it compared.
+
+#### Problems
+
+The improvements per component are small, single-run numbers; the timings are without TensorRT, unlike the T4/TensorRT tables of most later papers, so they are hard to compare directly; the head is still anchor-based in the main models and NMS is still required. Its successor by the same group, [YOLOv9](#yolov9-programmable-gradient-information), revisited the auxiliary supervision from an information-flow perspective.
+
+### YOLOv9: programmable gradient information
+
+*Paper:* C.-Y. Wang, I-H. Yeh and H.-Y. M. Liao, "YOLOv9: Learning what you want to learn using programmable gradient information," ECCV 2024 [@yolov9]. *Related part of YOLOv4:* [the backbone](#backbone-cspdarknet53), whose CSP design YOLOv9 generalizes. Numbers below are from the arXiv version of the paper.
+
+#### Challenge
+
+As data passes through many layers, information about the input is lost: by the data-processing inequality the paper writes $I(X, X) \ge I(X, f_\theta(X)) \ge I(X, g_\phi(f_\theta(X)))$, where $I$ is mutual information, $X$ the input and $f_\theta$, $g_\phi$ successive transformations [@yolov9]. When the information needed to compute the loss is gone, the gradients become unreliable and the network may learn false correlations. Reversible architectures keep all information but cost inference time, and deep supervision with auxiliary heads can make shallow features specialize and lose information needed elsewhere [@yolov9]. Lightweight models suffer most.
+
+#### Method
+
+**Programmable gradient information (PGI).** An auxiliary supervision framework with three parts [@yolov9]:
+
+- the **main branch**, the network used at inference;
+- an **auxiliary reversible branch**, used only during training, that maintains complete input information and supplies reliable gradients to the main branch; a reversible function $r_\psi$ with inverse $v_\zeta$ satisfies $X = v_\zeta(r_\psi(X))$, so no information is lost [@yolov9]. Because this branch is removed at inference, its cost is paid only in training;
+- **multi-level auxiliary information**, an integration network between the auxiliary feature-pyramid heads and the main branch, which combines the gradients from the different prediction heads so that each pyramid level of the main branch receives information about all target objects rather than only those of its own size [@yolov9].
+
+**GELAN.** The generalized efficient layer aggregation network combines CSPNet's split–merge design with ELAN's layer aggregation and allows any computational block inside; YOLOv9 uses CSP blocks with planned RepConv as computational blocks [@yolov9].
+
+**Training.** Built on YOLOv7 and its anchor-free variant, trained from scratch for 500 epochs with linear warm-up in the first 3 epochs and Mosaic switched off for the last 15 epochs; the auxiliary loss follows YOLOv7's auxiliary-head setting [@yolov9].
+
+#### Results
+
+Table 1 compares train-from-scratch detectors on COCO val by parameters, FLOPs and AP; it does not report latency [@yolov9]. YOLOv9-S reaches 46.8% AP with 7.1 M parameters and 26.4 GFLOPs, YOLOv9-C 53.0% with 25.3 M and 102.1 G, and YOLOv9-E 55.6% with 57.3 M and 189.0 G [@yolov9]. The paper states that YOLOv9-C matches the anchor-free YOLOv7's 53% AP with 42% fewer parameters and 22% less computation, and that YOLOv9-E improves on YOLOv8-X by 1.7 AP with 16% fewer parameters [@yolov9].
+
+#### Ablations
+
+On COCO val [@yolov9]:
+
+- **Computational blocks in GELAN** (Table 2, small model): plain convolutions 44.8% AP, residual blocks 44.3%, Darknet blocks 44.5%, CSP blocks 45.5%.
+- **Depth** (Table 3): AP grows roughly linearly with ELAN and CSP depth beyond 2, so GELAN is "not sensitive to the depth".
+- **PGI against deep supervision** (Table 5): for GELAN-S, deep supervision lowers AP (46.7 → 46.5) while PGI raises it slightly (46.8); for GELAN-C, deep supervision gives 52.5 and PGI 53.0; for GELAN-E, 55.3 and 55.6.
+- **Roadmap** (Table 6): YOLOv7 51.2% → anchor-free 53.0% → GELAN 53.2% → a deeper linkage 55.0% → PGI 55.6%.
+
+What it proves: auxiliary reversible information helps where ordinary deep supervision hurts, especially for small models, but the gains are a few tenths of AP.
+
+#### Conclusion
+
+YOLOv9 explains auxiliary supervision through information loss and proposes a training-only reversible branch (PGI) plus a flexible aggregation backbone (GELAN), achieving strong accuracy per parameter for train-from-scratch models.
+
+#### Problems
+
+The main comparison reports no speed, so the real-time claim rests on parameter and FLOP counts, which YOLOv4 itself showed to be poor proxies for GPU speed; [YOLOv10](#yolov10-nms-free-training-with-dual-assignments) later measured YOLOv9-C at 10.57 ms on a T4 [@yolov10]. The information-bottleneck argument motivates the design but is not tested quantitatively, NMS is still required, and PGI makes training more expensive.
+
+### YOLOv10: NMS-free training with dual assignments
+
+*Paper:* A. Wang, H. Chen, L. Liu, K. Chen, Z. Lin, J. Han and G. Ding, "YOLOv10: Real-time end-to-end object detection," NeurIPS 2024 [@yolov10]. *Related part of YOLOv4:* [label assignment](#label-assignment-several-anchors-per-object) and [post-processing](#post-processing-nms-and-diou-nms).
+
+#### Challenge
+
+YOLOs are trained with one-to-many assignment (YOLOv4's several anchors per object is one form), so several predictions fire on each object and NMS must remove the duplicates; NMS adds latency, depends on thresholds and prevents end-to-end deployment [@yolov10]. One-to-one assignment, as in DETR [@detr], removes NMS but gives weak supervision, which slows convergence and lowers accuracy. Separately, the paper argues that YOLO architectures had accumulated computational redundancy without a holistic efficiency and accuracy design [@yolov10].
+
+#### Method
+
+**Dual label assignments.** A second head with the same structure as the usual one-to-many head is added and trained with one-to-one assignment. Both share the backbone and neck, which therefore receive the rich one-to-many supervision; at inference only the one-to-one head is used, so no NMS is needed [@yolov10]. The one-to-one match is chosen by "top one selection", which the paper reports performs as well as Hungarian matching [@kuhn] with less training time [@yolov10].
+
+**Consistent matching metric.** Both heads rank predictions with the task-aligned metric
+
+$$
+m(\alpha, \beta) = s \cdot p^{\alpha} \cdot \text{IoU}(\hat{b}, b)^{\beta},
+$$
+
+where $p$ is the classification score for the object's class, $\hat{b}$ and $b$ are the predicted and true boxes, $s$ is a spatial prior that is 1 if the prediction's anchor point lies inside the object and 0 otherwise, and $\alpha, \beta$ balance classification against localization [@yolov10]; YOLOv8-S uses $\alpha = 0.5$, $\beta = 6$ by default [@yolov10]. The paper derives the **supervision gap** between the heads. For an object with largest IoU $u^*$ among the predictions, let $\Omega$ be the one-to-many positives and $i$ the one-to-one match; with task-aligned classification targets $t_{o2m,j} = u^* \cdot m_{o2m,j}/m^*_{o2m} \le u^*$ and $t_{o2o,i} = u^*$, the 1-Wasserstein distance between the two classification objectives is
+
+$$
+A = t_{o2o,i} - \mathbb{I}(i \in \Omega)\, t_{o2m,i} + \sum_{k \in \Omega \setminus \{i\}} t_{o2m,k},
+$$
+
+where $\mathbb{I}$ is the indicator function [@yolov10]. The gap is smallest when $i$ is the best positive of the one-to-many head, which holds when $\alpha_{o2o} = r\,\alpha_{o2m}$ and $\beta_{o2o} = r\,\beta_{o2m}$ (then $m_{o2o} = m_{o2m}^r$, and both heads rank predictions in the same order); the paper uses $r = 1$ [@yolov10].
+
+The toy snippet places an $8 \times 8$ grid of anchor points on a $100 \times 100$ image with three objects, computes $m$ with these defaults, and compares top-4 one-to-many assignment with Hungarian one-to-one assignment.
+
+```python
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+def iou_matrix(a, b):
+    x1 = np.maximum(a[:, None, 0], b[None, :, 0]); y1 = np.maximum(a[:, None, 1], b[None, :, 1])
+    x2 = np.minimum(a[:, None, 2], b[None, :, 2]); y2 = np.minimum(a[:, None, 3], b[None, :, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    area = lambda b: (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    return inter / (area(a)[:, None] + area(b)[None, :] - inter)
+
+rng = np.random.default_rng(3)
+gt = np.array([[20, 20, 60, 70], [55, 30, 95, 80], [10, 80, 40, 100]], float)
+# 8 x 8 grid of anchor points (stride 12.5 on a 100 x 100 image), each with a predicted box
+ys, xs = np.mgrid[0:8, 0:8]
+pts = np.stack([(xs.ravel() + 0.5) * 12.5, (ys.ravel() + 0.5) * 12.5], axis=1)
+inside = ((pts[:, None, 0] > gt[None, :, 0]) & (pts[:, None, 0] < gt[None, :, 2]) &
+          (pts[:, None, 1] > gt[None, :, 1]) & (pts[:, None, 1] < gt[None, :, 3]))      # spatial prior s
+near = inside.argmax(axis=1)                       # the object each point "looks at"
+pred = gt[near] + rng.normal(0, 5, (len(pts), 4))  # noisy box predictions
+p = np.where(inside.any(axis=1), rng.uniform(0.3, 0.9, len(pts)), rng.uniform(0, 0.2, len(pts)))
+
+alpha, beta = 0.5, 6.0                             # the defaults quoted in the YOLOv10 paper
+m = inside * p[:, None] ** alpha * iou_matrix(pred, gt) ** beta   # (points, objects)
+
+# one-to-many: the top-k points by m for every object become positives
+k = 4
+o2m = {}
+for j in range(len(gt)):
+    best = np.argsort(-m[:, j])[:k]
+    o2m[j] = best[m[best, j] > 0].tolist()
+# one-to-one: Hungarian matching on cost -m (each object gets exactly one point)
+rows, cols = linear_sum_assignment(-m)
+o2o = {int(c): [int(r)] for r, c in zip(rows, cols)}
+print("one-to-many positives:", o2m)
+print("one-to-one positives: ", dict(sorted(o2o.items())))
+print("positives per image: o2m", sum(map(len, o2m.values())), "| o2o", len(o2o))
+top1 = m.argmax(axis=0)                            # YOLOv10's cheaper top-1 choice
+print("top-1 equals Hungarian here:", all(top1[j] == o2o[j][0] for j in o2o))
+```
+
+```text
+one-to-many positives: {0: [26, 34, 42, 43], 1: [37, 46, 38, 30], 2: [58, 50, 49, 57]}
+one-to-one positives:  {0: [26], 1: [37], 2: [58]}
+positives per image: o2m 12 | o2o 3
+top-1 equals Hungarian here: True
+```
+
+One-to-many gives four times as many positives, and Figure 5 shows their cost: four overlapping boxes per object, all taught to fire. One-to-one keeps the single best point per object, which is also the top-ranked point under one-to-many, the property the consistent metric is designed to guarantee. The cheap per-object top-1 choice agrees with Hungarian matching here because no two objects compete for the same point.
+
+<Figure src={figAssign} alt="Two panels of the same toy scene with three ground-truth boxes (blue, orange, green) on a grid of gray points. Left: four colored positive points per object, each with a dashed predicted box, so every object is covered by four overlapping boxes. Right: one positive point and one dashed box per object." caption="Figure 5 — Label assignment on a toy scene. (a) One-to-many: the top-4 points per object by the task-aligned score are positives, so four overlapping predictions per object are trained to fire. (b) One-to-one (Hungarian): exactly one positive per object; every other point is trained as background." />
+
+**Efficiency-driven design.** Three changes reduce computation [@yolov10]: a **lightweight classification head** (two depthwise-separable $3 \times 3$ convolutions and a $1 \times 1$ convolution), justified by an analysis showing that regression errors matter more than classification errors; **spatial–channel decoupled downsampling**, a pointwise convolution that changes the channels followed by a depthwise stride-2 convolution, instead of one $3 \times 3$ stride-2 convolution, which lowers the cost from $O(\tfrac{9}{2} HWC^2)$ to $O(2HWC^2 + \tfrac{9}{2}HWC)$; and a **rank-guided block design**, which measures the numerical rank of each stage's last convolution (the number of singular values above half the largest), sorts stages from most redundant to least, and replaces their blocks with a cheaper compact inverted block (CIB) as long as accuracy does not drop.
+
+**Accuracy-driven design.** Large-kernel ($7 \times 7$) depthwise convolutions in the CIBs of deep stages, re-parameterized with an extra $3 \times 3$ branch, for small models only; and **partial self-attention (PSA)**, which splits the channels in two after a $1 \times 1$ convolution, applies multi-head self-attention and a feed-forward network to one half only, and is placed once after the lowest-resolution stage [@yolov10].
+
+#### Results
+
+Latency is end to end on a T4 GPU with TensorRT FP16, at batch 1, averaged over COCO val, with TensorRT's efficient-NMS plugin appended for models that need NMS and I/O excluded [@yolov10]. YOLOv10-S reaches 46.3% AP at 2.49 ms, against 44.9% at 7.07 ms for YOLOv8-S and 46.5% at 4.58 ms for RT-DETR-R18; YOLOv10-X reaches 54.4% AP at 10.70 ms, against 54.3% at 13.71 ms for RT-DETR-R101; YOLOv10-B matches YOLOv9-C's 52.5% AP at 5.74 ms instead of 10.57 ms [@yolov10]. The table also reports a forward-only latency ($\text{Latency}^f$) for comparisons without post-processing; do not mix the two columns.
+
+#### Ablations
+
+On COCO val [@yolov10]:
+
+- **NMS-free and the architecture** (Table 2): YOLOv10-S goes from 44.9% AP at 7.07 ms (YOLOv8-S with NMS) to 44.3% at 2.44 ms (NMS-free), 44.5% at 2.31 ms (+ efficiency design) and 46.3% at 2.49 ms (+ accuracy design).
+- **Dual assignments** (Table 3): one-to-many only, 44.9% AP at 7.07 ms; one-to-one only, 43.4% at 2.44 ms; both heads, 44.3% at 2.44 ms. The latency difference is NMS; the accuracy price of NMS-free inference is 0.6 AP.
+- **Matching metric** (Table 4, with $\alpha_{o2m} = 0.5$, $\beta_{o2m} = 6$): the consistent setting $(0.5, 6)$ gives 44.3%; inconsistent settings such as $(0.5, 2)$ give as little as 42.7%; and the proportional settings $(0.25, 3)$ and $(1.0, 12)$, which the theory predicts to be equally consistent, also reach 44.3%.
+- **Efficiency components** (Table 5): the lighter classification head, the decoupled downsampling and the rank-guided blocks reduce YOLOv10-S from 11.2 M to 6.2 M parameters and 2.44 to 2.31 ms while AP stays between 44.2% and 44.5%.
+
+#### Conclusion
+
+YOLOv10 brings NMS-free inference to YOLOs without giving up their dense training signal: a second, one-to-one head trained with a metric consistent with the one-to-many head. Combined with a careful efficiency and accuracy redesign, it cuts end-to-end latency substantially at equal accuracy.
+
+#### Problems
+
+The NMS-free head is 0.6 AP below the NMS-based one in its own ablation; the two heads receive equal loss weights throughout training; the box head still uses the distribution focal loss of its YOLOv8 base; and the ablations are single runs. [YOLO26](#yolo26-a-dfl-free-end-to-end-yolo) adds a progressive loss weighting toward the one-to-one head and removes the distribution head; [DEIM](#deim-dense-one-to-one-matching) attacks the same weak one-to-one supervision from the DETR side.
+
+### YOLOv12: an attention-centric YOLO
+
+*Paper:* Y. Tian, Q. Ye and D. Doermann, "YOLOv12: Attention-centric real-time object detectors," NeurIPS 2025 [@yolov12]. *Related part of YOLOv4:* [the modified SAM](#attention-and-fusion-the-modified-sam-and-weighted-residuals), the only attention YOLOv4 could afford. Numbers below are from the NeurIPS version.
+
+#### Challenge
+
+Attention models learn long-range relations well, but YOLOs had stayed convolutional because attention is slower: its cost grows quadratically with the number of tokens, and its memory access is inefficient [@yolov12]. Linear attention degrades quality; local window attention (as in Swin-style models) needs input sizes divisible into windows, which conflicts with YOLO's rectangular inference at native aspect ratios [@yolov12]. The challenge is attention as the core of a YOLO at real-time speed.
+
+#### Method
+
+**Area attention ($A^2$).** For a feature map of size $H \times W$, flatten it into $H \times W$ tokens and split the sequence into $l$ equal segments ("areas") of $HW/l$ consecutive tokens; self-attention is computed independently inside each area, which needs only a reshape [@yolov12]. With $n$ tokens, $h$ heads of size $d$, vanilla attention costs about $2n^2hd$; area attention divides the quadratic term by $l$. The default is $l = 4$ (or 8), which keeps a large receptive field, and the only constraint is that $HW$ is divisible by $l$ [@yolov12]. The memory-access problem is handled with FlashAttention [@flashattn].
+
+**R-ELAN.** Adding attention made the larger ELAN-based models fail to converge or train unstably, even with Adam-type optimizers [@yolov12]. Residual ELAN adds a shortcut from the block's input to its output, scaled by a factor (default 0.01), and simplifies the aggregation: a transition layer produces one feature map, which is processed by the following blocks and then concatenated, forming a bottleneck [@yolov12].
+
+**Architectural adjustments.** The hierarchical YOLO structure is kept; the backbone's last stage keeps a single block; the attention's MLP ratio is reduced from 4 to 1.5 (2 for the N, S and M models); positional encodings are removed and a $7 \times 7$ separable convolution ("position perceiver") supplies position information; and $v$ is projected separately from $q$ and $k$, which speeds up inference by about 10% [@yolov12].
+
+#### Results
+
+Latency is measured on a T4 with TensorRT FP16; accuracy on COCO val at 640 × 640; models are trained 600 epochs with SGD [@yolov12]. YOLOv12-N reaches 40.5% AP at 1.62 ms, against 38.5% at 1.84 ms for YOLOv10-N and 39.4% at 1.5 ms for YOLO11-N; YOLOv12-S 47.8% at 2.44 ms; YOLOv12-X 55.4% at 10.47 ms, against 54.4% at 10.70 ms for YOLOv10-X [@yolov12]. The comparison table takes competitors' numbers from their official reports, and the paper notes that some achieve higher speed in its own reproduction [@yolov12].
+
+#### Ablations
+
+- **Area attention** (Table 3, same hardware, without FlashAttention): for YOLOv12-N, global attention reaches 41.7% AP but takes 1.6 ms (FP16, RTX 3080) and 66.3 ms on CPU; area attention reaches 40.5% AP at 1.2 ms and 38.7 ms on CPU; other local attentions (criss-cross, two window schemes) reach 39.5% to 40.3% [@yolov12]. Area attention therefore trades about 1 AP of global attention for a large speed gain, and beats the other local schemes.
+- **R-ELAN** (Table 4): without the residual shortcut, the L and X models do not converge; with it and scale 0.01 they reach 53.8% and 55.4% AP; for the N model the shortcut is not needed [@yolov12].
+
+#### Conclusion
+
+YOLOv12 makes attention the central operator of a YOLO at real-time speed, with a simple area partition, FlashAttention for memory access and a residual aggregation block that keeps large attention models trainable.
+
+#### Problems
+
+The speed relies on FlashAttention, which needs recent GPUs and is not available on every deployment target; global attention remains more accurate in its own ablation; the main table mixes official numbers from other papers; and YOLOv12 still uses NMS. The [YOLOv13](#yolov13-hypergraph-correlation) paper reports a lower YOLOv12-N accuracy in its own reproduction (40.1% AP) [@yolov13], and the Jegham et al. survey found that YOLOv12's added complexity did not pay off on its datasets [@jegham].
+
+### YOLOv13: hypergraph correlation
+
+*Paper:* M. Lei, S. Li, Y. Wu, H. Hu, Y. Zhou et al., "YOLOv13: Real-time object detection with hypergraph-enhanced adaptive visual perception," arXiv, 2025 [@yolov13]. *Related part of YOLOv4:* [the PANet neck](#neck-part-2-panet-path-aggregation), the information path that YOLOv13 redesigns.
+
+#### Challenge
+
+Convolutions aggregate local information and self-attention, including YOLOv12's area attention, models pairwise relations between positions. The paper argues that neither captures "many-to-many" high-order correlations, for example several related objects in a cluttered scene, and that the usual backbone → neck → head flow limits how such information reaches the whole network [@yolov13].
+
+#### Method
+
+**Adaptive hypergraph computation.** A hypergraph has hyperedges that connect any number of vertices. Here every position of a feature map is a vertex $x_i \in \mathbb{R}^C$, $i = 1, \dots, N$, and $M$ hyperedges are learned rather than defined by thresholds [@yolov13]. Global average and max pooling give a context vector $f_{\text{ctx}} \in \mathbb{R}^{2C}$; a mapping layer turns it into an offset $\Delta P \in \mathbb{R}^{M \times C}$ that is added to learnable prototypes $P_0$, giving dynamic hyperedge prototypes $P = P_0 + \Delta P$. Each vertex is projected to a query $z_i = W_{\text{pre}} x_i$; with $h$ heads of size $d_h = C/h$, the similarity to prototype $m$ is the average over heads of $\langle \hat{z}^\tau_i, \hat{p}^\tau_m \rangle / \sqrt{d_h}$, and a softmax over vertices gives the continuous participation matrix
+
+$$
+A_{i,m} = \frac{\exp(\bar{s}_{i,m})}{\sum_{j=1}^{N} \exp(\bar{s}_{j,m})},
+$$
+
+where $\bar{s}_{i,m}$ is that averaged similarity [@yolov13]. Hypergraph convolution then collects vertex features into each hyperedge and sends them back:
+
+$$
+f_m = \sigma\Big(W_e \sum_{i=1}^{N} A_{i,m} x_i\Big), \qquad \tilde{x}_i = \sigma\Big(W_v \sum_{m=1}^{M} A_{i,m} f_m\Big),
+$$
+
+where $W_e$ and $W_v$ are the hyperedge and vertex projection weights and $\sigma$ an activation [@yolov13]. The cost is linear in $N$.
+
+**HyperACE.** The backbone features $B_3$, $B_4$, $B_5$ are resized to the size of $B_4$ and fused; the result is split into three channel groups: one goes through $K$ parallel C3AH blocks (a CSP-style block around the adaptive hypergraph computation) for global high-order correlation, one through lightweight depthwise-separable blocks for local correlation, and one is a shortcut; the three are concatenated and fused by a $1 \times 1$ convolution [@yolov13].
+
+**FullPAD.** The enhanced features are distributed through three "tunnels" to the backbone–neck connection, inside the neck and to the neck–head connection, each added as $F_i + \gamma H_i$ with a learnable scalar $\gamma$ [@yolov13].
+
+**Lightweight blocks.** Large-kernel convolutions are replaced by depthwise-separable ones (DS-C3k2 and related blocks) [@yolov13]. Models are trained 600 epochs with batch 256 and SGD; the number of hyperedges is 4, 8, 8 and 12 for the N, S, L and X models [@yolov13].
+
+#### Results
+
+On COCO val, with latency on a T4 with TensorRT FP16, YOLOv13-N reaches 41.6% AP at 1.97 ms and YOLOv13-X 54.8% at 14.67 ms; in the same table, re-trained by the authors on their hardware, YOLOv12-N reaches 40.1% at 1.83 ms and YOLO11-N 38.6% at 1.53 ms [@yolov13]. Trained on COCO and tested on PASCAL VOC 2007 [@voc] without fine-tuning, YOLOv13-N reaches 65.3% AP against 64.3% for YOLOv12-N [@yolov13].
+
+#### Ablations
+
+On YOLOv13-S [@yolov13]: FullPAD distribution to all three locations raises AP from 47.1% (no distribution) to 48.0%, each single location giving 47.6% to 47.8%; the number of hyperedges changes AP from 47.8% ($M = 2$) to 48.1% ($M = 16$); replacing the depthwise-separable blocks by ordinary ones keeps AP (48.0% against 48.0%) but raises FLOPs from 20.8 G to 27.1 G.
+
+#### Conclusion
+
+YOLOv13 adds a learned hypergraph module for high-order feature correlation and distributes its output through the whole network, improving accuracy per FLOP, especially for the smallest models.
+
+#### Problems
+
+It is an arXiv paper; its accuracy gains come with higher latency than the models it beats (1.97 ms against 1.83 ms for the re-trained YOLOv12-N), its comparisons re-train some baselines and take others from official numbers, and it still uses NMS. Whether hyperedges capture "high-order" relations beyond what attention does is argued with visualizations rather than measured.
+
+### YOLO26: a DFL-free end-to-end YOLO
+
+*Paper:* G. Jocher, J. Qiu, M. Liu, S. Lyu, F. C. Akyon and M. E. Kalfaoglu (Ultralytics), "Ultralytics YOLO26: Unified real-time end-to-end vision models," arXiv, June 2026 [@yolo26]; the software was released in January 2026. *Related part of YOLOv4:* [label assignment](#label-assignment-several-anchors-per-object), [post-processing](#post-processing-nms-and-diou-nms) and the [training schedule](#training-schedule-cosine-annealing-genetic-search-and-random-shapes).
+
+#### Challenge
+
+The paper lists four limits of current YOLOs [@yolo26]: (a) most still need NMS, and YOLOv10's dual heads give both heads the same loss weight throughout training, leaving the inference head under-trained; (b) the distribution focal loss (DFL), used in the Ultralytics head since YOLOv8, expands each box side from one number to $K = 16$ logits, inflating the head (YOLO11n has 2.6 M parameters and 6.5 GFLOPs with DFL and 2.3 M and 5.2 GFLOPs without), and limits the range of each side; (c) training needs about 600 epochs; (d) task-aligned assignment selects candidates whose anchor centres lie inside the box, so tiny objects can receive no positive at all.
+
+#### Method
+
+**Dual heads, NMS-free by default.** As in YOLOv10, a one-to-one head and a one-to-many head share the backbone and neck and use the same task-aligned assignment with different cardinalities: the one-to-one path forms a candidate set with top-$k = 7$ and then keeps the top 1 per object; the one-to-many head uses top-$k = 10$ [@yolo26]. The one-to-one head outputs at most 300 detections per image without NMS; the one-to-many head remains available with NMS when the highest accuracy matters [@yolo26].
+
+**No DFL.** DFL [@gfl] predicts a discrete distribution over $K$ bins for each box side and decodes the side as its expected value $d = \sum_{i=0}^{K-1} i \cdot \text{softmax}(z)_i$, so a side can be at most $(K - 1)$ strides long: about 960 pixels of width at stride 32 with $K = 16$ [@yolo26]. YOLO26 regresses the box directly with an L1 loss and recovers the lost localization quality with the training changes below [@yolo26]. The DFL loss itself, as defined in GFL, is
+
+$$
+\hat{y} = \sum_{i=0}^{n} S_i\, y_i, \qquad \text{DFL}(S_i, S_{i+1}) = -\big((y_{i+1} - y)\log S_i + (y - y_i)\log S_{i+1}\big),
+$$
+
+where $S_i$ is the softmax probability of the bin value $y_i$, $y$ the true distance and $y_i \le y \le y_{i+1}$ its two neighbouring bins; the minimum puts the mass on the two bracketing bins in proportion to the distances, so that $\hat{y} = y$ exactly [@gfl]. The snippet shows the decoding, the loss and the range limit.
+
+```python
+import numpy as np
+
+K, stride = 16, 8                        # 16 bins per box side, a stride-8 level
+bins = np.arange(K)                      # support y_0 = 0, ..., y_15 = 15 (in stride units)
+
+def softmax(z):
+    e = np.exp(z - z.max())
+    return e / e.sum()
+
+def dfl(logits, y):
+    """Distribution focal loss for one box side with continuous target y (stride units)."""
+    S = softmax(logits)
+    i = int(np.floor(y))                 # neighbours y_i <= y <= y_i + 1
+    return -((i + 1 - y) * np.log(S[i]) + (y - i) * np.log(S[i + 1]))
+
+y = 5.3                                  # true distance: 5.3 cells = 42.4 pixels
+flat = np.zeros(K)                       # untrained head: uniform distribution
+sharp = np.full(K, -10.0); sharp[5], sharp[6] = np.log(0.7), np.log(0.3)   # the ideal shape
+for name, z in [("uniform", flat), ("ideal", sharp)]:
+    S = softmax(z)
+    print(f"{name:7s} expected distance {S @ bins:5.2f} cells = {S @ bins * stride:6.1f} px | DFL {dfl(z, y):.3f}")
+print("largest distance this head can output:", (K - 1) * stride, "px")
+```
+
+```text
+uniform expected distance  7.50 cells =   60.0 px | DFL 2.773
+ideal   expected distance  5.30 cells =   42.4 px | DFL 0.611
+largest distance this head can output: 120 px
+```
+
+The ideal distribution decodes to exactly 5.3 cells, but its loss is not zero (0.611 is the entropy of the 0.7 / 0.3 split), and the support is finite: with 16 bins a side can be at most 15 strides long. Figure 6 shows the three cases.
+
+<Figure src={figDfl} alt="Three bar charts over 16 bins. Left: a flat distribution whose expected value is 7.50, far from the true distance 5.3. Middle: probability 0.7 at bin 5 and 0.3 at bin 6, whose expected value is exactly 5.30. Right: a broad bell-shaped distribution centred near bin 6 with expected value 6.01." caption="Figure 6 — How a distribution-based box side is decoded. The dashed line is the expected value (the predicted distance); the yellow line is the true distance 5.3. DFL trains the head toward the middle panel; a broad distribution, as on the right, expresses uncertainty about the edge." />
+
+**Progressive loss.** The total loss shifts weight from the one-to-many to the one-to-one head during training:
+
+$$
+\mathcal{L}_{\text{total}} = \alpha(t)\, \mathcal{L}_{\text{one2many}} + \big(1 - \alpha(t)\big)\, \mathcal{L}_{\text{one2one}}, \qquad \alpha(t) = \max\!\Big(1 - \frac{t}{\max(E - 1, 1)},\, 0\Big)(\alpha_{\text{init}} - \alpha_{\text{final}}) + \alpha_{\text{final}},
+$$
+
+where $t$ is the current epoch, $E$ the number of epochs and $\alpha_{\text{init}}, \alpha_{\text{final}}$ the initial and final one-to-many weights [@yolo26]. The default starts at weights (0.8, 0.2) for (one-to-many, one-to-one) and ends at (0.1, 0.9) [@yolo26].
+
+**STAL (small-target-aware label assignment).** For candidate selection only, every box side shorter than the smallest stride $s_{\min}$ is enlarged to a reference size $s_{\text{ref}}$ (the second pyramid stride), so that at least one anchor centre falls inside a tiny box; the original box is kept for scoring, assignment and regression [@yolo26].
+
+**MuSGD.** A hybrid optimizer: for multi-dimensional weights it mixes the SGD-momentum update with the Muon update [@muon], which orthogonalizes the momentum-based update with a few Newton–Schulz iterations; biases and normalization parameters use plain SGD [@yolo26].
+
+The paper also adds task-specific heads for segmentation, pose and oriented boxes, and an open-vocabulary variant; these are outside this chapter.
+
+#### Results
+
+Table 7 lists the released detection models on COCO val at 640 pixels, with T4 TensorRT 10 latency and CPU ONNX latency [@yolo26]: YOLO26n reaches 40.9% AP with NMS on the one-to-many head and 40.1% end to end at 1.7 ms; YOLO26s 48.6% / 47.8% at 2.5 ms; YOLO26x 57.5% / 56.9% at 11.8 ms. The end-to-end head trails the NMS head by 0.6 to 0.8 AP across sizes [@yolo26]. The released models are pre-trained on Objects365 [@objects365] before COCO fine-tuning [@yolo26], so they are not directly comparable with COCO-only models.
+
+#### Ablations
+
+Table 2 goes from YOLO11s to YOLO26s, reporting the NMS-based AP and, from the end-to-end step on, the end-to-end AP [@yolo26]: YOLO11s 47.0%; removing DFL 46.4%; + L1 loss 46.6%; + STAL 46.8%; + backbone and neck refinement 47.0%; + end-to-end head 46.4% end to end (47.0% with NMS); + progressive loss 46.7% (47.2%); + MuSGD 47.1% (47.6%); + Objects365 pre-training 47.4% (48.0%); + hyper-parameter search 47.8% (48.6%). A controlled DFL ablation at 640 and 1280 pixels finds that the DFL-free head is better at both, by 0.3 AP (1.0 APL) at 640 and 1.3 AP (2.2 APL) at 1280 [@yolo26]. MuSGD reaches 47.4% AP in 500 epochs against 47.0% for SGD in 600 [@yolo26]. For the progressive loss, starting at (1.0, 0.0), which gives the one-to-one head no weight at first, does not help (46.3% to 46.4% end to end), while the default schedule reaches 46.7% [@yolo26]. For STAL, $s_{\text{ref}} = 16$ is best (46.8% AP, small-object AP 29.6% against 29.0%), while 8 and 32 match or underperform the baseline [@yolo26].
+
+#### Conclusion
+
+YOLO26 makes the NMS-free head the default deployment path, removes the distribution-based box head and compensates with training changes aimed at the inference head and at tiny objects, ending where YOLOv4's anchor-based, NMS-dependent design started from the opposite side.
+
+#### Problems
+
+It is an arXiv paper by the company that ships the software, with benchmarks from its own repository; its main numbers use Objects365 pre-training and a hyper-parameter search; each training component adds a few tenths of AP in single runs; and the end-to-end head is still 0.6 to 0.8 AP below the NMS head. The paper itself names broader evaluation beyond COCO-centric benchmarks and learned loss schedules as future work [@yolo26].
+

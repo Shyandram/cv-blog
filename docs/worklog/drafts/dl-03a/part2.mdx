@@ -1,0 +1,519 @@
+```
+
+Mish is smooth everywhere (its slope at 0 is 0.6, while the leaky rectifier's slope jumps from 0.1 to 1), its smallest value is about $-0.31$, and for inputs above about 3 it is almost the identity. In the paper's classifier experiments Mish raised CSPResNeXt-50's top-1 accuracy from 77.9% to 78.9% on its own, and the detector built on the Mish-trained CSPDarknet53 was the best one (see [Ablations](#ablations)) [@yolov4]. The price is a slightly more expensive function than a rectifier.
+
+### Box loss: from IoU to CIoU
+
+**Plain version.** The box loss tells the network how wrong a predicted box is. Measuring errors in the four coordinates separately ignores that they describe one box. IoU-based losses measure the overlap instead, and the CIoU loss adds two more hints: how far apart the centres are and whether the shape is right.
+
+The paper's Section 2.2 retraces the history [@yolov4]. Mean squared error on $(x, y, w, h)$ or on corner offsets treats the coordinates as independent and grows with box size. The **IoU loss** [@unitbox] uses $1 - \text{IoU}$, which considers the box as a whole and is scale-invariant, but it is constant (and its gradient zero) whenever the boxes do not overlap. **GIoU** [@giou] adds a penalty based on the smallest box enclosing both. **DIoU** and **CIoU** [@diou] add a centre-distance term and, for CIoU, an aspect-ratio term. The CIoU loss for a predicted box $B$ and ground truth $B^{gt}$ is
+
+$$
+\mathcal{L}_{\text{CIoU}} = 1 - \text{IoU} + \frac{\rho^2(\mathbf{b}, \mathbf{b}^{gt})}{c^2} + \alpha v,
+\qquad v = \frac{4}{\pi^2}\Big(\arctan\frac{w^{gt}}{h^{gt}} - \arctan\frac{w}{h}\Big)^2,
+\qquad \alpha = \frac{v}{(1 - \text{IoU}) + v},
+$$
+
+where $\mathbf{b}$ and $\mathbf{b}^{gt}$ are the two box centres, $\rho$ is the Euclidean distance between them, $c$ is the diagonal length of the smallest box enclosing both, $(w, h)$ and $(w^{gt}, h^{gt})$ are the widths and heights, $v$ measures the aspect-ratio mismatch and $\alpha$ is a weight that gives the aspect term more influence once the boxes overlap well [@diou]. Dropping the last term gives the DIoU loss, and dropping the last two gives the IoU loss. [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#iou-and-its-variants) computes all four measures for disjoint and overlapping boxes; the snippet below instead splits the CIoU loss into its three parts for one tall ground-truth box.
+
+```python
+import numpy as np
+
+def iou_terms(a, b):
+    """a, b: boxes (x1, y1, x2, y2). Returns IoU, the DIoU penalty rho^2/c^2 and the CIoU term alpha*v."""
+    iw = max(0.0, min(a[2], b[2]) - max(a[0], b[0])); ih = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = iw * ih
+    wa, ha, wb, hb = a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]
+    iou = inter / (wa * ha + wb * hb - inter)
+    cw = max(a[2], b[2]) - min(a[0], b[0]); ch = max(a[3], b[3]) - min(a[1], b[1])
+    rho2 = ((a[0] + a[2] - b[0] - b[2]) ** 2 + (a[1] + a[3] - b[1] - b[3]) ** 2) / 4
+    v = 4 / np.pi ** 2 * (np.arctan(wb / hb) - np.arctan(wa / ha)) ** 2
+    alpha = v / ((1 - iou) + v) if v > 0 else 0.0
+    return iou, rho2 / (cw ** 2 + ch ** 2), alpha * v
+
+gt = (100, 100, 200, 300)                                  # 100 x 200 pixels, tall
+preds = {"centred, lying flat":       (50, 150, 250, 250),
+         "shifted, right shape":      (125, 125, 225, 325),
+         "far away":                  (300, 100, 400, 300)}
+for name, p in preds.items():
+    iou, d, av = iou_terms(p, gt)
+    print(f"{name:26s} IoU {iou:.3f} | L_IoU {1 - iou:.3f} | L_DIoU {1 - iou + d:.3f} | L_CIoU {1 - iou + d + av:.3f}")
+```
+
+```text
+centred, lying flat        IoU 0.333 | L_IoU 0.667 | L_DIoU 0.667 | L_CIoU 0.700
+shifted, right shape       IoU 0.488 | L_IoU 0.512 | L_DIoU 0.530 | L_CIoU 0.530
+far away                   IoU 0.000 | L_IoU 1.000 | L_DIoU 1.308 | L_CIoU 1.308
+```
+
+The centred but wrongly shaped box gets no DIoU penalty (the centres coincide) but a CIoU penalty for its shape; the shifted box of the right shape gets a distance penalty only; the far-away box has IoU 0, so the IoU loss says nothing about how far it is, while the distance term does. YOLOv4 adopts CIoU, arguing that it gives better convergence speed and accuracy [@yolov4]; the released configuration sets `iou_loss=ciou` with a loss weight of 0.07 (`iou_normalizer`, the "loss normalizer" found by the genetic search) [@darknet].
+
+### Post-processing: NMS and DIoU-NMS
+
+**Plain version.** With several positives per object, several predictions fire on each object, and non-maximum suppression keeps the best one and deletes the others that overlap it too much. Its cost depends on the scene. DIoU-NMS changes the deletion test so that two boxes whose centres are far apart are less likely to be treated as duplicates, which helps with neighbouring objects.
+
+**Greedy NMS and its cost.** Greedy NMS (defined in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#non-maximum-suppression-nms-and-soft-nms)) takes the highest-scoring box, computes its IoU with every remaining box, deletes those above a threshold, and repeats. If $n$ boxes enter and few are deleted, the number of IoU computations approaches
+
+$$
+\sum_{k=1}^{n-1} k = \frac{n(n-1)}{2},
+$$
+
+where $k$ counts the boxes still remaining after each kept box. If most boxes are duplicates of a few objects, they are deleted early and the work is much smaller. So NMS time depends on the number of candidates, on the confidence threshold that decides how many enter, and on the scene, unlike the forward pass, which takes about the same time for every image. The snippet times a NumPy greedy NMS on synthetic candidates; counts of IoU computations are deterministic, while the times depend on your machine.
+
+```python
+import time
+import numpy as np
+
+def nms_count(boxes, scores, thr=0.5):
+    """Greedy NMS that also counts how many box-pair IoUs it computes."""
+    order = np.argsort(-scores)
+    keep, n_iou = [], 0
+    while order.size:
+        i, rest = order[0], order[1:]
+        keep.append(i)
+        n_iou += rest.size
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0]); y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 2], boxes[rest, 2]); y2 = np.minimum(boxes[i, 3], boxes[rest, 3])
+        inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        area = lambda b: (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])
+        iou = inter / (area(boxes[i]) + area(boxes[rest]) - inter)
+        order = rest[iou <= thr]
+    return len(keep), n_iou
+
+def random_boxes(n, n_objects, rng, size=640):
+    """n candidate boxes jittered around n_objects true objects."""
+    centres = rng.uniform(40, size - 40, (n_objects, 2))
+    owner = rng.integers(0, n_objects, n)
+    c = centres[owner] + rng.normal(0, 6, (n, 2))
+    wh = rng.uniform(30, 60, (n, 2))
+    return np.hstack([c - wh / 2, c + wh / 2]), rng.random(n)
+
+rng = np.random.default_rng(0)
+for n_objects in (5, 500):                       # few objects vs a crowded scene
+    for n in (100, 1000, 8400):
+        b, s = random_boxes(n, n_objects, rng)
+        t0 = time.perf_counter()
+        kept, n_iou = nms_count(b, s)
+        ms = (time.perf_counter() - t0) * 1e3
+        print(f"objects {n_objects:3d} | boxes {n:4d} | kept {kept:4d} | IoUs {n_iou:9,d} | {ms:6.1f} ms")
+```
+
+```text
+objects   5 | boxes  100 | kept   21 | IoUs       770 |    0.8 ms
+objects   5 | boxes 1000 | kept   43 | IoUs     7,809 |    1.4 ms
+objects   5 | boxes 8400 | kept   86 | IoUs    90,699 |    6.8 ms
+objects 500 | boxes  100 | kept   94 | IoUs     4,621 |    2.2 ms
+objects 500 | boxes 1000 | kept  513 | IoUs   209,490 |   22.1 ms
+objects 500 | boxes 8400 | kept 1259 | IoUs 3,039,292 |  154.7 ms
+```
+
+(One run on one CPU core; your times will differ, the IoU counts will not.) With the same 8,400 candidates, the crowded scene needs about 34 times as many IoU computations as the sparse one. Real implementations run on the GPU and cap the number of boxes, so absolute times are much smaller, but the shape of the effect is the same: post-processing time grows with the number of candidates and with crowding. Figure 2 repeats the experiment over a range of candidate counts. This is the cost that the NMS-free successors remove ([YOLOv10](#yolov10-nms-free-training-with-dual-assignments), [RT-DETR](#rt-detr-a-real-time-detr)); the RT-DETR paper measured it directly for real detectors.
+
+<Figure src={figNms} alt="Two log-log plots against the number of boxes entering NMS, for scenes with 5, 50 and 500 objects. Left: NMS time in milliseconds rises with the number of boxes, and is higher for more crowded scenes. Right: the number of IoU computations rises the same way and approaches the dashed worst-case curve n(n-1)/2 for the most crowded scene." caption="Figure 2 — Cost of greedy NMS on synthetic candidates (toy run in NumPy). (a) Wall-clock time on one CPU core, which depends on the machine. (b) Number of IoU computations, which is deterministic; the dashed line is the worst case n(n−1)/2." />
+
+**DIoU-NMS.** Greedy NMS deletes a box $B_i$ when its IoU with the kept box $M$ exceeds the threshold, so two real people standing close together can be merged into one. The DIoU paper proposed to subtract the centre-distance penalty before the test [@diou]:
+
+$$
+s_i \leftarrow \begin{cases} s_i, & \text{IoU}(M, B_i) - \dfrac{\rho^2(\mathbf{b}_M, \mathbf{b}_i)}{c^2} \lt \varepsilon, \\[2mm] 0, & \text{otherwise}, \end{cases}
+$$
+
+where $s_i$ is the score of $B_i$ (0 means deleted), $\rho$ is the distance between the centres $\mathbf{b}_M$ and $\mathbf{b}_i$, $c$ is the diagonal of the box enclosing both, and $\varepsilon$ is the NMS threshold. Two boxes with distant centres "probably locate different objects" and survive more easily [@diou]. YOLOv4 lists DIoU-NMS in its bag of specials for the detector [@yolov4]. The snippet reuses `iou_terms` from the box-loss snippet.
+
+```python
+def nms(boxes, scores, thr=0.5, diou=False):
+    order, keep = list(np.argsort(-scores)), []
+    while order:
+        m = order.pop(0); keep.append(int(m))
+        crit = lambda j: iou_terms(boxes[m], boxes[j])[0] - (iou_terms(boxes[m], boxes[j])[1] if diou else 0)
+        order = [j for j in order if crit(j) < thr]
+    return keep
+
+# two people side by side (centres 32 px apart) and one duplicate of the first person
+boxes = np.array([[100, 100, 200, 200], [132, 100, 232, 200], [103, 100, 203, 200]], float)
+scores = np.array([0.9, 0.8, 0.7])
+print("greedy NMS keeps:", nms(boxes, scores), "| DIoU-NMS keeps:", nms(boxes, scores, diou=True))
+```
+
+```text
+greedy NMS keeps: [0] | DIoU-NMS keeps: [0, 1]
+```
+
+The second person overlaps the first with IoU 0.515, just above the threshold, so greedy NMS deletes it; the distance penalty lowers the criterion to 0.478 and DIoU-NMS keeps it, while the near-duplicate (centres 3 pixels apart) is still removed. The effect is confined to a narrow band of overlaps, which matches its modest role in the results.
+
+### Data augmentation: Mosaic and CutMix
+
+**Plain version.** Mosaic glues four training images into one, so every training image shows objects in four different contexts and at smaller sizes. It is the augmentation most associated with YOLOv4 and the one most copied by later detectors.
+
+Section 2.2 of the paper surveys pixel-wise augmentations (photometric changes, random scaling, cropping, flipping, rotation), occlusion-style augmentations that erase rectangles, and augmentations that combine images: MixUp [@mixup] blends two images with weights $\lambda$ and $1 - \lambda$ and blends their labels the same way, and CutMix [@cutmix] pastes a rectangle from one image into another and mixes the labels in proportion to the pasted area [@yolov4]. YOLOv4 uses CutMix for the backbone's classifier training and introduces **Mosaic**, which "mixes 4 training images" [@yolov4]. The paper's acknowledgements credit Glenn Jocher for the idea of Mosaic, along with the genetic hyper-parameter search and the grid-sensitivity fix [@yolov4].
+
+The paper gives two reasons for Mosaic: objects are seen "outside their normal context", and batch normalization computes its statistics from four different images per training image, which "significantly reduces the need for a large mini-batch size" [@yolov4]. That second reason links Mosaic to the single-GPU goal.
+
+The paper does not specify the procedure in more detail than its Figure 3, and implementations differ in how they scale and crop. A simple version, written out below, chooses a random split point on the output canvas, places the four images so that each touches the split point with one corner, cuts away whatever falls outside each image's quadrant, and clips or drops the boxes accordingly.
+
+```python
+import numpy as np
+
+def mosaic(images, boxes, size=416, rng=None, min_keep=0.25):
+    """Place four images around a random split point (xc, yc) of a size x size canvas.
+    images: four (H, W, 3) arrays; boxes: four (n, 4) arrays of (x1, y1, x2, y2) in pixels.
+    Each image touches the split point with one corner; whatever falls outside its quadrant is cut.
+    A box is kept if at least `min_keep` of its area survives the cut."""
+    xc, yc = (int(v) for v in rng.uniform(0.3, 0.7, 2) * size)
+    canvas = np.full((size, size, 3), 114, np.uint8)
+    out, n_cut, n_drop = [], 0, 0
+    for k, (img, bx) in enumerate(zip(images, boxes)):
+        h, w = img.shape[:2]
+        ox = xc - w if k in (0, 2) else xc          # where the image's top-left corner lands
+        oy = yc - h if k in (0, 1) else yc
+        rx0, rx1 = (0, xc) if k in (0, 2) else (xc, size)   # the quadrant it may fill
+        ry0, ry1 = (0, yc) if k in (0, 1) else (yc, size)
+        x0, x1, y0, y1 = max(rx0, ox), min(rx1, ox + w), max(ry0, oy), min(ry1, oy + h)
+        canvas[y0:y1, x0:x1] = img[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+        shifted = bx + [ox, oy, ox, oy]
+        clipped = np.clip(shifted, [x0, y0, x0, y0], [x1, y1, x1, y1])
+        area = lambda b: (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+        keep = area(clipped) >= min_keep * area(shifted)
+        n_cut += int((keep & (area(clipped) < area(shifted))).sum()); n_drop += int((~keep).sum())
+        out.append(clipped[keep])
+    return canvas, np.concatenate(out), (xc, yc), n_cut, n_drop
+
+rng = np.random.default_rng(0)
+imgs, bxs = [], []
+for k in range(4):                                   # four synthetic 256 x 256 "photos"
+    img = np.full((256, 256, 3), 60 * k + 40, np.uint8)
+    b = []
+    for _ in range(3):                               # three rectangles = three objects each
+        x, y = rng.integers(0, 200, 2); w, h = rng.integers(30, 90, 2)
+        x2, y2 = min(x + w, 256), min(y + h, 256)
+        img[y:y2, x:x2] = rng.integers(0, 256, 3); b.append([x, y, x2, y2])
+    imgs.append(img); bxs.append(np.array(b, float))
+
+canvas, boxes, split, n_cut, n_drop = mosaic(imgs, bxs, rng=rng)
+print("canvas", canvas.shape, "| split point", split)
+print(f"objects in: {sum(len(b) for b in bxs)} | kept: {len(boxes)} (of which cut: {n_cut}) | dropped: {n_drop}")
+```
+
+```text
+canvas (416, 416, 3) | split point (223, 181)
+objects in: 12 | kept: 9 (of which cut: 3) | dropped: 3
+```
+
+Figure 3 draws this example. Three of the twelve objects survive only partly and three are cut away almost completely; the rule for dropping a box (here, less than a quarter of its area left) is an implementation choice that the paper does not discuss. Mosaic later became the standard YOLO augmentation, and [DEIM](#deim-dense-one-to-one-matching) uses it for a different purpose: to put more objects in each image so that one-to-one matching receives more positives.
+
+<Figure src={figMosaic} alt="Left: four small synthetic images, each with a coloured background and three filled rectangles outlined as boxes. Right: a 416 by 416 canvas divided by dotted lines at a split point into four quadrants, each filled with part of one image; nine boxes are drawn, three of them dashed because they were cut at a quadrant edge, and three thin pink slivers mark boxes that were dropped." caption="Figure 3 — Mosaic on four synthetic images (the snippet's procedure, our implementation). Each image touches the random split point with one corner and is cut at its quadrant's edges; boxes are clipped, and boxes with less than 25% of their area left are dropped." />
+
+### Self-adversarial training
+
+**Plain version.** Self-adversarial training (SAT) first lets the network change the training image, not its weights, so that the image fools the network into seeing no object; then it trains the network on that altered image in the normal way. It is a data augmentation generated by the detector itself.
+
+The paper introduces SAT as "a new data augmentation technique that operates in 2 forward backward stages" [@yolov4]. In the first stage the network "alters the original image instead of the network weights", executing "an adversarial attack on itself" to create "the deception that there is no desired object"; in the second stage it is "trained to detect an object on this modified image in the normal way" [@yolov4]. The paper describes the stages in words only. One way to write them, in our notation rather than the paper's, is
+
+$$
+x' = x + \eta\, \nabla_x \mathcal{L}\big(f_\theta(x), y\big), \qquad \theta \leftarrow \theta - \lambda\, \nabla_\theta \mathcal{L}\big(f_\theta(x'), y\big),
+$$
+
+where $x$ is the training image, $y$ its boxes and labels, $f_\theta$ the detector with weights $\theta$, $\mathcal{L}$ the detection loss, $\eta$ the size of the image change (the weights are frozen during this step) and $\lambda$ the learning rate. Stage 1 moves the image in the direction that increases the detection loss, that is, that hides the objects from the current network; stage 2 is an ordinary training step on the altered image. SAT roughly doubles the cost of a training step and adds nothing at inference. The paper lists SAT among the detector's bag of freebies, but its ablation tables contain no SAT column, so its contribution is not measured separately (see [Limits of the evidence](#limits-of-the-evidence)).
+
+### Regularization: DropBlock and class label smoothing
+
+**Plain version.** Regularizers make training harder on purpose so that the network does not memorize the training set. DropBlock switches off whole square patches of a feature map instead of scattered single units; label smoothing tells the network never to be completely sure about a class.
+
+**DropBlock.** Dropout [@dropout] zeroes random units independently. In a convolutional feature map, neighbouring units are strongly correlated, so a zeroed unit can be reconstructed from its neighbours and dropout regularizes weakly. DropBlock [@dropblock] zeroes contiguous $b \times b$ blocks. Following its Algorithm 1: sample seed positions $M_{ij} \sim \text{Bernoulli}(\gamma)$ only where a whole block fits inside the map, zero a $b \times b$ square around each seed, multiply the activations by the mask, and rescale them by $\text{count}(M)/\text{count\_ones}(M)$ so that their expected sum is unchanged [@dropblock]. To drop roughly a fraction $1 - p_{\text{keep}}$ of the units on a $f \times f$ map, the seed probability is
+
+$$
+\gamma = \frac{1 - p_{\text{keep}}}{b^2} \cdot \frac{f^2}{(f - b + 1)^2},
+$$
+
+where $p_{\text{keep}}$ is the keep probability as in dropout, $b$ the block size, $f$ the feature-map size and $(f - b + 1)^2$ the number of valid seed positions; the formula is approximate because blocks can overlap [@dropblock]. The DropBlock paper also found that a fixed $p_{\text{keep}}$ hurts early training and gradually decreases it from 1 to the target value [@dropblock].
+
+```python
+import numpy as np
+
+def dropblock_mask(feat, block, keep_prob, rng):
+    """One DropBlock mask for a feat x feat map (Ghiasi et al., Algorithm 1)."""
+    gamma = (1 - keep_prob) / block ** 2 * feat ** 2 / (feat - block + 1) ** 2
+    half = block // 2
+    seeds = np.zeros((feat, feat), bool)                       # only where a whole block fits
+    seeds[half:feat - half, half:feat - half] = rng.random((feat - block + 1,) * 2) < gamma
+    mask = np.ones((feat, feat))
+    for i, j in zip(*np.nonzero(seeds)):
+        mask[i - half:i + half + 1, j - half:j + half + 1] = 0.0
+    return mask, gamma
+
+rng = np.random.default_rng(0)
+feat, block, keep = 38, 7, 0.9
+masks = [dropblock_mask(feat, block, keep, rng)[0] for _ in range(2000)]
+gamma = dropblock_mask(feat, block, keep, rng)[1]
+dropped = 1 - np.mean([m.mean() for m in masks])
+print(f"gamma = {gamma:.5f} | target drop rate {1 - keep:.2f} | measured {dropped:.3f}")
+m = masks[0]
+print("first mask: dropped units", int((m == 0).sum()), "| rescale factor", round(m.size / m.sum(), 3))
+```
+
+```text
+gamma = 0.00288 | target drop rate 0.10 | measured 0.094
+first mask: dropped units 171 | rescale factor 1.134
+```
+
+On a $38 \times 38$ map with $7 \times 7$ blocks, a seed probability below 0.3% already removes about 9.4% of the units, a little less than the 10% target because overlapping blocks are counted once. YOLOv4 chose DropBlock "without hesitation" because its authors' comparison with other methods was favourable [@yolov4], and lists it in both the backbone's and the detector's bag of freebies; the detector ablation table has no DropBlock column.
+
+**Class label smoothing.** With hard one-hot targets, cross-entropy keeps pushing the correct logit up, which encourages over-confidence. Label smoothing [@labelsmooth] replaces the target distribution by
+
+$$
+q'(k) = (1 - \epsilon)\,\delta_{k,y} + \frac{\epsilon}{K},
+$$
+
+where $k$ indexes the $K$ classes, $y$ is the true class, $\delta_{k,y}$ is 1 if $k = y$ and 0 otherwise, and $\epsilon$ is the smoothing amount [@labelsmooth]. YOLOv4's detector uses independent sigmoid scores, and its ablation table describes LS as "class label smoothing for sigmoid activation" [@yolov4]; for one two-way sigmoid output the same formula with $K = 2$ moves the targets from 1 and 0 to $1 - \epsilon/2$ and $\epsilon/2$. The paper does not state the value of $\epsilon$. Label smoothing helped the classifier (CSPResNeXt-50: 77.9% → 78.1% top-1) but lowered the detector's AP when used alone (38.0% → 33.0%; see [Detector bag of freebies](#detector-bag-of-freebies)) [@yolov4].
+
+### Normalization: cross mini-batch normalization
+
+**Plain version.** Batch normalization needs statistics computed over many images. On one GPU, a detector only fits a few images at a time. Cross mini-batch normalization (CmBN) collects the statistics over the several small mini-batches that together make up one training batch.
+
+**Batch normalization** [@bn] normalizes each channel with the mean $\mu_\mathcal{B}$ and variance $\sigma_\mathcal{B}^2$ of the current mini-batch $\mathcal{B}$: $\hat{z} = \gamma\,(z - \mu_\mathcal{B}) / \sqrt{\sigma_\mathcal{B}^2 + \epsilon} + \beta$, where $z$ is an activation, $\gamma, \beta$ are learned scale and shift and $\epsilon$ is a small constant. With only 4 or 8 images per mini-batch these statistics are noisy. **Cross-iteration batch normalization (CBN)** [@cbn] averages statistics over several recent training iterations; because the weights change between iterations, it compensates the old statistics with a Taylor-polynomial approximation of how they would look under the current weights [@cbn]. SyncBN, which averages over GPUs, does not help when there is only one GPU.
+
+YOLOv4 trains with a batch of 64 images split into mini-batches of 8 or 4 (the configuration's `subdivisions`), and the weights are updated once per batch [@yolov4], [@darknet]. **CmBN** "collects statistics only between mini-batches within a single batch" [@yolov4]. In our reading of the paper's Figure 4, the statistics used for the $t$-th mini-batch of a batch accumulate those of mini-batches $1, \dots, t$ of the same batch, for example
+
+$$
+\mu^{(t)} = \frac{1}{t} \sum_{\tau=1}^{t} \mu_{\mathcal{B}_\tau}, \qquad \sigma^{2\,(t)} = \frac{1}{t} \sum_{\tau=1}^{t} \sigma^2_{\mathcal{B}_\tau},
+$$
+
+where $\mathcal{B}_\tau$ is the $\tau$-th mini-batch; because the weights do not change inside a batch, these statistics need no compensation, unlike CBN's. The paper gives no equation for CmBN, so treat this formula as an interpretation. In the ablation (column CBN) CmBN alone gave 38.4% AP against the baseline's 38.0% [@yolov4].
+
+### Attention and fusion: the modified SAM and weighted residuals
+
+**Plain version.** An attention module lets the network re-weight its features, emphasizing informative positions. YOLOv4 takes the spatial attention module of CBAM and simplifies it to an element-wise gate. It also lists a learned-weight way of adding feature maps, taken from EfficientDet.
+
+**SAM.** The spatial attention module of CBAM [@cbam] pools the feature map $F \in \mathbb{R}^{C \times H \times W}$ along the channel axis by average and by max, concatenates the two $1 \times H \times W$ maps, and convolves them:
+
+$$
+M_s(F) = \sigma\big(f^{7 \times 7}([\,\text{AvgPool}_c(F);\ \text{MaxPool}_c(F)\,])\big), \qquad F' = M_s(F) \otimes F,
+$$
+
+where $f^{7 \times 7}$ is a $7 \times 7$ convolution, $\sigma$ the sigmoid and $\otimes$ multiplication broadcast over channels, so one weight per position scales all channels [@cbam]. The paper notes that SAM costs about 0.1% extra computation on ImageNet classifiers and "does not affect the speed of inference on the GPU at all", whereas it estimates that the representative channel-attention module adds about 10% to GPU inference time [@yolov4]. YOLOv4 modifies SAM "from spatial-wise attention to point-wise attention" (its Figure 5): in that figure the two pooling steps are replaced by a convolution applied to $F$ itself, so the gate $\sigma(\text{conv}(F))$ has the same shape $C \times H \times W$ as $F$ and scales every element separately [@yolov4]. In the specials ablation, adding SAM to CSPResNeXt50-PANet-SPP raised AP from 42.4% to 42.7% [@yolov4].
+
+**Multi-input weighted residual connections (MiWRC).** EfficientDet's feature network adds several inputs with learned non-negative weights, using "fast normalized fusion" [@efficientdet]:
+
+$$
+O = \sum_i \frac{w_i}{\varepsilon + \sum_j w_j}\, I_i,
+$$
+
+where $I_i$ are the input feature maps, $w_i \ge 0$ (enforced by a ReLU) are learned weights and $\varepsilon = 0.0001$ avoids division by zero [@efficientdet]. YOLOv4 lists MiWRC in the bag of specials for the backbone but reports no experiment that isolates it.
+
+### Training schedule: cosine annealing, genetic search and random shapes
+
+**Plain version.** Several freebies concern how training is run rather than what the network computes: how the learning rate changes, how the many hyper-parameters are chosen, and which input sizes the network sees.
+
+**Cosine annealing.** Instead of dropping the learning rate in steps, SGDR [@sgdr] lowers it along half a cosine:
+
+$$
+\eta_t = \eta_{\min} + \tfrac{1}{2}(\eta_{\max} - \eta_{\min})\Big(1 + \cos\big(\pi\, T_{\text{cur}} / T_i\big)\Big),
+$$
+
+where $\eta_{\max}$ and $\eta_{\min}$ bound the learning rate, $T_{\text{cur}}$ counts the epochs since the last restart and $T_i$ is the length of the current cycle, so $\eta_t$ falls smoothly from $\eta_{\max}$ to $\eta_{\min}$ [@sgdr]. YOLOv4's column CA ("altering the learning rate during sinusoid training") gave 38.7% AP alone against 38.0% for the step schedule [@yolov4].
+
+**Genetic hyper-parameter search (GA).** A genetic algorithm keeps a population of hyper-parameter settings, trains briefly with each, keeps the best (the "fittest"), and creates new settings by mutating and combining them. The paper uses it "for selecting the optimal hyperparameters during network training on the first 10% of time periods" [@yolov4]. The search ran YOLOv3-SPP with the GIoU loss for 300 epochs on a 5,000-image "min-val" set and selected a learning rate of 0.00261, momentum 0.949, the assignment IoU threshold 0.213 and the box-loss normalizer 0.07 [@yolov4]. Alone, GA gave 38.9% AP against 38.0% [@yolov4].
+
+**Random training shapes and dynamic mini-batch size.** Like [YOLOv2](#yolov2-and-yolo9000-anchors-priors-and-joint-training)'s multi-scale training [@yolov2], YOLOv4 changes the input resolution during training ("random training shapes") so that one model works at several resolutions [@yolov4]. "Dynamic mini-batch size" (DM) automatically increases the mini-batch size when the random shape is small, so that the GPU is used fully; alone it lowered AP to 35.3% [@yolov4].
+
+**Optimized anchors (OA).** The anchors are re-estimated for the 512 × 512 training resolution, in the spirit of YOLOv2's k-means "dimension clusters" (explained in the [DLCV 03 Supplementary notes](/en/learn/deep-learning/dl-03-object-detection/notes/#anchor-shapes-by-k-means-clustering-with-an-iou-distance)) [@yolov4].
+
+### The complete recipe
+
+**Plain version.** Putting the pieces together, YOLOv4 is CSPDarknet53 + SPP + PAN + YOLOv3 head, trained with a long list of freebies and fitted with a few cheap specials.
+
+Section 3.4 of the paper lists the final model as follows [@yolov4]:
+
+| Part | What YOLOv4 uses | Kind |
+| --- | --- | --- |
+| Backbone | CSPDarknet53 | architecture |
+| Neck | SPP, PAN (modified: concatenation) | architecture |
+| Head | YOLOv3 (anchor-based, 3 scales × 3 anchors) | architecture |
+| Backbone, freebies | CutMix and Mosaic, DropBlock, class label smoothing | training only |
+| Backbone, specials | Mish, cross-stage partial connections, MiWRC | small inference cost |
+| Detector, freebies | CIoU loss, CmBN, DropBlock, Mosaic, self-adversarial training, grid-sensitivity elimination, multiple anchors per ground truth, cosine annealing, genetically searched hyper-parameters, random training shapes | training only |
+| Detector, specials | Mish, SPP block, modified SAM, modified PAN, DIoU-NMS | small inference cost |
+
+Later detectors kept the overall shape of this recipe (a CSP-style backbone, an FPN–PAN neck, Mosaic, IoU-based losses, many positives per object) and replaced specific items; [Problems](#problems) maps those changes to the components above.
+
+## Results
+
+**Plain version.** On COCO, YOLOv4 reached 43.5% AP at 608 × 608 and ran above 30 FPS on all three GPU generations it tested, placing it ahead of other detectors at equal speed in its own comparison.
+
+### Training and evaluation setup
+
+All detector experiments train on COCO [@coco] and report accuracy on test-dev 2017 with the COCO AP metrics [@cocoeval] (AP averaged over IoU thresholds 0.50 to 0.95, plus AP50, AP75 and AP for small, medium and large objects) [@yolov4]. The classifier experiments train on ImageNet [@imagenet] and report ILSVRC 2012 validation accuracy [@yolov4].
+
+The detector's default schedule is 500,500 training steps with a step-decay learning rate starting at 0.01 and multiplied by 0.1 at steps 400,000 and 450,000; momentum 0.9 and weight decay 0.0005; one GPU, multi-scale training, a batch size of 64 and a mini-batch size of 8 or 4 depending on memory [@yolov4]. The classifier's default is 8,000,000 steps, batch 128 with mini-batch 32, a polynomial-decay learning rate starting at 0.1 with 1,000 warm-up steps, momentum 0.9 and weight decay 0.005; the BoF classifier experiments train 50% longer [@yolov4]. Everything runs on a single 1080 Ti or 2080 Ti [@yolov4].
+
+### The main comparison
+
+Tables 8, 9 and 10 of the paper compare YOLOv4 with other detectors on COCO test-dev, one table per GPU architecture: Maxwell (GTX Titan X or Tesla M40), Pascal (Titan X Pascal, Titan Xp, GTX 1080 Ti or Tesla P100) and Volta (Titan Volta or Tesla V100), all "with batch=1 without using tensorRT" [@yolov4]. YOLOv4's own rows are identical in accuracy across the three tables, because only the speed is re-measured:
+
+| Input | AP | AP50 | AP75 | APS | APM | APL | FPS Maxwell | FPS Pascal | FPS Volta |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 416 | 41.2 | 62.8 | 44.3 | 20.4 | 44.4 | 56.0 | 38 | 54 | 96 |
+| 512 | 43.0 | 64.9 | 46.5 | 24.3 | 46.1 | 55.2 | 31 | 43 | 83 |
+| 608 | 43.5 | 65.7 | 47.3 | 26.7 | 46.7 | 53.3 | 23 | 33 | 62 |
+
+How to read it against the other rows:
+
+- **Against YOLOv3** (Table 8, Maxwell): YOLOv3-608 reaches 33.0% AP and YOLOv3-SPP-608 36.2% AP, both at 20 FPS, so YOLOv4-608 is about 10 AP points more accurate at a slightly higher frame rate on the same GPU class [@yolov4].
+- **Against EfficientDet** (Table 10, Volta): EfficientDet-D0 to D3 reach 33.8%, 39.6%, 43.0% and 45.8% AP at 62.5, 50.0, 41.7 and 23.8 FPS. YOLOv4-512 matches D2's 43.0% AP at 83 FPS instead of 41.7; D3 is more accurate (45.8%) but runs at 23.8 FPS, below the 30 FPS line [@yolov4]. This is the basis of the paper's claim that YOLOv4 runs about twice as fast as EfficientDet at comparable accuracy.
+- **Against the slower, more accurate detectors**: several two-stage and keypoint-based detectors in Table 9 reach higher AP (the highest, 46.8%, runs at 1.3 FPS), but none of them is real-time [@yolov4]. YOLOv4 does not claim the highest AP overall, only the best accuracy among detectors at 30 FPS or more.
+
+Two details deserve attention. First, the large-object AP *falls* as the input grows (56.0 → 55.2 → 53.3), while small-object AP rises from 20.4 to 26.7; a larger input helps small objects but makes large objects relatively larger than the receptive field and the anchors were tuned for. Second, the abstract quotes "∼65 FPS on Tesla V100" for the 43.5% AP model, while Table 10 lists 62 FPS for it [@yolov4]; the table is the more specific source.
+
+### Speed: a measurement checklist
+
+When you measure, or read, a latency number for any detector, check the following; each item is a condition YOLOv4's tables fix, leave open, or vary.
+
+1. **Hardware, engine and precision** are stated and the same for every model being compared. YOLOv4 states the GPU family and "without TensorRT", but not the precision.
+2. **Batch size 1** for latency; throughput numbers with large batches do not transfer to a live camera.
+3. **End to end**: pre-processing, the network and post-processing including NMS, or a clear statement of what is excluded. YOLOv4 does not state whether NMS is timed; its successors' end-to-end benchmarks add NMS explicitly (see [RT-DETR](#rt-detr-a-real-time-detr) and [YOLOv10](#yolov10-nms-free-training-with-dual-assignments)), averaged over the COCO validation images because NMS time depends on the image.
+4. **Same device, not only the same architecture family**: YOLOv4's tables group cards of one GPU generation (for example a Titan X Maxwell and a Tesla M40), and the speeds of other methods come from their own papers, so small FPS differences between rows are not measurements on identical hardware.
+5. **Warm-up and averaging**: the first iterations of any engine are slow (memory allocation, kernel selection), so discard them and average over many images.
+6. **Input size and confidence threshold** used during timing; for NMS-based detectors, the threshold used for computing AP (often very low) also changes the post-processing time.
+
+## Ablations
+
+**Plain version.** The paper's experiments are a long series of "try one change, keep it if it helps" tables: first for the backbone as a classifier, then for the detector's freebies and specials, then for the backbone choice and the mini-batch size. Reading them carefully shows which components really matter and which were kept on weaker evidence.
+
+### Classifier ablations
+
+Tables 2 and 3 train the two candidate backbones as ImageNet classifiers with different freebies and activations (top-1 / top-5 accuracy) [@yolov4].
+
+| CSPResNeXt-50 setting | Top-1 | Top-5 |
+| --- | --- | --- |
+| baseline | 77.9 | 94.0 |
+| MixUp | 77.2 | 94.0 |
+| CutMix | 78.0 | 94.3 |
+| Mosaic | 78.1 | 94.5 |
+| bilateral blurring | 77.5 | 93.8 |
+| label smoothing | 78.1 | 94.4 |
+| Swish | 64.5 | 86.0 |
+| Mish | 78.9 | 94.5 |
+| CutMix + Mosaic + label smoothing | 78.5 | 94.8 |
+| CutMix + Mosaic + label smoothing + Mish | 79.8 | 95.2 |
+
+For CSPDarknet-53 the baseline is 77.2 / 93.6, the three freebies give 77.8 / 94.4 and adding Mish gives 78.7 / 94.8 [@yolov4]. What this proves: CutMix, Mosaic, label smoothing and Mish each help the classifier, and they combine; MixUp and blurring do not. The Swish row (64.5%) stands out; the paper does not discuss it, and a drop that large looks more like a failed training run than a property of the activation, so it should not be read as evidence against Swish in general.
+
+### Detector bag of freebies
+
+Table 4 tests detector freebies on CSPResNeXt50-PANet-SPP at 512 × 512 [@yolov4]. The columns are S (grid-sensitivity elimination), M (Mosaic), IT (several anchors per ground truth above the IoU threshold), GA (genetic hyper-parameters), LS (class label smoothing), CBN (CmBN), CA (cosine annealing), DM (dynamic mini-batch size), OA (optimized anchors) and the box loss. Reading the rows in groups:
+
+| Rows | Setting | AP | AP50 | AP75 |
+| --- | --- | --- | --- | --- |
+| baseline | MSE loss, no freebie | 38.0 | 60.0 | 40.8 |
+| one freebie, MSE loss | S | 37.7 | 59.9 | 40.5 |
+| | M | 39.1 | 61.8 | 42.0 |
+| | IT | 36.9 | 59.7 | 39.4 |
+| | GA | 38.9 | 61.7 | 41.9 |
+| | LS | 33.0 | 55.4 | 35.4 |
+| | CBN | 38.4 | 60.7 | 41.3 |
+| | CA | 38.7 | 60.7 | 41.9 |
+| | DM | 35.3 | 57.2 | 38.0 |
+| S + loss | GIoU / DIoU / CIoU | 39.4 / 39.1 / 39.6 | 59.4 / 58.8 / 59.2 | 42.5 / 42.1 / 42.6 |
+| combinations | S + M + IT + GA, CIoU | 41.5 | 64.0 | 44.8 |
+| | M + GA + OA, CIoU | 36.1 | 56.5 | 38.4 |
+| | S + M + IT + GA + OA, MSE | 40.3 | 64.0 | 43.1 |
+| | S + M + IT + GA + OA, GIoU | 42.4 | 64.4 | 45.9 |
+| | S + M + IT + GA + OA, CIoU | 42.4 | 64.4 | 45.9 |
+
+What the table proves:
+
+- **Mosaic is the strongest single freebie** (+1.1 AP alone), followed by GA, cosine annealing and CmBN, which each add a few tenths.
+- **IoU-type losses beat MSE**, and among them CIoU is best by a small margin when combined with S (39.6 against 39.4 for GIoU); in the best combination GIoU and CIoU tie at 42.4.
+- **Some freebies hurt in isolation**: S alone (−0.3), IT alone (−1.1), DM (−2.7) and LS (−5.0). S and IT pay off only in combination: S + M + IT + GA with CIoU reaches 41.5, and the best setting, 42.4 AP, includes both. A plausible reading is that more positives (IT) and wider centre ranges (S) need the stronger training of the combined recipe; the paper does not analyse it.
+- **The best rows do not contain LS, CBN, CA or DM**, although Section 3.4 lists label smoothing, CmBN and cosine annealing in YOLOv4's detector freebies. The table never shows a row with all of the final freebies together, so their joint effect on the detector is not measured here.
+
+### Detector bag of specials
+
+Table 5 adds modules to CSPResNeXt50-PANet-SPP at 512 × 512 [@yolov4]: the base with SPP and PAN reaches 42.4% AP; adding SAM gives 42.7% (AP50 64.6, AP75 46.3); the other combinations it tests (a receptive-field block, a Gaussian box-uncertainty head on top of SAM, and an adaptive feature-fusion block with the receptive-field block) all lower AP, to between 41.1% and 41.8% [@yolov4]. What it proves: SPP, PAN and SAM are the useful specials for this detector; adding more modules is not free. DIoU-NMS, Mish in the detector and MiWRC have no row.
+
+### Backbones and pre-trained weights
+
+Table 6 trains the detector with different classifier weights for initialization, all at 512 × 512 with otherwise similar settings [@yolov4]:
+
+| Detector backbone (initialized from) | AP | AP50 | AP75 |
+| --- | --- | --- | --- |
+| CSPResNeXt50 (default classifier) | 42.4 | 64.4 | 45.9 |
+| CSPResNeXt50 (classifier with BoF) | 42.3 | 64.3 | 45.7 |
+| CSPResNeXt50 (classifier with BoF + Mish) | 42.3 | 64.2 | 45.8 |
+| CSPDarknet53 (classifier with BoF) | 42.4 | 64.5 | 46.0 |
+| CSPDarknet53 (classifier with BoF + Mish) | 43.0 | 64.9 | 46.5 |
+
+What it proves: for CSPResNeXt50, a better classifier (79.8% instead of 77.9% top-1) does *not* give a better detector; for CSPDarknet53, the better classifier does. This is the experimental basis for the backbone choice, and the general lesson that ImageNet accuracy is a poor proxy for detection quality.
+
+### Mini-batch size
+
+Table 7 trains with mini-batches of 4 and 8 images [@yolov4]. Without the freebies and specials, CSPResNeXt50-PANet-SPP at 608 reaches 37.1% AP with mini-batch 4 and 38.4% with mini-batch 8; with them, CSPDarknet53-PANet-SPP at 512 reaches 41.6% and 41.7%. What it proves, within this setting: after the full recipe the mini-batch size "has almost no effect", which supports the claim that the detector can be trained well on one conventional GPU. Mosaic's four-images-per-sample statistics and CmBN are the components designed for this; the table does not separate their contributions.
+
+## Conclusion
+
+YOLOv4 shows that a classic one-stage, anchor-based detector, given a stronger backbone and neck and a carefully tested set of training tricks, can match much slower detectors in accuracy while running in real time, and can be trained on a single consumer GPU. Its experiments establish that Mosaic, IoU-type box losses, genetic hyper-parameter search, more positives per object, SPP, PAN and point-wise SAM help such a detector, that some popular tricks do not, and that the best classifier backbone is not automatically the best detector backbone. The paper's lasting contribution is less any single module than the vocabulary (backbone, neck, head; freebies and specials) and the practice of testing training tricks on the detector itself.
+
+## Problems
+
+**Plain version.** YOLOv4 kept the parts that later detectors found most limiting: anchors, a shared head for classes and boxes, many positives per object and therefore NMS. Its evidence also has gaps: several listed components are never tested on the detector, the ablations are single runs on the test set, and the paper was never peer reviewed.
+
+### Limits of the method
+
+- **Anchors are dataset-specific.** The nine anchors are clustered for COCO (and re-optimized for one input size); a new dataset or resolution needs new anchors, and an object whose shape matches no anchor is learned poorly. [YOLOX](#yolox-anchor-free-yolo-with-simota) argues exactly this when it drops anchors.
+- **A coupled head.** One set of convolutions predicts classes and boxes together. [YOLOX](#yolox-anchor-free-yolo-with-simota) shows that separating them speeds up convergence.
+- **Fixed-rule assignment.** Positives are chosen by anchor shape and object centre, not by how well the network currently predicts; later work assigns positives from the network's own predictions (SimOTA in YOLOX, task-aligned assignment in [YOLOv6](#yolov6-a-re-parameterized-industrial-detector)).
+- **NMS dependency.** Several positives per object make NMS necessary, with its threshold to tune, its cost that grows with the scene (Figure 2) and its failure on neighbouring objects; DIoU-NMS only narrows that failure. The NMS-free line starts with [YOLOv10](#yolov10-nms-free-training-with-dual-assignments).
+- **Large objects at high resolution.** APL drops from 56.0 at 416 to 53.3 at 608 in the paper's own results [@yolov4].
+
+### Limits of the evidence
+
+- **Not peer reviewed.** YOLOv4 exists as an arXiv preprint [@yolov4]; it was never published at a reviewed venue (unlike [YOLOv7](#yolov7-a-trainable-bag-of-freebies), by two of the same authors).
+- **Ablations on test-dev, single runs.** The detector ablations report test-dev results, a split intended for final evaluation, and give single numbers without variance; differences of a few tenths of AP may be within run-to-run variation.
+- **Untested components.** Self-adversarial training, DropBlock in the detector, DIoU-NMS, MiWRC and the PAN modification have no ablation row, and no row combines all the final freebies. The final recipe therefore includes components whose effect on this detector is asserted rather than measured.
+- **Speed conditions.** Numeric precision and the treatment of NMS are not stated, and competitor speeds come from other papers on the same GPU generation, not the same card. The abstract's "∼65 FPS" and Table 10's 62 FPS disagree slightly.
+
+### The paper and the released configuration
+
+The configuration file `cfg/yolov4.cfg` in the authors' repository (as accessed for this chapter) differs from the paper's list in places [@darknet]: it uses a step learning-rate schedule (`policy=steps`, steps 400,000 and 450,000) rather than cosine annealing, greedy NMS (`nms_kind=greedynms`) rather than DIoU-NMS, and contains no SAM or DropBlock layer, while it does use Mosaic, the CIoU loss, the grid-sensitivity factors and the 0.213 assignment threshold. Its learning rate is 0.0013 rather than the 0.00261 found by the genetic search. A repository file can change after publication, so this does not show what was used for the paper's tables; it shows that "YOLOv4" in practice may not include every item of Section 3.4, which matters when you compare reproductions.
+
+### Export, reduced precision and re-parameterization
+
+Training frameworks are not deployment engines. A trained detector is usually **exported** to an exchange format such as ONNX [@onnx] and compiled by an inference engine for the target device, for example TensorRT for NVIDIA GPUs [@tensorrt]. Three things change on the way:
+
+- **Precision.** FP16 halves memory traffic with little accuracy change on modern GPUs. INT8 quantization stores weights and activations as 8-bit integers with a scale per tensor or channel, using integer arithmetic at inference [@int8]. It needs calibration data, and box and score outputs are the most sensitive parts, so check AP at strict IoU thresholds after quantizing, not only AP50. [YOLOv6](#yolov6-a-re-parameterized-industrial-detector) reports that re-parameterized models are harder to quantize and changes its training to fix this [@yolov6].
+- **Graph simplification.** Batch normalization is folded into the preceding convolution, and re-parameterized multi-branch blocks (used from YOLOv6 and YOLOv7 on) are folded into single convolutions; the folding is derived in the Supplementary notes.
+- **Unsupported operators and post-processing.** Every operator must exist in the target engine. Mish, for example, is a less common operator than a rectifier. [RT-DETRv2](#rt-detrv2-a-bag-of-freebies-for-rt-detr) adds a discrete sampling operator for this reason [@rtdetrv2], and [YOLO26](#yolo26-a-dfl-free-end-to-end-yolo) cites simpler export as one reason for removing its distribution-based box head [@yolo26]. NMS-free models export more simply, because the network output already is the final list of boxes.
+
+*Optional: [Folding a re-parameterized block into one convolution](#folding-a-re-parameterized-block-into-one-convolution) (in the Supplementary notes). The batch-norm folding formula and a NumPy check that three branches become one convolution with the same output.*
+
+### What later one-stage detectors changed
+
+Each change below replaces or extends one YOLOv4 component; the linked paper guides explain the method in full.
+
+| YOLOv4 component | What came later | Paper |
+| --- | --- | --- |
+| Anchor-based coupled head | Anchor-free decoupled head, one prediction per location | [YOLOX](#yolox-anchor-free-yolo-with-simota) |
+| Fixed-rule positives (IoU of shapes > 0.213) | Prediction-aware assignment: SimOTA, then task-aligned assignment | [YOLOX](#yolox-anchor-free-yolo-with-simota), [YOLOv6](#yolov6-a-re-parameterized-industrial-detector) |
+| CSPDarknet53 blocks | Re-parameterizable blocks folded into plain convolutions for inference | [YOLOv6](#yolov6-a-re-parameterized-industrial-detector), [YOLOv7](#yolov7-a-trainable-bag-of-freebies) |
+| Training only the final head | Auxiliary heads and branches that supervise the network during training only | [YOLOv7](#yolov7-a-trainable-bag-of-freebies), [YOLOv9](#yolov9-programmable-gradient-information) |
+| Several positives + NMS (DIoU-NMS) | A one-to-one head trained alongside a one-to-many head; no NMS | [YOLOv10](#yolov10-nms-free-training-with-dual-assignments), [YOLO26](#yolo26-a-dfl-free-end-to-end-yolo) |
+| SAM, a cheap spatial gate | Real self-attention made affordable (area attention); hypergraph correlation | [YOLOv12](#yolov12-an-attention-centric-yolo), [YOLOv13](#yolov13-hypergraph-correlation) |
+| CIoU on four box numbers | Distribution-based box sides (DFL), later removed again | [YOLOv6](#yolov6-a-re-parameterized-industrial-detector), [YOLO26](#yolo26-a-dfl-free-end-to-end-yolo) |
+| SGD with step or cosine schedule | MuSGD, a hybrid of SGD and the Muon optimizer | [YOLO26](#yolo26-a-dfl-free-end-to-end-yolo) |
+
+What stayed: the CSP idea in backbones, an FPN-plus-PAN neck, Mosaic, IoU-type box losses and the habit of measuring speed on real hardware.
+
+### Beyond one-stage: real-time DETRs
+
+**Plain version.** DETR showed that a transformer can output the final set of boxes directly, with one prediction per object and no NMS, but it was slow to train and slow to run. Real-time DETRs keep the direct-set idea and redesign the expensive parts; they are not one-stage dense detectors, but since 2023 they compete with YOLOs at the same speed.
+
+DETR [@detr] and its descendants are introduced in [DLCV 03](/en/learn/deep-learning/dl-03-object-detection/#set-prediction-with-transformers-detr-and-its-descendants). The real-time line that started with RT-DETR differs from YOLOv4 in exactly the component that YOLOv4 left untouched: it trains with one-to-one (Hungarian [@kuhn]) matching, so each object has a single prediction and no NMS is needed. Each paper has its own introduction in the Paper guides:
+
+| Paper | What it changes |
+| --- | --- |
+| [RT-DETR](#rt-detr-a-real-time-detr) | A hybrid encoder (attention on the coarsest level only, convolutional fusion across levels), uncertainty-minimal query selection, adjustable decoder depth, and an end-to-end speed benchmark that times NMS for YOLOs |
+| [RT-DETRv2](#rt-detrv2-a-bag-of-freebies-for-rt-detr) | Per-scale sampling points, an optional discrete sampling operator for deployment, dynamic augmentation and scale-specific learning rates |
+| [D-FINE](#d-fine-boxes-as-refined-distributions) | Box edges as probability distributions refined decoder layer by layer, with self-distillation from the last layer |
+| [DEIM](#deim-dense-one-to-one-matching) | More positives under one-to-one matching through Mosaic and MixUp, and a matchability-aware classification loss |
+| [RF-DETR](#rf-detr-architecture-search-on-a-dinov2-backbone) | A DINOv2 backbone and weight-sharing architecture search that yields many speed–accuracy trade-offs without retraining |
+| [DEIMv2](#deimv2-dinov3-features-for-real-time-detrs) | DINOv3 features turned into multi-scale features by a light adapter, plus pruned convolutional backbones for the smallest models |
+

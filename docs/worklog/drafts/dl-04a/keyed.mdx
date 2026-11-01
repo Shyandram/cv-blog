@@ -1,0 +1,885 @@
+---
+title: "DLCV 04A · Image Super-Resolution"
+description: "Non-blind single-image super-resolution: why it is ill-posed, why pixel losses give blur, the design decisions behind SRCNN, ESPCN, EDSR, RCAN, SwinIR and HAT, perceptual and diffusion SR, and how to evaluate the results honestly."
+track: deep-learning
+order: 45
+level: advanced
+prereqs: [deep-learning/dl-04-image-restoration, image-processing/dip-02-fundamentals, image-processing/dip-04-frequency-domain]
+tags: [super-resolution, image-restoration, low-level-vision, pixel-shuffle, residual-learning, attention, perception-distortion, diffusion-models]
+published: 2026-10-31
+updated: 2026-11-01
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import ImageCompare from '../../../../components/ImageCompare.astro';
+import toyFig from '../../../../assets/deep-learning/dl-04a-super-resolution/perception-distortion-toy.png';
+import pipelineFig from '../../../../assets/deep-learning/dl-04a-super-resolution/degradation-pipeline.png';
+import aliasFig from '../../../../assets/deep-learning/dl-04a-super-resolution/aliasing-spectrum.png';
+import kernelFig from '../../../../assets/deep-learning/dl-04a-super-resolution/interpolation-kernels.png';
+import cropsFig from '../../../../assets/deep-learning/dl-04a-super-resolution/interpolation-crops.png';
+import regressorFig from '../../../../assets/deep-learning/dl-04a-super-resolution/linear-regressor.png';
+import cmpBicubic from '../../../../assets/deep-learning/dl-04a-super-resolution/compare-bicubic.png';
+import cmpLinear from '../../../../assets/deep-learning/dl-04a-super-resolution/compare-linear-sr.png';
+import strategiesFig from '../../../../assets/deep-learning/dl-04a-super-resolution/upsampling-strategies.png';
+import shuffleFig from '../../../../assets/deep-learning/dl-04a-super-resolution/pixel-shuffle.png';
+
+## What you'll learn
+
+- Why single-image super-resolution (SR) is **ill-posed**, and why a network trained with a pixel loss returns the blurry **posterior mean** of all plausible answers.
+- What the **non-blind** setting assumes (a known degradation, usually bicubic ×2, ×3 or ×4), and what interpolation and learned linear filters can do in it.
+- The six design decisions behind deep SR networks, in the order the field made them: where and how to upsample (**sub-pixel convolution**), residual learning, removing batch normalization, channel attention and window self-attention (SRCNN → ESPCN → VDSR → EDSR → RCAN → SwinIR and HAT).
+- How perceptual, adversarial and diffusion models (SRGAN, ESRGAN, SR3) trade pixel accuracy for realism, and why the **perception–distortion trade-off** says you must choose.
+- How SR is evaluated (Y-channel PSNR and SSIM with border shaving, the standard test sets), why PSNR and perceptual rankings disagree, and the typical failure modes.
+
+## The big picture
+
+Super-resolution makes a small image bigger *and* sharper. Stretching the pixels is easy; the hard part is filling in detail that the small image never recorded. A modern SR network fills it in from what it learned about natural images, and that is both its strength and its risk.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a friend describes a picture to you over the phone: "a woman with short brown hair, smiling, in front of a light wall." You can draw a good picture from that, but you cannot draw *her* exact freckles, because the description did not include them. Many different drawings fit the same description. A careful artist draws soft, safe shapes where they are unsure (the result looks blurry). A bold artist draws crisp freckles anyway (the result looks real, but the freckles may be in the wrong place). Super-resolution networks are artists of one kind or the other. This chapter shows how they are built, how to tell them apart, and how to check their work.
+</Callout>
+
+Why it matters: phones zoom digitally, games and video are rendered small and upscaled, and satellites and microscopes are limited by their optics. SR is also where many low-level vision ideas were first tested, from residual learning to diffusion priors.
+
+**Scope.** This chapter is about **non-blind** single-image SR: the way the low-resolution image was made is known and fixed, usually bicubic downscaling. The network designs were developed and compared in this setting, so it is the clearest place to learn them. Blind and real-world SR, where the degradation is unknown, is in [DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/); video SR in [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/); GAN and diffusion priors for restoration in general in [DLCV 04C](/en/learn/deep-learning/dl-04c-generative-restoration/); the generic losses and metrics in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#super-resolution). You should know basic interpolation ([IP 02](/en/learn/image-processing/dip-02-fundamentals/#image-interpolation)) and aliasing ([IP 04](/en/learn/image-processing/dip-04-frequency-domain/#aliasing)).
+
+**The running example.** Most code and figures use one case: the astronaut image from `skimage.data` (512 × 512), shrunk by 4 with a known blur and block averaging, then enlarged back. All code uses NumPy, SciPy, scikit-image, scikit-learn and OpenCV and runs on a CPU in seconds.
+
+## The problem: one input, many answers
+
+**Question.** What exactly is lost when an image is shrunk, and what does a network trained to minimize pixel error do about it? **Short answer:** many high-resolution images shrink to the same small image, and a pixel loss makes the network return their average, which is blurry.
+
+### Setup and notation
+
+Single-image super-resolution (SISR) estimates a high-resolution (HR) image $x \in \mathbb R^{sH \times sW \times C}$ from one low-resolution (LR) image $y \in \mathbb R^{H \times W \times C}$, where $s$ is the **scale factor** (2, 3, 4, …), $H \times W$ the LR size and $C$ the number of color channels. The standard forward model, introduced in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#the-unified-view), is
+
+$$
+y = (x * k)\downarrow_s + n,
+$$
+
+where $k$ is a blur kernel (the camera's optics and pixel integration, or a deliberate anti-aliasing filter), $*$ is 2-D convolution applied to each channel, $\downarrow_s$ keeps one sample out of every $s \times s$ block, and $n$ is noise. In **non-blind** SR, $k$, $s$ and the noise level are known and are the same in training and testing; a separate network is often trained for each $s$. Combining several shifted LR images of the same scene, the older multi-frame form of the problem [@park], is the subject of [DLCV 04B](/en/learn/deep-learning/dl-04b-video-super-resolution/).
+
+### Why the problem is ill-posed
+
+Count the numbers. Each LR pixel summarizes $s^2$ HR pixels, so the HR image has $s^2$ times more unknowns than there are measurements. At $s = 4$, a perfect, noise-free LR image fixes only one linear combination out of every 16 HR values; the other 15 directions are invisible. In linear-algebra terms, the degradation operator $\mathcal D(x) = (x * k)\downarrow_s$ has a large **null space**: any HR pattern $z$ with $\mathcal D(z) = 0$ can be added to a solution without changing $y$. Fine textures, the exact position of an edge and small text live largely in that null space.
+
+So SR needs a **prior** $p(x)$, a model of which HR images are plausible. With Bayes' rule, every HR candidate gets a posterior probability
+
+$$
+p(x \mid y) \propto p(y \mid x)\, p(x),
+$$
+
+where $p(y \mid x)$ is the likelihood (how well $\mathcal D(x)$ explains $y$ given the noise) and $p(x)$ the prior. Classical methods write the prior by hand; deep SR learns it from (LR, HR) pairs.
+
+### The posterior-mean blur
+
+Most SR networks are trained by minimizing a pixel loss over pairs. With the squared error, the best possible network outputs the **posterior mean**
+
+$$
+\hat x_{\text{MMSE}}(y) = \mathbb E[x \mid y] = \int x \, p(x \mid y)\, dx,
+$$
+
+the minimum mean-squared-error (MMSE) estimate. (With the L1 loss the optimum is the per-pixel posterior median, which behaves similarly.) When the posterior contains many sharp candidates that differ in the exact position of an edge or the phase of a texture, their average is a smooth compromise that is *not itself* a plausible image. This is the blur you see in MSE-trained SR, and more training data does not remove it: it is the correct answer to the question the loss asks.
+
+A one-dimensional toy makes this concrete. An HR signal of 64 samples is a single step edge at an unknown position. We average blocks of 4 samples and add noise with standard deviation 0.2, then compute the exact posterior over the 32 possible edge positions, its mean, and one random sample from it.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+n, s, sigma = 64, 4, 0.2                 # HR length, scale factor, LR noise level
+cand = np.arange(16, 48)                 # possible edge positions t (the prior: uniform)
+X = (np.arange(n)[None, :] >= cand[:, None]).astype(float)    # every HR step edge x_t
+DX = X.reshape(len(cand), n // s, s).mean(axis=2)              # their LR versions D(x_t)
+
+err_mmse, err_samp, jump_mmse, jump_samp = [], [], [], []
+for _ in range(2000):
+    t = rng.integers(len(cand))
+    y = DX[t] + sigma * rng.standard_normal(n // s)               # observed LR signal
+    logp = -((y - DX) ** 2).sum(axis=1) / (2 * sigma**2)          # log posterior over t
+    post = np.exp(logp - logp.max()); post /= post.sum()
+    x_mmse = post @ X                                             # posterior mean E[x | y]
+    x_samp = X[rng.choice(len(cand), p=post)]                     # one posterior sample
+    err_mmse.append(np.mean((x_mmse - X[t]) ** 2)); err_samp.append(np.mean((x_samp - X[t]) ** 2))
+    jump_mmse.append(np.diff(x_mmse).max()); jump_samp.append(np.diff(x_samp).max())
+
+print(f"MSE   posterior mean {np.mean(err_mmse):.4f} | posterior sample {np.mean(err_samp):.4f} "
+      f"| ratio {np.mean(err_samp) / np.mean(err_mmse):.2f}")
+print(f"largest one-pixel jump (a real edge has 1.00): mean {np.mean(jump_mmse):.2f} | sample {np.mean(jump_samp):.2f}")
+```
+
+```text
+MSE   posterior mean 0.0072 | posterior sample 0.0143 | ratio 1.97
+largest one-pixel jump (a real edge has 1.00): mean 0.48 | sample 1.00
+```
+
+The posterior mean has half the error of a posterior sample, but its edges are ramps: on average its largest one-pixel jump is 0.48, while every real edge (and every sample) jumps by 1.00. The sample looks exactly like a real edge, only sometimes in the wrong place. The ratio of about 2 is not a coincidence. Blau and Michaeli proved that an estimator whose outputs have exactly the distribution of real images (for example, a posterior sampler) never needs more than twice the MSE of the MMSE estimator, which is 3 dB of PSNR [@blau]. Figure 1 shows one example and the whole range between the two estimators.
+
+*Optional: [Why a posterior sample costs twice the MMSE](#why-a-posterior-sample-costs-twice-the-mmse) (in the Supplementary notes). It derives the factor of 2 in a few lines.*
+
+<Figure src={toyFig} alt="Left: a sharp step edge, its noisy four-sample LR version drawn as a staircase, the posterior mean drawn as a smooth ramp, and one posterior sample drawn as a sharp step a few pixels away from the true one. Right: eleven points from the posterior mean to the posterior sample; as the blend moves toward the sample, MSE rises from about 0.007 to 0.014 while the distance between the distributions of edge heights falls from about 0.52 to 0" caption="Figure 1 — The posterior-mean blur on a 1-D step-edge toy (×4, noise σ = 0.2). Left: one ambiguous example. Right: blending the posterior mean with a posterior sample trades distortion (MSE) for realism (distance between the distribution of edge heights in the outputs and in real edges). No blend is best on both axes." />
+
+This toy is the thread of the chapter: networks trained with MSE or L1 (SRCNN to HAT) approximate the posterior mean ever better; GANs and diffusion models (SRGAN, ESRGAN, SR3) try to output samples; evaluation must decide which of the two you wanted.
+
+### What the low-resolution image has lost: the frequency view
+
+**Plain version.** Shrinking an image can turn fine stripes into fake coarse stripes, and the blur before shrinking weakens even the detail that survives. So an SR model does two jobs: it sharpens what is weakened (deblurring) and it guesses what is gone (using its prior).
+
+The LR grid can only represent frequencies up to the LR **Nyquist limit**, $1/(2s)$ cycles per HR pixel (0.125 at $s = 4$), where $s$ is the scale factor. Higher HR frequencies either fold onto lower ones (**aliasing**, [IP 04](/en/learn/image-processing/dip-04-frequency-domain/#2-d-sampling-and-aliasing)) or, if the blur $k$ removed them first, vanish. So content above the limit must be unfolded or invented with a prior, and content below it, weakened by the blur, must be restored (Figure 2).
+
+*Optional: [Aliasing in the LR spectrum](#aliasing-in-the-lr-spectrum) (in the Supplementary notes). It writes the folding as a formula and works through the grating of Figure 2.*
+
+<Figure src={aliasFig} alt="Left three panels: a fine diagonal grating, the result of keeping every fourth pixel which shows coarse stripes in a different direction, and the result of blurring first which is a flat gray. Right: radial power spectra on a log scale for the HR astronaut image, the bicubic upsampling of its ×4 LR version, and a learned linear SR result; the learned curve follows the HR curve more closely up to about the LR Nyquist limit, and both reconstructions fall far below the HR curve at higher frequencies. A dotted vertical line marks the LR Nyquist limit at 0.125." caption="Figure 2 — Left: a grating at 0.30 cycles per pixel decimated by 4 without a prefilter turns into false coarse stripes (each axis component of about 0.21 cycles per pixel becomes about −0.15 cycles per LR pixel); blurring first removes it instead. Right: radial power spectra at ×4. Interpolation cannot create energy above the LR Nyquist limit (dotted line), and the blur also weakens frequencies below it. The learned linear model of the classical-baselines section recovers much of the band below the limit and little above it." />
+
+## The benchmark setting: a known degradation
+
+**Question.** How are training and test pairs made in non-blind SR, and how do we measure the result? **Short answer:** shrink HR images with one fixed, known operator, and compare the enlarged result with the original by PSNR on the luminance channel.
+
+Most SR benchmarks create LR images with MATLAB's `imresize` at its default settings, which use bicubic interpolation and, when shrinking, an anti-aliasing filter that is on by default [@imresize], [@wangsurvey]. There is no added noise, no camera blur and no compression. This "bicubic" setting is clean and reproducible, which made years of results comparable. A model trained on it has learned to invert exactly that one operator.
+
+Our running example uses a different but equally *known* operator, written out step by step: a Gaussian blur with σ = 1.2 HR pixels (the lens), the average of each $4 \times 4$ block (one larger sensor pixel), a little Gaussian noise (σ = 0.01) and rounding to 8 bits. The snippet enlarges the result with four standard interpolators and reports PSNR as SR papers do, on the luminance (Y) channel with a border of $s$ pixels removed (see Evaluating SR).
+
+```python
+import numpy as np, cv2
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+
+def degrade(hr, s=4, blur=1.2, noise=0.01, rng=None):
+    """hr: (H, W, 3) in [0, 1], H and W divisible by s. Returns the LR image y."""
+    rng = rng or np.random.default_rng(0)
+    x = ndi.gaussian_filter(hr, sigma=(blur, blur, 0))          # 1) lens blur
+    H, W, C = x.shape
+    x = x.reshape(H // s, s, W // s, s, C).mean(axis=(1, 3))      # 2) s x s pixel integration + decimation
+    x = x + noise * rng.standard_normal(x.shape)                  # 3) sensor noise
+    return np.round(np.clip(x, 0, 1) * 255) / 255                 # 4) 8-bit quantization
+
+def y_channel(rgb):
+    """BT.601 luma on the [16, 235] scale (the MATLAB rgb2ycbcr convention)."""
+    return 16 + rgb @ np.array([65.481, 128.553, 24.966])
+
+def psnr(a, b, shave, peak):
+    if shave:
+        a, b = a[shave:-shave, shave:-shave], b[shave:-shave, shave:-shave]
+    return 10 * np.log10(peak**2 / np.mean((a - b) ** 2))
+
+hr = img_as_float64(data.astronaut())                             # (512, 512, 3)
+lr = degrade(hr)                                                  # (128, 128, 3)
+print("LR shape:", lr.shape)
+for name, flag in [("nearest", cv2.INTER_NEAREST), ("bilinear", cv2.INTER_LINEAR),
+                   ("bicubic", cv2.INTER_CUBIC), ("lanczos", cv2.INTER_LANCZOS4)]:
+    sr = cv2.resize(lr, (512, 512), interpolation=flag)
+    sr = np.clip(sr, 0, 1)
+    y_hr, y_sr = y_channel(hr), y_channel(sr)
+    print(f"{name:8s}  Y, shave 4: {psnr(y_hr, y_sr, 4, 255):.2f} dB | "
+          f"Y, no shave: {psnr(y_hr, y_sr, 0, 255):.2f} dB | RGB, shave 4: {psnr(hr, sr, 4, 1):.2f} dB")
+```
+
+```text
+LR shape: (128, 128, 3)
+nearest   Y, shave 4: 24.62 dB | Y, no shave: 24.66 dB | RGB, shave 4: 23.06 dB
+bilinear  Y, shave 4: 25.35 dB | Y, no shave: 25.40 dB | RGB, shave 4: 23.83 dB
+bicubic   Y, shave 4: 26.36 dB | Y, no shave: 26.40 dB | RGB, shave 4: 24.81 dB
+lanczos   Y, shave 4: 26.50 dB | Y, no shave: 26.54 dB | RGB, shave 4: 24.94 dB
+```
+
+The ranking is the same under every protocol, but Y and RGB differ by about 1.5 dB, so only compare numbers measured the same way.
+
+Real photos go through more than this; Figure 3 adds JPEG compression to the chain. Non-blind SR fixes the whole chain in advance. When it is unknown or varies from photo to photo, the problem becomes blind or real-world SR ([DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/)).
+
+<Figure src={pipelineFig} alt="Five crops of the astronaut's face: the sharp HR crop, a blurred version, a blocky 48 by 48 LR version shown enlarged, the same with visible noise grain, and a JPEG-compressed version with blocking artifacts." caption="Figure 3 — A blur → downsample → noise → JPEG chain at ×4. The non-blind setting of this chapter fixes the chain and knows it; DLCV 04D treats the case where it is unknown. The LR panels are enlarged with nearest-neighbor interpolation only for display." />
+
+## Classical baselines
+
+**Question.** What can be done without a deep network, and why is it not enough? **Short answer:** interpolation spreads the existing samples with a fixed filter; learned linear filters add some lost detail back; neither can model the variety of natural images.
+
+### Interpolation: a fixed linear filter
+
+Interpolation places the LR samples on the HR grid and fills the gaps with a weighted sum of nearby samples. In one dimension,
+
+$$
+\hat x(t) = \sum_{u} y[u]\; \phi\!\left(\frac{t + \tfrac12}{s} - \tfrac12 - u\right),
+$$
+
+where $t$ is an HR pixel index, $u$ an LR pixel index, $\phi$ the **interpolation kernel** and the half-pixel terms align the centers of LR and HR pixels (the convention OpenCV uses). In 2-D the kernel is applied along rows and then columns. [IP 02](/en/learn/image-processing/dip-02-fundamentals/#image-interpolation) derives the common kernels:
+
+- **Nearest neighbor** and **linear**: a box of width 1 (blocky) and a triangle of width 2 (soft).
+- **Cubic convolution** (Keys) [@keys]: a piecewise cubic of width 4 with a free parameter $a$; Keys showed that $a = -\tfrac12$ gives the best approximation order in that family. Its small negative lobes sharpen edges slightly. OpenCV's `INTER_CUBIC` uses $a = -0.75$ instead (Exercise 1).
+- **Lanczos**: $\phi(t) = \operatorname{sinc}(t)\operatorname{sinc}(t/a)$ for $|t| \lt a$ and 0 otherwise, with $\operatorname{sinc}(t) = \sin(\pi t)/(\pi t)$ and $a$ the number of lobes kept on each side [@duchon]; OpenCV's `INTER_LANCZOS4` uses $a = 4$.
+
+Wider kernels approximate the ideal sinc better (Figure 4), which is why Lanczos scored highest above (26.50 dB versus 26.36 dB for bicubic). But every interpolator is **linear and shift-invariant**: it cannot create frequencies above the LR Nyquist limit, and it treats an edge and a flat region with the same weights (Figure 5).
+
+<Figure src={kernelFig} alt="Left: five interpolation kernels plotted against distance in LR pixels: the box of nearest neighbor, the triangle of linear interpolation, the Keys cubic with small negative lobes, Lanczos-3 with larger lobes, and the ideal sinc. Right: their frequency responses; the sinc is a perfect step at 0.5 cycles per LR pixel, Lanczos-3 is closest to it, the Keys cubic and linear kernels roll off earlier, and the box lets through a lot of energy above 0.5." caption="Figure 4 — Interpolation kernels (left) and the magnitude of their frequency responses (right). A good interpolator passes frequencies below the LR Nyquist limit (0.5 cycles per LR pixel) and blocks the spectral copies above it." />
+
+<Figure src={cropsFig} alt="Five crops of the astronaut's face: the HR ground truth, a blocky nearest-neighbor result, and three increasingly crisp but still blurry results from bilinear, bicubic and Lanczos interpolation, with Y-channel PSNR values of 24.62, 25.35, 26.36 and 26.50 dB." caption="Figure 5 — ×4 interpolation of the running example (blur σ = 1.2, noise σ = 0.01). Interpolation redistributes the information in the LR image but cannot restore what the blur and decimation removed." />
+
+### Learning from examples: from patch pairs to linear filters
+
+**Plain version.** If a small blurry patch looks like the blurry version of a sharp patch you have seen before, paste in the sharp version. Learned linear filters make this fast: fit, in advance, one formula per kind of patch that says "for a patch like this, add this correction".
+
+Example-based methods took (LR patch, HR patch) pairs from training images [@freeman] or from the input itself, because small patches recur across scales of one image [@glasner]; sparse coding compressed the pairs into two matched dictionaries [@yang]. Anchored neighborhood regression (ANR) and A+ replaced the search by precomputed ridge regressors [@anr], [@aplus], and RAISR learned one filter per bucket of gradient angle, strength and coherence [@raisr]. The common structure is
+
+$$
+\hat r = W_{c(p)}^{\top} \tilde p,
+\qquad
+W_c = \arg\min_{W} \sum_{i \in c} \bigl\| W^{\top} \tilde p_i - r_i \bigr\|_2^2 + \lambda \|W\|_F^2
+= (P_c^{\top} P_c + \lambda I)^{-1} P_c^{\top} R_c,
+$$
+
+where $p$ is an LR patch, $\tilde p$ its feature vector, $c(p)$ the class (atom or hash bucket) it belongs to, $r$ the HR detail to predict, $(\tilde p_i, r_i)$ the training pairs of class $c$ stacked as the rows of $P_c$ and $R_c$, $\lambda$ the ridge weight and $\|\cdot\|_F$ the Frobenius norm.
+
+*Optional: [Example-based SR and sparse coding in detail](#example-based-sr-and-sparse-coding-in-detail) (in the Supplementary notes). It gives the sparse-coding objective and the internal-learning idea behind ZSSR.*
+
+The snippet implements the simplest version, one class, on the running example in grayscale. For every LR pixel it takes the $7 \times 7$ LR patch around it (mean removed, plus a bias) and predicts the $4 \times 4$ block of HR **residual** (HR image minus its bicubic upsampling). Predicting $s^2$ values per LR pixel and arranging them into an $s \times s$ block is what a sub-pixel convolution does (Decision 2), so this is a one-layer, linear version of the networks that follow. We train it on eleven other `skimage` images, once for "sharp" LR inputs (block averaging only) and once for "blurry" ones (blur σ = 1.2, then averaging), and test both on the astronaut.
+
+```python
+import numpy as np, cv2
+from numpy.lib.stride_tricks import sliding_window_view
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+from skimage.color import rgb2gray
+
+s, p = 4, 7                                     # scale factor, LR patch size
+
+def degrade(x, blur):                           # blur (optional) -> s x s average
+    x = ndi.gaussian_filter(x, blur) if blur else x
+    H, W = x.shape[0] // s * s, x.shape[1] // s * s
+    return x[:H, :W].reshape(H // s, s, W // s, s).mean(axis=(1, 3))
+
+def bicubic(lr):
+    return cv2.resize(lr, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+
+def features(lr):                               # one p x p patch per LR pixel, mean removed, plus a bias
+    f = sliding_window_view(np.pad(lr, p // 2, mode="reflect"), (p, p)).reshape(lr.size, p * p)
+    return np.c_[f - f.mean(axis=1, keepdims=True), np.ones(lr.size)]
+
+def to_blocks(r):                               # HR residual -> one s*s vector per LR pixel (space-to-depth)
+    h, w = r.shape[0] // s, r.shape[1] // s
+    return r.reshape(h, s, w, s).transpose(0, 2, 1, 3).reshape(h * w, s * s)
+
+def from_blocks(b, h, w):                       # inverse: depth-to-space (pixel shuffle)
+    return b.reshape(h, w, s, s).transpose(0, 2, 1, 3).reshape(h * s, w * s)
+
+def train(images, blur, lam=1e-3):
+    A, B = [], []
+    for im in images:
+        im = im[: im.shape[0] // s * s, : im.shape[1] // s * s]
+        lr = degrade(im, blur)
+        A.append(features(lr)); B.append(to_blocks(im - bicubic(lr)))
+    A, B = np.concatenate(A), np.concatenate(B)
+    return np.linalg.solve(A.T @ A + lam * np.eye(A.shape[1]), A.T @ B)   # ridge: (p*p+1, s*s)
+
+def super_resolve(lr, Wt):
+    return bicubic(lr) + from_blocks(features(lr) @ Wt, *lr.shape)
+
+def psnr(a, b):
+    a, b = a[s:-s, s:-s], b[s:-s, s:-s]          # shave s border pixels
+    return 10 * np.log10(1.0 / np.mean((a - np.clip(b, 0, 1)) ** 2))
+
+train_imgs = [img_as_float64(im) for im in (data.camera(), data.moon(), data.coins(), data.page(),
+              data.text(), data.brick(), data.grass(), data.gravel(),
+              rgb2gray(data.coffee()), rgb2gray(data.chelsea()), rgb2gray(data.rocket()))]
+models = {"trained sharp": train(train_imgs, 0.0), "trained blurry": train(train_imgs, 1.2)}
+test = img_as_float64(rgb2gray(data.astronaut()))           # never seen in training
+print("weights per model:", models["trained sharp"].shape)
+for name, blur in [("sharp", 0.0), ("blurry", 1.2)]:
+    lr = degrade(test, blur)
+    row = "  ".join(f"{m} {psnr(test, super_resolve(lr, W)):.2f}" for m, W in models.items())
+    print(f"test {name:6s} | bicubic {psnr(test, bicubic(lr)):.2f} | {row}  (dB)")
+```
+
+```text
+weights per model: (50, 16)
+test sharp  | bicubic 25.61 | trained sharp 26.05  trained blurry 25.43  (dB)
+test blurry | bicubic 24.98 | trained sharp 25.66  trained blurry 26.26  (dB)
+```
+
+Each model has only $50 \times 16 = 800$ weights, fitted in closed form in about a second. With the matching degradation it gains 0.44 dB (sharp inputs) and 1.28 dB (blurry inputs) over bicubic on an unseen image. The off-diagonal entries show the price of a wrong assumption: the blurry-trained model **over-sharpens** sharp inputs and falls below bicubic (25.43 dB versus 25.61 dB), and the sharp-trained model under-corrects blurry ones (25.66 dB versus 26.26 dB). This is the core limitation of non-blind SR: a model is only as good as its degradation assumption. Efrat et al. found the same for classical methods: an accurate blur model matters more than a sophisticated image prior [@efrat]. Figure 6 shows the crops and the 16 learned filters, one per sub-pixel offset.
+
+<ImageCompare before={cmpBicubic} after={cmpLinear} beforeLabel="Bicubic" afterLabel="Linear SR (matched)" alt="Slider comparing a blurry bicubic ×4 upsampling of the astronaut's face with the sharper output of the learned linear regressor on the same crop." />
+
+<Figure src={regressorFig} alt="Six grayscale crops of the astronaut's face in two rows, plus a mosaic of sixteen small 7 by 7 filters. Top row, blurry input: bicubic at 24.98 dB, the matched linear model at 26.26 dB with crisper eyes and hair, and the HR ground truth. Bottom row, sharp input: bicubic at 25.61 dB, the blurry-trained model at 25.43 dB with exaggerated dark outlines and halos, and the matched sharp-trained model at 26.05 dB. The filter mosaic shows center-surround patterns whose centers shift with the sub-pixel position." caption="Figure 6 — A learned linear regressor (one 7 × 7 filter per sub-pixel offset, predicting the residual over bicubic). Matched training and test degradations help; a mismatch (bottom middle) over-sharpens and scores below bicubic. PSNR on the full grayscale test image with a 4-pixel border shaved." />
+
+## Deep SR networks: a story of design decisions
+
+**Question.** A deep SR network is a much richer, non-linear version of the regressor above. How did the field get from a three-layer CNN to today's transformers, and why does each piece exist? **Short answer:** through six decisions, each made to fix a specific problem of the previous design, and each with a cost.
+
+Table 1 is the map of this section; each row is explained below in the same order.
+
+| Decision | Landmark model | Problem it solved | What it cost |
+| --- | --- | --- | --- |
+| 1. Learn the mapping end to end, after bicubic upsampling | SRCNN [@srcnn] | hand-designed patch pipelines | every layer runs at HR size |
+| 1. Upsample at the end instead | FSRCNN [@fsrcnn], ESPCN [@espcn] | the $s^2$ cost of working at HR size | one upsampling tail per scale |
+| 2. Upsample with sub-pixel convolution (pixel shuffle) | ESPCN [@espcn] | the cost of a learned upsampler | checkerboard risk at initialization |
+| 3. Go deep and predict only the residual | VDSR [@vdsr] | slow, unstable training of deep networks | (none worth naming) |
+| 4. Remove batch normalization, scale residuals | EDSR [@edsr] | BN's memory and its normalized feature range | needs residual scaling to train wide models |
+| 5. Reweight channels (channel attention), residual in residual | RCAN [@rcan] | all channels treated equally; training 400+ layers | depth makes inference slow |
+| 6. Let pixels attend to content far away | SwinIR [@swinir], HAT [@hat] | fixed, local convolution weights | memory and runtime of attention |
+
+All of these networks are trained with a pixel loss (L2 or L1), so all of them are **posterior-mean estimators**: each decision makes the average better, none escapes it. The next section changes the loss instead.
+
+### Decision 1: where to upsample
+
+**Plain version.** The output is $s$ times larger than the input in each direction, so somewhere the network must grow the image. If it grows first, every later layer works on $s^2$ times more pixels. If it grows last, every layer works on the small image.
+
+SRCNN, the first end-to-end CNN for SR, enlarges the input with bicubic interpolation and then applies three convolution layers that its authors read as patch extraction, non-linear mapping and reconstruction, the same three steps as sparse-coding SR [@srcnn]. This **pre-upsampling** design is simple, and one network can serve several scales because the interpolation already did the resizing (VDSR trained one network for ×2, ×3 and ×4 this way [@vdsr]). Its cost follows from a count. A $k \times k$ convolution with $C_{\text{in}}$ input and $C_{\text{out}}$ output channels on an $h \times w$ map needs
+
+$$
+\text{MAC} = h \, w \, C_{\text{in}} \, C_{\text{out}} \, k^2
+$$
+
+multiply-accumulates, where $h \times w$ is the spatial size of the feature map. The count is proportional to $hw$, so running the same layer at HR size costs exactly $s^2$ times more.
+
+```python
+def conv_macs(h, w, c_in, c_out, k=3):
+    """Multiply-accumulates of one k x k convolution on an h x w feature map."""
+    return h * w * c_in * c_out * k * k
+
+s, H, W, C = 4, 128, 128, 64                    # x4 SR of a 128 x 128 input, 64 feature channels
+body_pre = conv_macs(s * H, s * W, C, C)        # one body layer at HR size (pre-upsampling)
+body_post = conv_macs(H, W, C, C)               # the same layer at LR size (post-upsampling)
+tail = conv_macs(H, W, C, 3 * s * s)            # sub-pixel tail: 64 -> 3*s*s channels, then pixel shuffle
+print(f"one body layer, pre-upsampling : {body_pre / 1e9:.2f} GMAC")
+print(f"one body layer, post-upsampling: {body_post / 1e9:.2f} GMAC (ratio {body_pre / body_post:.0f})")
+print(f"sub-pixel tail, 64 -> 48 channels at LR size: {tail / 1e9:.2f} GMAC")
+```
+
+```text
+one body layer, pre-upsampling : 9.66 GMAC
+one body layer, post-upsampling: 0.60 GMAC (ratio 16)
+sub-pixel tail, 64 -> 48 channels at LR size: 0.45 GMAC
+```
+
+For our 128 × 128 example at ×4, one 64-channel layer costs 9.66 GMAC at HR size and 0.60 GMAC at LR size, and networks have tens of such layers. **Post-upsampling** therefore keeps the body at LR size and enlarges only at the end. FSRCNN did this with a learned transposed convolution (and a thinner mapping stage) and reported a speed-up of more than 40 times over SRCNN [@fsrcnn]. The price is that the tail is tied to one scale factor, so multi-scale models keep one tail per scale; EDSR's multi-scale variant MDSR shares one body across ×2, ×3 and ×4 [@edsr]. Almost every later network uses post-upsampling (Figure 7).
+
+<Figure src={strategiesFig} alt="Two block diagrams. Top, pre-upsampling: LR, bicubic upsampling by s, a long block of convolution layers at HR size, HR; annotated: every layer costs s squared times more. Bottom, post-upsampling: LR, a long block of convolution or attention layers at LR size, a convolution to C times s squared channels, a pixel shuffle block, HR; annotated: layers run at LR size and resize only at the end." caption="Figure 7 — Pre-upsampling (SRCNN, VDSR) versus post-upsampling with sub-pixel convolution (ESPCN and most later networks). FSRCNN also upsamples at the end, but with a transposed convolution." />
+
+### Decision 2: how to upsample: transposed or sub-pixel convolution
+
+**Plain version.** A learned upsampler must produce $s^2$ output pixels for every input pixel. A transposed convolution spreads each input pixel over the output with a learned stamp. A sub-pixel convolution computes the $s^2$ values as $s^2$ separate channels at low resolution and then simply rearranges them into an $s \times s$ block.
+
+A **transposed convolution** with stride $s$ inserts $s - 1$ zeros between neighbouring LR samples and then convolves; equivalently, every LR pixel adds a scaled copy of the kernel to the output, with copies $s$ pixels apart. ESPCN observed that each output pixel then uses only some of the kernel's taps, and the pattern of used taps depends only on the **sub-pixel offset** (the output position modulo $s$). There are exactly $s^2$ patterns, so the operation equals $s^2$ ordinary convolutions at LR size, one per offset, with interleaved outputs [@espcn]. ESPCN implements this directly: the last convolution produces $C s^2$ channels at LR resolution, and a fixed rearrangement, **pixel shuffle** (or depth-to-space), turns them into $C$ channels at $s$ times the resolution. The rearrangement has no parameters, and EDSR, RCAN, SwinIR and HAT all use it [@edsr], [@rcan], [@swinir], [@hat].
+
+The precise version is an index rule. Let $T$ be the LR feature tensor of shape $(C s^2, H, W)$ and $X = \mathrm{PS}(T)$ the output of shape $(C, sH, sW)$. Then
+
+$$
+X\bigl[c,\; s h + i,\; s w + j\bigr] = T\bigl[c\, s^2 + s\, i + j,\; h,\; w\bigr],
+\qquad 0 \le c \lt C,\;\; 0 \le h \lt H,\;\; 0 \le w \lt W,\;\; 0 \le i, j \lt s,
+$$
+
+where $c$ is the output channel, $(h, w)$ an LR position and $(i, j)$ the sub-pixel offset inside the $s \times s$ output block that belongs to that LR position. In words: the $s^2$ channels that belong to output channel $c$ are read in row-major order of $(i, j)$ and spread over one $s \times s$ block. This is the ordering of PyTorch's `PixelShuffle`, whose implementation reshapes the channel axis into $(C, s, s)$ and permutes it next to the height and width axes [@pytorchps]. The inverse, **space-to-depth** (pixel unshuffle), reads each $s \times s$ block back into $s^2$ channels; efficient networks use it at the input to work at a lower resolution. Figure 8 draws the rule for $s = 2$.
+
+<Figure src={shuffleFig} alt="Left: four colored 3 by 3 LR feature maps labeled channel 0 to 3 with sub-pixel offsets (0,0), (0,1), (1,0), (1,1); the top-left cell of each is outlined. Right: a 6 by 6 HR grid where every 2 by 2 block contains the colors of channels 0, 1, 2, 3 in reading order; the top-left block is outlined. Text: output pixel (s·h + i, s·w + j) comes from channel s·i + j at LR position (h, w)." caption="Figure 8 — Pixel shuffle for s = 2 and C = 1. The four values at one LR position, one from each channel, become one 2 × 2 output block." />
+
+The NumPy version writes pixel shuffle and its inverse as one reshape, one transpose and one reshape each, checks the index rule element by element, and checks that the two operations are exact inverses.
+
+```python
+import numpy as np
+
+def pixel_shuffle(t, s):
+    """Depth-to-space: (C*s*s, H, W) -> (C, H*s, W*s)."""
+    Cs2, H, W = t.shape
+    C = Cs2 // (s * s)
+    return t.reshape(C, s, s, H, W).transpose(0, 3, 1, 4, 2).reshape(C, H * s, W * s)
+
+def pixel_unshuffle(x, s):
+    """Space-to-depth: (C, H*s, W*s) -> (C*s*s, H, W)."""
+    C, Hs, Ws = x.shape
+    H, W = Hs // s, Ws // s
+    return x.reshape(C, H, s, W, s).transpose(0, 2, 4, 1, 3).reshape(C * s * s, H, W)
+
+rng = np.random.default_rng(0)
+s, C, H, W = 3, 2, 4, 5
+t = rng.standard_normal((C * s * s, H, W))
+x = pixel_shuffle(t, s)
+print(x.shape)                                                   # (2, 12, 15)
+
+# The index rule: output (c, s*h + i, s*w + j) comes from channel c*s*s + s*i + j at (h, w).
+ok = all(x[c, s*h + i, s*w + j] == t[c*s*s + s*i + j, h, w]
+         for c in range(C) for h in range(H) for w in range(W)
+         for i in range(s) for j in range(s))
+print("index rule holds:", ok)
+print("unshuffle(shuffle(t)) == t:", np.array_equal(pixel_unshuffle(x, s), t))
+print("shuffle(unshuffle(x)) == x:", np.array_equal(pixel_shuffle(pixel_unshuffle(x, s), s), x))
+```
+
+```text
+(2, 12, 15)
+index rule holds: True
+unshuffle(shuffle(t)) == t: True
+shuffle(unshuffle(x)) == x: True
+```
+
+So, when the kernel size is a multiple of $s$, the two upsamplers represent the same operations; they differ in cost and behaviour. Pixel shuffle is a permutation of array entries: exactly invertible, with the inverse permutation as its gradient, and nothing is computed at HR size. Its one weakness is shared with the transposed convolution: each sub-pixel offset has its own filter, so a freshly initialized layer responds unequally at the $s^2$ offsets and a flat input comes out as a **checkerboard**. Aitken et al. initialize the $s^2$ filters as copies of one filter, so the layer starts as a convolution followed by nearest-neighbor upsampling, which removes the pattern [@aitken]; [DLCV 01B](/en/learn/deep-learning/dl-01b-building-blocks/#upsampling-transposed-convolution-pixel-shuffle-and-resize-convolution) works through the cause with code. Our linear regressor is a one-layer sub-pixel convolution: its 16 filters in Figure 6 are the 16 offsets.
+
+### Decision 3: how deep, and why predict a residual
+
+**Plain version.** Deeper networks see a larger neighbourhood and can model more complex detail, but they are harder to train. The fix is to let the network predict only what is *missing* from a cheap upsampling, a small signal that is close to zero almost everywhere.
+
+VDSR made the network much deeper than SRCNN (20 weight layers of $3 \times 3$ filters) and made that depth trainable with two choices [@vdsr]. First, **global residual learning**: the network $f_\theta$ predicts only the correction to the interpolated input,
+
+$$
+\hat x = U(y) + f_\theta(y), \qquad \mathcal L(\theta) = \tfrac12 \bigl\| x - U(y) - f_\theta(y) \bigr\|_2^2,
+$$
+
+where $U$ is bicubic upsampling, $\hat x$ the SR output and $\mathcal L$ the training loss for one pair. Second, a very high learning rate kept stable by **adjustable gradient clipping** [@vdsr].
+
+*Optional: [Adjustable gradient clipping](#adjustable-gradient-clipping) (in the Supplementary notes). It gives VDSR's clipping rule and why it scales with the learning rate.*
+
+Why does the residual help? The interpolated image already contains the low frequencies, so the target $x - U(y)$ is small and centred at zero. The snippet measures this on the running example.
+
+```python
+import numpy as np, cv2
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+from skimage.color import rgb2gray
+
+s = 4
+hr = img_as_float64(rgb2gray(data.astronaut()))                        # (512, 512), values in [0, 1]
+lr = ndi.gaussian_filter(hr, 1.2).reshape(128, s, 128, s).mean(axis=(1, 3))   # the running example
+up = cv2.resize(lr, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)   # bicubic upsampling
+r = hr - up                                                            # what a residual network predicts
+print(f"HR image: mean {hr.mean():.3f}  std {hr.std():.3f}")
+print(f"residual: mean {r.mean():+.3f}  std {r.std():.3f}  |r| < 0.05 at {np.mean(np.abs(r) < 0.05):.0%} of pixels")
+```
+
+```text
+HR image: mean 0.442  std 0.296
+residual: mean -0.000  std 0.056  |r| < 0.05 at 82% of pixels
+```
+
+The residual has about one fifth of the image's standard deviation and is below 0.05 at 82% of the pixels. A network whose output starts near zero is thus already close to a sensible answer (bicubic) and can spend its capacity on edges and textures. Post-upsampling networks keep the idea in two forms: **local** residual blocks inside the body ([DLCV 01B](/en/learn/deep-learning/dl-01b-building-blocks/#resnet-versus-edsr-and-nafnet) compares them with ResNet's), and a **long skip** from the first features to the last. The cost is negligible, so every later network in Table 1 uses residual learning.
+
+### Decision 4: remove batch normalization
+
+**Plain version.** Batch normalization (BN) rescales every feature channel to a standard range, which helps classifiers. An SR network must reproduce exact intensities, so this throws away something it needs, and the memory BN uses is better spent on a wider network.
+
+A BN layer normalizes each channel with the mean and variance of the current mini-batch during training, then applies a learned scale and shift; at test time it uses running averages. SRResNet, the generator of SRGAN, used residual blocks with BN, as classifiers did [@srgan]. EDSR removed them, for two reasons [@edsr]: BN normalizes the features and so takes away the network's **range flexibility**, and BN layers use as much memory as the convolutions before them (without BN, training used about 40% less memory than SRResNet). The savings went into width: 32 residual blocks with 256 channels. At that width training became numerically unstable, which EDSR fixed with **residual scaling**: each residual branch is multiplied by 0.1 before it is added. EDSR also switched to the L1 loss (it converged better), initialized its ×3 and ×4 models from the ×2 model, and won the NTIRE 2017 SR challenge [@edsr], [@ntire2017]. ESRGAN later added a third reason: when training and test statistics differ, BN tends to introduce artifacts, especially in deep GAN-trained networks [@esrgan].
+
+The cost: the network loses BN's help with optimization and needs residual scaling and careful initialization instead. And at deployment, BN-free networks have activations with a much larger dynamic range, which makes them harder to quantize ([DLCV 01C](/en/learn/deep-learning/dl-01c-model-compression/#dense-prediction-and-restoration)). [DLCV 01B](/en/learn/deep-learning/dl-01b-building-blocks/#normalization-bn-ln-gn-and-when-to-leave-it-out) discusses when to leave normalization out in general.
+
+### Decision 5: reweight channels (RCAN)
+
+**Plain version.** Some feature channels carry smooth, low-frequency content that the input already shows; others carry the fine detail SR is really about. Channel attention lets the network turn each channel up or down depending on the image, instead of treating all channels the same.
+
+RCAN made two changes [@rcan]. Its **channel attention** summarizes each channel by its average, passes the summary through a small bottleneck, and uses the result to rescale the channel. For a feature tensor with channels $x_1, \dots, x_C$ of size $H \times W$,
+
+$$
+z_c = \frac{1}{HW} \sum_{i=1}^{H} \sum_{j=1}^{W} x_c(i, j), \qquad
+\mathbf s = f\bigl(W_U \, \delta(W_D \, \mathbf z)\bigr), \qquad
+\hat x_c = s_c \, x_c,
+$$
+
+where $x_c(i, j)$ is the value of channel $c$ at position $(i, j)$, $\mathbf z = (z_1, \dots, z_C)$ the vector of channel averages, $W_D$ a $1 \times 1$ convolution that reduces $C$ channels to $C/r$, $\delta$ the ReLU, $W_U$ a $1 \times 1$ convolution that expands them back to $C$, $f$ the sigmoid, $s_c \in (0, 1)$ the weight of channel $c$, and $\hat x_c$ the rescaled channel. RCAN uses $C = 64$ and reduction ratio $r = 16$, so the bottleneck has 4 channels; the extra parameters are tiny. The same mechanism appears in classification networks as squeeze-and-excitation ([DLCV 01B](/en/learn/deep-learning/dl-01b-building-blocks/#attention-inside-a-cnn-se-and-cbam)).
+
+Its **residual-in-residual** structure makes great depth trainable: 10 residual groups of 20 channel-attention blocks, each group with a short skip connection, all inside one long skip connection, for over 400 layers [@rcan]. The authors' argument is that the abundant low-frequency information of the input can bypass the body through these skips, so the main network can focus on high frequencies. The cost is latency: 400 layers run one after another.
+
+### Decision 6: let pixels attend to content far away (SwinIR, HAT)
+
+**Plain version.** A convolution applies the same weights everywhere; self-attention computes its weights from the content, so a pixel on one window frame can borrow detail from a similar frame elsewhere. Full attention over an image is too expensive, so SR transformers attend within small windows that shift between layers.
+
+Within a window of $M \times M$ tokens (here, one token per LR pixel), self-attention computes
+
+$$
+\operatorname{Attention}(Q, K, V) = \operatorname{SoftMax}\!\bigl(Q K^{\top} / \sqrt d + B\bigr) V,
+$$
+
+where $Q$, $K$ and $V$ are the query, key and value matrices obtained by linear maps of the tokens in the window ($M^2$ rows each), $d$ is the dimension of a query or key, and $B$ is a learned bias that depends only on the relative position of two tokens [@hat]. Each output is a weighted average of the values in the window, weighted by how well its query matches each key ([ML 04](/en/learn/ml/ml-04-vision-transformers/#swin-and-hierarchical-transformers) explains attention and shifted windows in general). Windows are what make this affordable. For a map of $h \times w$ tokens with $C$ channels, the Swin Transformer paper counts
+
+$$
+\Omega(\text{MSA}) = 4hwC^2 + 2(hw)^2 C, \qquad \Omega(\text{W-MSA}) = 4hwC^2 + 2M^2 hwC,
+$$
+
+where MSA is global multi-head self-attention, W-MSA attention within $M \times M$ windows, the first term the linear projections and the second the attention itself [@swin]. Global attention grows with the square of the number of tokens; windowed attention grows linearly. With SwinIR's width $C = 180$ and window $M = 8$ on our 128 × 128 LR map, the formulas give about 98.8 GMAC for global attention and 2.50 GMAC for windows in one layer (our arithmetic; Exercise 6).
+
+SwinIR builds an SR network around this block: a $3 \times 3$ convolution for shallow features, residual Swin Transformer blocks (several Swin layers plus a convolution, wrapped in a residual connection; 6 blocks of 6 layers, windows of 8 and 180 channels in its standard SR setting), and a pixel-shuffle reconstruction, trained with the L1 loss [@swinir]. HAT asked how much of the input SwinIR really uses. With an attribution method for SR (LAM), its authors found that SwinIR uses a limited spatial range, and designed HAT to "activate more pixels" [@hat]: a channel-attention branch in parallel with window attention, windows of 16, an **overlapping cross-attention** block whose keys and values come from larger, overlapping windows, and pre-training on ImageNet for the same SR task before fine-tuning on DIV2K and Flickr2K. Later backbones continue the search for cheap long-range context: DAT alternates spatial and channel self-attention [@dat], and MambaIR replaces attention with state-space scans that reach the whole image at linear cost [@mambair].
+
+The cost is memory and runtime, which grow with the window size; large images are processed in tiles, which can leave seams. And Table 1's main point still holds: trained with L1, these networks owe their sharper outputs to better use of context, not to sampling.
+
+**The common training recipe.** These networks are trained on small random crops from DIV2K or DIV2K plus Flickr2K (EDSR used $48 \times 48$ LR patches), with random flips and 90° rotations, the L1 loss and Adam. A "+" after a name (EDSR+) means **geometric self-ensemble**: the outputs for the 8 flipped and rotated versions of the input are transformed back and averaged [@edsr]. The general losses are in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#loss-functions).
+
+## Perceptual and adversarial SR
+
+**Question.** If a pixel loss always returns the safe, blurry average, can a different loss produce realistic detail? **Short answer:** yes, by rewarding outputs that look like real photos (perceptual and adversarial losses), at the price of a lower PSNR and occasional invented detail.
+
+### Perceptual losses and GANs
+
+Johnson, Alahi and Fei-Fei trained SR networks with a **perceptual loss**, the distance between features of a pretrained classifier (VGG [@vgg]) for the output and for the target, and obtained sharper edges and textures than with a pixel loss, at a lower PSNR [@johnson]. SRGAN added an **adversarial loss**: a discriminator learns to tell SR outputs from real HR images, and the SR network (SRResNet, 16 residual blocks) is trained to fool it, which pushes the solution toward the natural image manifold; in a mean-opinion-score test, raters clearly preferred SRGAN's outputs [@srgan]. ESRGAN improved each part: residual-in-residual dense blocks without BN (Decision 4), a relativistic discriminator that judges whether a real image looks *more* realistic than a generated one, and a perceptual loss on VGG features taken before the activation; a variant won region 3 (the most perceptual one) of the PIRM 2018 challenge [@esrgan], [@pirm]. A typical generator loss is
+
+$$
+\mathcal L = \lambda_1 \,\| \hat x - x \|_1 + \lambda_p \,\bigl\| \phi(\hat x) - \phi(x) \bigr\|_2^2 + \lambda_a \,\mathcal L_{\text{adv}}(\hat x),
+$$
+
+where $\hat x$ is the SR output, $x$ the HR target, $\phi$ a fixed layer of a pretrained network, $\mathcal L_{\text{adv}}$ the adversarial term computed with the discriminator, and $\lambda_1, \lambda_p, \lambda_a \ge 0$ weights chosen by hand. GANs are explained in [ML 06](/en/learn/ml/ml-06-generative-models/#gans-learning-with-an-adversary).
+
+ESRGAN also introduced a simple knob, **network interpolation**: blend the weights of a PSNR-oriented network and its GAN-fine-tuned copy, $\theta = (1 - \alpha)\, \theta_{\text{PSNR}} + \alpha\, \theta_{\text{GAN}}$ with $0 \le \alpha \le 1$, to move between smooth and textured outputs without retraining [@esrgan].
+
+*Optional: [ESRGAN's changes in detail](#esrgans-changes-in-detail) (in the Supplementary notes). It gives the relativistic discriminator's losses, the reasons for features before activation, and the block structure.*
+
+### The perception–distortion trade-off
+
+Blau and Michaeli defined **distortion** as the expected dissimilarity between $\hat x$ and $x$ (MSE, for example) and **perceptual quality** as the distance between the distribution of outputs and the distribution of real images, and proved that the two cannot both be minimized: the best perceptual quality achievable at a given distortion gets worse as the allowed distortion shrinks, and the MMSE estimator sits at the low-distortion, low-realism end [@blau]. The formal statement is in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#the-perceptiondistortion-trade-off). Our toy traces such a curve (Figure 1, right): moving from the posterior mean toward a posterior sample raises MSE from 0.0072 to 0.0143 and closes the realism gap. ESRGAN's network interpolation is the same move made with real networks. Two practical consequences follow:
+
+- A method should state *where* on the trade-off it aims. Comparing a GAN to an MSE network by PSNR alone, or by a perceptual metric alone, says nothing about which is better.
+- Benchmarks must measure both axes. The PIRM 2018 challenge did this by splitting the perception–distortion plane into three regions by RMSE (at most 11.5, 12.5 and 16) and ranking methods within each region by a perceptual index built from two no-reference metrics, NIQE [@niqe] and the SR-specific metric of Ma et al. [@ma], [@pirm].
+
+## Diffusion SR for a known degradation
+
+**Question.** Can a model output a genuine sample from the posterior, not a sharpened average? **Short answer:** a conditional diffusion model can; it is the most direct answer to Figure 1, and it is slow.
+
+A diffusion model learns to turn noise into realistic images step by step; conditioned on the LR image, it generates an HR image that fits the input, and different random seeds give different plausible answers. SR3 is the representative method for the non-blind setting, with LR images made by bicubic downscaling [@sr3]. Its U-Net [@unet] receives the noisy HR estimate concatenated, along the channel axis, with the bicubic upsampling of the LR image, and learns to remove noise at many levels. Inference starts from pure Gaussian noise and refines it, in at most 100 steps in the paper's setting [@sr3].
+
+SR3's own comparisons show the trade-off of the previous section. On ×8 face SR (16 × 16 to 128 × 128), human raters asked to pick the real photo chose SR3's output close to 50% of the time, while GAN baselines reached at most 34%. On ×4 ImageNet SR, a regression model with the same architecture scored higher PSNR and SSIM, while SR3 scored better on sample-quality metrics; the authors note that PSNR and SSIM penalize any synthetic detail that is not perfectly aligned [@sr3]. SR3 also checked **consistency**: its outputs, downsampled again, matched the LR inputs better than the GAN baselines' outputs did [@sr3]. [DLCV 04C](/en/learn/deep-learning/dl-04c-generative-restoration/#route-a-train-a-conditional-diffusion-restorer) explains how such a conditional diffusion restorer is trained and sampled, and [ML 07](/en/learn/ml/ml-07-diffusion-flow-matching/#latent-diffusion) the diffusion mechanics.
+
+In short: diffusion outputs are samples, so they score lower PSNR than regression networks; their details are generated, so they can be wrong (see Failure modes); and each image costs many network evaluations. Methods built on large pretrained text-to-image models, with sampling cut to a few steps or one, were developed for real-world photos and are covered in [DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/).
+
+## When the degradation is unknown: blind and real-world SR
+
+**Plain version.** Everything so far assumed that we know how the small image was made. A real photo comes with its own unknown blur, noise and compression, and a model trained on bicubic pairs misjudges it, as the mismatched linear model above did. Blind and real-world SR either trains on a very wide range of synthetic degradations, estimates the degradation first, or learns from real captured pairs, and it evaluates results without ground truth. These methods, their datasets, and the diffusion-prior restorers used for real photos have their own chapter, [DLCV 04D · Blind and Real-World Image Super-Resolution](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/).
+
+## Arbitrary-scale SR
+
+**Plain version.** The networks above are trained for one fixed factor such as ×4. Arbitrary-scale networks treat the image as a continuous function, so you can ask for any output size, including non-integer factors like ×2.7.
+
+Meta-SR replaced the fixed upsampling tail with a **meta-upscale module** that predicts the weights of the upscaling filters from the scale factor and the relative position of each output pixel [@metasr]. LIIF went further and learned a **local implicit image function** [@liif]:
+
+$$
+\hat I(x_q) = f_\theta\bigl(z^{*},\; x_q - v^{*}\bigr),
+$$
+
+where $x_q$ is a continuous query coordinate in the image plane, $z^{*}$ the latent feature vector (from a CNN encoder applied to the LR image) whose grid position $v^{*}$ is nearest to $x_q$, and $f_\theta$ a small MLP that outputs the RGB value at $x_q$. Because $x_q$ is continuous, the same network renders any output size. Trained on scales between ×1 and ×4, it was shown producing outputs up to ×30 [@liif]. The price is one MLP evaluation per output pixel, and at scales far outside training almost everything is generated by the prior.
+
+*Optional: [LIIF's three refinements](#liifs-three-refinements) (in the Supplementary notes). It explains feature unfolding, local ensemble and cell decoding.*
+
+## Efficiency
+
+**Plain version.** Many SR uses (phones, video calls, game rendering) need results in milliseconds on small chips. Efficient SR asks how small and fast a network can be while staying above a quality threshold.
+
+Post-upsampling with pixel shuffle (Decisions 1 and 2) is the first rule: almost all computation happens at LR size. Beyond that, efficient networks reuse features cheaply; IMDN, for example, splits features step by step into a "distilled" part that is kept and a part that is processed further, then fuses them with a contrast-aware channel attention [@imdn]. Parameters, FLOPs and runtime measure different costs, so the NTIRE efficient SR challenges score all three. In 2024 and 2025 the task was ×4 SR, and entries had to reach a PSNR of at least 26.90 dB on the validation set and 26.99 dB on the test set while minimizing runtime, parameters and FLOPs [@esr2024], [@esr2025]. Compressing an existing network (pruning, quantization, distillation) is the subject of [DLCV 01C](/en/learn/deep-learning/dl-01c-model-compression/#dense-prediction-and-restoration).
+
+## Evaluating SR
+
+**Question.** How do you tell whether one SR result is better than another? **Short answer:** for fidelity, follow the community's fixed PSNR/SSIM recipe exactly, because small details change the numbers; for realism, add perceptual metrics and human judgments, and never compare the two kinds by one number. The generic metrics are explained in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#evaluation-metrics); this section covers what is specific to SR.
+
+### Y-channel PSNR and SSIM with border shaving
+
+The classical protocol, inherited from the MATLAB code of early papers, is:
+
+1. Convert both the HR image and the SR output to YCbCr and keep the luma channel
+$$
+Y = 16 + 65.481\, R + 128.553\, G + 24.966\, B,
+$$
+where $R, G, B \in [0, 1]$ are the (gamma-encoded) color values and $Y$ lies in $[16, 235]$. These are the BT.601 coefficients as implemented by MATLAB's `rgb2ycbcr` (and by `skimage.color.rgb2ycbcr`) [@bt601], [@rgb2ycbcr].
+2. Remove a border of pixels from both images before comparing ("shaving"), so that the effects of padding at the image border do not dominate.
+3. Compute PSNR with peak value 255 and SSIM [@ssim] on what remains. Definitions are in [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#full-reference-metrics).
+
+The details vary even within one paper. EDSR reports its benchmark results on Y with a border equal to the scale factor, but its ablation study on DIV2K uses all RGB channels and ignores $6 + s$ border pixels [@edsr]; the NTIRE 2024 and 2025 ×4 challenges compute on Y with a 4-pixel border [@ntire2024], [@ntire2025]. Wang et al. note that the color space and channel alone can change results by up to 4 dB in one reported case [@wangsurvey]. Part of that is arithmetic: the coefficients above sum to 219, so $Y = 16 + 219\,\ell$ with $\ell \in [0, 1]$, and PSNR with peak 255 on $Y$ adds $20 \log_{10}(255/219) \approx 1.32$ dB to PSNR on $\ell$ with peak 1 (Exercise 2). Rounding, clipping and the resizer also shift results slightly, so fair comparisons run every method through one evaluation script.
+
+### The standard test sets
+
+SR papers report results on a small set of public test sets, each with a different character [@wangsurvey]:
+
+| Test set | Images | Content | Source |
+| --- | --- | --- | --- |
+| Set5 | 5 | baby, bird, butterfly, head, woman | [@set5] |
+| Set14 | 14 | people, animals, flowers, comic, slides | [@zeyde] |
+| BSD100 (B100) | 100 | natural scenes, the test images of the Berkeley segmentation dataset | [@bsd] |
+| Urban100 | 100 | buildings and city scenes with regular structures | [@huang] |
+| Manga109 | 109 | Japanese comic volumes (line art and screen tones) | [@manga1], [@manga2] |
+| DIV2K validation | 100 | diverse 2K-resolution photos | [@div2k] |
+
+Set5 and Set14 are tiny, so a few hundredths of a dB on them mean little. The sets reward different abilities: Urban100 is full of repeated structures, and HAT's larger attention window helped most there [@hat].
+
+### Why PSNR and perceptual rankings disagree
+
+Three reasons, all seen in this chapter. First, PSNR is maximized by the blurry average of all plausible answers, so a method that commits to one sharp answer loses PSNR even when it looks better (Figure 1; SR3 versus its regression baseline). Second, a texture with the right statistics but shifted by half a period has a large pixel error. Third, learned perceptual metrics such as LPIPS [@lpips] and no-reference metrics such as NIQE [@niqe] reward natural-looking texture and can be fooled by over-sharpening, while PSNR rewards smoothness. The NTIRE 2025 ×4 challenge ran a restoration track ranked by PSNR and a perceptual track ranked by one combined score of six full-reference and no-reference quality metrics, including LPIPS and NIQE [@ntire2025]. The advice from [DLCV 04](/en/learn/deep-learning/dl-04-image-restoration/#user-studies-and-paired-comparisons) applies: report a fidelity metric, a perceptual metric and, for generative SR, a user study.
+
+## Datasets and benchmarks
+
+**Plain version.** A few datasets and a yearly competition define most of what "state of the art" means in non-blind SR.
+
+- **DIV2K** [@div2k] contains 1,000 diverse 2K-resolution images, split 800/100/100 for training, validation and testing [@ntire2025]. It was introduced for the NTIRE 2017 challenge and is the standard training set. It is often combined with **Flickr2K**, which the NTIRE 2025 report describes as 2,650 2K images [@ntire2025]; the combination is called DF2K, and HAT, for example, fine-tunes on it after pre-training on ImageNet [@hat].
+- **NTIRE 2017** [@ntire2017], the first SR challenge of the series, had a bicubic track and a track with unknown downscaling operators (learnable from the provided training pairs), each at ×2, ×3 and ×4.
+- **NTIRE 2024 and 2025 ×4 SR** [@ntire2024], [@ntire2025] use bicubic ×4 on DIV2K; the 2025 edition added the perceptual track described above.
+- **NTIRE efficient SR** [@esr2024], [@esr2025] ranks ×4 models by runtime, parameters and FLOPs above a fixed PSNR.
+
+The real-world datasets and challenges, which have no clean bicubic pairs, are described in [DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/).
+
+## Failure modes
+
+**Plain version.** An SR model can fail by being too cautious (blurry) or too bold (invented detail). The bold failures are more dangerous, because the result looks convincing.
+
+- **Over-smoothing.** MSE- and L1-trained models return the posterior mean: waxy skin, flat grass, soft hair. This is expected behaviour, not a bug (Figure 1).
+- **Hallucinated text and faces.** At large scales a generative model can turn illegible text into legible but *wrong* characters, or a few pixels of a face into a sharp face that is not the person photographed; for forensic, medical or scientific images this is unacceptable. Ren et al. argue that fidelity and no-reference metrics both capture such hallucinations poorly, and propose scoring them with a multimodal large language model [@halluc].
+- **Texture artifacts.** GAN-based models can add repetitive, noise-like textures; ESRGAN was designed partly to reduce such artifacts of SRGAN [@esrgan]. Our mismatched linear model shows halos and exaggerated edges in miniature (Figure 6).
+- **Color shifts.** Diffusion-based SR can shift global colors away from the input; Moser et al. list it among the open problems of diffusion SR [@moser].
+- **Degradation mismatch.** A non-blind model applied to images made differently under- or over-corrects (Figure 6). Testing on more than one degradation exposes this; [DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/) covers the remedies.
+- **Tiling seams.** Large images are often processed in patches; non-overlapping patches can leave visible borders, as the SwinIR authors note for patch-based processing [@swinir].
+
+A useful sanity check for any SR output is **consistency with the input**: degrade the output with the assumed model and compare it with $y$. A large difference means the model changed content that the LR image did measure.
+
+## Modern view
+
+### Survey papers
+
+Two surveys cover this chapter's material. Wang, Chen and Hoi split deep SR into supervised, unsupervised and domain-specific SR, and describe supervised models along independent axes: where to upsample (pre-, post-, progressive, iterative up-and-down), with which operator, which network design (residual, recursive, dense, attention and others), which losses and which training strategies [@wangsurvey]. Their takeaway matches Table 1: most models are combinations of choices along these axes, so read a new model as "which choices did it change?". The survey also tabulates the test sets; it predates transformers and diffusion models. Moser et al. cover diffusion models for SR: the theory first, then methods organized by input domain (pixel, latent, wavelet), conditioning, guidance, corruption spaces and zero-shot use of pretrained models [@moser]. Their open issues (high compute, poor comparability across papers, limited explainability, color shifts) are a good checklist for reading any diffusion SR paper. The blind and real-world surveys are discussed in [DLCV 04D](/en/learn/deep-learning/dl-04d-blind-real-world-super-resolution/).
+
+### State of the art, 2023–2026
+
+1. **Fidelity-oriented SR** uses attention and state-space backbones (HAT, DAT, MambaIR [@hat], [@dat], [@mambair]), large-scale pre-training, and is benchmarked each year by the NTIRE ×4 restoration track [@ntire2024], [@ntire2025].
+2. **Evaluation is catching up with generation**: perceptual SR has its own challenge track with a combined perceptual score, so realism-oriented methods are no longer ranked by PSNR [@ntire2025], and the first metrics for hallucination appeared [@halluc].
+3. **Efficiency** has its own benchmark with fixed quality thresholds [@esr2024], [@esr2025].
+
+### Open problems
+
+- **Faithful generative SR.** How to get diffusion-level realism without inventing content, and how to show a user which details are measured and which are guessed.
+- **Evaluation.** PSNR rewards blur, perceptual metrics can be gamed, and hallucination metrics are new.
+- **Benchmark saturation.** Gains of a few hundredths of a dB on small bicubic test sets say little about real use; the bicubic setting itself is far from real cameras (DLCV 04D).
+- **Cost.** Attention and diffusion models are far heavier than the networks of the efficient SR challenges.
+- **Arbitrary and extreme scales.** Behaviour far outside the training scales, and at factors where almost everything is generated, is poorly understood.
+
+## Key takeaways
+
+- SR is ill-posed: at ×4 each LR pixel constrains one combination of 16 HR values, so a prior decides the rest. Pixel losses give the **posterior mean**, which is blurry by construction; a posterior sample looks real and costs at most twice the MSE.
+- **Non-blind** SR assumes a known degradation, usually bicubic downscaling. A model is only as good as that assumption: a mismatched blur makes it under- or over-sharpen.
+- The CNN line is a chain of decisions: upsample **at the end** (an $s^2$ saving), with **pixel shuffle** ($X[c, sh + i, sw + j] = T[cs^2 + si + j, h, w]$), predict the **residual**, drop **batch normalization** and scale residuals, **reweight channels**, and add **window self-attention**.
+- All of these are still posterior-mean estimators; perceptual, adversarial and diffusion models (SRGAN, ESRGAN, SR3) aim at realistic samples instead and lose PSNR in exchange. The **perception–distortion trade-off** says you must choose.
+- Evaluate on Y with a shaved border, state the protocol, and add perceptual metrics and a user study for generative models.
+- Watch for hallucinated text and faces, texture artifacts, color shifts, over-smoothing and tiling seams; check outputs for consistency with the LR input.
+
+## Exercises
+
+1. **Which cubic does OpenCV use?** Make a 1-D signal of 16 zeros with a single 1 in the middle, upsample it by 4 with `cv2.resize(..., interpolation=cv2.INTER_CUBIC)`, and compare the result with the Keys kernel evaluated at the half-pixel-aligned positions $(t + \tfrac12)/4 - \tfrac12 - 8$ for $a = -0.5$ and $a = -0.75$. Then plot both kernels' frequency responses and compare their values at the LR Nyquist frequency.
+
+<details>
+<summary>Hint</summary>
+
+The output of a resize of a unit impulse is the kernel itself, sampled at the output positions. In our run the maximum absolute difference was 0.0 for $a = -0.75$ and about 0.037 for $a = -0.5$. A more negative $a$ gives deeper negative lobes, a response that stays near 1 a little longer and then overshoots slightly: a sharper but more ringing interpolator. Repeat with `INTER_LANCZOS4` and the Lanczos kernel with $a = 4$; the match is close but not exact (we measured a maximum difference of about 0.0016), because the library normalizes the weights.
+
+</details>
+
+2. **Protocol arithmetic.** (a) Show that $Y$-PSNR with peak 255 equals the PSNR of $\ell = (Y - 16)/219$ with peak 1 plus $20 \log_{10}(255/219)$. (b) In the benchmark-setting snippet, change the shave from 4 to 0 and to 16 pixels and explain the size of the change. (c) Why is shaving necessary for a network with zero padding but nearly irrelevant for `cv2.resize`?
+
+<details>
+<summary>Hint</summary>
+
+(a) $Y_{\text{hr}} - Y_{\text{sr}} = 219(\ell_{\text{hr}} - \ell_{\text{sr}})$, so the MSE scales by $219^2$ and PSNR becomes $10\log_{10}(255^2 / (219^2 \,\mathrm{MSE}_\ell)) = \mathrm{PSNR}_\ell + 20\log_{10}(255/219) \approx \mathrm{PSNR}_\ell + 1.32$ dB. (b) Shaving changes the result by only a few hundredths of a dB here (24.66 versus 24.62 dB for nearest neighbor), because OpenCV extrapolates borders reasonably and the image edges are smooth. (c) Zero padding makes a convolutional network see black outside the image, so the outputs near the border are systematically worse; shaving removes a region whose quality depends on the padding choice rather than on the method.
+
+</details>
+
+3. **A channel-ordering bug.** Suppose one library orders the $C s^2$ channels as $k = c s^2 + s i + j$ (our formula) and another as $k = (s i + j) C + c$. You load weights trained with the first ordering into the second. For $C = 3$ and $s = 2$, which of the 12 channels end up in the right place? What does the output look like?
+
+<details>
+<summary>Hint</summary>
+
+Solve $4c + q = 3q + c$ with $q = 2i + j$: $3c = 2q$, so only $(c, q) = (0, 0)$ and $(2, 3)$ coincide, 2 channels out of 12 (we checked this by enumerating all 12). The other values are moved to the wrong color channel and the wrong sub-pixel offset, so the output shows a fine color mosaic in every 2 × 2 block even though the coarse image is recognizable. For $C = 1$ the two orderings agree, which is why such bugs often appear only when moving from grayscale to color models.
+
+</details>
+
+4. **Make the linear model better.** Starting from the regressor snippet, (a) change the patch size $p$ to 3, 5, 9 and 11; (b) split LR pixels into classes by the angle of the local gradient (as RAISR does) and fit one regressor per class; (c) add noise with σ = 0.01 to the LR training images but not to the test images, and the other way round. Report PSNR for each change and explain.
+
+<details>
+<summary>Hint</summary>
+
+(a) On the blurry test input we measured 25.94 dB for $p = 3$, 26.18 dB for $p = 5$ and 26.26 dB for $p = 7, 9, 11$: beyond 7 × 7 a linear model gains nothing. (b) Four angle classes (computed from the gradient of the slightly smoothed LR image) gave 26.33 dB and eight gave 26.32 dB, a small gain: classes let the filter follow edge direction, which is what makes RAISR and A+ better than one global filter. (c) Training on noisy inputs teaches the model to smooth, so it under-sharpens clean inputs; training on clean inputs teaches it to amplify fine detail, so it amplifies noise. This is the noise version of the blur mismatch in Figure 6.
+
+</details>
+
+5. **Posterior mean by hand.** Two HR pixels $a, b \in \{0, 1\}$ are independent and equally likely to be 0 or 1. The LR pixel is $y = (a + b)/2$ with no noise. (a) For each value of $y$, give the posterior mean of $(a, b)$ and a posterior sample. (b) Compute the expected per-pixel MSE of both estimators. (c) Which estimator produces outputs that look like the HR data?
+
+<details>
+<summary>Hint</summary>
+
+(a) $y = 0$ and $y = 1$ determine $(a, b)$ exactly. For $y = 0.5$ (probability 1/2) the posterior is $(0, 1)$ or $(1, 0)$ with equal probability, so the mean is $(0.5, 0.5)$ and a sample is one of the two. (b) Only $y = 0.5$ contributes. The mean has squared error $0.25$ per pixel there, so its MSE is $0.5 \times 0.25 = 0.125$. A sample is right half the time and wrong by 1 on both pixels otherwise, so its MSE is $0.5 \times 0.5 \times 1 = 0.25$: exactly twice as large. (c) Only the sample: real pixels are 0 or 1, and the value 0.5 never occurs in the HR data.
+
+</details>
+
+6. **The price of global attention.** Using the two formulas of Decision 6, compute $\Omega(\text{MSA})$ and $\Omega(\text{W-MSA})$ for $C = 180$, $M = 8$ and LR maps of $64 \times 64$ and $128 \times 128$ tokens. How does the ratio between them change when the image side doubles, and why? What window size $M$ would make windowed attention as expensive as global attention?
+
+<details>
+<summary>Hint</summary>
+
+We obtained 6.6 versus 0.63 GMAC (ratio 10.5) at $64 \times 64$ and 98.8 versus 2.50 GMAC (ratio 39.5) at $128 \times 128$. Doubling the side multiplies $hw$ by 4: the projection term $4hwC^2$ and the windowed attention term grow by 4, but the global attention term $2(hw)^2C$ grows by 16. The two attention terms are equal when $M^2 = hw$, that is when one window covers the whole image.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional background. Nothing in the main text or the exercises depends on them.
+
+### Example-based SR and sparse coding in detail
+
+This note explains how classical example-based SR works and how sparse coding compresses its library of examples.
+
+Freeman, Jones and Pasztor chose, for each LR patch of a new image, an HR training patch that matched it and was compatible with its neighbours [@freeman]. Glasner, Bagon and Irani observed that patches recur within and across scales of one image, so the LR image and its downscaled copies supply LR–HR examples without external data [@glasner]; Huang, Singh and Ahuja widened that internal search with perspective and affine transformations, which helps on urban scenes [@huang]. Zero-shot SR (ZSSR) brought the internal idea to deep learning: it trains a small image-specific CNN at test time on examples extracted only from the input image [@zssr].
+
+Yang et al. learned an LR dictionary $D_\ell$ and an HR dictionary $D_h$ whose columns are paired atoms [@yang]. For an LR patch feature $p_\ell$ they solve
+
+$$
+\min_{\alpha} \; \bigl\| D_\ell\, \alpha - p_\ell \bigr\|_2^2 + \lambda \|\alpha\|_1,
+\qquad \hat p_h = D_h\, \alpha,
+$$
+
+where $\alpha$ is the sparse code, $\|\alpha\|_1$ encourages few non-zero coefficients, $\lambda > 0$ sets the sparsity and $\hat p_h$ is the HR patch estimate; overlapping patches are averaged. Zeyde, Elad and Protter simplified and sped up this pipeline [@zeyde], and anchored regression (ANR, A+) replaced the sparse-coding step by precomputed ridge regressors [@anr], [@aplus], which is the model of the main text's snippet. SRCNN's three layers were first read as a learned version of this pipeline [@srcnn].
+
+### Aliasing in the LR spectrum
+
+This note writes down exactly which HR frequencies end up at each LR frequency when an image is decimated.
+
+Work in one dimension. Let $X(f)$ be the spectrum (discrete-time Fourier transform) of the HR signal, with $f$ in cycles per HR sample and $X$ periodic with period 1. Keeping every $s$-th sample gives the LR spectrum
+
+$$
+Y(f') = \frac{1}{s} \sum_{m=0}^{s-1} X\!\left(\frac{f' + m}{s}\right), \qquad -\tfrac12 \le f' \lt \tfrac12,
+$$
+
+where $f'$ is in cycles per LR sample and $m$ indexes the $s$ HR frequencies $(f' + m)/s$ that "fold" onto the same LR frequency. Only one of them, the one in the band $|f| \le 1/(2s)$, belongs there; the other $s - 1$ are aliases. A blur applied before decimation multiplies $X$ by the blur's frequency response, which is small above $1/(2s)$, so the aliases are weak and $Y(f') \approx X(f'/s)/s$: the LR image then holds a clean but attenuated copy of the low band, and nothing of the high band.
+
+Worked example (the grating of Figure 2). A grating at 0.30 cycles per HR pixel along the diagonal has a component of about 0.21 cycles per pixel along each axis. Decimating by $s = 4$ maps 0.21 cycles per HR pixel to $4 \times 0.21 = 0.85$ cycles per LR pixel, which lies outside $[-\tfrac12, \tfrac12)$ and wraps around to $0.85 - 1 = -0.15$: a coarse grating in a different direction appears, which was never in the scene. Blurring first attenuates the 0.21 component almost to zero, so the decimated image is nearly flat gray. An SR model that sees the coarse stripes cannot tell from the LR image alone whether they were real or aliased; only a prior can.
+
+### Adjustable gradient clipping
+
+This note explains the clipping rule VDSR used to train a 20-layer network with a very high learning rate [@vdsr].
+
+Plain gradient clipping limits each component of the gradient $g$ to a fixed range $[-\theta, \theta]$, where $\theta > 0$ is a threshold. With stochastic gradient descent the step is $\gamma g$, where $\gamma$ is the learning rate. VDSR starts with a learning rate $10^4$ times that of SRCNN, according to its authors, and lowers it during training. With a fixed $\theta$ there is a conflict: at the start, $\theta$ must be small so that $\gamma \theta$ does not explode; later, when $\gamma$ has been reduced, that same small $\theta$ makes the effective step $\gamma\theta$ tiny and training crawls. VDSR clips instead to
+
+$$
+g_i \leftarrow \min\!\Bigl(\max\bigl(g_i, -\tfrac{\theta}{\gamma}\bigr), \tfrac{\theta}{\gamma}\Bigr),
+$$
+
+where $g_i$ is one component of the gradient and $\gamma$ the current learning rate. The largest possible step per component is then $\gamma \cdot \theta/\gamma = \theta$, whatever the learning rate: large learning rates are safe, and small ones are not starved. The authors present residual learning and this clipping rule together as their answer to the exploding gradients that high learning rates cause, and report that their 20-layer network trained within 4 hours [@vdsr].
+
+### Why a posterior sample costs twice the MMSE
+
+This note derives the factor of 2 between the MSE of a posterior sample and that of the posterior mean.
+
+**Plain version.** The posterior mean sits exactly in the middle of all plausible answers. The true image is one random point in that cloud, and a posterior sample is another, independent random point in the same cloud. Two random points are, on average, twice as far apart (in squared distance) as one random point is from the center.
+
+**Precise version.** Let $X$ be the HR image, $Y$ the LR observation, $\mu(Y) = \mathbb E[X \mid Y]$ the posterior mean, and $\hat X$ a sample drawn from $p(x \mid Y)$ independently of $X$ given $Y$. Then, conditioned on $Y$,
+
+$$
+\begin{aligned}
+\mathbb E\bigl[\|X - \hat X\|^2 \mid Y\bigr]
+&= \mathbb E\bigl[\|(X - \mu) - (\hat X - \mu)\|^2 \mid Y\bigr] \\
+&= \mathbb E\bigl[\|X - \mu\|^2 \mid Y\bigr] + \mathbb E\bigl[\|\hat X - \mu\|^2 \mid Y\bigr] - 2\,\mathbb E\bigl[(X - \mu)^{\top}(\hat X - \mu) \mid Y\bigr] \\
+&= 2\,\mathbb E\bigl[\|X - \mu\|^2 \mid Y\bigr],
+\end{aligned}
+$$
+
+where $\|\cdot\|$ is the Euclidean norm over all pixels. The second line expands the square. In the third, the two squared terms are equal because $X$ and $\hat X$ have the same conditional distribution, and the cross term vanishes because, given $Y$, the two are independent and each has mean $\mu$. Taking the expectation over $Y$ gives $\mathbb E\|X - \hat X\|^2 = 2\,\mathbb E\|X - \mu(Y)\|^2$: the sampler's MSE is exactly twice the minimum MSE, a 3 dB PSNR gap. Its output distribution equals the distribution of real images, so its perceptual quality is perfect. Blau and Michaeli use this construction to show that perfect perceptual quality never costs more than a factor of 2 in MSE [@blau].
+
+The same algebra gives the curve in Figure 1. For the blend $X_\alpha = \mu + \alpha(\hat X - \mu)$ with $0 \le \alpha \le 1$,
+
+$$
+\mathbb E\|X - X_\alpha\|^2 = (1 + \alpha^2)\, \mathbb E\|X - \mu\|^2,
+$$
+
+where the cross term vanishes for the same reason. The distortion grows smoothly from the MMSE value at $\alpha = 0$ to twice that value at $\alpha = 1$, while the blend's outputs move from the blurry posterior mean toward realistic samples. In our toy, the measured MSE went from 0.0072 to 0.0143.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(1)
+mu = rng.standard_normal((100000, 1))                  # posterior means for many observations y
+X = mu + rng.standard_normal(mu.shape)                 # the truth: one draw from p(x | y) = N(mu, 1)
+X_hat = mu + rng.standard_normal(mu.shape)             # an independent posterior sample
+for a in (0.0, 0.5, 1.0):
+    print(f"alpha {a:.1f}: MSE {np.mean((X - (mu + a * (X_hat - mu))) ** 2):.3f}  (theory {1 + a * a:.3f})")
+```
+
+```text
+alpha 0.0: MSE 1.002  (theory 1.000)
+alpha 0.5: MSE 1.250  (theory 1.250)
+alpha 1.0: MSE 1.996  (theory 2.000)
+```
+
+### ESRGAN's changes in detail
+
+This note gives the precise form of the four changes ESRGAN made to SRGAN [@esrgan].
+
+**Generator block.** The basic block is the residual-in-residual dense block (RRDB): dense blocks, in which every convolution receives the outputs of all earlier convolutions in the block, are chained with residual connections at two levels, and no block contains BN. Each residual branch is multiplied by a constant between 0 and 1 before it is added (0.2 in the authors' experiments), and the initial weights are scaled down, because the authors found very deep residual networks easier to train that way. The large model has 23 RRDBs.
+
+**Relativistic average discriminator.** Let $C(\cdot)$ be the raw (pre-sigmoid) output of the discriminator network, $\sigma$ the sigmoid, $x_r$ a real HR image and $x_f$ a generated one. A standard discriminator outputs $\sigma(C(x))$, the probability that $x$ is real. The relativistic average discriminator instead outputs
+
+$$
+D_{Ra}(x_r, x_f) = \sigma\bigl(C(x_r) - \mathbb E_{x_f}[C(x_f)]\bigr),
+$$
+
+the probability that a real image is more realistic than the average generated image, where $\mathbb E_{x_f}$ averages over the generated images in the mini-batch. The losses are
+
+$$
+\begin{aligned}
+\mathcal L_D^{Ra} &= -\mathbb E_{x_r}\bigl[\log D_{Ra}(x_r, x_f)\bigr] - \mathbb E_{x_f}\bigl[\log\bigl(1 - D_{Ra}(x_f, x_r)\bigr)\bigr], \\
+\mathcal L_G^{Ra} &= -\mathbb E_{x_r}\bigl[\log\bigl(1 - D_{Ra}(x_r, x_f)\bigr)\bigr] - \mathbb E_{x_f}\bigl[\log D_{Ra}(x_f, x_r)\bigr],
+\end{aligned}
+$$
+
+where $D_{Ra}(x_f, x_r)$ is the same expression with the roles of real and generated images swapped. Because $\mathcal L_G^{Ra}$ contains real images too, the generator receives gradients from both real and generated data.
+
+**Perceptual loss before activation.** The VGG features are taken before the ReLU instead of after it, for two reasons the authors give: after a deep layer most activations are zero (for one test image, only 11.17% of the neurons after the layer they used were active), which gives weak supervision; and features after activation led to reconstructions whose brightness differed from the ground truth. The total generator loss is $\mathcal L_G = \mathcal L_{\text{percep}} + \lambda\, \mathcal L_G^{Ra} + \eta\, \mathcal L_1$, with weights $\lambda$ and $\eta$.
+
+**Network interpolation.** $\theta_{\text{INTERP}} = (1 - \alpha)\, \theta_{\text{PSNR}} + \alpha\, \theta_{\text{GAN}}$, where $\theta_{\text{GAN}}$ is obtained by fine-tuning $\theta_{\text{PSNR}}$, so the two networks share a starting point and their weights can be blended meaningfully. The authors report that interpolating weights gave a better balance between noise and blur than interpolating the two output images pixel by pixel.
+
+### LIIF's three refinements
+
+This note explains three small additions that make LIIF's feature lookup richer, smooth and aware of the output pixel size [@liif].
+
+In the LIIF formula of the main text, **feature unfolding** concatenates the $3 \times 3$ neighbourhood of each latent code into one vector, so each code describes a small region. **Local ensemble** evaluates the MLP with the four latent codes around $x_q$ and blends the four predictions with area weights, so the output does not jump when the nearest code $z^{*}$ changes. **Cell decoding** also gives the MLP the height and width of the output pixel being rendered, so it knows whether it is predicting a fine or a coarse sample.
+
+## References
+
+@park: S. C. Park, M. K. Park and M. G. Kang, "Super-Resolution Image Reconstruction: A Technical Overview," *IEEE Signal Processing Magazine*, vol. 20, no. 3, pp. 21–36, 2003. [doi](https://doi.org/10.1109/MSP.2003.1203207)
+@blau: Y. Blau and T. Michaeli, "The Perception-Distortion Tradeoff," in *Proc. IEEE/CVF CVPR*, 2018, pp. 6228–6237. [doi](https://doi.org/10.1109/CVPR.2018.00652) · [arXiv](https://arxiv.org/abs/1711.06077)
+@imresize: MathWorks, "imresize: Resize image," MATLAB documentation (default method bicubic; antialiasing on when shrinking). [link](https://www.mathworks.com/help/matlab/ref/imresize.html)
+@wangsurvey: Z. Wang, J. Chen and S. C. H. Hoi, "Deep Learning for Image Super-Resolution: A Survey," *IEEE TPAMI*, vol. 43, no. 10, pp. 3365–3387, 2021. [doi](https://doi.org/10.1109/TPAMI.2020.2982166) · [arXiv](https://arxiv.org/abs/1902.06068)
+@efrat: N. Efrat, D. Glasner, A. Apartsin, B. Nadler and A. Levin, "Accurate Blur Models vs. Image Priors in Single Image Super-Resolution," in *Proc. IEEE ICCV*, 2013, pp. 2832–2839. [doi](https://doi.org/10.1109/ICCV.2013.352) · [CVF](https://openaccess.thecvf.com/content_iccv_2013/html/Efrat_Accurate_Blur_Models_2013_ICCV_paper.html)
+@keys: R. Keys, "Cubic Convolution Interpolation for Digital Image Processing," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 29, no. 6, pp. 1153–1160, 1981. [doi](https://doi.org/10.1109/TASSP.1981.1163711)
+@duchon: C. E. Duchon, "Lanczos Filtering in One and Two Dimensions," *Journal of Applied Meteorology*, vol. 18, no. 8, pp. 1016–1022, 1979. [doi](https://doi.org/10.1175/1520-0450%281979%29018%3C1016%3ALFIOAT%3E2.0.CO%3B2)
+@freeman: W. T. Freeman, T. R. Jones and E. C. Pasztor, "Example-Based Super-Resolution," *IEEE Computer Graphics and Applications*, vol. 22, no. 2, pp. 56–65, 2002. [doi](https://doi.org/10.1109/38.988747)
+@glasner: D. Glasner, S. Bagon and M. Irani, "Super-Resolution from a Single Image," in *Proc. IEEE ICCV*, 2009, pp. 349–356. [doi](https://doi.org/10.1109/ICCV.2009.5459271)
+@yang: J. Yang, J. Wright, T. S. Huang and Y. Ma, "Image Super-Resolution via Sparse Representation," *IEEE Transactions on Image Processing*, vol. 19, no. 11, pp. 2861–2873, 2010. [doi](https://doi.org/10.1109/TIP.2010.2050625)
+@anr: R. Timofte, V. De Smet and L. Van Gool, "Anchored Neighborhood Regression for Fast Example-Based Super-Resolution," in *Proc. IEEE ICCV*, 2013, pp. 1920–1927. [doi](https://doi.org/10.1109/ICCV.2013.241) · [CVF](https://openaccess.thecvf.com/content_iccv_2013/html/Timofte_Anchored_Neighborhood_Regression_2013_ICCV_paper.html)
+@aplus: R. Timofte, V. De Smet and L. Van Gool, "A+: Adjusted Anchored Neighborhood Regression for Fast Super-Resolution," in *Computer Vision – ACCV 2014*, Lecture Notes in Computer Science, Springer, 2015, pp. 111–126. [doi](https://doi.org/10.1007/978-3-319-16817-3_8)
+@raisr: Y. Romano, J. Isidoro and P. Milanfar, "RAISR: Rapid and Accurate Image Super Resolution," *IEEE Transactions on Computational Imaging*, vol. 3, no. 1, pp. 110–125, 2017. [doi](https://doi.org/10.1109/TCI.2016.2629284) · [arXiv](https://arxiv.org/abs/1606.01299)
+@srcnn: C. Dong, C. C. Loy, K. He and X. Tang, "Image Super-Resolution Using Deep Convolutional Networks," *IEEE TPAMI*, vol. 38, no. 2, pp. 295–307, 2016. [doi](https://doi.org/10.1109/TPAMI.2015.2439281) · [arXiv](https://arxiv.org/abs/1501.00092)
+@fsrcnn: C. Dong, C. C. Loy and X. Tang, "Accelerating the Super-Resolution Convolutional Neural Network," in *Proc. ECCV*, 2016, pp. 391–407. [doi](https://doi.org/10.1007/978-3-319-46475-6_25) · [arXiv](https://arxiv.org/abs/1608.00367)
+@espcn: W. Shi, J. Caballero, F. Huszár, J. Totz, A. P. Aitken, R. Bishop, D. Rueckert and Z. Wang, "Real-Time Single Image and Video Super-Resolution Using an Efficient Sub-Pixel Convolutional Neural Network," in *Proc. IEEE CVPR*, 2016, pp. 1874–1883. [doi](https://doi.org/10.1109/CVPR.2016.207) · [arXiv](https://arxiv.org/abs/1609.05158)
+@vdsr: J. Kim, J. K. Lee and K. M. Lee, "Accurate Image Super-Resolution Using Very Deep Convolutional Networks," in *Proc. IEEE CVPR*, 2016, pp. 1646–1654. [doi](https://doi.org/10.1109/CVPR.2016.182) · [arXiv](https://arxiv.org/abs/1511.04587)
+@edsr: B. Lim, S. Son, H. Kim, S. Nah and K. M. Lee, "Enhanced Deep Residual Networks for Single Image Super-Resolution," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1132–1140. [doi](https://doi.org/10.1109/CVPRW.2017.151) · [arXiv](https://arxiv.org/abs/1707.02921)
+@rcan: Y. Zhang, K. Li, K. Li, L. Wang, B. Zhong and Y. Fu, "Image Super-Resolution Using Very Deep Residual Channel Attention Networks," in *Proc. ECCV*, 2018, pp. 294–310. [doi](https://doi.org/10.1007/978-3-030-01234-2_18) · [arXiv](https://arxiv.org/abs/1807.02758)
+@swinir: J. Liang, J. Cao, G. Sun, K. Zhang, L. Van Gool and R. Timofte, "SwinIR: Image Restoration Using Swin Transformer," in *Proc. IEEE/CVF ICCV Workshops*, 2021, pp. 1833–1844. [doi](https://doi.org/10.1109/ICCVW54120.2021.00210) · [arXiv](https://arxiv.org/abs/2108.10257)
+@hat: X. Chen, X. Wang, J. Zhou, Y. Qiao and C. Dong, "Activating More Pixels in Image Super-Resolution Transformer," in *Proc. IEEE/CVF CVPR*, 2023, pp. 22367–22377. [doi](https://doi.org/10.1109/CVPR52729.2023.02142) · [arXiv](https://arxiv.org/abs/2205.04437)
+@pytorchps: PyTorch contributors, "PixelShuffle.cpp" (implementation of `torch.nn.PixelShuffle` and `torch.nn.PixelUnshuffle`), PyTorch source code. [GitHub](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/PixelShuffle.cpp)
+@aitken: A. Aitken, C. Ledig, L. Theis, J. Caballero, Z. Wang and W. Shi, "Checkerboard Artifact Free Sub-Pixel Convolution: A Note on Sub-Pixel Convolution, Resize Convolution and Convolution Resize," arXiv:1707.02937, 2017. [arXiv](https://arxiv.org/abs/1707.02937)
+@srgan: C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017, pp. 105–114. [doi](https://doi.org/10.1109/CVPR.2017.19) · [arXiv](https://arxiv.org/abs/1609.04802)
+@ntire2017: R. Timofte, E. Agustsson, L. Van Gool, M.-H. Yang, L. Zhang et al., "NTIRE 2017 Challenge on Single Image Super-Resolution: Methods and Results," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1110–1121. [doi](https://doi.org/10.1109/CVPRW.2017.149) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Timofte_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+@esrgan: X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018 (Lecture Notes in Computer Science, 2019), pp. 63–79. [doi](https://doi.org/10.1007/978-3-030-11021-5_5) · [arXiv](https://arxiv.org/abs/1809.00219)
+@swin: Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin and B. Guo, "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows," in *Proc. IEEE/CVF ICCV*, 2021, pp. 9992–10002. [doi](https://doi.org/10.1109/ICCV48922.2021.00986) · [arXiv](https://arxiv.org/abs/2103.14030)
+@dat: Z. Chen, Y. Zhang, J. Gu, L. Kong, X. Yang and F. Yu, "Dual Aggregation Transformer for Image Super-Resolution," in *Proc. IEEE/CVF ICCV*, 2023, pp. 12278–12287. [doi](https://doi.org/10.1109/ICCV51070.2023.01131) · [arXiv](https://arxiv.org/abs/2308.03364)
+@mambair: H. Guo, J. Li, T. Dai, Z. Ouyang, X. Ren and S.-T. Xia, "MambaIR: A Simple Baseline for Image Restoration with State-Space Model," in *Proc. ECCV*, 2024, pp. 222–241. [doi](https://doi.org/10.1007/978-3-031-72649-1_13) · [arXiv](https://arxiv.org/abs/2402.15648)
+@vgg: K. Simonyan and A. Zisserman, "Very Deep Convolutional Networks for Large-Scale Image Recognition," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1409.1556)
+@johnson: J. Johnson, A. Alahi and L. Fei-Fei, "Perceptual Losses for Real-Time Style Transfer and Super-Resolution," in *Proc. ECCV*, 2016, pp. 694–711. [doi](https://doi.org/10.1007/978-3-319-46475-6_43) · [arXiv](https://arxiv.org/abs/1603.08155)
+@pirm: Y. Blau, R. Mechrez, R. Timofte, T. Michaeli and L. Zelnik-Manor, "The 2018 PIRM Challenge on Perceptual Image Super-Resolution," in *Proc. ECCV Workshops*, 2018. [arXiv](https://arxiv.org/abs/1809.07517)
+@niqe: A. Mittal, R. Soundararajan and A. C. Bovik, "Making a “Completely Blind” Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+@ma: C. Ma, C.-Y. Yang, X. Yang and M.-H. Yang, "Learning a No-Reference Quality Metric for Single-Image Super-Resolution," *Computer Vision and Image Understanding*, vol. 158, pp. 1–16, 2017. [doi](https://doi.org/10.1016/j.cviu.2016.12.009) · [arXiv](https://arxiv.org/abs/1612.05890)
+@sr3: C. Saharia, J. Ho, W. Chan, T. Salimans, D. J. Fleet and M. Norouzi, "Image Super-Resolution via Iterative Refinement," *IEEE TPAMI*, 2022. [doi](https://doi.org/10.1109/TPAMI.2022.3204461) · [arXiv](https://arxiv.org/abs/2104.07636)
+@unet: O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," in *Proc. MICCAI*, 2015, pp. 234–241. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) · [arXiv](https://arxiv.org/abs/1505.04597)
+@metasr: X. Hu, H. Mu, X. Zhang, Z. Wang, T. Tan and J. Sun, "Meta-SR: A Magnification-Arbitrary Network for Super-Resolution," in *Proc. IEEE/CVF CVPR*, 2019, pp. 1575–1584. [doi](https://doi.org/10.1109/CVPR.2019.00167) · [arXiv](https://arxiv.org/abs/1903.00875)
+@liif: Y. Chen, S. Liu and X. Wang, "Learning Continuous Image Representation with Local Implicit Image Function," in *Proc. IEEE/CVF CVPR*, 2021, pp. 8624–8634. [doi](https://doi.org/10.1109/CVPR46437.2021.00852) · [arXiv](https://arxiv.org/abs/2012.09161)
+@imdn: Z. Hui, X. Gao, Y. Yang and X. Wang, "Lightweight Image Super-Resolution with Information Multi-distillation Network," in *Proc. ACM International Conference on Multimedia*, 2019, pp. 2024–2032. [doi](https://doi.org/10.1145/3343031.3351084) · [arXiv](https://arxiv.org/abs/1909.11856)
+@esr2024: B. Ren, Y. Li, N. Mehta, R. Timofte et al., "The Ninth NTIRE 2024 Efficient Super-Resolution Challenge Report," in *Proc. IEEE/CVF CVPR Workshops*, 2024. [CVF](https://openaccess.thecvf.com/content/CVPR2024W/NTIRE/html/Ren_The_Ninth_NTIRE_2024_Efficient_Super-Resolution_Challenge_Report_CVPRW_2024_paper.html) · [arXiv](https://arxiv.org/abs/2404.10343)
+@esr2025: B. Ren, H. Guo, L. Sun, Z. Wu, R. Timofte, Y. Li et al., "The Tenth NTIRE 2025 Efficient Super-Resolution Challenge Report," in *Proc. IEEE/CVF CVPR Workshops*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025W/NTIRE/html/Ren_The_Tenth_NTIRE_2025_Efficient_Super-Resolution_Challenge_Report_CVPRW_2025_paper.html) · [arXiv](https://arxiv.org/abs/2504.10686)
+@bt601: ITU-R, "Recommendation BT.601: Studio Encoding Parameters of Digital Television for Standard 4:3 and Wide Screen 16:9 Aspect Ratios." [ITU](https://www.itu.int/rec/R-REC-BT.601)
+@rgb2ycbcr: MathWorks, "rgb2ycbcr: Convert RGB color values to YCbCr color space," Image Processing Toolbox documentation. [link](https://www.mathworks.com/help/images/ref/rgb2ycbcr.html)
+@ssim: Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+@ntire2024: Z. Chen, Z. Wu, E. Zamfir, K. Zhang, Y. Zhang, R. Timofte et al., "NTIRE 2024 Challenge on Image Super-Resolution (×4): Methods and Results," in *Proc. IEEE/CVF CVPR Workshops*, 2024, pp. 6108–6132. [doi](https://doi.org/10.1109/CVPRW63382.2024.00617) · [arXiv](https://arxiv.org/abs/2404.09790)
+@ntire2025: Z. Chen, K. Liu, J. Gong, J. Wang, L. Sun, Z. Wu, R. Timofte, Y. Zhang et al., "NTIRE 2025 Challenge on Image Super-Resolution (×4): Methods and Results," in *Proc. IEEE/CVF CVPR Workshops*, 2025, pp. 1525–1535. [doi](https://doi.org/10.1109/CVPRW67362.2025.00141) · [arXiv](https://arxiv.org/abs/2504.14582)
+@set5: M. Bevilacqua, A. Roumy, C. Guillemot and M.-L. Alberi Morel, "Low-Complexity Single-Image Super-Resolution based on Nonnegative Neighbor Embedding," in *Proc. BMVC*, 2012, pp. 135.1–135.10. [doi](https://doi.org/10.5244/C.26.135)
+@zeyde: R. Zeyde, M. Elad and M. Protter, "On Single Image Scale-Up Using Sparse-Representations," in *Curves and Surfaces*, Lecture Notes in Computer Science, Springer, 2012, pp. 711–730. [doi](https://doi.org/10.1007/978-3-642-27413-8_47)
+@bsd: D. Martin, C. Fowlkes, D. Tal and J. Malik, "A Database of Human Segmented Natural Images and Its Application to Evaluating Segmentation Algorithms and Measuring Ecological Statistics," in *Proc. IEEE ICCV*, 2001, vol. 2, pp. 416–423. [doi](https://doi.org/10.1109/ICCV.2001.937655)
+@huang: J.-B. Huang, A. Singh and N. Ahuja, "Single Image Super-Resolution from Transformed Self-Exemplars," in *Proc. IEEE CVPR*, 2015, pp. 5197–5206. [doi](https://doi.org/10.1109/CVPR.2015.7299156) · [CVF](https://openaccess.thecvf.com/content_cvpr_2015/html/Huang_Single_Image_Super-Resolution_2015_CVPR_paper.html)
+@manga1: A. Fujimoto, T. Ogawa, K. Yamamoto, Y. Matsui, T. Yamasaki and K. Aizawa, "Manga109 Dataset and Creation of Metadata," in *Proc. 1st International Workshop on coMics ANalysis, Processing and Understanding (MANPU)*, 2016, pp. 1–5. [doi](https://doi.org/10.1145/3011549.3011551)
+@manga2: Y. Matsui, K. Ito, Y. Aramaki, A. Fujimoto, T. Ogawa, T. Yamasaki and K. Aizawa, "Sketch-Based Manga Retrieval Using Manga109 Dataset," *Multimedia Tools and Applications*, vol. 76, no. 20, pp. 21811–21838, 2017. [doi](https://doi.org/10.1007/s11042-016-4020-z)
+@div2k: E. Agustsson and R. Timofte, "NTIRE 2017 Challenge on Single Image Super-Resolution: Dataset and Study," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1122–1131. [doi](https://doi.org/10.1109/CVPRW.2017.150) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Agustsson_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+@lpips: R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+@halluc: W. Ren, R. Goyal, Z. Hu, T. T. Aumentado-Armstrong, I. Mohomed and A. Levinshtein, "Hallucination Score: Towards Mitigating Hallucinations in Generative Image Super-Resolution," arXiv:2507.14367, 2025. [arXiv](https://arxiv.org/abs/2507.14367)
+@moser: B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+@zssr: A. Shocher, N. Cohen and M. Irani, "‘Zero-Shot’ Super-Resolution Using Deep Internal Learning," in *Proc. IEEE/CVF CVPR*, 2018, pp. 3118–3126. [doi](https://doi.org/10.1109/CVPR.2018.00329) · [arXiv](https://arxiv.org/abs/1712.06087)
