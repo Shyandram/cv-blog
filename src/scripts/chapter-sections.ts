@@ -1,8 +1,15 @@
-// Enhance tutorial h2 sections without changing their content, ids, search index or PDF sources.
+import './legacy-fragments';
+// Enhance the page's major sections while preserving content, ids and source heading levels.
 const prose = document.querySelector<HTMLElement>('.prose[data-fold-sections]');
 if (prose) {
   const zh = document.documentElement.lang.startsWith('zh');
-  const headings = [...prose.querySelectorAll<HTMLElement>(':scope > h2, :scope > .zone-wrap > h2')];
+  // Extracted note/paper items keep their original h4/h5 headings. Their page title is
+  // rendered separately, so use the shallowest remaining body level on those pages.
+  const bodyHeadings = [...prose.querySelectorAll<HTMLElement>(':scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6')];
+  const level = prose.dataset.foldLevel === 'item' && bodyHeadings.length
+    ? Math.min(...bodyHeadings.map((heading) => Number(heading.tagName.slice(1))))
+    : 2;
+  const headings = [...prose.querySelectorAll<HTMLElement>(`:scope > h${level}, :scope > .zone-wrap > h2`)];
   const sections: HTMLDetailsElement[] = [];
   for (const heading of headings) {
     const section = document.createElement('details');
@@ -21,7 +28,10 @@ if (prose) {
     summary.append(action);
     // Optional-reading cards and reference wrappers remain independent of the preceding section.
     let next = section.nextSibling;
-    while (next && !(next instanceof HTMLElement && (next.tagName === 'H2' || next.matches('.notes-teaser, .zone-wrap')))) {
+    while (next && !(next instanceof HTMLElement && (
+      (/^H[2-6]$/.test(next.tagName) && Number(next.tagName.slice(1)) <= level)
+      || next.matches('.notes-teaser, .zone-wrap')
+    ))) {
       const following = next.nextSibling;
       body.append(next);
       next = following;

@@ -91,12 +91,12 @@ export const curriculum: CurriculumTree = {
     { slug: 'deep-learning/dl-06b-video-understanding' },
     { slug: 'deep-learning/dl-04-image-restoration', children: [
       { slug: 'deep-learning/dl-04a-super-resolution', children: [
+        { slug: 'deep-learning/dl-04d-blind-real-world-super-resolution' },
+        { slug: 'deep-learning/dl-04e-one-step-diffusion-super-resolution' },
         { slug: 'deep-learning/dl-04b-video-super-resolution' },
       ] },
       { slug: 'deep-learning/dl-04c-generative-restoration' },
-      { slug: 'deep-learning/dl-05-low-light-enhancement', children: [
-        { slug: 'deep-learning/dl-05a-lightweight-enhancement' },
-      ] },
+      { slug: 'deep-learning/dl-05-low-light-enhancement' },
     ] },
     { slug: 'deep-learning/dl-05b-image-fusion' },
     { slug: 'deep-learning/dl-08-3d-reconstruction', children: [
@@ -104,6 +104,7 @@ export const curriculum: CurriculumTree = {
     ] },
     { slug: 'deep-learning/dl-10-image-generation', children: [
       { slug: 'deep-learning/dl-10a-video-generation' },
+      { slug: 'deep-learning/dl-10b-one-step-generation' },
     ] },
     { slug: 'deep-learning/dl-07-world-models' },
     { slug: 'deep-learning/dl-11-robustness' },

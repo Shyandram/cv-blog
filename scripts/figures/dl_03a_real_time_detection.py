@@ -1,9 +1,11 @@
-"""Figures for DLCV 03A - Real-Time Detection: The YOLO Family and RT-DETR.
+"""Figures for DLCV 03A - One-Stage Detection, Read Through YOLOv4.
 
-Run:  .venv/bin/python scripts/figures/dl_03a_real_time_detection.py
+Run:  .venv/bin/python scripts/figures/dl_03a_real_time_detection.py [figure names]
 Writes only to src/assets/deep-learning/dl-03a-real-time-detection/.
-Everything is synthetic (diagrams, random boxes, toy distributions); nothing is downloaded.
+Everything is synthetic (diagrams, random boxes, toy distributions, coloured rectangles);
+nothing is downloaded.
 """
+import sys
 import time
 from pathlib import Path
 
@@ -60,7 +62,8 @@ def fig_timeline():
     #       "soft" = software release without a paper at release time, "announced" = not released
     items = [
         ("YOLO v1", 2015, 0, "peer", 0), ("YOLOv2", 2016, 0, "peer", 0), ("YOLOv3", 2018, 0, "arxiv", 0),
-        ("YOLOv4", 2020, 1, "arxiv", 0), ("YOLOv7", 2022, 1, "peer", 0), ("YOLOv9", 2024, 1, "peer", 0),
+        ("YOLOv4", 2020, 1, "arxiv", 0), ("YOLOR", 2021, 1, "arxiv", 0),
+        ("YOLOv7", 2022, 1, "peer", 0), ("YOLOv9", 2024, 1, "peer", 0),
         ("YOLOv5", 2020, 2, "soft", 0), ("YOLOv8", 2023, 2, "soft", 0), ("YOLO11", 2024, 2, "soft", 0),
         ("YOLO26", 2026, 2, "soft", -0.25), ("YOLO27\n(announced)", 2026, 2, "announced", 0.3),
         ("YOLOX", 2021, 3, "arxiv", 0), ("YOLOv6", 2022, 3, "arxiv", 0), ("YOLOv10", 2024, 3, "peer", 0),
@@ -255,9 +258,89 @@ def fig_dfl():
     save(fig, "dfl.png")
 
 
+# ---------------------------------------------------------------- 6. Mosaic augmentation
+def mosaic(images, boxes, size=416, rng=None, min_keep=0.25):
+    """Same procedure as the Mosaic snippet in the chapter: four images meet at a random split
+    point; parts outside each quadrant are cut; boxes keeping < min_keep of their area are dropped."""
+    xc, yc = (int(v) for v in rng.uniform(0.3, 0.7, 2) * size)
+    canvas = np.full((size, size, 3), 114, np.uint8)
+    kept, dropped = [], []
+    for k, (img, bx) in enumerate(zip(images, boxes)):
+        h, w = img.shape[:2]
+        ox = xc - w if k in (0, 2) else xc
+        oy = yc - h if k in (0, 1) else yc
+        rx0, rx1 = (0, xc) if k in (0, 2) else (xc, size)
+        ry0, ry1 = (0, yc) if k in (0, 1) else (yc, size)
+        x0, x1, y0, y1 = max(rx0, ox), min(rx1, ox + w), max(ry0, oy), min(ry1, oy + h)
+        canvas[y0:y1, x0:x1] = img[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+        shifted = bx + [ox, oy, ox, oy]
+        clipped = np.clip(shifted, [x0, y0, x0, y0], [x1, y1, x1, y1])
+        area = lambda b: (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])  # noqa: E731
+        ok = area(clipped) >= min_keep * area(shifted)
+        cut = area(clipped) < area(shifted)
+        kept += [(b, k, c) for b, c in zip(clipped[ok], cut[ok])]
+        dropped += [(b, k) for b in clipped[~ok]]
+    return canvas, kept, dropped, (xc, yc)
+
+
+def fig_mosaic():
+    rng = np.random.default_rng(0)
+    backgrounds = [(222, 235, 247), (253, 230, 214), (220, 242, 230), (247, 236, 205)]
+    imgs, bxs = [], []
+    for k in range(4):                                       # four synthetic 256 x 256 "photos"
+        img = np.empty((256, 256, 3), np.uint8)
+        img[:] = backgrounds[k]
+        b = []
+        for _ in range(3):
+            x, y = rng.integers(0, 200, 2)
+            w, h = rng.integers(30, 90, 2)
+            x2, y2 = min(x + w, 256), min(y + h, 256)
+            rng.integers(0, 256, 3)        # keeps the random sequence identical to the chapter's snippet
+            img[y:y2, x:x2] = np.array(matplotlib.colors.to_rgb(C[k])) * 255 * 0.85
+            b.append([x, y, x2, y2])
+        imgs.append(img)
+        bxs.append(np.array(b, float))
+    canvas, kept, dropped, (xc, yc) = mosaic(imgs, bxs, rng=rng)
+
+    fig = plt.figure(figsize=(10.4, 4.9))
+    gs = fig.add_gridspec(2, 4, width_ratios=[1, 1, 0.15, 2.2], wspace=0.08, hspace=0.12)
+    for k in range(4):
+        ax = fig.add_subplot(gs[k // 2, k % 2])
+        ax.imshow(imgs[k])
+        for x1, y1, x2, y2 in bxs[k]:
+            ax.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, ec=INK, lw=1.2))
+        ax.set_xlim(-0.5, 255.5)
+        ax.set_ylim(255.5, -0.5)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"image {k + 1}", fontsize=10)
+    ax = fig.add_subplot(gs[:, 3])
+    ax.imshow(canvas)
+    for (x1, y1, x2, y2), k, cut in kept:
+        ax.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, ec=INK, lw=1.8,
+                               ls="--" if cut else "-"))
+    for (x1, y1, x2, y2), k in dropped:
+        ax.add_patch(Rectangle((x1, y1), max(x2 - x1, 1), max(y2 - y1, 1), fill=False, ec=C[4], lw=2.6))
+    ax.set_xlim(-0.5, canvas.shape[1] - 0.5)
+    ax.set_ylim(canvas.shape[0] - 0.5, -0.5)
+    ax.axvline(xc, color=MUTED, lw=1, ls=":")
+    ax.axhline(yc, color=MUTED, lw=1, ls=":")
+    ax.plot([xc], [yc], "o", color=INK, ms=6)
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title(f"one 416 x 416 Mosaic: {len(kept)} boxes kept, {len(dropped)} dropped", fontsize=10)
+    fig.legend(handles=[Line2D([], [], color=INK, lw=1.8, label="box kept whole"),
+                        Line2D([], [], color=INK, lw=1.8, ls="--", label="box cut at a quadrant edge"),
+                        Line2D([], [], color=C[4], lw=2.0, label="box dropped (< 25% left)"),
+                        Line2D([], [], color=INK, marker="o", lw=0, label="random split point")],
+               loc="lower center", ncol=4, frameon=False, fontsize=10, bbox_to_anchor=(0.5, -0.04))
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.1)
+    save(fig, "mosaic.png")
+
+
+FIGURES = {"timeline": fig_timeline, "anatomy": fig_anatomy, "assignment": fig_assignment,
+           "nms": fig_nms_cost, "dfl": fig_dfl, "mosaic": fig_mosaic}
+
 if __name__ == "__main__":
-    fig_timeline()
-    fig_anatomy()
-    fig_assignment()
-    fig_nms_cost()
-    fig_dfl()
+    # Run all figures, or only the named ones (e.g. `... dl_03a_real_time_detection.py mosaic`).
+    # nms-cost.png contains wall-clock timings, so re-running it changes the PNG on every machine.
+    for name in (sys.argv[1:] or FIGURES):
+        FIGURES[name]()

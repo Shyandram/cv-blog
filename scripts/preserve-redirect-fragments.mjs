@@ -7,7 +7,7 @@ export async function preserveRedirectFragments(out) {
     const file = join(out, from, 'index.html');
     const html = await readFile(file, 'utf8');
     if (html.includes('data-preserve-fragment')) continue;
-    const script = `<script data-preserve-fragment>location.replace(${JSON.stringify(to)} + location.hash)</script>`;
+    const script = `<script data-preserve-fragment>const target=new URL(${JSON.stringify(to)},location.href);if(!target.hash)target.hash=location.hash;location.replace(target.href)</script>`;
     await writeFile(file, html.replace(/<meta http-equiv="refresh"[^>]*>/, (meta) => script + '<noscript>' + meta + '</noscript>'));
   }
 }

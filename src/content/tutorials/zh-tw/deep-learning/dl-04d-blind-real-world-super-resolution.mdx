@@ -1,0 +1,1314 @@
+---
+title: "盲與真實世界影像超解析度"
+description: "從估核、退化表示、合成資料與實拍配對，理解如何處理未知損傷，再比較生成先驗，以及沒有真值時的評估與保真限制。"
+track: deep-learning
+order: 48
+level: advanced
+prereqs: [deep-learning/dl-04a-super-resolution, deep-learning/dl-04c-generative-restoration]
+tags: [super-resolution, blind-super-resolution, real-world-super-resolution, degradation-model, kernel-estimation, diffusion-models, image-quality-assessment]
+published: 2026-11-02
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import mismatchFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/kernel-mismatch.png';
+import samplesFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/degradation-samples.png';
+import metricFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/metric-disagreement.png';
+import sincFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/sinc-ringing.png';
+
+## 你將學到
+
+- **盲**與**真實世界**超解析度（SR）差在哪裡，以及固定縮圖配方為何無法處理所有真實照片。
+- 依兩篇綜述建立地圖：顯式／隱式退化建模、外部資料／單張輸入資訊，以及後來的生成先驗家族。
+- 顯式方法如何接收、估計和修正模糊核，以及錯核如何影響輸出，並用 NumPy 實驗重現。
+- 對比退化嵌入、BSRGAN 隨機退化、Real-ESRGAN 二階退化、實拍配對與未配對轉換各自的假設。
+- StableSR、DiffBIR、PASD、SeeSR、SUPIR、ResShift 如何借用擴散先驗，以及保真與虛構的取捨。
+- 沒有真值時如何結合全參考、無參考、人類研究與挑戰規則，理解彼此不一致的排名。
+
+## 先看全貌
+
+[DLCV 09A](/zh-tw/learn/deep-learning/super-resolution/) 假設已知退化，以固定縮圖方式訓練反向映射，再對照原 HR。真實照片沒有配方：鏡頭、失焦、手震、感光元件、光線，以及未知軟體的銳化、縮放與壓縮都會留下影響。盲與真實世界 SR 要在這些未知下仍然工作。
+
+<Callout type="tip" title="用最簡單的話說">
+朋友傳來模糊小照片，要你放大變清楚。若知道它如何弄髒，就能針對那種損傷處理；但你不在現場。可以猜損傷再修、用許多自己弄壞的照片練習，或請懂照片的畫家補畫缺失。本章介紹這三種策略，也學習沒有乾淨副本時怎麼檢查成果。
+</Callout>
+
+手機變焦、老照片、網路圖與影片放大幾乎都面對未知退化。Bicubic 基準很強的模型，可能不適合真實 JPEG；真實 JPEG 上看起來很好的輸出，也可能虛構細節。家族分類幫助辨識假設、能力與失敗方式。
+
+**本章位置。** [DLCV 09A](/zh-tw/learn/deep-learning/super-resolution/#問題設定與符號) 提供退化、感知／失真取捨及基準；[DLCV 09B](/zh-tw/learn/deep-learning/generative-restoration/) 介紹一般生成復原；[DLCV 09](/zh-tw/learn/deep-learning/image-restoration/#無參考指標) 定義無參考指標。少步方法另見 [DLCV 09A.2](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/)。主線解釋家族，論文頁補完整設計。程式只用 NumPy、SciPy、scikit-image、OpenCV 與 `skimage.data`，可在 CPU 快速執行。
+
+## 問題：沒有人量過的損傷
+
+**白話說。** 已知損傷時，超解析度雖難，問題至少明確；未知時，同一觀測必須同時推估清晰影像與損傷。
+
+### 簡述退化模型
+
+[DLCV 09A](/zh-tw/learn/deep-learning/super-resolution/#問題設定與符號) 的經典模型，將 LR 影像 $y$ 寫為：
+
+$$
+y = (x \circledast k)\downarrow_s + n,
+$$
+
+$x$ 是 HR，$k$ 是鏡頭、失焦、運動、像素積分或抗混疊模糊核；$\circledast$ 是逐色彩通道二維卷積，$\downarrow_s$ 以倍率 $s$ 降取樣，可取每個 $s\times s$ 區塊一點或 bicubic 縮放；$n$ 是加性雜訊。真實管線還有品質 $q$ 的 JPEG $\mathcal C_q$，其位置可能改變，以及去馬賽克、去雜訊、銳化與色調處理。較完整但仍簡化的例子為 $y=\mathcal C_q((x\circledast k)\downarrow_s+n)$。
+
+### 盲與真實世界的意思
+
+文獻用詞不完全一致，本章採以下區分：
+
+- **非盲 SR：** 測試時已知 $k$、$s$ 及雜訊程度；固定 bicubic 是每張圖共用設定的特例。
+- **盲 SR：** 至少一項未知且隨影像改變；許多研究仍假設高斯類模糊與高斯雜訊，只是不知道參數。
+- **真實世界 SR／Real-ISR：** 退化不只未知，也可能超出模型家族，包括壓縮、相機處理與空間變化，通常沒有對應 HR 真值。
+
+因此，在正確模型家族內估未知參數很準，不代表遇到錯誤退化家族仍能工作。
+
+### 為什麼 bicubic 訓練會失效
+
+**白話說。** 只練習反解一種縮圖方式，就可能把另一種損傷當成同一件事來修。
+
+[DLCV 09A](/zh-tw/learn/deep-learning/super-resolution/#問題設定與符號) 的線性模型展示：銳利訓練、模糊測試會修不足，反之會過度銳化。Efrat 等人 [1] 說明正確模糊模型的重要性；無雜訊訓練也容易放大雜訊和 JPEG 區塊。SRMD [2] 指出：假設核比真核寬會振鈴，較窄則過度平滑，後面以小實驗驗證。
+
+## 研究領域的地圖
+
+**白話說。** 問兩件事：退化是否明寫成公式，還是從資料吸收？知識來自外部資料集，還是只有眼前一張圖？
+
+Liu 等人 [3] 依顯式／隱式與外部／單圖整理，指出當時單圖隱式格仍空缺；Chen 等人 [4] 分退化建模、實拍配對、領域轉換及自我學習。兩篇早於擴散時代，因此表中另補 2023 年起擴大的生成先驗家族 [5]。
+
+| 家族 | 估計或學習什麼 | 代表方法 | 優點 | 常見失敗 |
+| --- | --- | --- | --- | --- |
+| 顯式、給定核 | 測試直接提供核與雜訊 | SRMD [2]、UDVD [6]、USRNet [7] | 單模型處理多種已知退化，控制可解釋 | 需要可靠核，錯誤造成模糊或振鈴 |
+| 顯式、外部資料估核 | 核代碼與 SR 交替估計 | IKC [8]、DAN [9]、DCLS [10] | 退化符合假設時準確 | JPEG、相機處理與空間變化超出範圍 |
+| 顯式、單圖統計 | 跨尺度重複區塊推估核 | Michaeli–Irani [11]、KernelGAN [12]、ZSSR [13] | 不需外部訓練，可逐圖調適 | 逐圖訓練慢，先驗弱且怕雜訊 |
+| 退化表示 | 分辨退化的嵌入 | DASR [14]、KDSR [15] | 不需核標籤，快速前向 | 仍受訓練退化範圍限制 |
+| 隱式、合成管線 | 廣泛隨機退化到清晰圖的映射 | BSRGAN [16]、Real-ESRGAN [17]、Liang 等人的 DASR [18] | 單模型處理多種照片 | 平滑、GAN 偽影與分布外退化 |
+| 隱式、實拍配對 | 特定相機配對映射 | RealSR [19]、DRealSR [20]、City100 [21] | 真實資料 | 規模小、相機專屬、對齊誤差 |
+| 隱式、未配對轉換 | 退化生成器或領域轉換器 | CinCGAN [22]、Bulat 等人 [23]、FSSR [24]、Ji 等人 [25] | 真 LR 不需 HR 配對 | GAN 不穩、虛假紋理 |
+| 生成先驗（2023–2026） | LR 控制的預訓練擴散先驗 | StableSR [26]、DiffBIR [27]、PASD [28]、SeeSR [29]、SUPIR [30]、ResShift [31] | 強退化下仍有自然紋理 | 虛構、低 PSNR、取樣慢與偏色 |
+
+分類可重疊：DAN 顯式卻由外部資料學估計器；BSRGAN 稱隱式，訓練退化仍是手寫公式。另有兩篇 **DASR**：Wang 等人的對比退化表示 [14]，與 Liang 等人的高效率退化調適 [18]，比較時先確認指哪篇。
+
+## 顯式退化建模
+
+**白話說。** 保留 $y=(x\circledast k)\downarrow_s+n$，把核和雜訊當旋鈕。可以由外部告知，也可以讓模型從影像估設定。
+
+### 把核告訴網路
+
+SRMD [2] 以 PCA 將 $p\times p$ 核壓成短向量，附加雜訊值，各數字展成 LR 大小常數圖，再與影像串接，學 $\hat x=F(y,k,\sigma)$；控制圖也可空間變化。UDVD [6] 依退化產生動態卷積；USRNet [7] 展開 MAP 求解器，交替使用已知核／倍率／雜訊的資料步與學得去雜訊先驗，服務多種核及倍率。其分裂背景見 [DLCV 09](/zh-tw/learn/deep-learning/image-restoration/notes/即插即用先驗與半二次分裂/)。
+
+這些仍是**非盲**模型：從反解固定退化，改為接收退化條件；前提是有人能提供可靠估計。
+
+*選讀：[SRMD](#srmd一個網路處理多種已知退化cvpr-2018)（見「論文導讀」）。維度展開、訓練退化與模型不匹配的實驗。*
+
+### 估計並修正核
+
+**白話說。** 錯核會留下特徵：太窄偏模糊，太寬偏振鈴。看輸出來辨識誤差，再修正核。
+
+IKC [8] 先預測核代碼，以 SFTMD 做條件 SR，再讓 corrector 看目前 SR 與核代碼來修正。SFTMD 透過每個殘差區塊的空間特徵轉換注入條件 [32]。DAN [9] 將估計器與復原器展成共享權重的固定輪數交替；復原器以估計核而非真核訓練，學會容忍估計錯誤。DCLS [10] 則將估核及最小平方去模糊改在 LR 特徵空間進行。
+
+經典模型下，交替最佳化寫成：
+
+$$
+k^{(i+1)} = \arg\min_{k} \bigl\| y - (x^{(i)} \circledast k)\downarrow_s \bigr\|_1, \qquad
+x^{(i+1)} = \arg\min_{x} \bigl\| y - (x \circledast k^{(i+1)})\downarrow_s \bigr\|_1 + \phi(x),
+$$
+
+$i$ 是輪數，$x^{(i)},k^{(i)}$ 是目前影像／核估計，$\phi$ 是影像先驗；DAN [9] 以學得模組取代兩個最小化步。
+
+*選讀：[IKC](#ikc反覆修正模糊核cvpr-2019)、[DAN](#dan展開交替最佳化neurips-2020)（見「論文導讀」）。Predictor／corrector、SFTMD、Gaussian8 規則與端到端交替的作用。*
+
+### 從影像本身估計核
+
+**白話說。** 自然影像的小區塊會跨尺度重複。合適降取樣核應讓縮小後區塊與原圖重複區塊仍相似。
+
+Michaeli–Irani [11] 據此做非參數核估計。KernelGAN [12] 只用測試圖訓練深層**線性**生成器，做 ×2 縮圖；判別器比較其 7 × 7 區塊與原圖，最後讀出核供 ZSSR／SRMD。ZSSR [13] 另以輸入產生 LR—更低解析度配對，逐圖訓練小 CNN。KernelGAN 原文約每圖一分鐘 GPU，ZSSR 還有額外訓練時間。
+
+*選讀：[KernelGAN](#kernelgan以單圖-gan-估計核neurips-2019)（見「論文導讀」）。深但線性的生成器、四個核正規化、DIV2KRK 與由 ×2 建 ×4。*
+
+*選讀：[為什麼核難以識別](#為什麼核難以識別)（見「補充資料」）。以數值檢查位移和模糊交換的精確歧義。*
+
+### 核不匹配會怎麼樣
+
+**白話說。** 非盲求解器會認真反解你給的錯誤模糊。假設模糊不足留下柔軟影像，假設過強則把本來銳利的邊緣過度銳化成振鈴。
+
+最簡單的非盲 ×2 實驗以共軛梯度求解：
+
+$$
+\hat x_{\sigma_a} = \arg\min_x \; \bigl\| (x \circledast g_{\sigma_a})\downarrow_2 - y \bigr\|_2^2 + \lambda \|\nabla x\|_2^2
+$$
+
+$g_{\sigma_a}$ 是假設寬度 $\sigma_a$ 的高斯核，$y$ 由真寬度 $\sigma$ 產生，$\nabla$ 是梯度，以法方程式中的 Laplacian 實作；$\lambda=2\times10^{-3}$ 控制平滑先驗。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from scipy.sparse.linalg import LinearOperator, cg
+from skimage import data, img_as_float64
+
+s = 2                                                   # scale factor
+x = img_as_float64(data.camera())[128:384, 128:384]     # HR test crop (256 x 256)
+H, W = x.shape
+
+def blur(z, sigma):                                     # circular Gaussian blur (self-adjoint)
+    return ndi.gaussian_filter(z, sigma, mode="wrap")
+
+def A(z, sigma):                                        # degradation: blur, then keep every s-th pixel
+    return blur(z, sigma)[::s, ::s]
+
+def At(r, sigma):                                       # its adjoint: zero-fill upsampling, then blur
+    up = np.zeros((H, W)); up[::s, ::s] = r
+    return blur(up, sigma)
+
+def lap(z):                                             # discrete Laplacian (smoothness prior)
+    return ndi.laplace(z, mode="wrap")
+
+def nonblind_sr(y, sigma, lam=2e-3):
+    """Solve min_x ||A_sigma x - y||^2 + lam ||grad x||^2 with conjugate gradients."""
+    op = LinearOperator((H * W, H * W), dtype=float,
+                        matvec=lambda v: (At(A(v.reshape(H, W), sigma), sigma) - lam * lap(v.reshape(H, W))).ravel())
+    sol, _ = cg(op, At(y, sigma).ravel(), maxiter=200)
+    return sol.reshape(H, W)
+
+def psnr(a, b):
+    return 10 * np.log10(1.0 / np.mean((a - np.clip(b, 0, 1)) ** 2))
+
+rng = np.random.default_rng(0)
+assumed = [0.6, 1.0, 1.6, 2.2, 2.8]
+print("true \\ assumed " + "".join(f"{a:7.1f}" for a in assumed))
+for true in [1.0, 1.6, 2.2]:
+    y = A(x, true) + 0.003 * rng.standard_normal((H // s, W // s))   # LR observation
+    row = [psnr(x, nonblind_sr(y, a)) for a in assumed]
+    print(f"sigma = {true:.1f}      " + "".join(f"{p:7.2f}" for p in row))
+```
+
+```text
+true \ assumed     0.6    1.0    1.6    2.2    2.8
+sigma = 1.0        26.80  28.43  24.59  19.84  16.91
+sigma = 1.6        24.22  25.30  27.23  24.13  19.83
+sigma = 2.2        22.45  22.92  24.11  25.51  23.43
+```
+
+每列最高分在真核與假設核相符的對角線；損失並不對稱。真 $\sigma=1.0$ 時，假設 2.8 損失約 **11.5 dB**，假設 0.6 損失 **1.6 dB**；過度去模糊放大雜訊與振鈴，修不足主要留模糊。圖 1 用真 $\sigma=1.6$ 展示，正是 IKC [8] 想辨識的特徵。
+
+<Figure src={mismatchFig} alt="攝影師影像的 HR、真核寬度 1.6 的 LR，及假設 0.6、1.6、2.8 的復原：分別為模糊的 24.22 dB、最清楚的 27.23 dB，以及振鈴的 19.83 dB；曲線都在真寬度附近最高。" caption="圖 1 — 非盲 ×2 的核不匹配實驗。假設核較窄會留模糊，較寬則過度銳化與振鈴；PSNR 以完整 256 × 256 裁切計算。" />
+
+## 退化表示學習
+
+**白話說。** 不一定要知道核的精確形狀，也可以學會分辨損傷種類，形成不需核標籤的緊湊指紋。
+
+Wang 等人的 DASR [14] 假設同圖各處退化相同、跨圖不同：同圖兩區塊為正對，別圖為負對。編碼器搭配 MoCo 式負例佇列及 InfoNCE [33]，再以表示預測深度卷積權重與通道縮放。KDSR [15] 讓看得到 HR—LR 的教師教只看 LR 的學生，以涵蓋模糊、雜訊及 JPEG；Liang 等人的 DASR [18] 則估顯式參數，再混合多個卷積專家。
+
+嵌入將「逐點估核」改為「辨認退化」，免核標籤，卻仍依賴訓練退化多樣性，不保證處理未見家族。
+
+*選讀：[DASR](#dasr對比退化表示cvpr-2021)（見「論文導讀」）。完整對比損失、退化感知卷積與逐元件消融。*
+
+## 用退化合成做隱式建模
+
+**白話說。** 不逐圖寫出損傷，而設計涵蓋廣泛情況的損傷生成器，製作大量配對，再訓練同一模型。
+
+### BSRGAN：打亂步驟
+
+BSRGAN [16] 擴大模糊、降取樣與雜訊種類，也打亂順序：等向／非等向高斯、nearest／bilinear／bicubic／先縮後放、Gaussian／JPEG／反向再前向相機處理產生的感光雜訊，最後再 JPEG。固定 bicubic 與經典退化成為特例。沿用 ESRGAN 式網路 [34]，先 L1 訓練 BSRNet，再加感知與對抗項成 BSRGAN。
+
+### Real-ESRGAN：重複步驟
+
+Real-ESRGAN [17] 用**兩輪**退化模擬拍攝、編輯、重複壓縮縮放。每輪抽模糊、縮放、Gaussian／Poisson 雜訊與 JPEG；末端縮放和 sinc 視為一組，與 JPEG 隨機交換順序。有限 sinc 近似理想低通，可產生振鈴／過衝，教模型移除而非放大暈邊。另用 U-Net 式逐像素判別器 [35] 搭配頻譜正規化 [36] 穩定廣泛退化訓練。
+
+*選讀：[逐步看高階退化管線](#逐步看高階退化管線)、[Sinc 濾波與振鈴](#sinc-濾波與振鈴)（見「補充資料」）。完整抽樣與理想低通為何振鈴。*
+
+*選讀：[BSRGAN](#bsrgan實用的退化模型iccv-2021)、[Real-ESRGAN](#real-esrgan純合成高階退化iccvw-2021)（見「論文導讀」）。元件、參數範圍、損失、測試集與消融。*
+
+### 訓練配對如何產生
+
+程式以兩輪模糊、隨機縮放、雜訊和 JPEG，再交換末端縮放／sinc 與 JPEG，示範二階退化。部分範圍依原文 [17]，但縮放、光子雜訊及核家族有簡化；教學版有時略過整輪二階，官方只可能略過二階模糊。因此不是完整訓練配方重現。
+
+```python
+import numpy as np, cv2
+from scipy import ndimage as ndi
+from scipy.special import j1
+from skimage import data, img_as_float32
+
+def gaussian_kernel(rng, size, smax):
+    """Random isotropic or anisotropic Gaussian: k(c) ~ exp(-0.5 c^T S^-1 c), normalized."""
+    s1, s2 = rng.uniform(0.2, smax, 2)
+    if rng.random() < 0.5:
+        s2 = s1                                                     # isotropic half of the time
+    th = rng.uniform(0, np.pi)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    S = R @ np.diag([s1**2, s2**2]) @ R.T
+    ax = np.arange(size) - size // 2
+    C = np.stack(np.meshgrid(ax, ax, indexing="ij"), -1)
+    k = np.exp(-0.5 * np.einsum("...i,ij,...j", C, np.linalg.inv(S), C))
+    return k / k.sum(), f"gauss({s1:.1f},{s2:.1f})"
+
+def sinc_kernel(size, wc):
+    """2-D sinc low-pass: k(r) = wc J1(wc r) / (2 pi r), with k(0) = wc^2 / (4 pi)."""
+    ax = np.arange(size) - size // 2
+    r = np.hypot(*np.meshgrid(ax, ax, indexing="ij"))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        k = np.where(r == 0, wc**2 / (4 * np.pi), wc * j1(wc * r) / (2 * np.pi * r))
+    return k / k.sum()
+
+def jpeg(img, q):
+    ok, buf = cv2.imencode(".jpg", (np.clip(img, 0, 1) * 255).round().astype(np.uint8)[..., ::-1],
+                           [cv2.IMWRITE_JPEG_QUALITY, int(q)])
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)[..., ::-1].astype(np.float32) / 255
+
+def one_round(img, rng, log, smax, nmax):
+    """blur -> random resize -> noise -> JPEG: one 'classical' degradation."""
+    size = int(rng.choice(np.arange(7, 22, 2)))
+    if rng.random() < 0.1:
+        k, name = sinc_kernel(size, rng.uniform(np.pi / 3, np.pi)), "sinc"
+    else:
+        k, name = gaussian_kernel(rng, size, smax)
+    img = np.stack([ndi.convolve(img[..., c], k, mode="reflect") for c in range(3)], -1)
+    f = rng.uniform(0.3, 1.2)                                       # resize factor (illustrative range)
+    interp = rng.choice([cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC])
+    img = cv2.resize(img, None, fx=f, fy=f, interpolation=interp)
+    if rng.random() < 0.5:                                          # Gaussian noise, sigma in 1..nmax (8-bit units)
+        sig = rng.uniform(1, nmax) / 255
+        shape = img.shape[:2] + ((1,) if rng.random() < 0.4 else (3,))   # gray or color noise
+        img = img + sig * rng.standard_normal(shape); noise = f"gauss{sig * 255:.0f}"
+    else:                                                           # shot noise with a random photon count
+        peak = 10 ** rng.uniform(1.5, 3)
+        img = rng.poisson(np.clip(img, 0, 1) * peak) / peak; noise = f"poisson{peak:.0f}"
+    q = rng.uniform(30, 95)
+    img = jpeg(img, q)
+    log.append(f"{name} x{f:.2f} {noise} q{q:.0f}")
+    return img
+
+def degrade(hr, rng, scale=4):
+    """Second-order pipeline in the spirit of Real-ESRGAN (parameter ranges partly our own)."""
+    log = []
+    img = one_round(hr, rng, log, smax=3.0, nmax=30)
+    if rng.random() < 0.8:
+        img = one_round(img, rng, log, smax=1.5, nmax=25)          # second, milder round
+    h, w = hr.shape[0] // scale, hr.shape[1] // scale
+    def resize_sinc(z):
+        z = cv2.resize(z, (w, h), interpolation=cv2.INTER_AREA)
+        k = sinc_kernel(15, rng.uniform(np.pi / 3, np.pi))  # same kernel for all color channels
+        return np.stack([ndi.convolve(z[..., c], k, mode="reflect") for c in range(3)], -1)
+    final = [lambda z: jpeg(z, rng.uniform(30, 95)), resize_sinc]
+    if rng.random() < 0.5:
+        final = final[::-1]                                         # swap JPEG with the resize-and-sinc pair
+    for op in final:
+        img = op(img)
+    return np.clip(img, 0, 1), log
+
+hr = img_as_float32(data.astronaut())                               # (512, 512, 3)
+for seed in range(3):
+    lr, log = degrade(hr, np.random.default_rng(seed))
+    print(f"seed {seed}: LR {lr.shape} | " + " ; ".join(log))
+```
+
+```text
+seed 0: LR (128, 128, 3) | gauss(0.3,0.2) x0.85 poisson207 q64 ; gauss(0.9,0.9) x0.84 gauss5 q90
+seed 1: LR (128, 128, 3) | gauss(0.6,0.6) x1.04 gauss17 q71 ; gauss(1.4,0.6) x0.40 poisson42 q40
+seed 2: LR (128, 128, 3) | gauss(2.5,0.5) x0.47 gauss9 q67 ; gauss(0.3,1.1) x1.04 gauss19 q50
+```
+
+每行代表新 LR：`gauss(σ1,σ2)` 是兩軸寬度，另有縮放、雜訊與品質值。每次對同一 HR 重抽損傷，圖 2 的七張輸入遠比固定 bicubic 多樣。Real-ESRGAN [17] 在 GPU 合成，使用 **180** 組近期配對池避免同批共享縮放因素。
+
+<Figure src={samplesFig} alt="太空人臉部的 HR 與七張低解析度裁切，各有不同模糊、彩色雜訊、JPEG 區塊和斑駁皮膚。" caption="圖 2 — 種子 0–6 從同一 HR 產生七組 ×4 退化；單一模型必須處理所有情況。" />
+
+### 後續改進
+
+StableSR、SeeSR、SUPIR、ResShift 都用 Real-ESRGAN 類合成 [26]、[29]、[30]、[31]。但**範圍不一定比複雜度次要**：DiffBIR [27] 的前段復原器以範圍較廣的一階退化得到較佳無參考分數。LDL [37] 則從局部殘差統計建立偽影圖，專門懲罰 GAN 偽影，處理不同問題。
+
+## 真實配對與未配對資料
+
+**白話說。** 可以實際拍出損傷：用不同焦段拍同場景，或在配對不可能時，從真實高低品質集合學習。
+
+### 實拍配對
+
+RealSR [19] 用不同焦段拍 DSLR，再對齊與校色；DRealSR [20] 擴至五種 DSLR；City100 [21] 用相機／手機改變焦段或距離研究視野取捨。DPED [38] 的同時手機／DSLR 照片也常作無真值輸入。實拍可評估真實退化，卻仍規模小、相機專屬且有錯位，不能涵蓋所有網路照片。
+
+### 未配對學習與領域轉換
+
+CinCGAN [22] 先把真實 LR 轉乾淨 LR，再接預訓練 SR 並端到端調整。Bulat 等人 [23] 先學 HR→真實 LR 退化，再訓練復原；Lugmayr 等人 [39] 補回自然感光特性。DSGAN／FSSR [24] 將對抗項限制高頻，低頻另約束。Ji 等人 [25] 從目標領域估核與抽雜訊，贏得 NTIRE 2020 [40]。此類依賴資料分布，也可能產生嚴重 GAN 偽影 [3]。
+
+## 用生成先驗處理真實世界 SR
+
+**白話說。** 大型文字擴散從廣泛影像學得先驗。2023 年起，許多復原方法保留大部分預訓練權重，再以小控制網路提供 LR，補出合理細節。
+
+### 為什麼借用生成先驗
+
+嚴重損傷時，LR 不再含所有 HR 細節。L2 迴歸學條件平均，可能平均不相容細節；生成模型則取一個合理答案。[DLCV 09B](/zh-tw/learn/deep-learning/generative-restoration/#感知失真權衡) 說明感知／失真，[擴散概覽](/zh-tw/learn/deep-learning/generative-restoration/#一頁看懂擴散) 與[虛構問題](/zh-tw/learn/deep-learning/generative-restoration/#幻覺問題) 補背景。本章聚焦 SR 如何餵 LR、額外條件及保真控制。
+
+本節使用 Real-ESRGAN 或類似合成。多數採 Stable Diffusion [41]，將 512 × 512 壓為 64 × 64 潛在網格再去雜訊；許多也調整 ControlNet [42]，用零初始化卷積把可訓練編碼分支連到凍結模型。
+
+### 每種方法接收什麼條件
+
+| 方法 | 先驗 | LR 如何進入 | 額外條件 | 保真控制 | 原文步數 |
+| --- | --- | --- | --- | --- | --- |
+| StableSR [26] | 凍結 SD 2.1 | 時間編碼器、殘差區塊 SFT | 空提示 | 解碼器特徵包覆權重 $w$ | 200 DDPM |
+| DiffBIR [27] | 凍結 SD 2.1 | 先復原，再餵 IRControlNet | 負提示 | 區域自適應復原引導 | 50 |
+| PASD [28] | Stable Diffusion | 去退化、像素感知交叉注意力 | 語意特徵與描述 | 雜訊排程 | 20 |
+| SeeSR [29] | 凍結 SD 2 | LR ControlNet、起始混入 LR | 退化感知硬標籤及軟嵌入 | — | 50 |
+| SUPIR [30] | 凍結 SDXL | 強健編碼器、裁減 ControlNet 與 ZeroSFT | 多模態描述、負品質提示 | 復原引導 $\tau_r$ | 100 EDM |
+| ResShift [31] | 從頭訓練、VQGAN 潛在空間 | 起點靠近 LR、移動殘差 | 無 | $\kappa,p$ 排程 | 15 |
+
+這些是原文預設，不代表等成本。SeeSR 補充資料 [29] 在同一 V100、128→512 比較：StableSR **18.70 秒／200 步**，DiffBIR **5.85／50**，PASD **6.07／20**，SeeSR **7.24／50**，ResShift **1.12／15**，Real-ESRGAN **0.09 秒**。
+
+三個反覆出現的設計：
+
+- **條件強度隨雜訊變化。** StableSR 時間編碼器約在訊雜比 $5\times10^{-2}$ 最強，對應內容形成 [26]。
+- **先移除損傷。** DiffBIR 先清理再生成，避免模型把雜訊／壓縮當內容；SUPIR 也調適編碼器增強退化強健性 [27]、[30]。
+- **像素不足時加入語意。** PASD、SeeSR 從 LR 提取文字，SeeSR 讓乾淨／退化標籤一致；SUPIR 用多模態描述和使用者文字控制 [28]、[29]、[30]。
+
+*選讀：[StableSR](#stablesr以時間感知編碼器控制凍結先驗ijcv-2024)、[DiffBIR](#diffbir先移除退化再生成細節eccv-2024)、[SeeSR](#seesr退化感知的語意提示cvpr-2024)、[SUPIR](#supir擴大先驗資料與文字控制cvpr-2024)（見「論文導讀」）。完整設計與驗證實驗；ResShift 見[單步 SR](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/)。*
+
+### 擴散 Transformer 與新先驗
+
+**白話說。** 生成先驗的去雜訊器從 U-Net 轉向 Transformer，SR 也跟著改變條件注入方式。
+
+DreamClear [43] 使用 DiT、生成管線整理的**一百萬**高品質訓練圖及退化先驗專家混合。DiT4SR [44] 讓 LR 潛在串流持續參與注意力，再用跨串流卷積補局部細節。趨勢是更大先驗及更深入的條件交互。
+
+### 保真、虛構與控制旋鈕
+
+**白話說。** 強先驗畫得可信，也可能多畫不存在的東西。因此需要「靠近輸入」與「自然外觀」的控制。
+
+StableSR 的 $w\in[0,1]$ 混合 LR 編碼特徵；DiffBIR 引導 $s$ 在平坦區更強地拉向清理圖；SUPIR 的 $\tau_r$ 讓每步預測靠向 LR 潛在；ResShift 的 $p$ 改殘差排程 [26]、[27]、[30]、[31]。指標未必單調，部分設定可同時改善多項。常見錯誤是把模糊船補成鳥等**語意錯誤**，以及天空／牆面的**虛構紋理**；小字小臉也是明列限制 [26]、[29]、[45]。
+
+### 減少步數
+
+**白話說。** 每圖數十至數百次評估不利手機或影片。LR 已固定多數配置，若專門訓練，就可能從觀測附近以少步完成。
+
+ResShift 的 15 步 [31] 是橋梁；SinSR [46] 蒸餾成一步，OSEDiff [45] 以 LoRA 和 VSD 學 LR→HR 潛在映射。詳細機制及計時見 [DLCV 09A.2](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/)。
+
+## 盲與真實世界的評估
+
+**白話說。** 無真值的照片無法直接算真實重建誤差。可測已知合成退化、預測人類評分或請人比較，每一種都只回答部分問題。
+
+### 合成測試集的全參考指標
+
+顯式方法常用 IKC 的 Gaussian8 [8]，或 KernelGAN 的 DIV2KRK [12]：DIV2K 驗證 **100** 張 [47]，每張隨機非等向受擾核。真實方法也測自家合成，例如 **3,000** 個 Real-ESRGAN 退化裁切 [26]、[29]、[45]，或 BSRGAN 的四種 DIV2K4D [16]。PSNR、SSIM [48] 測失真，LPIPS、DISTS [49]、[50] 測感知距離；同訓練管線的測試可能偏袒該模型。
+
+RealSR／DRealSR 實拍也能算這些指標，但錯位會降低所有方法的 PSNR，並可能獎勵模糊；KernelGAN 也以此說明不採 NTIRE 2018 配對 [12]。
+
+### 無參考指標
+
+**白話說。** 無參考（NR）指標不看原圖，預測外觀品質；它是人類意見的模型，仍可能被欺騙。
+
+NIQE [51] 比較自然場景統計，越低越好；MUSIQ [52]、MANIQA [53] 是評分訓練模型，CLIPIQA [54] 用 CLIP 比較好／壞照片提示，越高越好。定義見 [DLCV 09](/zh-tw/learn/deep-learning/image-restoration/#無參考指標)。FID [55] 比較輸出與真實圖的特徵分布，不是逐圖正確性。
+
+小實驗比較模糊、unsharp masking，以及模糊加細雜訊，以 PSNR 和刻意粗糙的 NR「清脆度」平均梯度評分。真正 NR 精細得多，但同樣評外觀而非真實內容。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+from skimage.color import rgb2gray
+
+hr = img_as_float64(rgb2gray(data.astronaut()))
+rng = np.random.default_rng(0)
+
+def psnr(a, b):
+    return 10 * np.log10(1.0 / np.mean((a - np.clip(b, 0, 1)) ** 2))
+
+def crispness(img):
+    """A crude no-reference score: mean gradient magnitude (higher = 'sharper looking')."""
+    return np.mean(np.hypot(ndi.sobel(img, 0), ndi.sobel(img, 1)))
+
+smooth = ndi.gaussian_filter(hr, 1.5)                               # a cautious, blurry restoration
+candidates = {
+    "smooth (posterior-mean-like)": smooth,
+    "unsharp-masked x2": smooth + 2.0 * (smooth - ndi.gaussian_filter(smooth, 2)),
+    "smooth + fake fine texture": smooth + 0.04 * rng.standard_normal(hr.shape),
+}
+for name, img in candidates.items():
+    img = np.clip(img, 0, 1)
+    print(f"{name:28s} PSNR {psnr(hr, img):6.2f} dB | crispness {crispness(img):.3f}")
+print(f"{'ground truth':28s} PSNR    -     | crispness {crispness(hr):.3f}")
+```
+
+```text
+smooth (posterior-mean-like) PSNR  26.82 dB | crispness 0.170
+unsharp-masked x2            PSNR  28.42 dB | crispness 0.259
+smooth + fake fine texture   PSNR  24.48 dB | crispness 0.262
+ground truth                 PSNR    -     | crispness 0.246
+```
+
+兩張「銳化」都比真值更清脆，虛假紋理最高、PSNR 最差。Unsharp 的 PSNR 改善是部分反解模糊；PSNR 也可能偏好稍模糊但位置正確，而非清楚卻偏移的紋理。
+
+<Figure src={metricFig} alt="臉部真值清脆度 0.246；模糊為 PSNR 26.82、清脆度 0.170；unsharp 為 28.42、0.259 且有暈邊；新增細雜訊為 24.48、0.262。" caption="圖 3 — 粗略無參考分數把銳化及假紋理評得比真值好，PSNR 則懲罰假紋理。真正指標較精密，公開實驗仍有類似張力。" />
+
+### 為什麼排名不一致
+
+原文表格也呈現相同張力：
+
+- **無參考與外觀。** BSRGAN 在 **20** 張 RealSRSet 的 NIQE **5.60**，比其他方法 **3.99–4.95** 差，作者卻認為視覺較好 [16]。
+- **保真與寫實。** StableSR 的 DIV2K 裁切 PSNR **23.26 dB**，低於部分 GAN 的 **24.62 dB**，FID／CLIPIQA／MUSIQ 卻較好 [26]。SUPIR 也呈現無參考強、PSNR／SSIM／LPIPS 弱的取捨 [30]。
+- **指標彼此衝突。** OSEDiff 表中多步 SeeSR／PASD 的 NIQE、MUSIQ、MANIQA 較強，OSEDiff 的 LPIPS、DISTS、FID、CLIPIQA 較強 [45]。
+- **提示會推動分數。** 負提示引導可提高 CLIPIQA、MUSIQ，過強又會銳化過度 [26]；可被取樣技巧提高的分數不是獨立真實性裁判。
+
+至少在合成／實拍配對報一種全參考，真實圖報不同家族的兩種 NR，重要偏好主張另做人類研究。說明解析度及裁切；512 × 512 訓練模型在小裁切與大圖的表現可能不同 [26]。
+
+### 人類研究與挑戰
+
+人類研究測偏好，不判定虛構細節是否真有。StableSR 收集 **35** 人、**40** 圖、**1,400** 票 [26]；SeeSR 的 **20** 人研究中，誤認輸出為真值 **38.6%**，真實圖最佳偏好 **57.1%** [29]。方法匿名、隨機排序與足夠樣本等規則見 [DLCV 09](/zh-tw/learn/deep-learning/image-restoration/#使用者研究與成對比較)。
+
+挑戰顯示領域從已知到未知退化的轉變：
+
+- **NTIRE 2018：** 一個 bicubic、三個未知模擬相機退化賽道，提供配對可學習 [56]。
+- **NTIRE 2019：** 實拍不同焦段配對，導入 RealSR [57]。
+- **AIM 2019／NTIRE 2020：** 不提供配對，使用來源 LR 及部分賽道的未配對高品質圖；2020 依人類感知評比 [58]、[40]。
+- **AIM 2020：** ×2／×3／×4 實拍，按 PSNR／SSIM [59]。
+- **NTIRE 2025：** ×4 bicubic，並列感知與 PSNR 復原賽道 [60]。
+
+## 失敗模式
+
+**白話說。** 一種錯誤是誤判損傷、修太多或太少；另一種是太相信先驗、補出不存在內容。
+
+- **分布外退化：** 合成資料未保證涵蓋未知損傷，Real-ESRGAN 也列出可能反而放大的限制 [17]。
+- **錯核：** 造成圖 1 的模糊／振鈴，單核假設也難處理空間變化。
+- **GAN 偽影：** 扭曲線條、氣泡紋理等，LDL 專門處理此問題 [17]、[16]、[37]。
+- **語意虛構：** 錯物件、平坦區假紋理，小字小臉尤其難 [29]、[26]。
+- **偏色：** StableSR 以輸入通道平均／變異數或低頻小波帶校正 [26]。
+- **分塊與解析度：** 大圖可能有塊間不一致，原文聚合取樣用來減少它 [26]。
+- **迎合指標：** 銳化、顆粒與提示可能增分而不保真。
+
+可用合理退化把 SR 再縮回 LR，比較輸入；文字和平坦區的大差異值得檢查。但算子本身未知，小殘差也不能證明正確，[DLCV 09B](/zh-tw/learn/deep-learning/generative-restoration/#幻覺問題) 有更完整說明。
+
+## 現代觀點
+
+### 綜述論文
+
+**白話說。** 盲與真實 SR 的兩篇綜述建立用語，較新的擴散及廣義 SR 綜述再擴充它。
+
+- **Liu 等人，Blind Image Super-Resolution: A Survey and Beyond，TPAMI** [3]：整理顯式外部資料、顯式單圖統計、隱式外部資料；回顧當時單圖隱式缺口、GAN 偽影與退化假設不一致的比較困難。
+- **Chen 等人，Real-World Single Image Super-Resolution: A Brief Review，Information Fusion 2022** [4]：分退化建模、實拍配對、領域轉換及自學習，提醒合成基準可能高估真實照片能力。
+- **Moser 等人，Diffusion Models, Image Super-Resolution, and Everything，TNNLS 2025** [5]：依輸入域、條件、引導與損傷空間整理擴散 SR，指出成本、偏色及可比較性問題。
+- **Zhang 等人，Deep-Learning-Empowered Super Resolution: A Comprehensive Survey and Future Prospects，Proceedings of the IEEE 2025** [61]：涵蓋單圖、影片、立體、光場，按 CNN／Transformer／GAN／擴散、資料及複雜度整理，適合作廣義索引。
+
+### 2023–2026 年的研究方向
+
+1. **生成先驗成為重要家族。** StableSR 至 SUPIR 以編碼器、ControlNet、SFT 控制凍結文字模型 [26]、[27]、[28]、[29]、[30]；DreamClear／DiT4SR 改用 Transformer [43]、[44]。
+2. **語意作為條件：** 退化標籤、多模態描述及文字控制 [29]、[30]。
+3. **資料仍多為合成：** BSRGAN／Real-ESRGAN 類管線，SUPIR 報 **兩千萬**帶文字圖，DreamClear **一百萬**整理的合成圖 [30]、[43]。
+4. **速度成為工程目標：** 從 200 步到 ResShift 的 15，再到 SinSR／OSEDiff 的一步 [31]、[46]、[45]，詳見 [DLCV 09A.2](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/)。
+5. **經典顯式盲 SR 持續發展：** DCLS、KDSR 改善估計與表示，仍以 Gaussian8／DIV2KRK 評估 [10]、[15]。
+
+### 開放問題
+
+- **內容可信度：** 指標難以穩定區分清楚正確和清楚虛構，已有多模態虛構評估提案 [62]。
+- **管線外損傷：** 空間變化、相機處理、反覆社群壓縮與影片編碼未完全涵蓋。
+- **沒有真值的評估：** NR 彼此及與人類不一致，還可能被取樣技巧提高 [16]、[26]。
+- **成本：** 大型先驗、多步取樣與完整管線仍受裝置預算限制。
+- **單圖隱式建模：** 是綜述當時指出的缺口，不代表之後完全無人處理 [3]。
+
+## 重點整理
+
+- **盲 SR** 通常是不知道既定家族的參數；**真實 SR** 連家族都可能不符，常沒有真值。
+- 顯式／隱式退化、外部／單圖資訊，是兩個分類軸。
+- 假設核太寬會振鈴，太窄留模糊；IKC／DAN 修正估計，KernelGAN 用跨尺度重複估核。
+- BSRGAN 打亂與 Real-ESRGAN 二階合成提供廣泛資料，仍不保證分布外泛化。
+- 生成先驗可提供自然紋理，但條件與控制不同，也可能降保真或虛構。
+- 結合配對全參考、兩種無參考及人類研究，預期排名可能不一致。
+
+## 練習
+
+1. **核誤差的不對稱。** 將實驗雜訊設零，再把 $\lambda$ 增到 $10^{-2}$，各自重做表格。假設核太寬的懲罰如何改變？
+
+<details>
+<summary>
+提示
+</summary>
+
+太寬會放大原本沒有被衰減的頻率。去雜訊後右側損失減少、仍有振鈴；加大平滑權重抑制放大，使兩側較平、最高分也可能下降。比較距對角線相同步數的差。
+
+</details>
+
+2. **打亂或重複。** 改 `degrade` 支援 BSRGAN 式：等向／非等向模糊、×4 降取樣、雜訊、JPEG 用 `rng.permutation` 打亂，再最後 JPEG。對 **50** 組隨機 LR 做 bicubic 放大，與 HR 算平均 PSNR，哪一種更難？
+
+<details>
+<summary>
+提示
+</summary>
+
+降取樣若先於模糊／雜訊，會在 LR 尺度模糊，雜訊也未經縮放平滑。應報平均及散布；散布有助理解退化空間涵蓋。
+
+</details>
+
+3. **閱讀無參考分數。** 新增真值 JPEG 品質 **50** 及位移一像素兩候選，按 PSNR／清脆度排序。哪個顯示 PSNR 懲罰了肉眼可能不在意的變化？
+
+<details>
+<summary>
+提示
+</summary>
+
+一像素位移看起來近似，PSNR 可能大降；JPEG 降低部分清脆度，也可能因區塊邊提高它。實拍錯位因此可能偏袒較模糊方法。
+
+</details>
+
+4. **選擇家族。** 為下列情境各選一家族並解釋：（a）1990 年代掃描家庭照做相簿；（b）顯微影像數細胞；（c）手機 ×2 變焦須 **30 ms**；（d）可拍校正配對的固定監視器。
+
+<details>
+<summary>
+提示
+</summary>
+
+（a）適度控制的生成先驗可處理混合損傷，但須檢查身分與細節。（b）優先量測點擴散函數及配對復原，不能虛構計數。（c）先評估小型回歸／GAN；短擴散仍須實測完整裝置成本。（d）用該相機實拍配對，必要時結合量測核。
+
+</details>
+
+5. **KernelGAN 的 ×4 核。** $k_4=k_2\circledast k_2^{\uparrow}$，$k_2^{\uparrow}$ 在係數間插零。用一維高斯驗證兩次 ×2 等於一次此核 ×4，並求 $k_2$ 寬度 $\sigma$ 對應的 $k_4$ 寬度。
+
+<details>
+<summary>
+提示
+</summary>
+
+將第二次卷積移到第一次抽取前，核要膨脹兩倍：兩高斯寬度平方相加，得 $\sqrt{\sigma^2+(2\sigma)^2}=\sqrt5\sigma$。可用長度 **256** 隨機訊號與 `np.convolve` 測試。
+
+</details>
+
+## 補充資料
+
+以下選讀各深入一個概念，主線程式與練習不依賴它們。
+
+### 逐步看高階退化管線
+
+依原文及 x4-plus 設定 [17]、[63] 整理 Real-ESRGAN，並比較 BSRGAN [16]。
+
+**記號。** $y$ 是 256 × 256 HR 訓練塊，單輪 $\mathcal D_j(z)=\mathcal C_{q_j}(\mathcal R_j(z\circledast k_j)+n_j)$，其中 $k_j$ 為核、$\mathcal R_j$ 為縮放、$n_j$ 為雜訊、$q_j$ 為 JPEG 品質。$x=(\mathcal D_n\circ\dots\circ\mathcal D_1)(y)$，Real-ESRGAN 用 $n=2$；「階」指重複輪數，非數學階數。
+
+**第一與第二輪**，括號為第二輪較窄範圍：
+
+1. **模糊。** Gaussian／generalized Gaussian／plateau 機率 **0.7／0.15／0.15**，尺寸 $\{7,9,\dots,21\}$，寬度 $[0.2,3]$（$[0.2,1.5]$）；形狀 $\beta$ 為 $[0.5,4]$ 或 $[1,2]$。$k(i,j)\propto\exp(-\tfrac12C^\top\Sigma^{-1}C)$，$C=[i,j]^\top$，$\Sigma=R_\theta\operatorname{diag}(\sigma_1^2,\sigma_2^2)R_\theta^\top$，$R_\theta$ 是旋轉、$\sigma_1,\sigma_2$ 是主軸寬度；generalized Gaussian 再將二次式升 $\beta$ 次方。以 **0.1** 機率換 sinc；第二輪模糊以 **0.2** 機率略過。
+2. **縮放。** 隨機上／下取樣，area、bilinear、bicubic；排除會位移的 nearest。
+3. **雜訊。** Gaussian／Poisson 各 **0.5**，八位元 Gaussian $\sigma\in[1,30]$（$[1,25]$），Poisson 尺度 $[0.05,3]$（$[0.05,2.5]$），**0.4** 機率共用灰階雜訊。
+4. **JPEG。** $q\in[30,95]$，GPU 模擬；官方 `DiffJPEG(differentiable=False)` 不需要對退化反傳 [63]。
+
+**最後。** 隨機選「縮至 LR→sinc→JPEG」或「JPEG→縮至 LR→sinc」。縮放／sinc 保持成對，末端 sinc 機率 **0.8** [63]，不是三步任意打亂。
+
+**配對池。** 整批 GPU 產生會共享縮放因素，因此 **180** 配對池混合批次來恢復多樣性。
+
+**BSRGAN 差異** [16]：（1）打亂 $\{B_{\mathrm{iso}},B_{\mathrm{aniso}},D_s,N_G,N_{\mathrm{JPEG}},N_S\}$ 再最後 JPEG，涵蓋 LR 尺度雜訊／模糊；（2）含半像素修正前濾波的 nearest、bilinear、bicubic 或先縮後放倍率 $a$；（3）以 **0.25** 機率反向映到 RAW、加雜訊，再套前向相機流程，參數來自五種相機。Real-ESRGAN [17] 認為不是所有亂序都有必要；兩篇並未在完全相同網路及預算下直接數值比較。
+
+### Sinc 濾波與振鈴
+
+本節說明理想低通為何產生 Real-ESRGAN 要學會處理的振鈴。
+
+理想二維低通保留半徑 $\omega_c$ 的頻率圓盤；$\omega_c$ 單位為弧度／像素。其反傅立葉響應為徑向對稱 jinc：
+
+$$
+k(i, j) = \frac{\omega_c}{2\pi \sqrt{i^2 + j^2}}\, J_1\!\left(\omega_c \sqrt{i^2 + j^2}\right), \qquad k(0, 0) = \frac{\omega_c^2}{4\pi},
+$$
+
+$(i,j)$ 是中心位移，$J_1$ 是一階第一類 Bessel 函數，中心取半徑趨零極限。Real-ESRGAN 稱其 sinc [17]。理想響應支撐無限，有限正規化 21 × 21 核只是近似，帶有正負交替環。階躍因此有過衝、下衝與衰減波紋。此實驗 $\omega_c=\pi/3$，約超出 1 與低於 0 各 **0.10**；Gaussian 無此過衝。
+
+<Figure src={sincFig} alt="左為截止 0.33π 與 0.67π 的 21 × 21 紅藍 sinc 核，中心正、外環正負交替；右比較理想階躍、無過衝高斯，以及帶振鈴的 sinc 響應。" caption="圖 4 — Sinc／jinc 核在階躍產生振鈴，類似寬度 Gaussian 不會。真實銳化、壓縮及縮放也會留下此類暈邊。" />
+
+只見過 Gaussian 模糊的模型可能把暈邊當真實邊緣再銳化。較低 $\omega_c$ 的環較寬；隨機截止讓訓練涵蓋多種暈邊。主線程式採 $[\pi/3,\pi]$ 是教學選擇，不是宣稱完整官方分布。
+
+### 為什麼核難以識別
+
+單張 LR 無法不靠假設就分離影像與核，因此每種盲方法都需要先驗。
+
+**兩種精確歧義。** 對 $y=(x\circledast k)\downarrow_s$：
+
+1. **位移。** 影像移 $\delta$、核反向移，$(x(\cdot-\delta))\circledast(k(\cdot+\delta))=x\circledast k$，LR 不變。SRMD [2] 以此解釋平均位移候選造成平滑；KernelGAN [12] 的核重心約束用慣例移除此歧義。
+2. **模糊交換。** 結合律使 $(x\circledast g)\circledast k=x\circledast(g\circledast k)$。高斯有 $g_{\sigma_1}\circledast g_{\sigma_2}=g_{\sqrt{\sigma_1^2+\sigma_2^2}}$，清晰海報失焦與柔和畫作清晰拍攝可能產生同 LR。
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+
+x = img_as_float64(data.camera())
+s = 4
+
+def lr(img, sigma, shift=0):
+    """Blur with a Gaussian kernel centred at `shift` pixels, then keep every s-th pixel."""
+    k = ndi.gaussian_filter(img, sigma, mode="wrap")
+    return np.roll(k, shift, axis=1)[::s, ::s]
+
+# 1) Shift ambiguity: move the scene one pixel right and the kernel one pixel left.
+a = lr(x, 1.5)
+b = lr(np.roll(x, 1, axis=1), 1.5, shift=-1)
+print("shifted scene + shifted kernel, max |difference|:", f"{np.abs(a - b).max():.1e}")
+
+# 2) Blur ambiguity: a soft scene with a sharp kernel vs a sharp scene with a wide kernel.
+soft_scene = ndi.gaussian_filter(x, 1.0, mode="wrap")
+c = lr(soft_scene, 1.2)
+d = lr(x, np.hypot(1.0, 1.2))                     # Gaussian widths add in quadrature
+print("soft scene + sigma 1.2 vs sharp scene + sigma 1.56, max |difference|:", f"{np.abs(c - d).max():.1e}")
+```
+
+```text
+shifted scene + shifted kernel, max |difference|: 0.0e+00
+soft scene + sigma 1.2 vs sharp scene + sigma 1.56, max |difference|: 2.2e-05
+```
+
+執行中第一差為零，第二差約為取樣高斯的離散誤差。
+
+**如何選答案。** 顯式方法限制核為居中、和一及特定形狀，影像先驗偏好自然清晰；KernelGAN 假設跨尺度自相似 [12]、[11]；隱式方法依訓練核分布直接選合理輸出。歧義說明資料本身不足，也說明假設為何決定答案。
+
+## 論文導讀
+
+以下選讀各介紹挑戰、完整方法、實驗、消融、結論與限制。
+
+### SRMD：一個網路處理多種已知退化（CVPR 2018）
+
+#### 挑戰
+
+Bicubic CNN 遇到不同模糊會失效，經典 MAP 雖可換核卻慢且須調參。SRMD [2] 問：告知退化後，一個前饋 CNN 能否處理多核、雜訊與空間變化，並轉用真實照片？
+
+#### 方法
+
+**退化模型。** 原文使用：
+
+$$
+y = (x \circledast k)\downarrow_s + n,
+$$
+
+$x$ 是 HR，$k$ 是核，$\downarrow_s$ 是倍率 $s$ 的 **bicubic**，$n$ 是標準差 $\sigma$ 的白高斯雜訊。delta 核加零雜訊即 bicubic 特例。原文也討論先降取樣再模糊，但主實驗用前者。
+
+**MAP 與條件。** 最大後驗估計為：
+
+$$
+\hat x = \arg\min_x \; \frac{1}{2\sigma^2}\bigl\| (x \circledast k)\downarrow_s - y \bigr\|^2 + \lambda \Phi(x),
+$$
+
+第一項是資料一致，$\Phi$ 是先驗，$\lambda$ 是權重。解為 $\hat x=F(y,k,\sigma,\lambda)$；把權重吸收到雜訊參數後，學 $F(y,k,\sigma;\Theta)$。固定 bicubic 則只學特定 $k$ 的 $F(y;\Theta)$。
+
+**維度展開。** 輸入為 $W\times H\times C$ 影像、$p\times p$ 核及雜訊純量。核向量化為 $p^2$，PCA 壓為 $t$，附 $\sigma$，將 $t+1$ 數字各展成 $W\times H$ 圖再串接。$t=15$ 保留約 **99.8%** 能量；條件圖不必處處常數，亦可描述空間變化。
+
+**網路。** **12** 層 3 × 3、**128** 通道，除末層外 Conv／BN／ReLU；輸入 $C+t+1$，輸出 $s^2C$ 再 pixel shuffle 成 $sW\times sH\times C$。沒有殘差學習或預先 bicubic 放大，避免插值複雜化雜訊。每倍率各訓練一個模型；SRMDNF 移除雜訊通道，再以無雜訊資料微調。
+
+**資料。** 15 × 15 等向高斯，×2／×3／×4 寬度 $[0.2,2],\;[0.2,3],\;[0.2,4]$，步距 0.1；另有角度 $[0,\pi]$、特徵值尺度上限 **6／8／10** 的非等向核。×3 也擬合可近似直接抽取的核 $k_b$。雜訊 $[0,75]$，DIV2K **800** 張 [47] 加其他公開照片 **5,144** 張；每 epoch 抽 $128\times3{,}000$ 個 40 × 40 LR，MSE 與 Adam [64]。
+
+**為何不是盲模型。** 影像和核反向位移可得到同 LR，盲網路可能平均不同 HR 而過度平滑。條件圖錨定解；供給雜訊值也能改變保真／平滑偏好，但須合理設定。
+
+#### 結果
+
+**Bicubic。** RGB Set5／Set14／BSD100／Urban100 [65]、[66]、[67]、[68] 中，Set5 ×2／×3／×4：SRMDNF **37.79／34.12／31.96 dB**，VDSR [69] **37.56／33.67／31.35**，SRMD **37.53／33.86／31.59**。
+
+**一般退化。** 表 2 用寬度 **0.2／1.3／2.6**、雜訊 **0／15／50**。寬 1.3 無雜訊，VDSR ×2／×3／×4 **30.57／30.24／29.72**，SRMD **37.04／33.77／31.56**，SRMDNF **37.45／34.16／31.99**。寬 2.6、雜訊 15，SRMD **28.48／27.55／26.82**；先去雜訊再 SRMDNF 的 ×3／×4 **21.33／23.85**，CNN 先驗模型 **26.44／25.67／24.36**。7 × 7、寬 1.6、直接 ×3 抽取，SRMDNF **34.01**，模型基準 **33.38 dB**。
+
+**時間。** MATLAB／MatConvNet、Titan X Pascal、1024 × 1024 輸出，SRMD ×2／×3／×4 **0.084／0.042／0.027 秒**，VDSR **0.174 秒**；SRMD 的大部分工作在 LR 網格。
+
+**空間變化與真圖。** 提供相符的核／雜訊圖可處理變化；真圖以核寬 **0.1–2.4**、雜訊 **0–75** 視覺網格搜尋，沒有真值評分。
+
+#### 消融實驗
+
+原文無獨立消融表。控制比較包括：無雜訊時 SRMDNF 相對一般版在 Set5 寬 0.2 增 **0.26–0.37 dB**（×2 **37.53→37.79**，×4 **31.59→31.96**）；串接去雜訊器不如聯合 SRMD，差距隨核增寬；以 **291** 張重訓 Y 通道 ×3 的 SRMDNF 仍達 **33.97 dB**，不能只把改善歸因更多資料。
+
+#### 結論
+
+展開退化圖讓普通 CNN 接收可解釋條件，兼顧 bicubic 與多種已知損傷，成為復原條件注入的重要設計。
+
+#### 限制與問題
+
+- 核仍須外部提供；真圖靠搜尋，錯核會振鈴／模糊。[IKC](#ikc反覆修正模糊核cvpr-2019) 加估計與修正。
+- 只在輸入串接，深網路可能弱化條件；SFTMD 改逐塊調制。
+- 高斯家族不涵蓋 JPEG／相機處理，[BSRGAN](#bsrgan實用的退化模型iccv-2021) 擴大退化。
+- BN 與 MSE 反映早期設計，後來方法改用其他骨幹與損失。
+
+### IKC：反覆修正模糊核（CVPR 2019）
+
+#### 挑戰
+
+核估計不可能完全準確，小誤差也會形成規律偽影。IKC [8] 利用假設核太窄的模糊、太寬的振鈴，學會從 SR 輸出讀取並修正誤差。
+
+#### 方法
+
+**設定。** $I^{LR}=(k\otimes I^{HR})\downarrow_s+n$，等向高斯加 bicubic，另有高斯雜訊版。21 × 21 核用 $M\in\mathbb R^{b\times l^2}$ 壓為 $h=Mk\in\mathbb R^b$，$l=21$，$b$ 為代碼長度。
+
+**三個網路。**
+
+1. **SFTMD $F$。** SRResNet 式骨幹 [70] 在殘差卷積後與全域殘差後加 SFT [32]。核展成 $b\times H\times W$ 的 $H$，與 $C_f\times H\times W$ 特徵產生 $\gamma,\beta$，計算 $\mathrm{SFT}(F,H)=\gamma\odot F+\beta$，逐層調制而非只串輸入。
+2. **Predictor $P$。** 四卷積、LeakyReLU、全域平均產生 $h_0=P(I^{LR})$，以真核代碼平方誤差訓練。
+3. **Corrector $C$。** 五卷積抽 SR 特徵，兩全連接處理代碼並展圖，串接後三個 1 × 1 與全域平均產生 $\Delta h$，讓 $h+C(I^{SR},h)$ 接近真代碼。
+
+**程序。** $h_0=P(I^{LR})$、$I_0^{SR}=F(I^{LR},h_0)$；反覆 $\Delta h_i=C(I_{i-1}^{SR},h_{i-1})$、$h_i=h_{i-1}+\Delta h_i$、$I_i^{SR}=F(I^{LR},h_i)$。多次小修正避免一次過度或不足。
+
+**訓練。** SFTMD 先用 MSE 與倍率別寬度 $[0.2,2],\;[0.2,3],\;[0.2,4]$ 預訓練，資料 DIV2K／Flickr2K 共 **3,450** 張 [47]、[71]。凍結它後交替訓練 $P,C$，**7** 輪，Adam [64]、學習率 $10^{-4}$。
+
+**Gaussian8。** 每倍率八個等向核，×2／×3／×4 寬度 $[0.80,1.60],\;[1.35,2.40],\;[1.80,3.20]$，模糊後 bicubic，測 Set5、Set14、BSD100、Urban100、Manga109 [72]。
+
+#### 結果
+
+×4 五資料集 PSNR **31.52／28.26／27.29／25.33／29.90**，ZSSR **26.45／24.78／24.97／22.11／23.53**，bicubic **24.57／22.79／23.29／20.35／21.50**。Set5 只有初始 predictor 為 **29.29**，修正增加 **2.23 dB**；×2 **36.62**。先盲去模糊再 SR **18.10**，先 SR 再去模糊 **28.69**。未訓練的直接降取樣下，BSD100 寬 2.0 仍 **27.06 dB**。真圖免手動搜尋有較好外觀，但無真值。
+
+#### 消融實驗
+
+- **SFT／串接。** 真核、Set5 ×4 寬 1.3：SFTMD **32.39**，SRMDNF **32.00**，逐層串接 **31.69**，只首層串接 **29.11 dB**。
+- **修正輪數。** 單圖從 **23.60** 至一至四輪 **25.65／27.75／27.94／27.97 dB**；不是只修一次即可。
+- **PCA／寬度。** 未見直接抽取的 BSD100，寬 2.0 **27.06 對 26.85**，寬 3.0 **26.98 對 26.75 dB**，支持代碼表示。
+
+#### 結論
+
+核不匹配有可學規律，反覆修正配合 SFT 條件，改善該高斯盲 SR 設定。
+
+#### 限制與問題
+
+- 主要等向高斯，沒有完整真實相機管線。
+- 三網路分開訓練、七次 SR；DAN 測量約 **3.93 秒**。[DAN](#dan展開交替最佳化neurips-2020) 改端到端。
+- SR 以真核訓練、估核測試有落差。
+- JPEG 與處理效應未建模。
+
+### KernelGAN：以單圖 GAN 估計核（NeurIPS 2019）
+
+#### 挑戰
+
+核隨鏡頭與手震變，非盲 SR 需要逐圖估計。早期跨尺度區塊搜尋 [11] 高於 ×2 困難且約 **45 分鐘**。KernelGAN [12] 只用測試圖本身做無外部資料核估計。
+
+#### 方法
+
+**原理。** 學一個縮圖器，使其小區塊分布與原 LR 難分辨；利用 GAN 做跨尺度分布匹配。
+
+**目標。** $u,v$ 是 LR 裁切，$G$ 為縮圖器，$D$ 為區塊判別器，官方交替最小化：
+
+$$
+\mathcal L_D=\tfrac12\mathbb E\bigl[\lvert D(u)-1\rvert+\lvert D(G(v))\rvert\bigr],\qquad
+\mathcal L_G=\mathbb E\lvert D(G(v))-1\rvert+R(k).
+$$
+
+絕對誤差對判別空間圖平均，$R(k)$ 正規化有效核。判別器真標 1、生成標 0，生成器目標 1；判別更新停止生成梯度。原文 minimax 簡寫不等於實際更新，官方 `GANLoss` 用平均 L1 [73]、[74]。**3,000** 次交替，Adam [64]、$2\times10^{-4}$ 及衰減排程，偏好梯度豐富裁切。
+
+**判別器。** 不降取樣的全卷積，一個 7 × 7 加六個 1 × 1，頻譜正規化 [36]、BN、ReLU、末 sigmoid。每個判斷只看 7 × 7 區塊，輸出空間 D-map 與逐點標籤。
+
+**深線性生成器。** 不使用非線性，避免只拼有效區塊來騙判別器。單一卷積本可表達線性縮圖，深分解則在原實驗更好最佳化，不保證核唯一。五個 **64** 通道隱藏卷積，前核 **7／5／3**、後為 1，總感受野 **13 × 13**。初期用 bicubic 輸出作起始約束。
+
+**讀出核。** 以 stride 1 串起所有生成卷積得可微有效核 $k$，加入：
+
+$$
+R = \alpha \mathcal L_{\text{sum\_to\_1}} + \beta \mathcal L_{\text{boundaries}} + \gamma \mathcal L_{\text{sparse}} + \delta \mathcal L_{\text{center}}, \qquad \alpha = 0.5,\ \beta = 0.5,\ \gamma = 5,\ \delta = 1,
+$$
+
+$\mathcal L_{\mathrm{sum\_to\_1}}=|1-\sum k_{ij}|$ 保和一；$\mathcal L_{\mathrm{boundaries}}=\sum|k_{ij}m_{ij}|$ 以遠距增長遮罩懲罰邊緣；$\mathcal L_{\mathrm{sparse}}=\sum|k_{ij}|^{1/2}$ 抑制過平滑；重心與 $(x_0,y_0)$ 的 L2 距離約束居中。官方 [73] 改為倍率相依中心、中心 MSE、稀疏指數 **0.2** 而非原式 **0.5**，且係數有排程；重現須匹配版本。
+
+**×2 到 ×4。** 只學 $k_2$，用 $k_4=k_2\circledast k_2^{\mathrm{dil}}$，其中 $k_2^{\mathrm{dil}}[n_1,n_2]$ 在兩索引偶數時等於 $k_2[n_1/2,n_2/2]$、否則零，避免在過小 ×4 圖訓練。
+
+**DIV2KRK。** DIV2K **100** 張驗證，11 × 11 非等向高斯，軸寬 $U(0.6,5)$、角度 $U[-\pi,\pi]$，再乘最多 **25%** 均勻擾動、正規化並抽取。用來避免舊實拍基準錯位偏袒模糊。
+
+#### 結果
+
+KernelGAN＋ZSSR 的 ×2／×4 PSNR／SSIM 為 **30.363／0.8669、26.810／0.7316**；RCAN+ **29.198／0.8223、25.659／0.6936**，bicubic **28.731／0.8040、25.330／0.6795**。舊盲賽冠軍 ×4 **26.340／0.7190**。換早期核＋ZSSR 為 **29.368／26.080 dB**；真核上界 **32.436／27.527**。KernelGAN＋SRMD ×4 **25.711／0.7265**，PSNR 與 SSIM 排名不同。V100 每圖 **61 秒**、K80 **102 秒**，固定裁切訓練預算不隨圖大小直接增加。
+
+#### 消融實驗
+
+- 單層線性生成器比深層差 **3.8 dB／1.6 dB**（×2／×4）。
+- 固定 SR 方法換核，品質依 bicubic、Michaeli–Irani、KernelGAN、真核逐步改善。
+- 四核約束的消融只在專案網站，非正文，不補造原文數字。
+
+#### 結論
+
+深線性、逐圖 GAN 可從跨尺度區塊估核，再交非盲模型；原基準仍有距真核的差距。
+
+#### 限制與問題
+
+- 逐圖約一分鐘，還須 SR；DAN 測 KernelGAN＋ZSSR **415.7 秒**，前饋估計快得多。
+- 雜訊／JPEG 不符合純縮圖模型。
+- 假設區塊重複及單一空間核，非重複或變化模糊較難。
+- 估計器與復原器分開仍可能失配；DAN 報 KernelGAN＋USRNet 在 DIV2KRK ×4 **20.06 dB**。
+
+### DAN：展開交替最佳化（NeurIPS 2020）
+
+#### 挑戰
+
+分開估核再復原有三個問題：多模型分開訓練、估計器只看 LR、復原器真核訓練卻估核測試。DAN [9] 用端到端交替讓兩者合作。
+
+#### 方法
+
+**交替問題。** 先假設雜訊另處理，以 L1 重建交替最小化：
+
+$$
+k_{i+1} = \arg\min_k \; \bigl\| y - (x_i \otimes k)\downarrow_s \bigr\|_1, \qquad
+x_{i+1} = \arg\min_x \; \bigl\| y - (x \otimes k_{i+1})\downarrow_s \bigr\|_1 + \phi(x),
+$$
+
+$\downarrow_s$ 取每 $s\times s$ 左上點，$\phi$ 為先驗，$i$ 為輪數。核從 delta 開始，PCA 壓縮；Estimator 與 Restorer 共享權重展 **4** 輪，只對末輸出做 L1 監督。解析估核在原測試較慢且怕殘餘雜訊。
+
+**條件殘差區塊 CRB。** 基本輸入 LR 不變，條件輸入每輪改變：估計器看 SR，復原器看核。若忽略條件，第二輪就不會改進。CRB 反覆注入條件：
+
+$$
+f_{\text{out}} = R\bigl(\operatorname{Concat}([f_{\text{basic}}, f_{\text{cond}}])\bigr) + f_{\text{basic}},
+$$
+
+$R$ 含兩個 3 × 3 與通道注意力，$f_{\mathrm{basic}},f_{\mathrm{cond}}$ 分別是基本與條件特徵。
+
+**模組。** Estimator 用 stride-$s$ 卷積縮 SR，**5** 個 **32** 通道 CRB 後全域平均輸出 PCA。Restorer 以展開核作條件，**40** 個 CRB，基本 **64**、條件 **10** 通道，最後 pixel shuffle。
+
+**訓練。** DIV2K／Flickr2K **3,450** 張，64 × 64 LR、批次 **64**、Adam **40 萬**次，初始 $2\times10^{-4}$、每十萬減半。設定 1 為 IKC 式 21 × 21 等向核，×4／×3／×2 寬 $[0.2,4],\;[0.2,3],\;[0.2,2]$；設定 2 為 11 × 11 不規則非等向核。真圖另訓練加高斯雜訊版。
+
+#### 結果
+
+Gaussian8、Y、×4 五集 DAN **31.89／28.43／27.51／25.86／30.50 dB**，IKC **31.52／28.26／27.29／25.33／29.90**。Manga109 ×3 **33.16 對 28.21**，差 **4.95 dB**；Set5 ×2 **37.33 對 36.62**。
+
+DIV2KRK ×2／×4 DAN **32.56／0.8997、27.55／0.7582**，KernelGAN＋ZSSR **30.36／0.8669、26.81／0.7316**；增加 **2.20／0.74 dB**。KernelGAN＋USRNet ×4 只有 **20.06 dB**，強模組分開訓練也可能配不好。
+
+RTX 2080 Ti、Gaussian8 Set5 **40** 圖，每圖 DAN **0.75 秒**、IKC **3.93**、KernelGAN＋ZSSR **415.7**。
+
+#### 消融實驗
+
+- **真核替換。** 一次 Restorer 用真核：Set5 **31.85 對 31.89**、Urban100 **25.87 對 25.86 dB**，幾乎無改善，因已適應估計器。
+- **核誤差。** Urban100 代碼 L1 比 IKC 小，寬核的品質差距更大。
+- **輪數。** 訓練四輪、測一至七輪先升後趨穩；Set14 圖例四輪 **20.42**、五輪 **20.43 dB**，不是保證任意圖都單調收斂。
+
+#### 結論
+
+共享權重、CRB 與端到端交替，讓估核和復原協同，改善原高斯盲設定的速度與準確度。
+
+#### 限制與問題
+
+- 仍是固定降取樣、高斯類核及 AWGN，未完整建模相機／壓縮，見 [BSRGAN](#bsrgan實用的退化模型iccv-2021)。
+- PCA 只表達訓練核家族的一部分。
+- 雜訊版須重訓，不是公式自動解決。
+- DCLS [10]、KDSR [15] 繼續改善估計／表示，但基準假設仍須確認。
+
+### DASR：對比退化表示（CVPR 2021）
+
+#### 挑戰
+
+顯式估核可能慢且誤差敏感。DASR [14] 問：SR 是否只需要分辨退化的表示，而不必精確核標籤？
+
+#### 方法
+
+**假設。** 同圖退化一致、跨圖不同，因此同圖兩區塊共享退化，別圖作負例。
+
+**編碼器與對比目標。** 六層 CNN、兩層投影 MLP，把區塊轉為 query $x$、正例 $x^+$ 與負例 $x^-_n$。InfoNCE 為：
+
+$$
+\mathcal L_x = -\log \frac{\exp(x \cdot x^+ / \tau)}{\exp(x \cdot x^+ / \tau) + \sum_{n=1}^{N} \exp(x \cdot x^-_n / \tau)}
+$$
+
+$\cdot$ 是內積，$N$ 是負例數，$\tau$ 是溫度。每批 $B$ 張退化圖各抽兩塊，$p_i^1,p_i^2\in\mathbb R^{256}$ 為 query／positive，MoCo 式 [33] 舊批佇列供負例：
+
+$$
+\mathcal L_{\text{degrad}} = \frac{1}{B}\sum_{i=1}^{B} -\log \frac{\exp(p_i^1 \cdot p_i^2 / \tau)}{\exp(p_i^1 \cdot p_i^2 / \tau) + \sum_{j=1}^{N_{\text{queue}}} \exp(p_i^1 \cdot p_{\text{queue}}^j / \tau)},
+$$
+
+$\tau=0.07$、佇列 **8192**，嵌入先 L2 正規化。此式依官方 [75]，softmax 分母含正例及負例，以目標零的交叉熵平均；原文式 2–3 用僅負例佇列簡寫。相同退化不同內容鼓勵、但不保證內容不變。「無監督」指退化表示無核標籤，SR 仍有 HR—LR 配對。
+
+**退化感知 SR。** RCAN 式 [76] **5** 組、每組 **5** 個 DA block，每塊兩個 DA convolution。表示 $R$ 一路產生 $C\times1\times3\times3$ 深度核 $w$，濾特徵 $F$ 後加 1 × 1 得 $F_1$；另一路兩全連接／sigmoid 得通道權重 $v$，縮放 $F$ 成 $F_2$。相加進下一層，避免直接串接條件與影像干擾。
+
+**訓練。** DIV2K **800** 加 Flickr2K **2650**，21 × 21、bicubic；先等向倍率別範圍，再加 $\lambda_1,\lambda_2\sim U(0.2,4)$、$\theta\sim U(0,\pi)$ 非等向及雜訊 $[0,25]$。每批 **32** 圖／核，各兩個 48 × 48 LR。編碼器先 **100 epochs**，全網再 **500**，L1 SR 加對比目標。
+
+#### 結果
+
+×4 Set14 核寬 **0／1.2／2.4／3.6**，DASR **28.50／28.45／28.28／27.45 dB**；IKC **28.52／28.45／28.16／26.81**；估核 SRMDNF **27.74／26.15／26.20／26.17**；RCAN **28.87／27.48／24.93／23.41**。Urban100 寬 3.6 **24.66 對 24.06**。原表 DASR **70 ms**、IKC **517 ms**，但計時不夠可攜，不能跨論文裝置比較。Set5 ×2 寬 0／1.8 為 **37.87／35.43 dB**。
+
+非等向九核、Set14 ×4：無雜訊 DASR **26.21–27.99**，先去雜訊＋IKC **25.33–27.78**；雜訊 10 為 **24.43–26.57 對 23.01–26.16 dB**。DASR **5.8 M**，表列 **70 對 520 ms** 仍有前述限制。表示視覺化依雜訊／模糊聚類，真圖外觀較好，但不保證跨家族泛化。
+
+#### 消融實驗
+
+表 1 均為 Set14 ×4、核寬 **0.2／1.0／1.8／2.6／3.4**：
+
+- 完整 PSNR **28.50／28.45／28.40／28.16／27.58**；移除對比 **28.46／28.40／28.30／27.77／26.79**。
+- 改串接 **28.49／28.38／27.99／27.54／26.72**。
+- 移除通道調制 **28.42／28.30／28.21／27.97／27.33**。
+- 真退化五全連接表示 **28.60／28.67／28.69／28.48／27.90**，作同網路參考上界。SRMDNF 寬 3.4 用真核 **27.55**、KernelGAN 核 **26.66**、IKC 預測 **26.18 dB**，顯式誤差也有代價。
+- 換九張同退化別圖表示，PSNR 幾乎相同，支持該測試的內容不敏感性。
+
+#### 結論
+
+對比學習鼓勵無核標籤、分辨退化且內容不敏感的表示；由它生成卷積與通道調制，在原設定兼顧速度和準確度。
+
+#### 限制與問題
+
+- 表示仍受高斯／雜訊訓練限制；KDSR [15] 擴至含 JPEG 的配對知識蒸餾。
+- 同圖一致假設不適用空間變化。
+- 非等向雜訊比較的基準需另去雜訊，應留意系統差異。
+- Liang 等人的 ECCV 2022 DASR [18] 是不同模型。
+
+### BSRGAN：實用的退化模型（ICCV 2021）
+
+#### 挑戰
+
+SR 網路學的是訓練退化的反向，不是通用「變清晰」。BSRGAN [16] 研究：用較貼近真實的損傷資料，普通骨幹能否處理真實照片？Bicubic 成績不足以回答壓縮、感光雜訊與縮放交互作用。
+
+核心貢獻是**訓練資料生成器**，不是逐圖還原唯一歷史，也不需實拍配對。乾淨圖作目標、隨機處理形成對齊觀測；完整配方仍同時涉及資料與損失，不能把所有改善單獨歸因一個步驟。
+
+#### 方法
+
+**兩個模糊。** 等向與非等向高斯都會出現，奇數核 **7–21**；×4 等向寬 **0.1–2.8**，非等向軸寬 **0.5–8**、隨機角度。寬度屬操作當下座標，縮圖後同寬模糊在 HR 的等效範圍更大。
+
+**四種縮放。** Bilinear、bicubic、帶位移修正高斯前濾波的 nearest，或先縮後放。先縮後放的兩步可被其他退化隔開，建模不只是單一核寬的不確定性。
+
+**三種雜訊。** Gaussian 可逐通道獨立、灰階共用或相關；JPEG 產生區塊／量化；感光雜訊則近似反向相機流程至 RAW、加雜訊再前向。五種相機參數池，以 **0.25** 機率採此分支，不代表回復真正感光量測。
+
+**隨機順序。** $\mathcal O=\{B_i,B_a,D_s,N_g,N_j,N_c\}$，由排列 $\pi$ 形成：
+
+$$
+y=N_{j,\mathrm{final}}\circ\mathcal O_{\pi(6)}\circ\cdots\circ\mathcal O_{\pi(1)}(x).
+$$
+
+$x$ 為 HR、$y$ 為 LR，$B_i,B_a$ 為兩種模糊，$D_s$ 為縮放，$N_g,N_j,N_c$ 為 Gaussian、JPEG、相機雜訊，末端再 JPEG。算子不交換：降取樣可抑制已有雜訊，之後加則留在最終尺度。
+
+**復原與損失。** ESRGAN 的 RRDB [34] 先 L1 訓練 BSRNet，再加像素／感知／對抗，權重 **1／1／0.1**。VGG-19 [77] 第四 pooling 前第四卷積的啟動前特徵作感知，判別器頻譜正規化 [36]、最小平方對抗 [74]。像素、特徵與合理外觀是不同要求，不驗證紋理真實存在。
+
+#### 結果
+
+DIV2K4D 用 DIV2K **100** 張驗證圖 [47] 的四種退化；表 1 為 Y 通道 PSNR（dB）及越低越好的 LPIPS：
+
+| 退化 | BSRNet PSNR／LPIPS | BSRGAN PSNR／LPIPS |
+| --- | --- | --- |
+| I：bicubic | 29.07 / 0.331 | 27.30 / 0.236 |
+| II | 27.76 / 0.397 | 26.26 / 0.284 |
+| III | 27.59 / 0.419 | 26.28 / 0.284 |
+| IV：提出的管線 | 25.67 / 0.506 | 24.58 / 0.361 |
+
+表格呈現像素保真與感知重建取捨。IV 使用自家退化，測得泛化有價值，但不是涵蓋所有相機的獨立證據。
+
+**20** 張真實圖的 NIQE **5.60**，比其他 **3.99–4.95** 差，作者仍視覺偏好 BSRGAN。這種不一致也是結果，不能改寫成所有數字皆勝。
+
+#### 消融實驗
+
+原文沒有固定預算下逐項移除每個模糊、雜訊與亂序的量化消融。BSRNet／BSRGAN 列改變感知訓練，不單獨隔離亂序。Real-ESRGAN [17] 後續提供一／二階及 sinc 的控制影像比較。
+
+#### 結論
+
+實用觀測分布可能和新骨幹一樣重要，操作順序、相機處理及多樣性都是訓練設計。
+
+#### 限制與問題
+
+合成可能包含少見歷史卻漏掉真實歷史；壓縮網格、空間變化及未知軟體仍難。GAN 可產生氣泡紋理，分數與目視可能衝突。廣泛訓練改善強健性，不確定缺失細節的唯一真值。
+
+### Real-ESRGAN：純合成高階退化（ICCVW 2021）
+
+#### 挑戰
+
+Real-ESRGAN [17] 針對 bicubic 感知模型把 JPEG、振鈴與雜訊當細節放大的問題，合成這些缺陷，並給較廣退化適合的空間判別回饋。
+
+「高階」是重複退化輪數，不是高階微分或求解器。兩輪、第二輪較溫和，近似相機與編輯歷史，不重建每圖真實歷史。
+
+#### 方法
+
+**重複合成。** 每輪模糊、縮放、Gaussian／Poisson、JPEG。Gaussian／generalized／plateau 的機率 **0.7／0.15／0.15**，另有 sinc；核 **7–21**，第一寬 **0.2–3**、第二 **0.2–1.5**。雜訊有灰階／彩色，縮放可放、縮或不變，因中間放大也是合理歷史。
+
+**振鈴。** 有限徑向 sinc 的負瓣在階躍產生過衝，Gaussian 正核不會。可替代中間模糊或用於末端；官方 [63] 把 JPEG 與「最終縮放＋sinc」整組交換，不是三步獨立亂序。
+
+**生成器。** 主 ×4 沿用 RRDB [34]，大部分運算在 LR；小倍率可先 pixel unshuffle。骨幹熟悉，使資料與判別器成為主要改動。
+
+**判別器。** U-Net [35] 提供逐位置真實感、跳接結合局部與廣域；頻譜正規化 [36] 限制放大以穩定訓練。沒有它的密集判別器反而可能不穩並鼓勵假紋理。
+
+**兩階段。** Real-ESRNet 先 L1，初始化 Real-ESRGAN，再最小化：
+
+$$
+\mathcal L_G=\mathcal L_1+\mathcal L_{\mathrm{perceptual}}+0.1\mathcal L_{\mathrm{GAN}}.
+$$
+
+$\mathcal L_1$ 為像素、感知比較 VGG [77]、對抗鼓勵局部自然。多層啟動前感知權重 **0.1／0.1／1／1／1**。**180** 配對池混合不同批次退化。先銳化訓練目標得到 Real-ESRGAN+，這改了目標分布，不是額外推論後處理。
+
+#### 結果
+
+主實驗以真實圖及視覺比較為主，補充 NIQE 表為：
+
+| 資料集 | BSRGAN | Real-ESRGAN | Real-ESRGAN+ |
+| --- | --- | --- | --- |
+| RealSR Canon | 5.7489 | 4.5899 | 4.5314 |
+| RealSR Nikon | 5.9920 | 5.0753 | 5.0247 |
+| DRealSR | 6.1362 | 4.9796 | 4.8458 |
+| DPED iPhone | 5.9906 | 5.4352 | 5.2631 |
+
+NIQE [51] 越低越好，數字來自原文而非本章重跑，資料來源 [19]、[20]、[38]。它衡量統計符合度，不保證身分、文字或細節真實。
+
+#### 消融實驗
+
+四組控制影像顯示：改一階留下更多牆面雜訊／田野模糊；移除 sinc 放大文字振鈴；舊判別器少局部紋理、未正規化 U-Net 有不自然紋理和不穩；移除 generalized／plateau 多數差小、部分真實模糊修不足。主要是視覺消融，沒有逐項通用 PSNR 增益。
+
+#### 結論
+
+多樣缺陷合成加空間對抗回饋，讓標準前饋模型處理更廣的真實輸入。
+
+#### 限制與問題
+
+原文明列扭曲線、GAN 偽影及分布外失敗。主線教學合成刻意簡化，不能當作重現官方分布；應固定權重版本、退化範圍與目標銳化 [63]。
+
+### StableSR：以時間感知編碼器控制凍結先驗（IJCV 2024）
+
+#### 挑戰
+
+StableSR [26] 想保留預訓練自然影像知識，又加入足夠 LR 引導來保結構。重訓整個模型昂貴且可能改掉先驗；不同雜訊時間也不該假設同一條件永遠合適。
+
+因此分開處理三項：凍結去雜訊器的條件、解碼保真控制，以及大圖塊間協調，各有不同失敗目標。
+
+#### 方法
+
+**時間編碼器。** 將放大輸入與時間嵌入編碼，多尺度特徵進入凍結去雜訊器的 SFT，例如：
+
+$$
+\widetilde F_n=(1+\alpha_n)\odot F_n+\beta_n,
+\qquad (\alpha_n,\beta_n)=M_n(E_n(y,t)).
+$$
+
+$y$ 為條件圖，$t$ 為時間，$E_n$ 為尺度 $n$ 條件特徵，$F_n$ 為去雜訊特徵，$M_n$ 為可訓練卷積；scale／shift 與特徵同形狀，$\odot$ 為逐元素乘。只訓練條件與調制，時間讓引導隨內容形成變化。
+
+**可控特徵包覆。** 用輸入編碼特徵 $F_e$ 和解碼特徵 $F_d$ 做另訓練的修正：
+
+$$
+F_m=F_d+wC(F_e,F_d;\theta),\qquad 0\leq w\leq1.
+$$
+
+$C$ 是參數 $\theta$ 的殘差修正，$F_m$ 是新特徵，$w$ 是使用者係數。這不是把 bicubic 與輸出像素混合。先產生潛在重建例子，再固定擴散、訓練連接器；它增加記憶體，可選用。
+
+**校色。** 通道平均／變異數對齊，或以小波換回輸入低頻，減少全域漂色。兩者不恢復高頻證據，也可能保留輸入低頻缺陷。
+
+**聚合取樣。** 每步對重疊潛在區塊估去雜訊更新，以正規化高斯權重合成，再更新共用整圖狀態。它在整段取樣協調重疊，不是各塊生成完才混邊。
+
+**訓練與推論。** 凍結 SD 2.1 [41]，條件以雜訊預測目標訓練，Real-ESRGAN 退化 [17]。原預設 **200 步**、空提示；512 × 512 輸出對應 64 × 64 潛在，條件需和多尺度網格對齊。
+
+#### 結果
+
+**3,000** DIV2K 合成配對：PSNR **23.26**、LPIPS **0.3114**、FID **24.44**、CLIPIQA **0.6771**、MUSIQ **65.92**。同表 Real-ESRGAN+ PSNR **24.47**、FID **49.16**。RealSR **24.65／0.3002**、DRealSR **28.03／0.3284**（PSNR／LPIPS）。有取捨，且不同裁切／退化不可直接拼表。
+
+#### 消融實驗
+
+表 3：有時間、無校色的 RealSR **22.24／0.3180**；加像素校色 **24.65／0.3002**；去時間但保校色 **24.65／0.3157**。相同 PSNR 掩蓋感知差異。
+
+表 4：DIV2K $w=0,\;0.5,\;0.75,\;1$ 的 PSNR **22.68／23.26／24.17／23.14**，FID **25.83／24.44／24.05／26.14**。控制**不是單調指標滑桿**，過大也可能變差。聚合取樣另以影像展示減少分塊不一致。
+
+#### 結論
+
+凍結先驗可用時間條件調適，再於解碼分別控制保真；大圖則需要整段取樣的區塊協調。
+
+#### 限制與問題
+
+多步成本、偏色、假文字／人臉／紋理、連接器記憶體及解析度效應仍存在。偏好不證明場景正確，單步方法雖減去雜訊成本，也有新的訓練近似，見下一個 SR 子章。
+
+### DiffBIR：先移除退化，再生成細節（ECCV 2024）
+
+#### 挑戰
+
+直接以損傷圖控制先驗，可能忠實複製損傷。DiffBIR [27] 先用普通復原器產生乾淨結構條件，再用擴散補合理細節；雖涵蓋多復原任務，下列數字主要是 SR。
+
+兩階段只是設計假說，不保證普遍勝過聯合模型。第一段也可能刪掉內容，第二段只能以先驗猜測已失證據。
+
+#### 方法
+
+**復原模組。** 用廣範圍一階合成配對訓練回歸器，不假定輪數越多條件越好。部署可換任務專用復原器；擴散學消費清理後條件，不依賴前一模型內部構造。
+
+**條件編碼。** $r=R(y)$ 經凍結預訓練 $E$ 得 $c_r=E(r)$；$y$ 是觀測、$R$ 是前段復原器。與先驗共用表示有助保留空間／色彩關係，淺層新編碼器不必然同樣相容。
+
+**IRControlNet。** 複製去雜訊器編碼器和中段，接收 $[z_t,c_r]$，新增通道權重零初始化。多尺度特徵由零初始化卷積接到凍結中段與 skip [42]。$z_t$ 讓控制依目前狀態變化，預訓練初始化免從零學條件路徑。
+
+**生成目標。** 文字條件 $c$、雜訊 $\epsilon$、時間 $t$ 下最小化：
+
+$$
+\mathcal L_{\mathrm{diff}}=\mathbb E\|\epsilon-\epsilon_\theta(z_t,c,t,c_r)\|_2^2.
+$$
+
+期望涵蓋影像、時間與雜訊；只更新控制路徑和連接器，$\epsilon_\theta$ 代表含凍結骨幹的整體預測。清理條件避免把每種雜訊都解讀成內容。
+
+**區域引導。** 推論預測乾淨潛在 $\widetilde z_0$，用 $D$ 解碼，與 $r$ 比較：
+
+$$
+\mathcal L_{\mathrm{guide}}=\frac{1}{HWC}\|W\odot(D(\widetilde z_0)-r)\|_2^2.
+$$
+
+分母 $H,W,C$ 是影像維度，範數中的 $W$ 卻是權重圖，實作宜另名 `weight_map`。平滑區大、梯度強區小，對乾淨潛在做梯度修正，較強壓制天空假紋理。使用者調引導尺度，但它需要解碼和梯度，不是免費後處理。
+
+#### 結果
+
+表 2 的 DIV2K 合成引導掃描：
+
+| 尺度 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | MUSIQ ↑ |
+| --- | --- | --- | --- | --- |
+| 0 | 20.5824 | 0.4277 | 0.3939 | 73.1019 |
+| 0.5 | 21.5808 | 0.4794 | 0.3935 | 68.6657 |
+| 1 | 21.9154 | 0.4986 | 0.4263 | 61.1476 |
+
+拉近條件改善像素保真，MUSIQ 下降；LPIPS 中間值略佳。無真值 RealSRSet 的品質分數不能判定生成細節正確。
+
+#### 消融實驗
+
+表 6 移除前段，PSNR **23.0078→22.8481**，SSIM **0.5198→0.5039**，LPIPS **0.4026→0.4076**；RealSRSet MUSIQ **64.7319→62.5683**。這是消融設定，不是主表同一列。
+
+控制研究的 PSNR／MANIQA：預設 **22.9865／0.2689**；移除 $z_t$ **23.1461／0.2611**；不複製初始化 **22.8818／0.2384**；改控制解碼特徵 **22.9721／0.2686** 且通道成本較大。去 $z_t$ 的 PSNR 更高卻更平滑、收斂慢。編碼器及退化比較支持相容表示與適當範圍，不是固定順序的普遍優勢。
+
+#### 結論
+
+先清損傷讓先驗更易理解條件；相容潛在、控制初始化及區域引導分別解決不同問題。
+
+#### 限制與問題
+
+前段若錯，區域引導也拉向錯誤。強引導壓紋理，弱引導允許語意變動；多步成本與先驗偏差仍在。輸出是重建假說，不是取得新的 HR 證據。
+
+### SeeSR：退化感知的語意提示（CVPR 2024）
+
+#### 挑戰
+
+同一模糊物件可有多種解釋；錯標籤會讓先驗清楚畫出錯物件。SeeSR [29] 把語意條件也視為退化估計問題，乾淨照片標註器不自動適合 LR。
+
+結構約束位置，硬標籤提供概念，軟特徵保留標籤清單漏掉的資訊；另改起點減少純雜訊在平坦區生成不必要紋理。
+
+#### 方法
+
+**DAPE。** 預訓練標註模型 [78] 形成凍結乾淨教師及可調退化分支；配對 HR $x$、LR $y$ 對齊表示和標籤 logits：
+
+$$
+\mathcal L_{\mathrm{DAPE}}=\|f^{\mathrm{rep}}_y-f^{\mathrm{rep}}_x\|_2^2+\lambda\|f^{\mathrm{logit}}_y-f^{\mathrm{logit}}_x\|_2^2.
+$$
+
+$f^{\mathrm{rep}}$ 為表示，$f^{\mathrm{logit}}$ 是閾值前分數，$\lambda$ 平衡，配對向量同維。低秩調適 [79] 降低成本；乾淨教師固定，退化分支學抗損傷語意，依賴訓練配對。
+
+**硬／軟提示。** 閾值標籤作文字，未閾值表示作軟條件。閾值有召回／精確取捨，軟表示補資訊，但兩者都不確定不可辨識物件。
+
+**影像與表示控制。** ControlNet 式 [42] 提供影像特徵；文字 cross-attention 後再加表示 cross-attention，query 來自去雜訊特徵，key／value 來自軟語意。骨幹凍結，新增編碼器、控制及注意力以雜訊預測訓練。
+
+**LR 起點嵌入。** $z_y$ 是放大 LR 的自動編碼，$\bar\alpha_T$ 是末端訊號係數，從下式開始：
+
+$$
+z_T=\sqrt{\bar\alpha_T}\,z_y+\sqrt{1-\bar\alpha_T}\,\epsilon,
+\qquad \epsilon\sim\mathcal N(0,I).
+$$
+
+狀態形狀符合模型，以 LR 訊號取代全雜訊起點，尤其適合原排程仍殘留末端訊號時。這是推論策略，不是新似然，也不保證消除虛構。
+
+#### 結果
+
+×4 合成、實拍與真實低品質圖的研究中，對真值混淆率 **38.6%**，真實圖最佳選擇率 **57.1%**。兩者問題與候選不同，不是同一種準確率。
+
+補充時間：V100 **32 GB**、128→512，SeeSR **50 步／7.24 秒**，StableSR **200／18.70**，Real-ESRGAN **0.09 秒**。不是手機預測，步數也沒涵蓋提示與編碼器工作。
+
+#### 消融實驗
+
+補充表 1 加 LR 起點：DRealSR PSNR **26.55→27.90**，LPIPS **0.3952→0.3299**，CLIPIQA **0.7248→0.6708**。DIV2K PSNR **20.58→21.04**，FID 卻 **32.53→32.79**；不是所有指標都改善。
+
+表 3 的 DIV2K FID：無 DAPE／表示注意力 **37.35**；直接用乾淨標註器 **46.34**；硬提示 **38.92**；軟提示 **38.77**；完整 **32.79**。軟提示 LPIPS 略好卻有語意錯誤，互補是整體語意與多指標主張。標註準確度另有實驗，不能只憑 SR 好看推論。
+
+#### 結論
+
+語意估計也須為退化訓練；結構、標籤與連續表示比直接套乾淨標籤提供更可靠引導。
+
+#### 限制與問題
+
+強退化仍會誤標，先驗可能放大錯誤，小字小臉仍難。標註器增加記憶體與時間；LR 嵌入不使細節變成事實。單步後繼方法若保留擷取器，計時仍須包含它。
+
+### SUPIR：擴大先驗、資料與文字控制（CVPR 2024）
+
+#### 挑戰
+
+SUPIR [30] 同時研究更大先驗、更多復原資料與語言引導。強生成器若只有普通控制器，也可能漂亮但偏離觀測。
+
+三個問題對應元件：編碼器誤讀損傷、控制器昂貴、生成過強而虛構，因此用強健編碼、裁減控制器與 ZeroSFT、復原引導取樣。目標是感知復原，不保證精確原始高頻。
+
+#### 方法
+
+**先驗。** 凍結 SDXL [80]，原文討論 **26 億**參數生成先驗；總部署還有條件、影像及文字處理，不能只以此當完整大小。
+
+**強健編碼。** 從預訓練編碼器調成 $E_{\mathrm{dr}}$，固定 $D$，讓乾淨／退化配對重建接近：
+
+$$
+\mathcal L_E=\|D(E_{\mathrm{dr}}(y))-D(E_{\mathrm{dr}}(x))\|_2^2.
+$$
+
+$x$ 是 HR，$y$ 是放大退化圖，兩者進入同一潛在座標。解碼比較鼓勵條件對損傷不敏感，避免 JPEG 被當內容，不代表任意歧義配對都能有完全相同代碼。
+
+**裁減控制與 ZeroSFT。** 複製生成編碼器作控制，刪除其中編碼區塊一半 Transformer。ZeroSFT 結合零卷積、正規化及空間仿射調制，提供較強條件而維持穩定初始化。裁減的是控制器，並非把凍結先驗也刪一半。
+
+**圖文資料。** **兩千萬**高品質圖文加人臉，以 Real-ESRGAN 式 [17] 合成。負品質例子教提示何謂壞外觀；只有負提示文字未必有效。部署多模態模型 [81] 可描述輸入、使用者可編輯，但文字是額外條件，不是獨立場景量測。
+
+**復原引導取樣。** 修改 EDM [82]，在雜訊 $\sigma_t$ 把去雜訊預測拉向 $z_y$，權重為：
+
+$$
+k_t=(\sigma_t/\sigma_T)^{\tau_r},
+\qquad \widetilde z=\widehat z+k_t(z_y-\widehat z).
+$$
+
+$\widehat z$ 是乾淨估計，$\sigma_T$ 為起始尺度，$\tau_r$ 為控制指數。修正估計用來更新取樣方向，不是末圖覆寫。高雜訊較強、逐漸衰減；較小指數讓後期仍有較強輸入影響。預設 **100 步、$\tau_r=4$**。
+
+#### 結果
+
+表 2a 的 **60** 張真圖，SUPIR CLIPIQA／MUSIQ／MANIQA **0.8232／73.00／0.4295**，StableSR **0.7654／70.70／0.3035**。合成 ×4 表 1 的 SUPIR PSNR／SSIM／LPIPS **22.66／0.5763／0.2662**，BSRGAN **24.97／0.6572／0.2261**。強無參考分數可伴較差參考保真。
+
+大解析度操作點與別篇小裁切不同。除非統一重跑，不能把處理規則不同的列拼為單一排名。
+
+#### 消融實驗
+
+表 2c 將 ZeroSFT 換零卷積，PSNR **20.66→19.47**，SSIM **0.4763→0.4261**，LPIPS **0.3412→0.3969**，MUSIQ 卻 **73.66→74.00**。漂亮細節增分不等於保真。
+
+表 2b：有負訓練例、無正負品質提示，MUSIQ **68.94**；兩提示皆有 **73.66**，PSNR **22.90→20.66**。移除負訓練例但保留兩提示，MUSIQ **72.68**、MANIQA **0.3180**，完整 MANIQA **0.4740**。其餘視覺消融涉及規模、強健編碼及指數，不能全部歸因大模型。
+
+#### 結論
+
+放大先驗是系統設計：強健表示、控制器、圖文資料及取樣限制共同維持特定輸入的用途。
+
+#### 限制與問題
+
+系統大型且多步，描述昂貴也可能誤導；提示編輯可能改屬性，強引導也可能保留缺陷。美感不等於正確，依賴事實細節的應用仍須量測約束與不確定性處理。
+
+## 參考文獻
+
+1. N. Efrat, D. Glasner, A. Apartsin, B. Nadler and A. Levin, "Accurate Blur Models vs. Image Priors in Single Image Super-Resolution," in *Proc. IEEE ICCV*, 2013, pp. 2832–2839. [doi](https://doi.org/10.1109/ICCV.2013.352) · [CVF](https://openaccess.thecvf.com/content_iccv_2013/html/Efrat_Accurate_Blur_Models_2013_ICCV_paper.html)
+2. K. Zhang, W. Zuo and L. Zhang, "Learning a Single Convolutional Super-Resolution Network for Multiple Degradations," *CVPR*, 2018. [paper](https://openaccess.thecvf.com/content_cvpr_2018/papers/Zhang_Learning_a_Single_CVPR_2018_paper.pdf)
+3. A. Liu, Y. Liu, J. Gu, Y. Qiao, C. Dong, "Blind Image Super-Resolution: A Survey and Beyond," *IEEE TPAMI (early access)*, 2022. [source](https://arxiv.org/abs/2107.03055)
+4. Honggang Chen, Xiaohai He, Linbo Qing, Yuanyuan Wu, Chao Ren, Ray E. Sheriff, Ce Zhu, "Real-world single image super-resolution: A brief review," *Information Fusion*, 2022. [source](https://doi.org/10.1016/j.inffus.2021.09.005)
+5. B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+6. Y. Xu, S. R. Tseng, Y. Tseng, H. Kuo, Y. Tsai, "Unified Dynamic Convolutional Network for Super-Resolution with Variational Degradations," *CVPR*, 2020. [source](https://arxiv.org/abs/2004.06965)
+7. K. Zhang, L. Van Gool, R. Timofte, "Deep Unfolding Network for Image Super-Resolution," *CVPR*, 2020. [source](https://arxiv.org/abs/2003.10428)
+8. J. Gu, H. Lu, W. Zuo and C. Dong, "Blind Super-Resolution With Iterative Kernel Correction," *CVPR*, 2019. [paper](https://openaccess.thecvf.com/content_CVPR_2019/papers/Gu_Blind_Super-Resolution_With_Iterative_Kernel_Correction_CVPR_2019_paper.pdf)
+9. Z. Luo, Y. Huang, S. Li, L. Wang and T. Tan, "Unfolding the Alternating Optimization for Blind Super Resolution," *NeurIPS*, 2020. [paper](https://proceedings.neurips.cc/paper_files/paper/2020/file/3d2d8ccb37df977cb6d9da15b76c3f3a-Paper.pdf)
+10. Z. Luo, H. Huang, L. Yu, Y. Li, H. Fan and S. Liu, "Deep Constrained Least Squares for Blind Image Super-Resolution," *CVPR*, 2022. [paper](https://openaccess.thecvf.com/content/CVPR2022/papers/Luo_Deep_Constrained_Least_Squares_for_Blind_Image_Super-Resolution_CVPR_2022_paper.pdf)
+11. T. Michaeli, M. Irani, "Nonparametric Blind Super-resolution," *Proceedings of the IEEE International Conference on Computer Vision*, 2013. [source](https://openaccess.thecvf.com/content_iccv_2013/html/Michaeli_Nonparametric_Blind_Super-resolution_2013_ICCV_paper.html)
+12. S. Bell-Kligler, A. Shocher and M. Irani, "Blind Super-Resolution Kernel Estimation using an Internal-GAN," *NeurIPS*, 2019. [paper](https://papers.nips.cc/paper_files/paper/2019/file/5fd0b37cd7dbbb00f97ba6ce92bf5add-Paper.pdf)
+13. A. Shocher, N. Cohen and M. Irani, "‘Zero-Shot’ Super-Resolution Using Deep Internal Learning," in *Proc. IEEE/CVF CVPR*, 2018, pp. 3118–3126. [doi](https://doi.org/10.1109/CVPR.2018.00329) · [arXiv](https://arxiv.org/abs/1712.06087)
+14. L. Wang, Y. Wang, X. Dong, Q. Xu, J. Yang, W. An and Y. Guo, "Unsupervised Degradation Representation Learning for Blind Super-Resolution," *CVPR*, 2021. [paper](https://openaccess.thecvf.com/content/CVPR2021/papers/Wang_Unsupervised_Degradation_Representation_Learning_for_Blind_Super-Resolution_CVPR_2021_paper.pdf)
+15. B. Xia, Y. Zhang, Y. Wang, Y. Tian, W. Yang, R. Timofte and L. Van Gool, "Knowledge Distillation Based Degradation Estimation for Blind Super-Resolution," *ICLR*, 2023. [paper](https://arxiv.org/pdf/2211.16928)
+16. K. Zhang, J. Liang, L. Van Gool, R. Timofte, "Designing a Practical Degradation Model for Deep Blind Image Super-Resolution," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021/html/Zhang_Designing_a_Practical_Degradation_Model_for_Deep_Blind_Image_Super-Resolution_ICCV_2021_paper.html)
+17. X. Wang, L. Xie, C. Dong, Y. Shan, "Real-ESRGAN: Training Real-World Blind Super-Resolution With Pure Synthetic Data," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Wang_Real-ESRGAN_Training_Real-World_Blind_Super-Resolution_With_Pure_Synthetic_Data_ICCVW_2021_paper.html)
+18. J. Liang, H. Zeng, L. Zhang, "Efficient and Degradation-Adaptive Network for Real-World Image Super-Resolution," *ECCV*, 2022. [source](https://arxiv.org/abs/2203.14216)
+19. J. Cai, H. Zeng, H. Yong, Z. Cao, L. Zhang, "Toward Real-World Single Image Super-Resolution: A New Benchmark and a New Model," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2019. [source](https://openaccess.thecvf.com/content_ICCV_2019/html/Cai_Toward_Real-World_Single_Image_Super-Resolution_A_New_Benchmark_and_a_ICCV_2019_paper.html)
+20. P. Wei, Z. Xie, H. Lu, Z. Zhan, Q. Ye, W. Zuo, L. Lin, "Component Divide-and-Conquer for Real-World Image Super-Resolution," *ECCV*, 2020. [source](https://arxiv.org/abs/2008.01928)
+21. C. Chen, Z. Xiong, X. Tian, Z. Zha, F. Wu, "Camera Lens Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2019. [source](https://openaccess.thecvf.com/content_CVPR_2019/html/Chen_Camera_Lens_Super-Resolution_CVPR_2019_paper.html)
+22. Y. Yuan, S. Liu, J. Zhang, Y. Zhang, C. Dong, L. Lin, "Unsupervised Image Super-Resolution using Cycle-in-Cycle Generative Adversarial Networks," *CVPR Workshops*, 2018. [source](https://arxiv.org/abs/1809.00437)
+23. A. Bulat, J. Yang, G. Tzimiropoulos, "To learn image super-resolution, use a GAN to learn how to do image degradation first," *ECCV*, 2018. [source](https://arxiv.org/abs/1807.11458)
+24. M. Fritsche, S. Gu, R. Timofte, "Frequency Separation for Real-World Super-Resolution," *ICCV Workshops*, 2019. [source](https://arxiv.org/abs/1911.07850)
+25. X. Ji, Y. Cao, Y. Tai, C. Wang, J. Li, F. Huang, "Real-World Super-Resolution via Kernel Estimation and Noise Injection," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops*, 2020. [source](https://openaccess.thecvf.com/content_CVPRW_2020/html/w31/Ji_Real-World_Super-Resolution_via_Kernel_Estimation_and_Noise_Injection_CVPRW_2020_paper.html)
+26. J. Wang, Z. Yue, S. Zhou, K. C. K. Chan, C. C. Loy, "Exploiting Diffusion Prior for Real-World Image Super-Resolution," *IJCV*, 2024. [source](https://arxiv.org/abs/2305.07015)
+27. X. Lin, J. He, Z. Chen, et al., "DiffBIR: Towards Blind Image Restoration with Generative Diffusion Prior," *ECCV*, 2024. [source](https://arxiv.org/abs/2308.15070)
+28. T. Yang, R. Wu, P. Ren, X. Xie, L. Zhang, "Pixel-Aware Stable Diffusion for Realistic Image Super-resolution and Personalized Stylization," *ECCV*, 2024. [source](https://arxiv.org/abs/2308.14469)
+29. R. Wu, T. Yang, L. Sun, Z. Zhang, S. Li, L. Zhang, "SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2024. [source](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_SeeSR_Towards_Semantics-Aware_Real-World_Image_Super-Resolution_CVPR_2024_paper.html) · [supplementary experiments](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_SeeSR_Towards_Semantics-Aware_CVPR_2024_supplemental.pdf)
+30. F. Yu, J. Gu, Z. Li, et al., "Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration In the Wild," *CVPR*, 2024. [source](https://arxiv.org/abs/2401.13627)
+31. Z. Yue, J. Wang, C. C. Loy, "ResShift: Efficient Diffusion Model for Image Super-resolution by Residual Shifting," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2307.12348)
+32. X. Wang, K. Yu, C. Dong, C. C. Loy, "Recovering Realistic Texture in Image Super-Resolution by Deep Spatial Feature Transform," *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition*, 2018. [source](https://openaccess.thecvf.com/content_cvpr_2018/html/Wang_Recovering_Realistic_Texture_CVPR_2018_paper.html)
+33. K. He, H. Fan, Y. Wu, S. Xie, R. Girshick, "Momentum Contrast for Unsupervised Visual Representation Learning," *CVPR*, 2020. [source](https://arxiv.org/abs/1911.05722)
+34. X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018 (Lecture Notes in Computer Science, 2019), pp. 63–79. [doi](https://doi.org/10.1007/978-3-030-11021-5_5) · [arXiv](https://arxiv.org/abs/1809.00219)
+35. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," in *Proc. MICCAI*, 2015, pp. 234–241. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) · [arXiv](https://arxiv.org/abs/1505.04597)
+36. T. Miyato, T. Kataoka, M. Koyama, Y. Yoshida, "Spectral Normalization for Generative Adversarial Networks," *ICLR*, 2018. [source](https://arxiv.org/abs/1802.05957)
+37. J. Liang, H. Zeng, L. Zhang, "Details or Artifacts: A Locally Discriminative Learning Approach to Realistic Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2022. [source](https://openaccess.thecvf.com/content/CVPR2022/html/Liang_Details_or_Artifacts_A_Locally_Discriminative_Learning_Approach_to_Realistic_CVPR_2022_paper.html)
+38. A. Ignatov, N. Kobyshev, R. Timofte, K. Vanhoey, L. Van Gool, "DSLR-Quality Photos on Mobile Devices with Deep Convolutional Networks," *ICCV*, 2017. [source](https://arxiv.org/abs/1704.02470)
+39. A. Lugmayr, M. Danelljan, R. Timofte, "Unsupervised Learning for Real-World Super-Resolution," *arXiv preprint*, 2019. [source](https://arxiv.org/abs/1909.09629)
+40. A. Lugmayr, M. Danelljan, R. Timofte, et al., "NTIRE 2020 Challenge on Real-World Image Super-Resolution: Methods and Results," *CVPR Workshops*, 2020. [source](https://arxiv.org/abs/2005.01996)
+41. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+42. L. Zhang, A. Rao, M. Agrawala, "Adding Conditional Control to Text-to-Image Diffusion Models," *ICCV*, 2023. [source](https://arxiv.org/abs/2302.05543)
+43. Y. Ai, X. Zhou, H. Huang, X. Han, Z. Chen, Q. You, H. Yang, "DreamClear: High-Capacity Real-World Image Restoration with Privacy-Safe Dataset Curation," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2410.18666)
+44. Z. Duan, J. Zhang, X. Jin, et al., "DiT4SR: Taming Diffusion Transformer for Real-World Image Super-Resolution," *ICCV*, 2025. [source](https://arxiv.org/abs/2503.23580)
+45. R. Wu, L. Sun, Z. Ma, L. Zhang, "One-Step Effective Diffusion Network for Real-World Image Super-Resolution," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2406.08177)
+46. Y. Wang, W. Yang, X. Chen, et al., "SinSR: Diffusion-Based Image Super-Resolution in a Single Step," *CVPR*, 2024. [source](https://arxiv.org/abs/2311.14760)
+47. E. Agustsson and R. Timofte, "NTIRE 2017 Challenge on Single Image Super-Resolution: Dataset and Study," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1122–1131. [doi](https://doi.org/10.1109/CVPRW.2017.150) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Agustsson_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+48. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+49. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+50. K. Ding, K. Ma, S. Wang, E. P. Simoncelli, "Image Quality Assessment: Unifying Structure and Texture Similarity," *IEEE TPAMI*, 2022. [source](https://arxiv.org/abs/2004.07728)
+51. A. Mittal, R. Soundararajan and A. C. Bovik, "Making a “Completely Blind” Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+52. J. Ke, Q. Wang, Y. Wang, P. Milanfar, F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," *ICCV*, 2021. [source](https://arxiv.org/abs/2108.05997)
+53. S. Yang, T. Wu, S. Shi, S. Lao, Y. Gong, M. Cao, J. Wang, Y. Yang, "MANIQA: Multi-dimension Attention Network for No-Reference Image Quality Assessment," *CVPR Workshops*, 2022. [source](https://arxiv.org/abs/2204.08958)
+54. J. Wang, K. C. K. Chan, C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," *AAAI*, 2023. [source](https://arxiv.org/abs/2207.12396)
+55. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [source](https://arxiv.org/abs/1706.08500)
+56. R. Timofte, S. Gu, J. Wu, L. Van Gool, "NTIRE 2018 Challenge on Single Image Super-Resolution: Methods and Results," *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition Workshops*, 2018. [source](https://openaccess.thecvf.com/content_cvpr_2018_workshops/w13/html/Timofte_NTIRE_2018_Challenge_CVPR_2018_paper.html)
+57. J. Cai, S. Gu, R. Timofte, L. Zhang, "NTIRE 2019 Challenge on Real Image Super-Resolution: Methods and Results," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops*, 2019. [source](https://openaccess.thecvf.com/content_CVPRW_2019/html/NTIRE/Cai_NTIRE_2019_Challenge_on_Real_Image_Super-Resolution_Methods_and_Results_CVPRW_2019_paper.html)
+58. A. Lugmayr, M. Danelljan, R. Timofte, et al., "AIM 2019 Challenge on Real-World Image Super-Resolution: Methods and Results," *ICCV Workshops*, 2019. [source](https://arxiv.org/abs/1911.07783)
+59. P. Wei, H. Lu, R. Timofte, et al., "AIM 2020 Challenge on Real Image Super-Resolution: Methods and Results," *ECCV Workshops*, 2020. [source](https://arxiv.org/abs/2009.12072)
+60. Z. Chen, K. Liu, J. Gong, J. Wang, L. Sun, Z. Wu, R. Timofte, Y. Zhang et al., "NTIRE 2025 Challenge on Image Super-Resolution (×4): Methods and Results," in *Proc. IEEE/CVF CVPR Workshops*, 2025, pp. 1525–1535. [doi](https://doi.org/10.1109/CVPRW67362.2025.00141) · [arXiv](https://arxiv.org/abs/2504.14582)
+61. Le Zhang, Ao Li, Qibin Hou, Ce Zhu, Yonina C. Eldar, "Deep-Learning-Empowered Super Resolution: A Comprehensive Survey and Future Prospects," *Proceedings of the IEEE*, 2025. [source](https://doi.org/10.1109/JPROC.2025.3613233)
+62. W. Ren, R. Goyal, Z. Hu, T. T. Aumentado-Armstrong, I. Mohomed and A. Levinshtein, "Hallucination Score: Towards Mitigating Hallucinations in Generative Image Super-Resolution," arXiv:2507.14367, 2025. [arXiv](https://arxiv.org/abs/2507.14367)
+63. Real-ESRGAN contributors, “Real-ESRGAN model and ×4-plus training configuration,” official source, accessed 2026-11-02. [model](https://github.com/xinntao/Real-ESRGAN/blob/master/realesrgan/models/realesrgan_model.py) · [configuration](https://github.com/xinntao/Real-ESRGAN/blob/master/options/train_realesrgan_x4plus.yml)
+64. D. P. Kingma, J. Ba, "Adam: A Method for Stochastic Optimization," *ICLR*, 2015. [source](https://arxiv.org/abs/1412.6980)
+65. M. Bevilacqua, A. Roumy, C. Guillemot and M.-L. Alberi Morel, "Low-Complexity Single-Image Super-Resolution based on Nonnegative Neighbor Embedding," in *Proc. BMVC*, 2012, pp. 135.1–135.10. [doi](https://doi.org/10.5244/C.26.135)
+66. R. Zeyde, M. Elad and M. Protter, "On Single Image Scale-Up Using Sparse-Representations," in *Curves and Surfaces*, Lecture Notes in Computer Science, Springer, 2012, pp. 711–730. [doi](https://doi.org/10.1007/978-3-642-27413-8_47)
+67. D. Martin, C. Fowlkes, D. Tal and J. Malik, "A Database of Human Segmented Natural Images and Its Application to Evaluating Segmentation Algorithms and Measuring Ecological Statistics," in *Proc. IEEE ICCV*, 2001, vol. 2, pp. 416–423. [doi](https://doi.org/10.1109/ICCV.2001.937655)
+68. J.-B. Huang, A. Singh and N. Ahuja, "Single Image Super-Resolution from Transformed Self-Exemplars," in *Proc. IEEE CVPR*, 2015, pp. 5197–5206. [doi](https://doi.org/10.1109/CVPR.2015.7299156) · [CVF](https://openaccess.thecvf.com/content_cvpr_2015/html/Huang_Single_Image_Super-Resolution_2015_CVPR_paper.html)
+69. J. Kim, J. K. Lee and K. M. Lee, "Accurate Image Super-Resolution Using Very Deep Convolutional Networks," in *Proc. IEEE CVPR*, 2016, pp. 1646–1654. [doi](https://doi.org/10.1109/CVPR.2016.182) · [arXiv](https://arxiv.org/abs/1511.04587)
+70. C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017, pp. 105–114. [doi](https://doi.org/10.1109/CVPR.2017.19) · [arXiv](https://arxiv.org/abs/1609.04802)
+71. R. Timofte, E. Agustsson, L. Van Gool, M.-H. Yang, L. Zhang et al., "NTIRE 2017 Challenge on Single Image Super-Resolution: Methods and Results," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1110–1121. [doi](https://doi.org/10.1109/CVPRW.2017.149) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Timofte_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+72. Y. Matsui, K. Ito, Y. Aramaki, A. Fujimoto, T. Ogawa, T. Yamasaki and K. Aizawa, "Sketch-Based Manga Retrieval Using Manga109 Dataset," *Multimedia Tools and Applications*, vol. 76, no. 20, pp. 21811–21838, 2017. [doi](https://doi.org/10.1007/s11042-016-4020-z)
+73. KernelGAN contributors, “Adversarial losses and kernel constraints,” official source, accessed 2026-11-02. [loss definitions](https://github.com/sefibk/KernelGAN/blob/master/loss.py) · [alternating updates](https://github.com/sefibk/KernelGAN/blob/master/kernelGAN.py)
+74. X. Mao, Q. Li, H. Xie, R. Y. K. Lau, Z. Wang, S. P. Smolley, "Least Squares Generative Adversarial Networks," *ICCV*, 2017. [source](https://arxiv.org/abs/1611.04076)
+75. DASR contributors, “MoCo logits and contrastive cross-entropy implementation,” official DASR source, commit `51524af8021c94a502ee002e135867a1b75dc7d0`, accessed 2026-11-02. [encoder](https://github.com/SYSU-SAIL/DASR/blob/51524af8021c94a502ee002e135867a1b75dc7d0/moco/builder.py) · [loss](https://github.com/SYSU-SAIL/DASR/blob/51524af8021c94a502ee002e135867a1b75dc7d0/trainer.py)
+76. Y. Zhang, K. Li, K. Li, L. Wang, B. Zhong and Y. Fu, "Image Super-Resolution Using Very Deep Residual Channel Attention Networks," in *Proc. ECCV*, 2018, pp. 294–310. [doi](https://doi.org/10.1007/978-3-030-01234-2_18) · [arXiv](https://arxiv.org/abs/1807.02758)
+77. K. Simonyan and A. Zisserman, "Very Deep Convolutional Networks for Large-Scale Image Recognition," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1409.1556)
+78. Y. Zhang, X. Huang, J. Ma, et al., "Recognize Anything: A Strong Image Tagging Model," *CVPR Workshops*, 2024. [source](https://arxiv.org/abs/2306.03514)
+79. E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, W. Chen, "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [source](https://arxiv.org/abs/2106.09685)
+80. D. Podell, Z. English, K. Lacey, A. Blattmann, T. Dockhorn, J. Müller, J. Penna, R. Rombach, "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis," *ICLR*, 2024. [source](https://arxiv.org/abs/2307.01952)
+81. H. Liu, C. Li, Q. Wu, Y. J. Lee, "Visual Instruction Tuning," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2304.08485)
+82. T. Karras, M. Aittala, T. Aila, S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [source](https://arxiv.org/abs/2206.00364)

@@ -52,8 +52,7 @@ export const chapterPlan: Record<string, string[]> = {
     'deep-learning/dl-04a-super-resolution': ['restoration-ambiguity', 'pixel-sampling'],
     'deep-learning/dl-04b-video-super-resolution': ['pixel-sampling'],
     'deep-learning/dl-04c-generative-restoration': ['restoration-ambiguity'],
-    'deep-learning/dl-05-low-light-enhancement': ['lowlight-photons'],
-    'deep-learning/dl-05a-lightweight-enhancement': ['lowlight-photons', 'lut-trilinear'],
+    'deep-learning/dl-05-low-light-enhancement': ['lowlight-photons', 'lut-trilinear'],
     'deep-learning/dl-05b-image-fusion': ['image-fusion'],
     'deep-learning/dl-06-object-tracking': ['tracking-association'],
     'deep-learning/dl-06a-pose-keypoints': ['heatmap-decoding'],
@@ -107,6 +106,9 @@ export const chapterPlan: Record<string, string[]> = {
 };
 /** Chapters where the text, figures and exercises already carry the idea. They show no experiment. */
 export const readingOnlyChapters = [
+    'deep-learning/dl-04e-one-step-diffusion-super-resolution',
+    'deep-learning/dl-10b-one-step-generation',
+    'deep-learning/dl-04d-blind-real-world-super-resolution',
     'foundations/getting-started',
     'image-processing/dip-01-introduction',
     'image-processing/dip-07-wavelets-transforms',

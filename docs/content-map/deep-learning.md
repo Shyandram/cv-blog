@@ -13,7 +13,7 @@
 | DLCV 02 | [DLCV 02 · Deep Image Classification](#dl-02-image-classification) | advanced | DLCV 01, IP 13 | `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` |
 | DLCV 02A | &emsp;↳ [DLCV 02A · Face Recognition and Metric Learning](#dl-02a-face-metric-learning) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` |
 | DLCV 03 | [DLCV 03 · Object Detection: From R-CNN to DETR](#dl-03-object-detection) | advanced | DLCV 02, IP 12 | `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` |
-| DLCV 03A | &emsp;↳ [DLCV 03A · Real-Time Detection: The YOLO Family and RT-DETR](#dl-03a-real-time-detection) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` |
+| DLCV 03A | &emsp;↳ [DLCV 03A · One-Stage Detection, Read Through YOLOv4](#dl-03a-real-time-detection) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` |
 | DLCV 03B | &emsp;↳ [DLCV 03B · 3D Object Detection: LiDAR, Cameras and Bird's-Eye View](#dl-09-3d-object-detection) | advanced | DLCV 03, DLCV 11 | `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` |
 | DLCV 04 | [DLCV 04 · Image Segmentation: Semantic, Instance and Panoptic](#dl-03b-image-segmentation) | advanced | DLCV 03, IP 10 | `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` |
 | DLCV 05 | [DLCV 05 · Human Pose and Keypoint Estimation](#dl-06a-pose-keypoints) | advanced | DLCV 03 | `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` |
@@ -21,16 +21,18 @@
 | DLCV 07 | [DLCV 07 · Object Tracking: From Single-Object to Multi-Object](#dl-06-object-tracking) | advanced | DLCV 03, IP 10, IP 12 | `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` |
 | DLCV 08 | [DLCV 08 · Video Understanding and Action Recognition](#dl-06b-video-understanding) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-06b-video-understanding.mdx` |
 | DLCV 09 | [DLCV 09 · Deep Image Restoration: Low-Level Vision](#dl-04-image-restoration) | advanced | DLCV 01, IP 05 | `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` |
-| DLCV 09A | &emsp;↳ [DLCV 09A · Image Super-Resolution](#dl-04a-super-resolution) | advanced | DLCV 09, IP 02, IP 04 | `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` |
-| DLCV 09A.1 | &emsp;&emsp;↳ [DLCV 09A.1 · Video Super-Resolution: Using Time to Recover Detail](#dl-04b-video-super-resolution) | advanced | DLCV 09, DLCV 09A | `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` |
+| DLCV 09A | &emsp;↳ [DLCV 09A · Non-Blind Image Super-Resolution](#dl-04a-super-resolution) | advanced | DLCV 09, IP 02, IP 04 | `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` |
+| DLCV 09A.1 | &emsp;&emsp;↳ [DLCV 09A.1 · Blind and Real-World Image Super-Resolution](#dl-04d-blind-real-world-super-resolution) | advanced | DLCV 09A, DLCV 09B | `src/content/tutorials/en/deep-learning/dl-04d-blind-real-world-super-resolution.mdx` |
+| DLCV 09A.2 | &emsp;&emsp;↳ [DLCV 09A.2 · One-Step Diffusion Super-Resolution](#dl-04e-one-step-diffusion-super-resolution) | advanced | DLCV 09A.1, DLCV 12B | `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx` |
+| DLCV 09A.3 | &emsp;&emsp;↳ [DLCV 09A.3 · Video Super-Resolution: Using Time to Recover Detail](#dl-04b-video-super-resolution) | advanced | DLCV 09, DLCV 09A | `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` |
 | DLCV 09B | &emsp;↳ [DLCV 09B · Generative Image Restoration: Sampling a Plausible Answer](#dl-04c-generative-restoration) | advanced | DLCV 09, ML 07 | `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` |
 | DLCV 09C | &emsp;↳ [DLCV 09C · Low-Light Image Enhancement](#dl-05-low-light-enhancement) | advanced | DLCV 09, IP 03, IP 06 | `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` |
-| DLCV 09C.1 | &emsp;&emsp;↳ [DLCV 09C.1 · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables](#dl-05a-lightweight-enhancement) | advanced | DLCV 09C, IP 03 | `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx` |
-| DLCV 10 | [DLCV 10 · Image Fusion: Infrared–Visible, Multi-Focus and Multi-Exposure](#dl-05b-image-fusion) | advanced | DLCV 09, IP 07 | `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` |
+| DLCV 10 | [DLCV 10 · Image Fusion: Complementary Images, Useful Outputs](#dl-05b-image-fusion) | advanced | DLCV 09, IP 07 | `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` |
 | DLCV 11 | [DLCV 11 · 3D Reconstruction: From Multi-View Geometry to NeRF and Gaussian Splatting](#dl-08-3d-reconstruction) | advanced | IP 12, DLCV 01 | `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` |
 | DLCV 11A | &emsp;↳ [DLCV 11A · Depth Estimation and Optical Flow](#dl-08a-depth-optical-flow) | advanced | DLCV 11 | `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` |
 | DLCV 12 | [DLCV 12 · Image Generation: From GANs to Text-to-Image Systems](#dl-10-image-generation) | advanced | ML 07, ML 08 | `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` |
 | DLCV 12A | &emsp;↳ [DLCV 12A · Video Generation](#dl-10a-video-generation) | advanced | DLCV 12 | `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` |
+| DLCV 12B | &emsp;↳ [DLCV 12B · One-Step Generation](#dl-10b-one-step-generation) | advanced | ML 08, DLCV 12 | `src/content/tutorials/en/deep-learning/dl-10b-one-step-generation.mdx` |
 | DLCV 13 | [DLCV 13 · World Models: Video, Latent Dynamics and Planning](#dl-07-world-models) | advanced | ML 04, ML 10, DLCV 07 | `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` |
 | DLCV 14 | [DLCV 14 · Robustness: Distribution Shift, Adversarial Examples and Anomalies](#dl-11-robustness) | advanced | DLCV 02 | `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` |
 
@@ -476,45 +478,59 @@ How deep networks find and label every object in an image: box regression, IoU, 
 
 ## dl-03a-real-time-detection
 
-**DLCV 03A · Real-Time Detection: The YOLO Family and RT-DETR** · DLCV 03A・即時偵測：YOLO 系列與 RT-DETR  
-How detectors fast enough for live video are built, trained and measured: latency budgets, the backbone–neck–head design, the YOLO line from YOLO v1 to YOLO26, real-time DETRs, and the move from NMS to one-to-one label assignment.
+**DLCV 03A · One-Stage Detection, Read Through YOLOv4** · DLCV 03A・以 YOLOv4 讀懂單階段偵測  
+A detailed introduction to YOLOv4 as the representative one-stage detector: its anatomy, every training and inference component it tests, its experiments, its limits, and paper-by-paper introductions to the YOLO versions, one-stage detectors and real-time DETRs before and after it.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-03a-real-time-detection.mdx`
 - Pages: `/en/learn/deep-learning/real-time-detection/`, `/en/learn/deep-learning/real-time-detection/notes/`, `/en/learn/deep-learning/real-time-detection/papers/`
 - Course tree: under `deep-learning/dl-03-object-detection`
-- Level advanced · depth 2 · needs: `deep-learning/dl-03-object-detection` · tags: object-detection, real-time, yolo, rt-detr, label-assignment, nms
-- Figures: 5 (script `scripts/figures/dl_03a_real_time_detection.py`) · references: 52 · experiments: detection-nms
+- Level advanced · depth 2 · needs: `deep-learning/dl-03-object-detection` · tags: object-detection, real-time, yolo, yolov4, one-stage, rt-detr, label-assignment, nms
+- Figures: 6 (script `scripts/figures/dl_03a_real_time_detection.py`) · references: 87 · experiments: detection-nms
 
 - [What you'll learn](/en/learn/deep-learning/real-time-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/real-time-detection/#the-big-picture) `the-big-picture`
-- [What "real-time" means](/en/learn/deep-learning/real-time-detection/#what-real-time-means) `what-real-time-means`
-  - [Latency, throughput and frames per second](/en/learn/deep-learning/real-time-detection/#latency-throughput-and-frames-per-second) `latency-throughput-and-frames-per-second`
-  - [What is counted, and what is not](/en/learn/deep-learning/real-time-detection/#what-is-counted-and-what-is-not) `what-is-counted-and-what-is-not`
-  - [Why NMS time is not a constant](/en/learn/deep-learning/real-time-detection/#why-nms-time-is-not-a-constant) `why-nms-time-is-not-a-constant`
-- [Anatomy of a modern one-stage detector](/en/learn/deep-learning/real-time-detection/#anatomy-of-a-modern-one-stage-detector) `anatomy-of-a-modern-one-stage-detector`
-  - [Backbone, neck and head](/en/learn/deep-learning/real-time-detection/#backbone-neck-and-head) `backbone-neck-and-head`
-  - [Anchor-based and anchor-free prediction](/en/learn/deep-learning/real-time-detection/#anchor-based-and-anchor-free-prediction) `anchor-based-and-anchor-free-prediction`
-  - [Decoding the output tensor](/en/learn/deep-learning/real-time-detection/#decoding-the-output-tensor) `decoding-the-output-tensor`
-- [The YOLO lineage](/en/learn/deep-learning/real-time-detection/#the-yolo-lineage) `the-yolo-lineage`
+- [The family at a glance](/en/learn/deep-learning/real-time-detection/#the-family-at-a-glance) `the-family-at-a-glance`
   - [A timeline](/en/learn/deep-learning/real-time-detection/#a-timeline) `a-timeline`
-  - [Five ideas to remember](/en/learn/deep-learning/real-time-detection/#five-ideas-to-remember) `five-ideas-to-remember`
-- [Real-time DETRs](/en/learn/deep-learning/real-time-detection/#real-time-detrs) `real-time-detrs`
-  - [Why the original DETR was slow](/en/learn/deep-learning/real-time-detection/#why-the-original-detr-was-slow) `why-the-original-detr-was-slow`
-  - [RT-DETR](/en/learn/deep-learning/real-time-detection/#rt-detr) `rt-detr`
-  - [After RT-DETR](/en/learn/deep-learning/real-time-detection/#after-rt-detr) `after-rt-detr`
-- [Label assignment and the NMS-free trend](/en/learn/deep-learning/real-time-detection/#label-assignment-and-the-nms-free-trend) `label-assignment-and-the-nms-free-trend`
-  - [One-to-many versus one-to-one](/en/learn/deep-learning/real-time-detection/#one-to-many-versus-one-to-one) `one-to-many-versus-one-to-one`
-  - [Dual assignment, hybrid matching and dense one-to-one](/en/learn/deep-learning/real-time-detection/#dual-assignment-hybrid-matching-and-dense-one-to-one) `dual-assignment-hybrid-matching-and-dense-one-to-one`
-  - [A toy comparison](/en/learn/deep-learning/real-time-detection/#a-toy-comparison) `a-toy-comparison`
-- [Training recipe essentials](/en/learn/deep-learning/real-time-detection/#training-recipe-essentials) `training-recipe-essentials`
-  - [Data augmentation: mosaic and mixup](/en/learn/deep-learning/real-time-detection/#data-augmentation-mosaic-and-mixup) `data-augmentation-mosaic-and-mixup`
-  - [Weight averaging (EMA)](/en/learn/deep-learning/real-time-detection/#weight-averaging-ema) `weight-averaging-ema`
-  - [Loss components](/en/learn/deep-learning/real-time-detection/#loss-components) `loss-components`
-- [Evaluation and deployment](/en/learn/deep-learning/real-time-detection/#evaluation-and-deployment) `evaluation-and-deployment`
-  - [Accuracy: COCO mAP](/en/learn/deep-learning/real-time-detection/#accuracy-coco-map) `accuracy-coco-map`
+  - [The papers introduced in this chapter](/en/learn/deep-learning/real-time-detection/#the-papers-introduced-in-this-chapter) `the-papers-introduced-in-this-chapter`
+- [Challenge](/en/learn/deep-learning/real-time-detection/#challenge) `challenge`
+  - [A fast detector that one ordinary GPU can train](/en/learn/deep-learning/real-time-detection/#a-fast-detector-that-one-ordinary-gpu-can-train) `a-fast-detector-that-one-ordinary-gpu-can-train`
+  - [What "real-time" means and how YOLOv4 times it](/en/learn/deep-learning/real-time-detection/#what-real-time-means-and-how-yolov4-times-it) `what-real-time-means-and-how-yolov4-times-it`
+  - [Why the paper tests "freebies" and "specials"](/en/learn/deep-learning/real-time-detection/#why-the-paper-tests-freebies-and-specials) `why-the-paper-tests-freebies-and-specials`
+- [Method](/en/learn/deep-learning/real-time-detection/#method) `method`
+  - [The detector anatomy: input, backbone, neck and head](/en/learn/deep-learning/real-time-detection/#the-detector-anatomy-input-backbone-neck-and-head) `the-detector-anatomy-input-backbone-neck-and-head`
+  - [Backbone: CSPDarknet53](/en/learn/deep-learning/real-time-detection/#backbone-cspdarknet53) `backbone-cspdarknet53`
+  - [Neck, part 1: the SPP block](/en/learn/deep-learning/real-time-detection/#neck-part-1-the-spp-block) `neck-part-1-the-spp-block`
+  - [Neck, part 2: PANet path aggregation](/en/learn/deep-learning/real-time-detection/#neck-part-2-panet-path-aggregation) `neck-part-2-panet-path-aggregation`
+  - [Head: the YOLOv3 head and box decoding](/en/learn/deep-learning/real-time-detection/#head-the-yolov3-head-and-box-decoding) `head-the-yolov3-head-and-box-decoding`
+  - [Label assignment: several anchors per object](/en/learn/deep-learning/real-time-detection/#label-assignment-several-anchors-per-object) `label-assignment-several-anchors-per-object`
+  - [Activation: Mish](/en/learn/deep-learning/real-time-detection/#activation-mish) `activation-mish`
+  - [Box loss: from IoU to CIoU](/en/learn/deep-learning/real-time-detection/#box-loss-from-iou-to-ciou) `box-loss-from-iou-to-ciou`
+  - [Post-processing: NMS and DIoU-NMS](/en/learn/deep-learning/real-time-detection/#post-processing-nms-and-diou-nms) `post-processing-nms-and-diou-nms`
+  - [Data augmentation: Mosaic and CutMix](/en/learn/deep-learning/real-time-detection/#data-augmentation-mosaic-and-cutmix) `data-augmentation-mosaic-and-cutmix`
+  - [Self-adversarial training](/en/learn/deep-learning/real-time-detection/#self-adversarial-training) `self-adversarial-training`
+  - [Regularization: DropBlock and class label smoothing](/en/learn/deep-learning/real-time-detection/#regularization-dropblock-and-class-label-smoothing) `regularization-dropblock-and-class-label-smoothing`
+  - [Normalization: cross mini-batch normalization](/en/learn/deep-learning/real-time-detection/#normalization-cross-mini-batch-normalization) `normalization-cross-mini-batch-normalization`
+  - [Attention and fusion: the modified SAM and weighted residuals](/en/learn/deep-learning/real-time-detection/#attention-and-fusion-the-modified-sam-and-weighted-residuals) `attention-and-fusion-the-modified-sam-and-weighted-residuals`
+  - [Training schedule: cosine annealing, genetic search and random shapes](/en/learn/deep-learning/real-time-detection/#training-schedule-cosine-annealing-genetic-search-and-random-shapes) `training-schedule-cosine-annealing-genetic-search-and-random-shapes`
+  - [The complete recipe](/en/learn/deep-learning/real-time-detection/#the-complete-recipe) `the-complete-recipe`
+- [Results](/en/learn/deep-learning/real-time-detection/#results) `results`
+  - [Training and evaluation setup](/en/learn/deep-learning/real-time-detection/#training-and-evaluation-setup) `training-and-evaluation-setup`
+  - [The main comparison](/en/learn/deep-learning/real-time-detection/#the-main-comparison) `the-main-comparison`
   - [Speed: a measurement checklist](/en/learn/deep-learning/real-time-detection/#speed-a-measurement-checklist) `speed-a-measurement-checklist`
+- [Ablations](/en/learn/deep-learning/real-time-detection/#ablations) `ablations`
+  - [Classifier ablations](/en/learn/deep-learning/real-time-detection/#classifier-ablations) `classifier-ablations`
+  - [Detector bag of freebies](/en/learn/deep-learning/real-time-detection/#detector-bag-of-freebies) `detector-bag-of-freebies`
+  - [Detector bag of specials](/en/learn/deep-learning/real-time-detection/#detector-bag-of-specials) `detector-bag-of-specials`
+  - [Backbones and pre-trained weights](/en/learn/deep-learning/real-time-detection/#backbones-and-pre-trained-weights) `backbones-and-pre-trained-weights`
+  - [Mini-batch size](/en/learn/deep-learning/real-time-detection/#mini-batch-size) `mini-batch-size`
+- [Conclusion](/en/learn/deep-learning/real-time-detection/#conclusion) `conclusion`
+- [Problems](/en/learn/deep-learning/real-time-detection/#problems) `problems`
+  - [Limits of the method](/en/learn/deep-learning/real-time-detection/#limits-of-the-method) `limits-of-the-method`
+  - [Limits of the evidence](/en/learn/deep-learning/real-time-detection/#limits-of-the-evidence) `limits-of-the-evidence`
+  - [The paper and the released configuration](/en/learn/deep-learning/real-time-detection/#the-paper-and-the-released-configuration) `the-paper-and-the-released-configuration`
   - [Export, reduced precision and re-parameterization](/en/learn/deep-learning/real-time-detection/#export-reduced-precision-and-re-parameterization) `export-reduced-precision-and-re-parameterization`
-- [Failure modes and how to choose a model](/en/learn/deep-learning/real-time-detection/#failure-modes-and-how-to-choose-a-model) `failure-modes-and-how-to-choose-a-model`
+  - [What later one-stage detectors changed](/en/learn/deep-learning/real-time-detection/#what-later-one-stage-detectors-changed) `what-later-one-stage-detectors-changed`
+  - [Beyond one-stage: real-time DETRs](/en/learn/deep-learning/real-time-detection/#beyond-one-stage-real-time-detrs) `beyond-one-stage-real-time-detrs`
 - [Modern view](/en/learn/deep-learning/real-time-detection/#modern-view) `modern-view`
   - [What the surveys say](/en/learn/deep-learning/real-time-detection/#what-the-surveys-say) `what-the-surveys-say`
   - [The state of the art, 2023–2026](/en/learn/deep-learning/real-time-detection/#the-state-of-the-art-20232026) `the-state-of-the-art-20232026`
@@ -524,14 +540,33 @@ How detectors fast enough for live video are built, trained and measured: latenc
 
 *Supplementary notes (one page each, index `notes/`):*
 
-- [The YOLO family, version by version](/en/learn/deep-learning/real-time-detection/notes/the-yolo-family-version-by-version/) `notes/the-yolo-family-version-by-version/`
-- [Real-time DETRs after RT-DETR, in detail](/en/learn/deep-learning/real-time-detection/notes/real-time-detrs-after-rt-detr-in-detail/) `notes/real-time-detrs-after-rt-detr-in-detail/`
+- [Ultralytics releases without a paper](/en/learn/deep-learning/real-time-detection/notes/ultralytics-releases-without-a-paper/) `notes/ultralytics-releases-without-a-paper/`
 - [Folding a re-parameterized block into one convolution](/en/learn/deep-learning/real-time-detection/notes/folding-a-re-parameterized-block-into-one-convolution/) `notes/folding-a-re-parameterized-block-into-one-convolution/`
 
 *Paper guides (one page each, index `papers/`):*
 
-- [Reading the YOLOv10 paper](/en/learn/deep-learning/real-time-detection/papers/reading-the-yolov10-paper/) `papers/reading-the-yolov10-paper/`
-- [Reading the RT-DETR paper](/en/learn/deep-learning/real-time-detection/papers/reading-the-rt-detr-paper/) `papers/reading-the-rt-detr-paper/`
+- [YOLO v1: detection as a single regression](/en/learn/deep-learning/real-time-detection/papers/yolo-v1-detection-as-a-single-regression/) `papers/yolo-v1-detection-as-a-single-regression/`
+- [YOLOv2 and YOLO9000: anchors, priors and joint training](/en/learn/deep-learning/real-time-detection/papers/yolov2-and-yolo9000-anchors-priors-and-joint-training/) `papers/yolov2-and-yolo9000-anchors-priors-and-joint-training/`
+- [YOLOv3: three scales and Darknet-53](/en/learn/deep-learning/real-time-detection/papers/yolov3-three-scales-and-darknet-53/) `papers/yolov3-three-scales-and-darknet-53/`
+- [SSD: multi-scale default boxes](/en/learn/deep-learning/real-time-detection/papers/ssd-multi-scale-default-boxes/) `papers/ssd-multi-scale-default-boxes/`
+- [RetinaNet and the focal loss](/en/learn/deep-learning/real-time-detection/papers/retinanet-and-the-focal-loss/) `papers/retinanet-and-the-focal-loss/`
+- [FCOS: per-pixel anchor-free detection](/en/learn/deep-learning/real-time-detection/papers/fcos-per-pixel-anchor-free-detection/) `papers/fcos-per-pixel-anchor-free-detection/`
+- [CenterNet: objects as points](/en/learn/deep-learning/real-time-detection/papers/centernet-objects-as-points/) `papers/centernet-objects-as-points/`
+- [YOLOR: explicit features and learned implicit representations](/en/learn/deep-learning/real-time-detection/papers/yolor-explicit-features-and-learned-implicit-representations/) `papers/yolor-explicit-features-and-learned-implicit-representations/`
+- [YOLOX: anchor-free YOLO with SimOTA](/en/learn/deep-learning/real-time-detection/papers/yolox-anchor-free-yolo-with-simota/) `papers/yolox-anchor-free-yolo-with-simota/`
+- [YOLOv6: a re-parameterized industrial detector](/en/learn/deep-learning/real-time-detection/papers/yolov6-a-re-parameterized-industrial-detector/) `papers/yolov6-a-re-parameterized-industrial-detector/`
+- [YOLOv7: a trainable bag of freebies](/en/learn/deep-learning/real-time-detection/papers/yolov7-a-trainable-bag-of-freebies/) `papers/yolov7-a-trainable-bag-of-freebies/`
+- [YOLOv9: programmable gradient information](/en/learn/deep-learning/real-time-detection/papers/yolov9-programmable-gradient-information/) `papers/yolov9-programmable-gradient-information/`
+- [YOLOv10: NMS-free training with dual assignments](/en/learn/deep-learning/real-time-detection/papers/yolov10-nms-free-training-with-dual-assignments/) `papers/yolov10-nms-free-training-with-dual-assignments/`
+- [YOLOv12: an attention-centric YOLO](/en/learn/deep-learning/real-time-detection/papers/yolov12-an-attention-centric-yolo/) `papers/yolov12-an-attention-centric-yolo/`
+- [YOLOv13: hypergraph correlation](/en/learn/deep-learning/real-time-detection/papers/yolov13-hypergraph-correlation/) `papers/yolov13-hypergraph-correlation/`
+- [YOLO26: a DFL-free end-to-end YOLO](/en/learn/deep-learning/real-time-detection/papers/yolo26-a-dfl-free-end-to-end-yolo/) `papers/yolo26-a-dfl-free-end-to-end-yolo/`
+- [RT-DETR: a real-time DETR](/en/learn/deep-learning/real-time-detection/papers/rt-detr-a-real-time-detr/) `papers/rt-detr-a-real-time-detr/`
+- [RT-DETRv2: a bag of freebies for RT-DETR](/en/learn/deep-learning/real-time-detection/papers/rt-detrv2-a-bag-of-freebies-for-rt-detr/) `papers/rt-detrv2-a-bag-of-freebies-for-rt-detr/`
+- [D-FINE: boxes as refined distributions](/en/learn/deep-learning/real-time-detection/papers/d-fine-boxes-as-refined-distributions/) `papers/d-fine-boxes-as-refined-distributions/`
+- [DEIM: dense one-to-one matching](/en/learn/deep-learning/real-time-detection/papers/deim-dense-one-to-one-matching/) `papers/deim-dense-one-to-one-matching/`
+- [RF-DETR: architecture search on a DINOv2 backbone](/en/learn/deep-learning/real-time-detection/papers/rf-detr-architecture-search-on-a-dinov2-backbone/) `papers/rf-detr-architecture-search-on-a-dinov2-backbone/`
+- [DEIMv2: DINOv3 features for real-time DETRs](/en/learn/deep-learning/real-time-detection/papers/deimv2-dinov3-features-for-real-time-detrs/) `papers/deimv2-dinov3-features-for-real-time-detrs/`
 
 ## dl-09-3d-object-detection
 
@@ -974,14 +1009,14 @@ One degradation model, many tasks: how deep networks undo blur, noise, low resol
 
 ## dl-04a-super-resolution
 
-**DLCV 09A · Image Super-Resolution** · DLCV 09A・影像超解析度  
-Why super-resolution is ill-posed, how degradation models, sub-pixel convolution, residual, GAN, transformer and diffusion networks attack it, and how to evaluate the results honestly.
+**DLCV 09A · Non-Blind Image Super-Resolution** · DLCV 09A・非盲影像超解析度  
+Non-blind single-image super-resolution: why it is ill-posed, why pixel losses give blur, the design decisions behind SRCNN, ESPCN, EDSR, RCAN, SwinIR and HAT, perceptual and diffusion SR, and how to evaluate the results honestly.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-04a-super-resolution.mdx`
-- Pages: `/en/learn/deep-learning/super-resolution/`, `/en/learn/deep-learning/super-resolution/notes/`, `/en/learn/deep-learning/super-resolution/papers/`
-- Course tree: under `deep-learning/dl-04-image-restoration` · sub-chapters: `deep-learning/dl-04b-video-super-resolution`
-- Level advanced · depth 2 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-02-fundamentals`, `image-processing/dip-04-frequency-domain` · tags: super-resolution, image-restoration, low-level-vision, pixel-shuffle, perception-distortion, diffusion-models, blind-super-resolution
-- Figures: 10 (script `scripts/figures/dl_04a_super_resolution.py`) · references: 72 · experiments: restoration-ambiguity, pixel-sampling
+- Pages: `/en/learn/deep-learning/super-resolution/`, `/en/learn/deep-learning/super-resolution/notes/`
+- Course tree: under `deep-learning/dl-04-image-restoration` · sub-chapters: `deep-learning/dl-04d-blind-real-world-super-resolution`, `deep-learning/dl-04e-one-step-diffusion-super-resolution`, `deep-learning/dl-04b-video-super-resolution`
+- Level advanced · depth 2 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-02-fundamentals`, `image-processing/dip-04-frequency-domain` · tags: super-resolution, image-restoration, low-level-vision, pixel-shuffle, residual-learning, attention, perception-distortion, diffusion-models
+- Figures: 10 (script `scripts/figures/dl_04a_super_resolution.py`) · references: 57 · experiments: restoration-ambiguity, pixel-sampling
 
 - [What you'll learn](/en/learn/deep-learning/super-resolution/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/super-resolution/#the-big-picture) `the-big-picture`
@@ -989,36 +1024,30 @@ Why super-resolution is ill-posed, how degradation models, sub-pixel convolution
   - [Setup and notation](/en/learn/deep-learning/super-resolution/#setup-and-notation) `setup-and-notation`
   - [Why the problem is ill-posed](/en/learn/deep-learning/super-resolution/#why-the-problem-is-ill-posed) `why-the-problem-is-ill-posed`
   - [The posterior-mean blur](/en/learn/deep-learning/super-resolution/#the-posterior-mean-blur) `the-posterior-mean-blur`
-- [Degradation models](/en/learn/deep-learning/super-resolution/#degradation-models) `degradation-models`
-  - [The bicubic benchmark setting](/en/learn/deep-learning/super-resolution/#the-bicubic-benchmark-setting) `the-bicubic-benchmark-setting`
-  - [Blur, downsample, noise, compression](/en/learn/deep-learning/super-resolution/#blur-downsample-noise-compression) `blur-downsample-noise-compression`
-  - [Why bicubic-trained models fail on real photos](/en/learn/deep-learning/super-resolution/#why-bicubic-trained-models-fail-on-real-photos) `why-bicubic-trained-models-fail-on-real-photos`
-  - [Aliasing and the frequency view](/en/learn/deep-learning/super-resolution/#aliasing-and-the-frequency-view) `aliasing-and-the-frequency-view`
-- [Classical super-resolution](/en/learn/deep-learning/super-resolution/#classical-super-resolution) `classical-super-resolution`
-  - [Interpolation as a fixed linear filter](/en/learn/deep-learning/super-resolution/#interpolation-as-a-fixed-linear-filter) `interpolation-as-a-fixed-linear-filter`
-  - [Example-based SR, self-similarity and sparse coding](/en/learn/deep-learning/super-resolution/#example-based-sr-self-similarity-and-sparse-coding) `example-based-sr-self-similarity-and-sparse-coding`
-  - [Learned linear regressors](/en/learn/deep-learning/super-resolution/#learned-linear-regressors) `learned-linear-regressors`
-- [CNN super-resolution](/en/learn/deep-learning/super-resolution/#cnn-super-resolution) `cnn-super-resolution`
-  - [Pre-upsampling: SRCNN and VDSR](/en/learn/deep-learning/super-resolution/#pre-upsampling-srcnn-and-vdsr) `pre-upsampling-srcnn-and-vdsr`
-  - [Post-upsampling and sub-pixel convolution](/en/learn/deep-learning/super-resolution/#post-upsampling-and-sub-pixel-convolution) `post-upsampling-and-sub-pixel-convolution`
-  - [Deep residual and attention networks](/en/learn/deep-learning/super-resolution/#deep-residual-and-attention-networks) `deep-residual-and-attention-networks`
+  - [What the low-resolution image has lost: the frequency view](/en/learn/deep-learning/super-resolution/#what-the-low-resolution-image-has-lost-the-frequency-view) `what-the-low-resolution-image-has-lost-the-frequency-view`
+- [The benchmark setting: a known degradation](/en/learn/deep-learning/super-resolution/#the-benchmark-setting-a-known-degradation) `the-benchmark-setting-a-known-degradation`
+- [Classical baselines](/en/learn/deep-learning/super-resolution/#classical-baselines) `classical-baselines`
+  - [Interpolation: a fixed linear filter](/en/learn/deep-learning/super-resolution/#interpolation-a-fixed-linear-filter) `interpolation-a-fixed-linear-filter`
+  - [Learning from examples: from patch pairs to linear filters](/en/learn/deep-learning/super-resolution/#learning-from-examples-from-patch-pairs-to-linear-filters) `learning-from-examples-from-patch-pairs-to-linear-filters`
+- [Deep SR networks: a story of design decisions](/en/learn/deep-learning/super-resolution/#deep-sr-networks-a-story-of-design-decisions) `deep-sr-networks-a-story-of-design-decisions`
+  - [Decision 1: where to upsample](/en/learn/deep-learning/super-resolution/#decision-1-where-to-upsample) `decision-1-where-to-upsample`
+  - [Decision 2: how to upsample: transposed or sub-pixel convolution](/en/learn/deep-learning/super-resolution/#decision-2-how-to-upsample-transposed-or-sub-pixel-convolution) `decision-2-how-to-upsample-transposed-or-sub-pixel-convolution`
+  - [Decision 3: how deep, and why predict a residual](/en/learn/deep-learning/super-resolution/#decision-3-how-deep-and-why-predict-a-residual) `decision-3-how-deep-and-why-predict-a-residual`
+  - [Decision 4: remove batch normalization](/en/learn/deep-learning/super-resolution/#decision-4-remove-batch-normalization) `decision-4-remove-batch-normalization`
+  - [Decision 5: reweight channels (RCAN)](/en/learn/deep-learning/super-resolution/#decision-5-reweight-channels-rcan) `decision-5-reweight-channels-rcan`
+  - [Decision 6: let pixels attend to content far away (SwinIR, HAT)](/en/learn/deep-learning/super-resolution/#decision-6-let-pixels-attend-to-content-far-away-swinir-hat) `decision-6-let-pixels-attend-to-content-far-away-swinir-hat`
 - [Perceptual and adversarial SR](/en/learn/deep-learning/super-resolution/#perceptual-and-adversarial-sr) `perceptual-and-adversarial-sr`
   - [Perceptual losses and GANs](/en/learn/deep-learning/super-resolution/#perceptual-losses-and-gans) `perceptual-losses-and-gans`
   - [The perception–distortion trade-off](/en/learn/deep-learning/super-resolution/#the-perceptiondistortion-trade-off) `the-perceptiondistortion-trade-off`
-- [Transformer SR](/en/learn/deep-learning/super-resolution/#transformer-sr) `transformer-sr`
-- [Diffusion-based SR](/en/learn/deep-learning/super-resolution/#diffusion-based-sr) `diffusion-based-sr`
-- [Blind and real-world SR](/en/learn/deep-learning/super-resolution/#blind-and-real-world-sr) `blind-and-real-world-sr`
-  - [Degradation synthesis pipelines](/en/learn/deep-learning/super-resolution/#degradation-synthesis-pipelines) `degradation-synthesis-pipelines`
-  - [Kernel estimation](/en/learn/deep-learning/super-resolution/#kernel-estimation) `kernel-estimation`
-  - [Real captured pairs](/en/learn/deep-learning/super-resolution/#real-captured-pairs) `real-captured-pairs`
+- [Diffusion SR for a known degradation](/en/learn/deep-learning/super-resolution/#diffusion-sr-for-a-known-degradation) `diffusion-sr-for-a-known-degradation`
+- [When the degradation is unknown: blind and real-world SR](/en/learn/deep-learning/super-resolution/#when-the-degradation-is-unknown-blind-and-real-world-sr) `when-the-degradation-is-unknown-blind-and-real-world-sr`
 - [Arbitrary-scale SR](/en/learn/deep-learning/super-resolution/#arbitrary-scale-sr) `arbitrary-scale-sr`
-- [Video and reference-based SR (brief)](/en/learn/deep-learning/super-resolution/#video-and-reference-based-sr-brief) `video-and-reference-based-sr-brief`
 - [Efficiency](/en/learn/deep-learning/super-resolution/#efficiency) `efficiency`
 - [Evaluating SR](/en/learn/deep-learning/super-resolution/#evaluating-sr) `evaluating-sr`
   - [Y-channel PSNR and SSIM with border shaving](/en/learn/deep-learning/super-resolution/#y-channel-psnr-and-ssim-with-border-shaving) `y-channel-psnr-and-ssim-with-border-shaving`
   - [The standard test sets](/en/learn/deep-learning/super-resolution/#the-standard-test-sets) `the-standard-test-sets`
   - [Why PSNR and perceptual rankings disagree](/en/learn/deep-learning/super-resolution/#why-psnr-and-perceptual-rankings-disagree) `why-psnr-and-perceptual-rankings-disagree`
-- [Datasets, benchmarks and NTIRE challenges](/en/learn/deep-learning/super-resolution/#datasets-benchmarks-and-ntire-challenges) `datasets-benchmarks-and-ntire-challenges`
+- [Datasets and benchmarks](/en/learn/deep-learning/super-resolution/#datasets-and-benchmarks) `datasets-and-benchmarks`
 - [Failure modes](/en/learn/deep-learning/super-resolution/#failure-modes) `failure-modes`
 - [Modern view](/en/learn/deep-learning/super-resolution/#modern-view) `modern-view`
   - [Survey papers](/en/learn/deep-learning/super-resolution/#survey-papers) `survey-papers`
@@ -1030,20 +1059,138 @@ Why super-resolution is ill-posed, how degradation models, sub-pixel convolution
 *Supplementary notes (one page each, index `notes/`):*
 
 - [Example-based SR and sparse coding in detail](/en/learn/deep-learning/super-resolution/notes/example-based-sr-and-sparse-coding-in-detail/) `notes/example-based-sr-and-sparse-coding-in-detail/`
-- [Three kernel-aware methods](/en/learn/deep-learning/super-resolution/notes/three-kernel-aware-methods/) `notes/three-kernel-aware-methods/`
-- [LIIF's three refinements](/en/learn/deep-learning/super-resolution/notes/liifs-three-refinements/) `notes/liifs-three-refinements/`
+- [Aliasing in the LR spectrum](/en/learn/deep-learning/super-resolution/notes/aliasing-in-the-lr-spectrum/) `notes/aliasing-in-the-lr-spectrum/`
+- [Adjustable gradient clipping](/en/learn/deep-learning/super-resolution/notes/adjustable-gradient-clipping/) `notes/adjustable-gradient-clipping/`
 - [Why a posterior sample costs twice the MMSE](/en/learn/deep-learning/super-resolution/notes/why-a-posterior-sample-costs-twice-the-mmse/) `notes/why-a-posterior-sample-costs-twice-the-mmse/`
+- [ESRGAN's changes in detail](/en/learn/deep-learning/super-resolution/notes/esrgans-changes-in-detail/) `notes/esrgans-changes-in-detail/`
+- [LIIF's three refinements](/en/learn/deep-learning/super-resolution/notes/liifs-three-refinements/) `notes/liifs-three-refinements/`
+
+## dl-04d-blind-real-world-super-resolution
+
+**DLCV 09A.1 · Blind and Real-World Image Super-Resolution** · DLCV 09A.1・盲與真實世界影像超解析度  
+How super-resolution copes with damage nobody measured: estimating or conditioning on the blur kernel, learning degradation embeddings, synthesizing realistic training data, capturing real pairs, and borrowing generative priors, with honest evaluation when there is no ground truth.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-04d-blind-real-world-super-resolution.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-04d-blind-real-world-super-resolution.mdx`
+- Pages: `/en/learn/deep-learning/blind-real-world-super-resolution/`, `/en/learn/deep-learning/blind-real-world-super-resolution/notes/`, `/en/learn/deep-learning/blind-real-world-super-resolution/papers/`
+- Course tree: under `deep-learning/dl-04a-super-resolution`
+- Level advanced · depth 3 · needs: `deep-learning/dl-04a-super-resolution`, `deep-learning/dl-04c-generative-restoration` · tags: super-resolution, blind-super-resolution, real-world-super-resolution, degradation-model, kernel-estimation, diffusion-models, image-quality-assessment
+- Figures: 4 (script `scripts/figures/dl_04d_blind_real_world_super_resolution.py`) · references: 82
+
+- [What you'll learn](/en/learn/deep-learning/blind-real-world-super-resolution/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/blind-real-world-super-resolution/#the-big-picture) `the-big-picture`
+- [The problem: damage nobody measured](/en/learn/deep-learning/blind-real-world-super-resolution/#the-problem-damage-nobody-measured) `the-problem-damage-nobody-measured`
+  - [The degradation model, briefly](/en/learn/deep-learning/blind-real-world-super-resolution/#the-degradation-model-briefly) `the-degradation-model-briefly`
+  - [What "blind" and "real-world" mean](/en/learn/deep-learning/blind-real-world-super-resolution/#what-blind-and-real-world-mean) `what-blind-and-real-world-mean`
+  - [Why bicubic-trained models fail on real photos](/en/learn/deep-learning/blind-real-world-super-resolution/#why-bicubic-trained-models-fail-on-real-photos) `why-bicubic-trained-models-fail-on-real-photos`
+- [A map of the field](/en/learn/deep-learning/blind-real-world-super-resolution/#a-map-of-the-field) `a-map-of-the-field`
+- [Explicit degradation modelling](/en/learn/deep-learning/blind-real-world-super-resolution/#explicit-degradation-modelling) `explicit-degradation-modelling`
+  - [Telling the network the kernel](/en/learn/deep-learning/blind-real-world-super-resolution/#telling-the-network-the-kernel) `telling-the-network-the-kernel`
+  - [Estimating and correcting the kernel](/en/learn/deep-learning/blind-real-world-super-resolution/#estimating-and-correcting-the-kernel) `estimating-and-correcting-the-kernel`
+  - [Estimating the kernel from the image itself](/en/learn/deep-learning/blind-real-world-super-resolution/#estimating-the-kernel-from-the-image-itself) `estimating-the-kernel-from-the-image-itself`
+  - [What goes wrong: kernel mismatch](/en/learn/deep-learning/blind-real-world-super-resolution/#what-goes-wrong-kernel-mismatch) `what-goes-wrong-kernel-mismatch`
+- [Degradation representation learning](/en/learn/deep-learning/blind-real-world-super-resolution/#degradation-representation-learning) `degradation-representation-learning`
+- [Implicit modelling by degradation synthesis](/en/learn/deep-learning/blind-real-world-super-resolution/#implicit-modelling-by-degradation-synthesis) `implicit-modelling-by-degradation-synthesis`
+  - [BSRGAN: shuffle the steps](/en/learn/deep-learning/blind-real-world-super-resolution/#bsrgan-shuffle-the-steps) `bsrgan-shuffle-the-steps`
+  - [Real-ESRGAN: repeat the steps](/en/learn/deep-learning/blind-real-world-super-resolution/#real-esrgan-repeat-the-steps) `real-esrgan-repeat-the-steps`
+  - [How training pairs are produced](/en/learn/deep-learning/blind-real-world-super-resolution/#how-training-pairs-are-produced) `how-training-pairs-are-produced`
+  - [Later refinements](/en/learn/deep-learning/blind-real-world-super-resolution/#later-refinements) `later-refinements`
+- [Real paired and unpaired data](/en/learn/deep-learning/blind-real-world-super-resolution/#real-paired-and-unpaired-data) `real-paired-and-unpaired-data`
+  - [Captured pairs](/en/learn/deep-learning/blind-real-world-super-resolution/#captured-pairs) `captured-pairs`
+  - [Unpaired learning and domain translation](/en/learn/deep-learning/blind-real-world-super-resolution/#unpaired-learning-and-domain-translation) `unpaired-learning-and-domain-translation`
+- [Real-world SR with generative priors](/en/learn/deep-learning/blind-real-world-super-resolution/#real-world-sr-with-generative-priors) `real-world-sr-with-generative-priors`
+  - [Why a generative prior](/en/learn/deep-learning/blind-real-world-super-resolution/#why-a-generative-prior) `why-a-generative-prior`
+  - [What each method conditions on](/en/learn/deep-learning/blind-real-world-super-resolution/#what-each-method-conditions-on) `what-each-method-conditions-on`
+  - [Diffusion transformers and newer priors](/en/learn/deep-learning/blind-real-world-super-resolution/#diffusion-transformers-and-newer-priors) `diffusion-transformers-and-newer-priors`
+  - [Fidelity, hallucination and the knob](/en/learn/deep-learning/blind-real-world-super-resolution/#fidelity-hallucination-and-the-knob) `fidelity-hallucination-and-the-knob`
+  - [Fewer steps](/en/learn/deep-learning/blind-real-world-super-resolution/#fewer-steps) `fewer-steps`
+- [Evaluation in the blind and real-world setting](/en/learn/deep-learning/blind-real-world-super-resolution/#evaluation-in-the-blind-and-real-world-setting) `evaluation-in-the-blind-and-real-world-setting`
+  - [Full-reference metrics on synthetic test sets](/en/learn/deep-learning/blind-real-world-super-resolution/#full-reference-metrics-on-synthetic-test-sets) `full-reference-metrics-on-synthetic-test-sets`
+  - [No-reference metrics](/en/learn/deep-learning/blind-real-world-super-resolution/#no-reference-metrics) `no-reference-metrics`
+  - [Why rankings disagree](/en/learn/deep-learning/blind-real-world-super-resolution/#why-rankings-disagree) `why-rankings-disagree`
+  - [User studies and challenges](/en/learn/deep-learning/blind-real-world-super-resolution/#user-studies-and-challenges) `user-studies-and-challenges`
+- [Failure modes](/en/learn/deep-learning/blind-real-world-super-resolution/#failure-modes) `failure-modes`
+- [Modern view](/en/learn/deep-learning/blind-real-world-super-resolution/#modern-view) `modern-view`
+  - [Survey papers](/en/learn/deep-learning/blind-real-world-super-resolution/#survey-papers) `survey-papers`
+  - [State of the art, 2023–2026](/en/learn/deep-learning/blind-real-world-super-resolution/#state-of-the-art-20232026) `state-of-the-art-20232026`
+  - [Open problems](/en/learn/deep-learning/blind-real-world-super-resolution/#open-problems) `open-problems`
+- [Key takeaways](/en/learn/deep-learning/blind-real-world-super-resolution/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/blind-real-world-super-resolution/#exercises) `exercises`
+
+*Supplementary notes (one page each, index `notes/`):*
+
+- [The high-order degradation pipeline, step by step](/en/learn/deep-learning/blind-real-world-super-resolution/notes/the-high-order-degradation-pipeline-step-by-step/) `notes/the-high-order-degradation-pipeline-step-by-step/`
+- [Sinc filters and ringing](/en/learn/deep-learning/blind-real-world-super-resolution/notes/sinc-filters-and-ringing/) `notes/sinc-filters-and-ringing/`
+- [Why the kernel is hard to identify](/en/learn/deep-learning/blind-real-world-super-resolution/notes/why-the-kernel-is-hard-to-identify/) `notes/why-the-kernel-is-hard-to-identify/`
 
 *Paper guides (one page each, index `papers/`):*
 
-- [Wang, Chen and Hoi: Deep Learning for Image Super-Resolution (TPAMI 2021)](/en/learn/deep-learning/super-resolution/papers/wang-chen-and-hoi-deep-learning-for-image-super-resolution-tpami-2021/) `papers/wang-chen-and-hoi-deep-learning-for-image-super-resolution-tpami-2021/`
-- [Liu et al.: Blind Image Super-Resolution, a Survey and Beyond (TPAMI 2022)](/en/learn/deep-learning/super-resolution/papers/liu-et-al-blind-image-super-resolution-a-survey-and-beyond-tpami-2022/) `papers/liu-et-al-blind-image-super-resolution-a-survey-and-beyond-tpami-2022/`
-- [Chen et al.: Real-World Single Image Super-Resolution, a Brief Review (Information Fusion 2022)](/en/learn/deep-learning/super-resolution/papers/chen-et-al-real-world-single-image-super-resolution-a-brief-review-information-fusion-2022/) `papers/chen-et-al-real-world-single-image-super-resolution-a-brief-review-information-fusion-2022/`
-- [Moser et al.: Diffusion Models, Image Super-Resolution, and Everything (TNNLS 2025)](/en/learn/deep-learning/super-resolution/papers/moser-et-al-diffusion-models-image-super-resolution-and-everything-tnnls-2025/) `papers/moser-et-al-diffusion-models-image-super-resolution-and-everything-tnnls-2025/`
+- [SRMD: one network for many known degradations (CVPR 2018)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/srmd-one-network-for-many-known-degradations-cvpr-2018/) `papers/srmd-one-network-for-many-known-degradations-cvpr-2018/`
+- [IKC: iterative kernel correction (CVPR 2019)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/ikc-iterative-kernel-correction-cvpr-2019/) `papers/ikc-iterative-kernel-correction-cvpr-2019/`
+- [KernelGAN: kernel estimation with an internal GAN (NeurIPS 2019)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/kernelgan-kernel-estimation-with-an-internal-gan-neurips-2019/) `papers/kernelgan-kernel-estimation-with-an-internal-gan-neurips-2019/`
+- [DAN: unfolding the alternating optimization (NeurIPS 2020)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/dan-unfolding-the-alternating-optimization-neurips-2020/) `papers/dan-unfolding-the-alternating-optimization-neurips-2020/`
+- [DASR: contrastive degradation representations (CVPR 2021)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/dasr-contrastive-degradation-representations-cvpr-2021/) `papers/dasr-contrastive-degradation-representations-cvpr-2021/`
+- [BSRGAN: a practical degradation model (ICCV 2021)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/bsrgan-a-practical-degradation-model-iccv-2021/) `papers/bsrgan-a-practical-degradation-model-iccv-2021/`
+- [Real-ESRGAN: high-order degradation with pure synthetic data (ICCVW 2021)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/real-esrgan-high-order-degradation-with-pure-synthetic-data-iccvw-2021/) `papers/real-esrgan-high-order-degradation-with-pure-synthetic-data-iccvw-2021/`
+- [StableSR: a time-aware encoder for a frozen diffusion prior (IJCV 2024)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/stablesr-a-time-aware-encoder-for-a-frozen-diffusion-prior-ijcv-2024/) `papers/stablesr-a-time-aware-encoder-for-a-frozen-diffusion-prior-ijcv-2024/`
+- [DiffBIR: remove the degradation, then regenerate (ECCV 2024)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/diffbir-remove-the-degradation-then-regenerate-eccv-2024/) `papers/diffbir-remove-the-degradation-then-regenerate-eccv-2024/`
+- [SeeSR: degradation-aware semantic prompts (CVPR 2024)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/seesr-degradation-aware-semantic-prompts-cvpr-2024/) `papers/seesr-degradation-aware-semantic-prompts-cvpr-2024/`
+- [SUPIR: scaling up the prior, the data and the text (CVPR 2024)](/en/learn/deep-learning/blind-real-world-super-resolution/papers/supir-scaling-up-the-prior-the-data-and-the-text-cvpr-2024/) `papers/supir-scaling-up-the-prior-the-data-and-the-text-cvpr-2024/`
+
+## dl-04e-one-step-diffusion-super-resolution
+
+**DLCV 09A.2 · One-Step Diffusion Super-Resolution** · DLCV 09A.2・單步擴散超解析度  
+Understand LR-latent starts, residual-shift distillation, score regularization and adjustable one-step SR, with explicit limits on fidelity, speed and invented detail.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx`
+- Pages: `/en/learn/deep-learning/one-step-diffusion-super-resolution/`, `/en/learn/deep-learning/one-step-diffusion-super-resolution/notes/`, `/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/`
+- Course tree: under `deep-learning/dl-04a-super-resolution`
+- Level advanced · depth 3 · needs: `deep-learning/dl-04d-blind-real-world-super-resolution`, `deep-learning/dl-10b-one-step-generation` · tags: super-resolution, one-step-diffusion, score-distillation, lora, real-world-super-resolution
+- Figures: 2 (script `scripts/figures/dl_04e_one_step_diffusion_super_resolution.py`) · references: 37
+
+- [What you'll learn](/en/learn/deep-learning/one-step-diffusion-super-resolution/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/one-step-diffusion-super-resolution/#the-big-picture) `the-big-picture`
+- [What a one-step SR model must do](/en/learn/deep-learning/one-step-diffusion-super-resolution/#what-a-one-step-sr-model-must-do) `what-a-one-step-sr-model-must-do`
+  - [An exact ambiguity experiment](/en/learn/deep-learning/one-step-diffusion-super-resolution/#an-exact-ambiguity-experiment) `an-exact-ambiguity-experiment`
+  - [What is transferred from inference to training?](/en/learn/deep-learning/one-step-diffusion-super-resolution/#what-is-transferred-from-inference-to-training) `what-is-transferred-from-inference-to-training`
+- [A map of short-chain and one-step SR](/en/learn/deep-learning/one-step-diffusion-super-resolution/#a-map-of-short-chain-and-one-step-sr) `a-map-of-short-chain-and-one-step-sr`
+- [A short chain centered on the observation](/en/learn/deep-learning/one-step-diffusion-super-resolution/#a-short-chain-centered-on-the-observation) `a-short-chain-centered-on-the-observation`
+- [Starting from an LR latent: OSEDiff](/en/learn/deep-learning/one-step-diffusion-super-resolution/#starting-from-an-lr-latent-osediff) `starting-from-an-lr-latent-osediff`
+  - [The deployed path](/en/learn/deep-learning/one-step-diffusion-super-resolution/#the-deployed-path) `the-deployed-path`
+  - [Paired fidelity and a learned prior](/en/learn/deep-learning/one-step-diffusion-super-resolution/#paired-fidelity-and-a-learned-prior) `paired-fidelity-and-a-learned-prior`
+  - [Why regularize in latent space?](/en/learn/deep-learning/one-step-diffusion-super-resolution/#why-regularize-in-latent-space) `why-regularize-in-latent-space`
+- [Making adaptation depend on the damage](/en/learn/deep-learning/one-step-diffusion-super-resolution/#making-adaptation-depend-on-the-damage) `making-adaptation-depend-on-the-damage`
+- [Other ways to improve a short restoration map](/en/learn/deep-learning/one-step-diffusion-super-resolution/#other-ways-to-improve-a-short-restoration-map) `other-ways-to-improve-a-short-restoration-map`
+  - [Adversarial restoration distillation](/en/learn/deep-learning/one-step-diffusion-super-resolution/#adversarial-restoration-distillation) `adversarial-restoration-distillation`
+  - [Target-aware scores and training states](/en/learn/deep-learning/one-step-diffusion-super-resolution/#target-aware-scores-and-training-states) `target-aware-scores-and-training-states`
+  - [Learning where the reverse process starts](/en/learn/deep-learning/one-step-diffusion-super-resolution/#learning-where-the-reverse-process-starts) `learning-where-the-reverse-process-starts`
+  - [Separating pixel and semantic enhancement](/en/learn/deep-learning/one-step-diffusion-super-resolution/#separating-pixel-and-semantic-enhancement) `separating-pixel-and-semantic-enhancement`
+- [Fidelity, realism and control](/en/learn/deep-learning/one-step-diffusion-super-resolution/#fidelity-realism-and-control) `fidelity-realism-and-control`
+- [Measuring speed and quality honestly](/en/learn/deep-learning/one-step-diffusion-super-resolution/#measuring-speed-and-quality-honestly) `measuring-speed-and-quality-honestly`
+  - [The pipeline to time](/en/learn/deep-learning/one-step-diffusion-super-resolution/#the-pipeline-to-time) `the-pipeline-to-time`
+  - [The quality protocol](/en/learn/deep-learning/one-step-diffusion-super-resolution/#the-quality-protocol) `the-quality-protocol`
+- [Modern view](/en/learn/deep-learning/one-step-diffusion-super-resolution/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/deep-learning/one-step-diffusion-super-resolution/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/one-step-diffusion-super-resolution/#exercises) `exercises`
+
+*Supplementary notes (one page each, index `notes/`):*
+
+- [Why a latent start is not a noising equation](/en/learn/deep-learning/one-step-diffusion-super-resolution/notes/why-a-latent-start-is-not-a-noising-equation/) `notes/why-a-latent-start-is-not-a-noising-equation/`
+- [Score regularization and per-image measurement agreement](/en/learn/deep-learning/one-step-diffusion-super-resolution/notes/score-regularization-and-per-image-measurement-agreement/) `notes/score-regularization-and-per-image-measurement-agreement/`
+
+*Paper guides (one page each, index `papers/`):*
+
+- [ResShift: a short restoration-conditioned chain (NeurIPS 2023)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/resshift-a-short-restoration-conditioned-chain-neurips-2023/) `papers/resshift-a-short-restoration-conditioned-chain-neurips-2023/`
+- [SinSR: distilling a deterministic image-conditioned map (CVPR 2024)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/sinsr-distilling-a-deterministic-image-conditioned-map-cvpr-2024/) `papers/sinsr-distilling-a-deterministic-image-conditioned-map-cvpr-2024/`
+- [OSEDiff: LR-latent start and variational score regularization (NeurIPS 2024)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/osediff-lr-latent-start-and-variational-score-regularization-neurips-2024/) `papers/osediff-lr-latent-start-and-variational-score-regularization-neurips-2024/`
+- [S3Diff: degradation-guided low-rank adaptation](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/s3diff-degradation-guided-low-rank-adaptation/) `papers/s3diff-degradation-guided-low-rank-adaptation/`
+- [TSD-SR: target-aware score regularization (CVPR 2025)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/tsd-sr-target-aware-score-regularization-cvpr-2025/) `papers/tsd-sr-target-aware-score-regularization-cvpr-2025/`
+- [InvSR: a learned image-conditioned start (CVPR 2025)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/invsr-a-learned-image-conditioned-start-cvpr-2025/) `papers/invsr-a-learned-image-conditioned-start-cvpr-2025/`
+- [PiSA-SR: separate pixel and semantic adaptation (CVPR 2025)](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/pisa-sr-separate-pixel-and-semantic-adaptation-cvpr-2025/) `papers/pisa-sr-separate-pixel-and-semantic-adaptation-cvpr-2025/`
+- [AddSR: prediction-refined adversarial restoration distillation](/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/addsr-prediction-refined-adversarial-restoration-distillation/) `papers/addsr-prediction-refined-adversarial-restoration-distillation/`
 
 ## dl-04b-video-super-resolution
 
-**DLCV 09A.1 · Video Super-Resolution: Using Time to Recover Detail** · DLCV 09A.1・影片超解析度：用時間找回細節  
+**DLCV 09A.3 · Video Super-Resolution: Using Time to Recover Detail** · DLCV 09A.3・影片超解析度：用時間找回細節  
 How video super-resolution uses several misaligned low-resolution frames to recover detail one frame cannot hold: the video degradation model, optical flow and warping, flow, deformable and attention alignment, sliding-window, recurrent and transformer designs, real-world and diffusion VSR, and how results are measured.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-04b-video-super-resolution.mdx`
@@ -1166,9 +1313,9 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 - Files: `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05-low-light-enhancement.mdx`
 - Pages: `/en/learn/deep-learning/low-light-enhancement/`, `/en/learn/deep-learning/low-light-enhancement/notes/`, `/en/learn/deep-learning/low-light-enhancement/papers/`
-- Course tree: under `deep-learning/dl-04-image-restoration` · sub-chapters: `deep-learning/dl-05a-lightweight-enhancement`
+- Course tree: under `deep-learning/dl-04-image-restoration`
 - Level advanced · depth 2 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-03-intensity-spatial-filtering`, `image-processing/dip-06-color` · tags: low-light-enhancement, retinex, zero-dce, image-restoration, image-quality-assessment
-- Figures: 11 (script `scripts/figures/dl_05_low_light_enhancement.py`) · references: 75 · experiments: lowlight-photons
+- Figures: 18 (script `scripts/figures/dl_05_low_light_enhancement.py`) · references: 102 · experiments: lowlight-photons, lut-trilinear
 
 - [What you'll learn](/en/learn/deep-learning/low-light-enhancement/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/low-light-enhancement/#the-big-picture) `the-big-picture`
@@ -1184,24 +1331,27 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
   - [Another model: dehazing an inverted image](/en/learn/deep-learning/low-light-enhancement/#another-model-dehazing-an-inverted-image) `another-model-dehazing-an-inverted-image`
   - [Statistical approaches](/en/learn/deep-learning/low-light-enhancement/#statistical-approaches) `statistical-approaches`
 - [Deep-learning LLIE](/en/learn/deep-learning/low-light-enhancement/#deep-learning-llie) `deep-learning-llie`
+  - [Two axes: learning signal and design lineage](/en/learn/deep-learning/low-light-enhancement/#two-axes-learning-signal-and-design-lineage) `two-axes-learning-signal-and-design-lineage`
   - [Supervised methods (paired data)](/en/learn/deep-learning/low-light-enhancement/#supervised-methods-paired-data) `supervised-methods-paired-data`
+  - [Efficient end-to-end designs](/en/learn/deep-learning/low-light-enhancement/#efficient-end-to-end-designs) `efficient-end-to-end-designs`
   - [Retinex-based networks](/en/learn/deep-learning/low-light-enhancement/#retinex-based-networks) `retinex-based-networks`
+  - [Quality and cost within the same lineage](/en/learn/deep-learning/low-light-enhancement/#quality-and-cost-within-the-same-lineage) `quality-and-cost-within-the-same-lineage`
   - [Retinex-inspired unrolling](/en/learn/deep-learning/low-light-enhancement/#retinex-inspired-unrolling) `retinex-inspired-unrolling`
   - [Unpaired training: EnlightenGAN](/en/learn/deep-learning/low-light-enhancement/#unpaired-training-enlightengan) `unpaired-training-enlightengan`
   - [Zero-reference methods and curve estimation](/en/learn/deep-learning/low-light-enhancement/#zero-reference-methods-and-curve-estimation) `zero-reference-methods-and-curve-estimation`
   - [A zero-reference toy in PyTorch](/en/learn/deep-learning/low-light-enhancement/#a-zero-reference-toy-in-pytorch) `a-zero-reference-toy-in-pytorch`
   - [Normalizing flows and diffusion models](/en/learn/deep-learning/low-light-enhancement/#normalizing-flows-and-diffusion-models) `normalizing-flows-and-diffusion-models`
+  - [Real-time photographic transforms](/en/learn/deep-learning/low-light-enhancement/#real-time-photographic-transforms) `real-time-photographic-transforms`
   - [Raw-domain low light](/en/learn/deep-learning/low-light-enhancement/#raw-domain-low-light) `raw-domain-low-light`
   - [All-in-one restoration](/en/learn/deep-learning/low-light-enhancement/#all-in-one-restoration) `all-in-one-restoration`
   - [Low light for downstream tasks](/en/learn/deep-learning/low-light-enhancement/#low-light-for-downstream-tasks) `low-light-for-downstream-tasks`
+- [Measuring efficiency honestly](/en/learn/deep-learning/low-light-enhancement/#measuring-efficiency-honestly) `measuring-efficiency-honestly`
+- [Failure modes](/en/learn/deep-learning/low-light-enhancement/#failure-modes) `failure-modes`
 - [Evaluation](/en/learn/deep-learning/low-light-enhancement/#evaluation) `evaluation`
   - [Full-reference metrics](/en/learn/deep-learning/low-light-enhancement/#full-reference-metrics) `full-reference-metrics`
   - [No-reference metrics: why low light depends on them](/en/learn/deep-learning/low-light-enhancement/#no-reference-metrics-why-low-light-depends-on-them) `no-reference-metrics-why-low-light-depends-on-them`
   - [Classical natural-scene-statistics metrics: NIQE, BRISQUE and PI](/en/learn/deep-learning/low-light-enhancement/#classical-natural-scene-statistics-metrics-niqe-brisque-and-pi) `classical-natural-scene-statistics-metrics-niqe-brisque-and-pi`
-  - [Low-light-specific measures: lightness order, colorfulness and noise](/en/learn/deep-learning/low-light-enhancement/#low-light-specific-measures-lightness-order-colorfulness-and-noise) `low-light-specific-measures-lightness-order-colorfulness-and-noise`
-  - [Learned no-reference assessors](/en/learn/deep-learning/low-light-enhancement/#learned-no-reference-assessors) `learned-no-reference-assessors`
-  - [User studies and paired comparisons](/en/learn/deep-learning/low-light-enhancement/#user-studies-and-paired-comparisons) `user-studies-and-paired-comparisons`
-  - [Choosing and reporting no-reference metrics](/en/learn/deep-learning/low-light-enhancement/#choosing-and-reporting-no-reference-metrics) `choosing-and-reporting-no-reference-metrics`
+  - [No-reference measures need complementary checks](/en/learn/deep-learning/low-light-enhancement/#no-reference-measures-need-complementary-checks) `no-reference-measures-need-complementary-checks`
   - [The GT-mean pitfall](/en/learn/deep-learning/low-light-enhancement/#the-gt-mean-pitfall) `the-gt-mean-pitfall`
   - [Task-driven evaluation](/en/learn/deep-learning/low-light-enhancement/#task-driven-evaluation) `task-driven-evaluation`
 - [Benchmark datasets](/en/learn/deep-learning/low-light-enhancement/#benchmark-datasets) `benchmark-datasets`
@@ -1214,71 +1364,45 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 - [CLAHE: equalizing locally without amplifying noise](/en/learn/deep-learning/low-light-enhancement/notes/clahe-equalizing-locally-without-amplifying-noise/) `notes/clahe-equalizing-locally-without-amplifying-noise/`
 - [More deep LLIE methods](/en/learn/deep-learning/low-light-enhancement/notes/more-deep-llie-methods/) `notes/more-deep-llie-methods/`
+- [Counting resolution, arithmetic and memory](/en/learn/deep-learning/low-light-enhancement/notes/counting-resolution-arithmetic-and-memory/) `notes/counting-resolution-arithmetic-and-memory/`
+- [A bilateral-grid experiment](/en/learn/deep-learning/low-light-enhancement/notes/a-bilateral-grid-experiment/) `notes/a-bilateral-grid-experiment/`
+- [Implementing and checking trilinear LUTs](/en/learn/deep-learning/low-light-enhancement/notes/implementing-and-checking-trilinear-luts/) `notes/implementing-and-checking-trilinear-luts/`
+- [Fitting and slicing a bilateral grid in detail](/en/learn/deep-learning/low-light-enhancement/notes/fitting-and-slicing-a-bilateral-grid-in-detail/) `notes/fitting-and-slicing-a-bilateral-grid-in-detail/`
+- [Learnable LUT variants in detail](/en/learn/deep-learning/low-light-enhancement/notes/learnable-lut-variants-in-detail/) `notes/learnable-lut-variants-in-detail/`
+- [Structural re-parameterization step by step](/en/learn/deep-learning/low-light-enhancement/notes/structural-re-parameterization-step-by-step/) `notes/structural-re-parameterization-step-by-step/`
+- [Understanding no-reference low-light metrics](/en/learn/deep-learning/low-light-enhancement/notes/understanding-no-reference-low-light-metrics/) `notes/understanding-no-reference-low-light-metrics/`
+- [Efficient network building blocks](/en/learn/deep-learning/low-light-enhancement/notes/efficient-network-building-blocks/) `notes/efficient-network-building-blocks/`
+- [Banding, halos and temporal stability](/en/learn/deep-learning/low-light-enhancement/notes/banding-halos-and-temporal-stability/) `notes/banding-halos-and-temporal-stability/`
+- [Bilateral grids and color-table mathematics](/en/learn/deep-learning/low-light-enhancement/notes/bilateral-grids-and-color-table-mathematics/) `notes/bilateral-grids-and-color-table-mathematics/`
+- [From retouching to low light](/en/learn/deep-learning/low-light-enhancement/notes/from-retouching-to-low-light/) `notes/from-retouching-to-low-light/`
+- [A lightness-order exercise](/en/learn/deep-learning/low-light-enhancement/notes/a-lightness-order-exercise/) `notes/a-lightness-order-exercise/`
 
 *Paper guides (one page each, index `papers/`):*
 
-- [Guide to the LLIE surveys](/en/learn/deep-learning/low-light-enhancement/papers/guide-to-the-llie-surveys/) `papers/guide-to-the-llie-surveys/`
-
-## dl-05a-lightweight-enhancement
-
-**DLCV 09C.1 · Lightweight Image Enhancement: Curves, Retinex, Small Networks and Lookup Tables** · DLCV 09C.1・輕量影像增強：曲線、Retinex、小型網路與查找表  
-How enhancement models stay small and fast enough for phones and 4K video, organized the way the field organizes them: curve estimation, Retinex-style illumination estimation, lightweight end-to-end networks, and real-time retouching transforms such as bilateral grids and learnable 3D lookup tables.
-
-- Files: `src/content/tutorials/en/deep-learning/dl-05a-lightweight-enhancement.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05a-lightweight-enhancement.mdx`
-- Pages: `/en/learn/deep-learning/lightweight-enhancement/`, `/en/learn/deep-learning/lightweight-enhancement/notes/`, `/en/learn/deep-learning/lightweight-enhancement/papers/`
-- Course tree: under `deep-learning/dl-05-low-light-enhancement`
-- Level advanced · depth 3 · needs: `deep-learning/dl-05-low-light-enhancement`, `image-processing/dip-03-intensity-spatial-filtering` · tags: image-enhancement, efficient-networks, low-light-enhancement, curve-estimation, retinex, bilateral-grid, lookup-tables, hdrnet
-- Figures: 7 (script `scripts/figures/dl_05a_lightweight_enhancement.py`) · references: 37 · experiments: lowlight-photons, lut-trilinear
-
-- [What you'll learn](/en/learn/deep-learning/lightweight-enhancement/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/deep-learning/lightweight-enhancement/#the-big-picture) `the-big-picture`
-- [What "lightweight" means](/en/learn/deep-learning/lightweight-enhancement/#what-lightweight-means) `what-lightweight-means`
-- [Why enhancement suits small models](/en/learn/deep-learning/lightweight-enhancement/#why-enhancement-suits-small-models) `why-enhancement-suits-small-models`
-- [A map of lightweight enhancement](/en/learn/deep-learning/lightweight-enhancement/#a-map-of-lightweight-enhancement) `a-map-of-lightweight-enhancement`
-- [Curve and mapping estimation](/en/learn/deep-learning/lightweight-enhancement/#curve-and-mapping-estimation) `curve-and-mapping-estimation`
-- [Retinex and illumination estimation](/en/learn/deep-learning/lightweight-enhancement/#retinex-and-illumination-estimation) `retinex-and-illumination-estimation`
-- [Lightweight end-to-end networks and Transformers](/en/learn/deep-learning/lightweight-enhancement/#lightweight-end-to-end-networks-and-transformers) `lightweight-end-to-end-networks-and-transformers`
-  - [Depthwise separable convolutions](/en/learn/deep-learning/lightweight-enhancement/#depthwise-separable-convolutions) `depthwise-separable-convolutions`
-  - [Structural re-parameterization](/en/learn/deep-learning/lightweight-enhancement/#structural-re-parameterization) `structural-re-parameterization`
-  - [Other recurring design choices](/en/learn/deep-learning/lightweight-enhancement/#other-recurring-design-choices) `other-recurring-design-choices`
-- [Real-time retouching transforms: bilateral grids and 3D LUTs](/en/learn/deep-learning/lightweight-enhancement/#real-time-retouching-transforms-bilateral-grids-and-3d-luts) `real-time-retouching-transforms-bilateral-grids-and-3d-luts`
-  - [Bilateral grids and guided upsampling](/en/learn/deep-learning/lightweight-enhancement/#bilateral-grids-and-guided-upsampling) `bilateral-grids-and-guided-upsampling`
-  - [Code: fit a grid at low resolution, slice at full resolution](/en/learn/deep-learning/lightweight-enhancement/#code-fit-a-grid-at-low-resolution-slice-at-full-resolution) `code-fit-a-grid-at-low-resolution-slice-at-full-resolution`
-  - [Learnable 3D lookup tables](/en/learn/deep-learning/lightweight-enhancement/#learnable-3d-lookup-tables) `learnable-3d-lookup-tables`
-  - [From retouching to low light](/en/learn/deep-learning/lightweight-enhancement/#from-retouching-to-low-light) `from-retouching-to-low-light`
-- [Measuring efficiency honestly](/en/learn/deep-learning/lightweight-enhancement/#measuring-efficiency-honestly) `measuring-efficiency-honestly`
-- [Failure modes](/en/learn/deep-learning/lightweight-enhancement/#failure-modes) `failure-modes`
-- [Modern view](/en/learn/deep-learning/lightweight-enhancement/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/deep-learning/lightweight-enhancement/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/deep-learning/lightweight-enhancement/#exercises) `exercises`
-
-*Supplementary notes (one page each, index `notes/`):*
-
-- [Fitting and slicing a bilateral grid in detail](/en/learn/deep-learning/lightweight-enhancement/notes/fitting-and-slicing-a-bilateral-grid-in-detail/) `notes/fitting-and-slicing-a-bilateral-grid-in-detail/`
-- [Learnable LUT variants in detail](/en/learn/deep-learning/lightweight-enhancement/notes/learnable-lut-variants-in-detail/) `notes/learnable-lut-variants-in-detail/`
-- [Structural re-parameterization step by step](/en/learn/deep-learning/lightweight-enhancement/notes/structural-re-parameterization-step-by-step/) `notes/structural-re-parameterization-step-by-step/`
-
-*Paper guides (one page each, index `papers/`):*
-
-- [The Li et al. low-light survey (TPAMI 2022)](/en/learn/deep-learning/lightweight-enhancement/papers/the-li-et-al-low-light-survey-tpami-2022/) `papers/the-li-et-al-low-light-survey-tpami-2022/`
-- [HDRNet: deep bilateral learning for real-time image enhancement](/en/learn/deep-learning/lightweight-enhancement/papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/) `papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/`
-- [Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)](/en/learn/deep-learning/lightweight-enhancement/papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/) `papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/`
-- [NTIRE 2026 efficient low-light image enhancement challenge report](/en/learn/deep-learning/lightweight-enhancement/papers/ntire-2026-efficient-low-light-image-enhancement-challenge-report/) `papers/ntire-2026-efficient-low-light-image-enhancement-challenge-report/`
+- [Retinex-Net: decompose, adjust and denoise](/en/learn/deep-learning/low-light-enhancement/papers/retinex-net-decompose-adjust-and-denoise/) `papers/retinex-net-decompose-adjust-and-denoise/`
+- [EnlightenGAN: unpaired appearance learning with content constraints](/en/learn/deep-learning/low-light-enhancement/papers/enlightengan-unpaired-appearance-learning-with-content-constraints/) `papers/enlightengan-unpaired-appearance-learning-with-content-constraints/`
+- [Zero-DCE and Zero-DCE++: learn curves without reference images](/en/learn/deep-learning/low-light-enhancement/papers/zero-dce-and-zero-dce-learn-curves-without-reference-images/) `papers/zero-dce-and-zero-dce-learn-curves-without-reference-images/`
+- [RUAS: search the priors inside an unrolled enhancement model](/en/learn/deep-learning/low-light-enhancement/papers/ruas-search-the-priors-inside-an-unrolled-enhancement-model/) `papers/ruas-search-the-priors-inside-an-unrolled-enhancement-model/`
+- [SCI: train with calibration, deploy one illumination block](/en/learn/deep-learning/low-light-enhancement/papers/sci-train-with-calibration-deploy-one-illumination-block/) `papers/sci-train-with-calibration-deploy-one-illumination-block/`
+- [Retinexformer: illumination guides restoration](/en/learn/deep-learning/low-light-enhancement/papers/retinexformer-illumination-guides-restoration/) `papers/retinexformer-illumination-guides-restoration/`
+- [HDRNet: deep bilateral learning for real-time image enhancement](/en/learn/deep-learning/low-light-enhancement/papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/) `papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/`
+- [Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)](/en/learn/deep-learning/low-light-enhancement/papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/) `papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/`
 
 ## dl-05b-image-fusion
 
-**DLCV 10 · Image Fusion: Infrared–Visible, Multi-Focus and Multi-Exposure** · DLCV 10・影像融合：紅外線與可見光、多焦點與多曝光  
+**DLCV 10 · Image Fusion: Complementary Images, Useful Outputs** · DLCV 10・影像融合：互補來源與有用輸出  
 How to combine several images of one scene into a single better image: what infrared–visible, multi-focus and multi-exposure fusion ask for, the classical rules (decision maps, Laplacian pyramids, wavelets, exposure fusion), deep fusion without ground truth, and why fusion metrics disagree and can be gamed.
 
 - Files: `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05b-image-fusion.mdx`
 - Pages: `/en/learn/deep-learning/image-fusion/`, `/en/learn/deep-learning/image-fusion/notes/`, `/en/learn/deep-learning/image-fusion/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-07-wavelets-transforms` · tags: image-fusion, infrared-visible-fusion, multi-focus-fusion, multi-exposure-fusion, laplacian-pyramid, exposure-fusion, unsupervised-learning, evaluation
-- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 53 · experiments: image-fusion
+- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 67 · experiments: image-fusion
 
 - [What you'll learn](/en/learn/deep-learning/image-fusion/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-fusion/#the-big-picture) `the-big-picture`
 - [What image fusion is](/en/learn/deep-learning/image-fusion/#what-image-fusion-is) `what-image-fusion-is`
   - [Three tasks](/en/learn/deep-learning/image-fusion/#three-tasks) `three-tasks`
+  - [Medical and remote-sensing fusion ask different questions](/en/learn/deep-learning/image-fusion/#medical-and-remote-sensing-fusion-ask-different-questions) `medical-and-remote-sensing-fusion-ask-different-questions`
   - [Registration: the step everything assumes](/en/learn/deep-learning/image-fusion/#registration-the-step-everything-assumes) `registration-the-step-everything-assumes`
 - [The simplest rule: averaging, and why it fades contrast](/en/learn/deep-learning/image-fusion/#the-simplest-rule-averaging-and-why-it-fades-contrast) `the-simplest-rule-averaging-and-why-it-fades-contrast`
 - [Multi-focus fusion: focus measures and decision maps](/en/learn/deep-learning/image-fusion/#multi-focus-fusion-focus-measures-and-decision-maps) `multi-focus-fusion-focus-measures-and-decision-maps`
@@ -1299,6 +1423,7 @@ How to combine several images of one scene into a single better image: what infr
   - [Unsupervised losses](/en/learn/deep-learning/image-fusion/#unsupervised-losses) `unsupervised-losses`
   - [The loss defines the answer](/en/learn/deep-learning/image-fusion/#the-loss-defines-the-answer) `the-loss-defines-the-answer`
   - [Families of deep fusion networks](/en/learn/deep-learning/image-fusion/#families-of-deep-fusion-networks) `families-of-deep-fusion-networks`
+  - [What each learned family actually learns](/en/learn/deep-learning/image-fusion/#what-each-learned-family-actually-learns) `what-each-learned-family-actually-learns`
   - [Fusion for downstream tasks](/en/learn/deep-learning/image-fusion/#fusion-for-downstream-tasks) `fusion-for-downstream-tasks`
   - [Fusing images that are not aligned](/en/learn/deep-learning/image-fusion/#fusing-images-that-are-not-aligned) `fusing-images-that-are-not-aligned`
 - [Datasets and benchmarks](/en/learn/deep-learning/image-fusion/#datasets-and-benchmarks) `datasets-and-benchmarks`
@@ -1314,12 +1439,21 @@ How to combine several images of one scene into a single better image: what infr
 - [Sparse-representation fusion](/en/learn/deep-learning/image-fusion/notes/sparse-representation-fusion/) `notes/sparse-representation-fusion/`
 - [Mutual information as a fusion metric](/en/learn/deep-learning/image-fusion/notes/mutual-information-as-a-fusion-metric/) `notes/mutual-information-as-a-fusion-metric/`
 - [Training signals of representative fusion networks](/en/learn/deep-learning/image-fusion/notes/training-signals-of-representative-fusion-networks/) `notes/training-signals-of-representative-fusion-networks/`
+- [VIF and source-referenced fusion scores](/en/learn/deep-learning/image-fusion/notes/vif-and-source-referenced-fusion-scores/) `notes/vif-and-source-referenced-fusion-scores/`
 
 *Paper guides (one page each, index `papers/`):*
 
 - [Exposure fusion (Mertens, Kautz and Van Reeth)](/en/learn/deep-learning/image-fusion/papers/exposure-fusion-mertens-kautz-and-van-reeth/) `papers/exposure-fusion-mertens-kautz-and-van-reeth/`
 - [VIFB: a visible and infrared image fusion benchmark](/en/learn/deep-learning/image-fusion/papers/vifb-a-visible-and-infrared-image-fusion-benchmark/) `papers/vifb-a-visible-and-infrared-image-fusion-benchmark/`
 - [The infrared–visible fusion survey of Liu et al. (TPAMI 2025)](/en/learn/deep-learning/image-fusion/papers/the-infraredvisible-fusion-survey-of-liu-et-al-tpami-2025/) `papers/the-infraredvisible-fusion-survey-of-liu-et-al-tpami-2025/`
+- [DenseFuse: learn reconstruction, choose fusion in feature space](/en/learn/deep-learning/image-fusion/papers/densefuse-learn-reconstruction-choose-fusion-in-feature-space/) `papers/densefuse-learn-reconstruction-choose-fusion-in-feature-space/`
+- [DDFM: a diffusion prior with likelihood rectification](/en/learn/deep-learning/image-fusion/papers/ddfm-a-diffusion-prior-with-likelihood-rectification/) `papers/ddfm-a-diffusion-prior-with-likelihood-rectification/`
+- [FusionGAN: thermal intensity with an adversarial visible-image prior](/en/learn/deep-learning/image-fusion/papers/fusiongan-thermal-intensity-with-an-adversarial-visible-image-prior/) `papers/fusiongan-thermal-intensity-with-an-adversarial-visible-image-prior/`
+- [IFCNN: supervised fusion with a variable number of inputs](/en/learn/deep-learning/image-fusion/papers/ifcnn-supervised-fusion-with-a-variable-number-of-inputs/) `papers/ifcnn-supervised-fusion-with-a-variable-number-of-inputs/`
+- [U2Fusion: one unsupervised model across fusion tasks](/en/learn/deep-learning/image-fusion/papers/u2fusion-one-unsupervised-model-across-fusion-tasks/) `papers/u2fusion-one-unsupervised-model-across-fusion-tasks/`
+- [SwinFusion: attention within and across the sources](/en/learn/deep-learning/image-fusion/papers/swinfusion-attention-within-and-across-the-sources/) `papers/swinfusion-attention-within-and-across-the-sources/`
+- [SeAFusion: let semantic segmentation influence the fused image](/en/learn/deep-learning/image-fusion/papers/seafusion-let-semantic-segmentation-influence-the-fused-image/) `papers/seafusion-let-semantic-segmentation-influence-the-fused-image/`
+- [TarDAL: fuse for both appearance and object detection](/en/learn/deep-learning/image-fusion/papers/tardal-fuse-for-both-appearance-and-object-detection/) `papers/tardal-fuse-for-both-appearance-and-object-detection/`
 
 ## dl-08-3d-reconstruction
 
@@ -1470,7 +1604,7 @@ How image generators are built and judged as vision systems: the task and what g
 
 - Files: `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-10-image-generation.mdx`
 - Pages: `/en/learn/deep-learning/image-generation/`, `/en/learn/deep-learning/image-generation/notes/`, `/en/learn/deep-learning/image-generation/papers/`
-- Course tree: main chapter · sub-chapters: `deep-learning/dl-10a-video-generation`
+- Course tree: main chapter · sub-chapters: `deep-learning/dl-10a-video-generation`, `deep-learning/dl-10b-one-step-generation`
 - Level advanced · depth 1 · needs: `ml/ml-06-generative-models`, `ml/ml-07-diffusion-flow-matching` · tags: image-generation, text-to-image, diffusion-models, gan, autoregressive-models, cross-attention, controlnet, image-editing, evaluation, provenance
 - Figures: 4 (script `scripts/figures/dl_10_image_generation.py`) · references: 75
 
@@ -1583,6 +1717,58 @@ How video generators are built and judged: video autoencoders and tokenizers, fa
 
 - [Blattmann et al., "Stable Video Diffusion: Scaling Latent Video Diffusion Models to Large Datasets" (2023)](/en/learn/deep-learning/video-generation/papers/blattmann-et-al-stable-video-diffusion-scaling-latent-video-diffusion-models-to-large-datasets-2023/) `papers/blattmann-et-al-stable-video-diffusion-scaling-latent-video-diffusion-models-to-large-datasets-2023/`
 - [Ge et al., "On the Content Bias in Fréchet Video Distance" (CVPR 2024)](/en/learn/deep-learning/video-generation/papers/ge-et-al-on-the-content-bias-in-fréchet-video-distance-cvpr-2024/) `papers/ge-et-al-on-the-content-bias-in-fréchet-video-distance-cvpr-2024/`
+
+## dl-10b-one-step-generation
+
+**DLCV 12B · One-Step Generation** · DLCV 12B・單步生成  
+Learn what a one-step generator must predict, compare trajectory distillation, consistency, reflow and distribution matching, and measure the speed–quality trade with reproducible examples.
+
+- Files: `src/content/tutorials/en/deep-learning/dl-10b-one-step-generation.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-10b-one-step-generation.mdx`
+- Pages: `/en/learn/deep-learning/one-step-generation/`, `/en/learn/deep-learning/one-step-generation/notes/`, `/en/learn/deep-learning/one-step-generation/papers/`
+- Course tree: under `deep-learning/dl-10-image-generation`
+- Level advanced · depth 2 · needs: `ml/ml-07-diffusion-flow-matching`, `deep-learning/dl-10-image-generation` · tags: diffusion-distillation, consistency-models, rectified-flow, one-step-generation, distribution-matching
+- Figures: 2 (script `scripts/figures/dl_10b_one_step_generation.py`) · references: 31
+
+- [What you'll learn](/en/learn/deep-learning/one-step-generation/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/deep-learning/one-step-generation/#the-big-picture) `the-big-picture`
+- [Why taking one large step is different](/en/learn/deep-learning/one-step-generation/#why-taking-one-large-step-is-different) `why-taking-one-large-step-is-different`
+  - [A toy where the score is known exactly](/en/learn/deep-learning/one-step-generation/#a-toy-where-the-score-is-known-exactly) `a-toy-where-the-score-is-known-exactly`
+- [A map of acceleration methods](/en/learn/deep-learning/one-step-generation/#a-map-of-acceleration-methods) `a-map-of-acceleration-methods`
+- [Compressing teacher trajectories](/en/learn/deep-learning/one-step-generation/#compressing-teacher-trajectories) `compressing-teacher-trajectories`
+  - [Progressive distillation](/en/learn/deep-learning/one-step-generation/#progressive-distillation) `progressive-distillation`
+  - [Coupling is part of the target](/en/learn/deep-learning/one-step-generation/#coupling-is-part-of-the-target) `coupling-is-part-of-the-target`
+- [Endpoint agreement with consistency models](/en/learn/deep-learning/one-step-generation/#endpoint-agreement-with-consistency-models) `endpoint-agreement-with-consistency-models`
+  - [Latent consistency and guidance](/en/learn/deep-learning/one-step-generation/#latent-consistency-and-guidance) `latent-consistency-and-guidance`
+- [Straightening before distilling](/en/learn/deep-learning/one-step-generation/#straightening-before-distilling) `straightening-before-distilling`
+- [Adding a realism signal](/en/learn/deep-learning/one-step-generation/#adding-a-realism-signal) `adding-a-realism-signal`
+- [Matching distributions rather than individual endpoints](/en/learn/deep-learning/one-step-generation/#matching-distributions-rather-than-individual-endpoints) `matching-distributions-rather-than-individual-endpoints`
+  - [What DMD2 changes](/en/learn/deep-learning/one-step-generation/#what-dmd2-changes) `what-dmd2-changes`
+- [Learning finite jumps directly](/en/learn/deep-learning/one-step-generation/#learning-finite-jumps-directly) `learning-finite-jumps-directly`
+  - [Shortcut models](/en/learn/deep-learning/one-step-generation/#shortcut-models) `shortcut-models`
+  - [Average velocity with MeanFlow](/en/learn/deep-learning/one-step-generation/#average-velocity-with-meanflow) `average-velocity-with-meanflow`
+- [Evaluating the complete trade-off](/en/learn/deep-learning/one-step-generation/#evaluating-the-complete-trade-off) `evaluating-the-complete-trade-off`
+  - [Steps, evaluations and time](/en/learn/deep-learning/one-step-generation/#steps-evaluations-and-time) `steps-evaluations-and-time`
+  - [Quality, alignment and diversity](/en/learn/deep-learning/one-step-generation/#quality-alignment-and-diversity) `quality-alignment-and-diversity`
+  - [Reading benchmark tables safely](/en/learn/deep-learning/one-step-generation/#reading-benchmark-tables-safely) `reading-benchmark-tables-safely`
+- [Failure modes and choosing a family](/en/learn/deep-learning/one-step-generation/#failure-modes-and-choosing-a-family) `failure-modes-and-choosing-a-family`
+- [Modern view](/en/learn/deep-learning/one-step-generation/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/deep-learning/one-step-generation/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/deep-learning/one-step-generation/#exercises) `exercises`
+
+*Supplementary notes (one page each, index `notes/`):*
+
+- [Instantaneous velocity versus interval velocity](/en/learn/deep-learning/one-step-generation/notes/instantaneous-velocity-versus-interval-velocity/) `notes/instantaneous-velocity-versus-interval-velocity/`
+- [Three meanings of teacher-free](/en/learn/deep-learning/one-step-generation/notes/three-meanings-of-teacher-free/) `notes/three-meanings-of-teacher-free/`
+
+*Paper guides (one page each, index `papers/`):*
+
+- [Progressive Distillation: two teacher moves in one student move (ICLR 2022)](/en/learn/deep-learning/one-step-generation/papers/progressive-distillation-two-teacher-moves-in-one-student-move-iclr-2022/) `papers/progressive-distillation-two-teacher-moves-in-one-student-move-iclr-2022/`
+- [Consistency Models: the same endpoint along a path (ICML 2023)](/en/learn/deep-learning/one-step-generation/papers/consistency-models-the-same-endpoint-along-a-path-icml-2023/) `papers/consistency-models-the-same-endpoint-along-a-path-icml-2023/`
+- [InstaFlow: reflow, then endpoint distillation (ICLR 2024)](/en/learn/deep-learning/one-step-generation/papers/instaflow-reflow-then-endpoint-distillation-iclr-2024/) `papers/instaflow-reflow-then-endpoint-distillation-iclr-2024/`
+- [Latent Consistency Models: endpoints in a guided latent flow (2023)](/en/learn/deep-learning/one-step-generation/papers/latent-consistency-models-endpoints-in-a-guided-latent-flow-2023/) `papers/latent-consistency-models-endpoints-in-a-guided-latent-flow-2023/`
+- [Adversarial Diffusion Distillation: a teacher and a discriminator (ECCV 2024)](/en/learn/deep-learning/one-step-generation/papers/adversarial-diffusion-distillation-a-teacher-and-a-discriminator-eccv-2024/) `papers/adversarial-diffusion-distillation-a-teacher-and-a-discriminator-eccv-2024/`
+- [DMD: matching a teacher-defined distribution (CVPR 2024)](/en/learn/deep-learning/one-step-generation/papers/dmd-matching-a-teacher-defined-distribution-cvpr-2024/) `papers/dmd-matching-a-teacher-defined-distribution-cvpr-2024/`
+- [DMD2: tracking the student and using real data (NeurIPS 2024)](/en/learn/deep-learning/one-step-generation/papers/dmd2-tracking-the-student-and-using-real-data-neurips-2024/) `papers/dmd2-tracking-the-student-and-using-real-data-neurips-2024/`
 
 ## dl-07-world-models
 

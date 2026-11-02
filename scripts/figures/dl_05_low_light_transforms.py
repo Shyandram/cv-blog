@@ -1,7 +1,7 @@
 """Figures for DLCV 05A - Lightweight Image Enhancement.
 
 Run:  .venv/bin/python scripts/figures/dl_05a_lightweight_enhancement.py
-Writes PNGs to src/assets/deep-learning/dl-05a-lightweight-enhancement/ only.
+Writes PNGs to src/assets/deep-learning/dl-05-low-light-enhancement/ only.
 All inputs come from skimage.data or synthetic arrays; nothing is downloaded.
 Everything is NumPy/SciPy arithmetic and runs in a few seconds on a CPU.
 """
@@ -19,7 +19,7 @@ from skimage import data, img_as_float  # noqa: E402
 from skimage.metrics import peak_signal_noise_ratio as psnr  # noqa: E402
 from skimage.transform import resize  # noqa: E402
 
-OUT = Path(__file__).resolve().parents[2] / "src" / "assets" / "deep-learning" / "dl-05a-lightweight-enhancement"
+OUT = Path(__file__).resolve().parents[2] / "src" / "assets" / "deep-learning" / "dl-05-low-light-enhancement"
 OUT.mkdir(parents=True, exist_ok=True)
 plt.rcParams.update({"font.size": 10, "figure.facecolor": "white", "savefig.facecolor": "white",
                      "axes.titlesize": 10})
@@ -142,14 +142,14 @@ def fig_lut():
             for cg in (0, 1):
                 ax.plot(x0 + cr, cg, "ko", ms=6)
                 ax.text(x0 + cr + (0.07 if cr else -0.07), cg + (0.07 if cg else -0.16),
-                        f"({cr},{cg},{z})", ha="left" if cr else "right", fontsize=9)
+                        f"({cr},{cg},{z})", ha="left" if cr else "right", fontsize=10)
         ax.plot(x0 + dr, dg, marker="*", color="#d62728", ms=12)
-        ax.text(x0 + 0.5, -0.42, lab, ha="center", fontsize=9.5)
+        ax.text(x0 + 0.5, -0.42, lab, ha="center", fontsize=10)
         ax.annotate("", xy=(x0 + dr, -0.06), xytext=(x0, -0.06), arrowprops=dict(arrowstyle="<->", lw=0.8))
-        ax.text(x0 + dr / 2, -0.2, "dr", ha="center", fontsize=9)
+        ax.text(x0 + dr / 2, -0.2, "dr", ha="center", fontsize=10)
     ax.text(1.7, 1.3, "corner weight = product over R, G, B of\nd (offset 1) or 1 - d (offset 0)",
-            ha="center", fontsize=9)
-    ax.text(1.7, 0.45, "db", ha="center", fontsize=9)
+            ha="center", fontsize=10)
+    ax.text(1.7, 0.45, "db", ha="center", fontsize=10)
     ax.annotate("", xy=(2.35, 0.6), xytext=(1.05, 0.6), arrowprops=dict(arrowstyle="->", lw=0.8, color="#555555"))
     ax.set_xlim(-0.65, 4.05)
     ax.set_ylim(-0.6, 1.65)
@@ -168,10 +168,10 @@ def fig_lut():
     ax.set_xlabel("input value")
     ax.set_ylabel("output value")
     ax.set_title("(c) linear pieces between nodes")
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="lower right", fontsize=10)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    save(fig, "lut-trilinear.png")
+    save(fig, "efficient-lut-trilinear.png")
 
 
 # ---------------------------------------------------------------- Figure 2: bilateral grid and slicing
@@ -200,7 +200,7 @@ def fig_grid():
     ax.set_ylabel("guide value g")
     ax.set_ylim(0, 1)
     ax.set_title("(a) grid nodes over (position, intensity); a pixel\nblends the affine maps of the nodes around its cell")
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper right", fontsize=10)
 
     ax = axes[1]
     ax.set_xlim(0, 10)
@@ -222,10 +222,10 @@ def fig_grid():
     arrow(ax, (7.9, 1.9), (8.4, 1.9))
     arrow(ax, (1.6, 4.4), (6.8, 2.4), color="#888888")
     ax.text(5.0, 0.55, "expensive part: low resolution, fixed size\ncheap part: a few hundred MACs per full-res pixel",
-            ha="center", fontsize=9.5)
+            ha="center", fontsize=10)
     ax.set_title("(b) predict the transform at low resolution, apply it at full resolution")
     fig.tight_layout()
-    save(fig, "bilateral-grid.png")
+    save(fig, "efficient-bilateral-grid.png")
 
 
 # ---------------------------------------------------------------- Figure 3: cost versus resolution (pure arithmetic)
@@ -272,15 +272,15 @@ def fig_cost():
     axes[0].set_title("(a) compute grows with pixels unless the\nnetwork runs at a fixed low resolution")
     axes[1].set_ylabel("largest feature map, fp16 (MiB, log)")
     axes[1].set_title("(b) memory traffic: one 32-channel map at 4K\nis about half a gigabyte")
-    axes[0].legend(fontsize=9, loc="upper left")
+    axes[0].legend(fontsize=10, loc="upper left")
     axes[1].text(0.3, 400, "U-Net-like and tiny CNN coincide:\nboth keep 32 channels at full resolution",
-                 fontsize=9)
+                 fontsize=10)
     for ax, top in zip(axes, (False, True)):
         lo, hi = ax.get_ylim()
         for x, t in [(2.07, "1080p"), (8.29, "4K")]:
-            ax.text(x * 1.05, hi / 2.2 if top else lo * 1.25, t, fontsize=9, color="#555555")
+            ax.text(x * 1.05, hi / 2.2 if top else lo * 1.25, t, fontsize=10, color="#555555")
     fig.tight_layout()
-    save(fig, "cost-vs-resolution.png")
+    save(fig, "efficient-cost-vs-resolution.png")
 
 
 # ---------------------------------------------------------------- Figure 4: the toy comparison
@@ -308,9 +308,9 @@ def fig_toy():
     for ax in axes.ravel():
         ax.axis("off")
     fig.tight_layout()
-    save(fig, "toy-comparison.png", quantize=True)
-    save_rgb(full, "toy-input.png")
-    save_rgb(outs["bilateral grid 9x13x8"], "toy-grid.png")
+    save(fig, "efficient-toy-comparison.png", quantize=True)
+    save_rgb(full, "efficient-toy-input.png")
+    save_rgb(outs["bilateral grid 9x13x8"], "efficient-toy-grid.png")
 
 
 # ---------------------------------------------------------------- Figure 5: banding
@@ -327,7 +327,7 @@ def fig_banding():
                      fontsize=10)
         ax.axis("off")
     fig.tight_layout()
-    save(fig, "banding.png")
+    save(fig, "efficient-banding.png")
 
 
 if __name__ == "__main__":

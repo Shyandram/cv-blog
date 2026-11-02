@@ -36,7 +36,7 @@ plt.rcParams.update({
 })
 RNG = np.random.default_rng(7)
 torch.manual_seed(0)
-torch.set_num_threads(4)
+torch.set_num_threads(1)
 
 
 def save(fig, name, colors=256):
@@ -238,7 +238,7 @@ def fig_le_curves():
     for a in np.linspace(-1, 1, 9):
         ax.plot(x, x + a * x * (1 - x), color=cmap((a + 1) / 2), label=f"α = {a:+.2f}")
     ax.set_title("One LE curve: x + α x (1 - x)")
-    ax.legend(fontsize=8, ncol=2, loc="upper left")
+    ax.legend(fontsize=10, ncol=2, loc="upper left")
     ax = axs[1]
     for n, ls in zip([1, 2, 4, 8], ["-", "--", "-.", ":"]):
         y = x.copy()
@@ -250,7 +250,7 @@ def fig_le_curves():
             y = y + 0.4 * y * (1 - y)
         ax.plot(x, y, ls, color="C0", label=f"α = 0.4, n = {n}")
     ax.set_title("Iterated curve LE_n (same α each step)")
-    ax.legend(fontsize=8, ncol=2, loc="lower right")
+    ax.legend(fontsize=10, ncol=2, loc="lower right")
     for ax in axs:
         ax.plot(x, x, color="0.6", lw=0.8)
         ax.set_xlim(0, 1)
@@ -271,39 +271,36 @@ def box(ax, x, y, w, h, text, fc, fs=10, bold=False):
 
 
 def fig_taxonomy():
-    fig, ax = plt.subplots(figsize=(15, 5.2))
-    ax.set_xlim(0, 15)
-    ax.set_ylim(1.2, 6.5)
-    ax.axis("off")
-    box(ax, 5.75, 5.7, 3.5, 0.7, "Deep low-light enhancement", "#dde6f5", fs=12, bold=True)
-    groups = [
-        ("Supervised\n(paired data)", "#e8f2e3",
-         "LLNet (2017)\nRetinex-Net (2018)\nKinD / KinD++\nMIRNet (2020)\nSNR-aware (2022)\nRetinexformer (2023)\nHVI-CIDNet (2025)"),
-        ("Retinex-inspired\nunrolling", "#f6efdc",
-         "RUAS (2021)\nURetinex-Net (2022)\n\n(optimization steps\nbecome layers)"),
-        ("Unpaired /\nGAN", "#f5e3e3",
-         "EnlightenGAN (2021)\n\n(adversarial loss vs.\nunpaired normal-light\nphotos)"),
-        ("Zero-reference /\nself-supervised", "#e9e3f5",
-         "Zero-DCE (2020)\nZero-DCE++ (2022)\nSCI (2022)\nCLIP-LIT (2023)\n(prompt-guided)"),
-        ("Generative\n(flow / diffusion)", "#e3f1f5",
-         "LLFlow (2022)\nDiff-Retinex (2023)\nGSAD (2023)\nLightenDiffusion (2024)\nReti-Diff (2025)"),
-        ("Other axes", "#eeeeee",
-         "Raw domain: SID (2018)\nMamba: RetinexMamba\nAll-in-one: InstructIR\nTask-driven: MAET,\nFeatEnHancer"),
+    fig, axs = plt.subplots(1, 2, figsize=(10.5, 5.4))
+    panels = [
+        ("What training signal is available?", [
+            "SL: paired dark / reference images",
+            "RL: rewards for adjustment actions",
+            "UL: unrelated dark / normal-light sets",
+            "ZSL: low-light inputs, no bright targets",
+            "SSL: paired and unpaired stages",
+        ]),
+        ("What does the model predict?", [
+            "Curve parameters: Zero-DCE / ++",
+            "Illumination: Retinex-Net, RUAS, SCI",
+            "Restored image: CNNs / Transformers",
+            "Conditional distribution: flow / diffusion",
+            "Retouching transform: HDRNet / 3D LUT",
+        ]),
     ]
-    w, gap = 2.3, 0.18
-    x0 = (15 - (6 * w + 5 * gap)) / 2
-    for i, (head, fc, body) in enumerate(groups):
-        x = x0 + i * (w + gap)
-        box(ax, x, 4.35, w, 0.85, head, fc, fs=10.5, bold=True)
-        box(ax, x, 1.75, w, 2.4, body, fc, fs=9.5)
-        ax.annotate("", xy=(x + w / 2, 5.22), xytext=(7.5, 5.68),
-                    arrowprops=dict(arrowstyle="->", color="0.35", lw=0.9))
-    ax.text(7.5, 1.35, "Grouped mainly by training signal (flow/diffusion is a model-family axis). "
-            "Retinex-style decomposition appears in several columns.", ha="center", fontsize=10, style="italic")
+    for ax, (title, rows) in zip(axs, panels):
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=16)
+        for i, label in enumerate(rows):
+            y = 0.87 - i * 0.17
+            ax.text(0.04, y, label, fontsize=10.5, va="center",
+                    bbox=dict(boxstyle="round,pad=0.65", facecolor="#edf2f8", edgecolor="#c9d5e4"))
+    fig.text(0.5, 0.025, "These are independent axes. Retinex is a design model; diffusion is a model family.",
+             ha="center", fontsize=10)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
     save(fig, "taxonomy.png")
 
 
-# --- Figure 7: timeline --------------------------------------------------------
 def fig_timeline():
     events = {
         2017: ["LLNet", "LIME (non-DL)"],
@@ -333,10 +330,10 @@ def fig_timeline():
                 c = colors["Diff"]
             if "NTIRE" in name:
                 c = colors["NTIRE"]
-            ax.text(y, 0.35 + 0.5 * k, name, ha="center", va="bottom", fontsize=9, color=c)
+            ax.text(y, 0.35 + 0.5 * k, name, ha="center", va="bottom", fontsize=10, color=c)
     handles = [plt.Line2D([], [], color=v, lw=4) for v in colors.values()]
     ax.legend(handles, ["Other supervised / task-driven", "Retinex-based / unrolled", "Unpaired or zero-reference",
-                        "Flow / diffusion", "Challenge"], loc="upper left", fontsize=9, frameon=False)
+                        "Flow / diffusion", "Challenge"], loc="upper left", fontsize=10, frameon=False)
     ax.set_xlim(years[0] - 0.7, years[-1] + 0.7)
     ax.set_ylim(-0.9, 3.2)
     ax.axis("off")
@@ -387,7 +384,7 @@ def L_spa(y, x, p=4):
     return sum(((torch.diff(Y, dim=d) - torch.diff(X, dim=d)) ** 2).mean() for d in (2, 3))
 
 
-def train_toy(steps=600, max_seconds=50):
+def train_toy(steps=600):
     rng = np.random.default_rng(0)
     train = [resize(img_as_float(f()), (256, 256), anti_aliasing=True)
              for f in (data.astronaut, data.chelsea, data.rocket, data.immunohistochemistry)]
@@ -412,8 +409,6 @@ def train_toy(steps=600, max_seconds=50):
         loss.backward()
         opt.step()
         hist.append(loss.item())
-        if time.time() - t0 > max_seconds:
-            break
     print(f"toy: {len(hist)} steps in {time.time() - t0:.1f}s, final loss {hist[-1]:.4f}")
     return net, hist
 

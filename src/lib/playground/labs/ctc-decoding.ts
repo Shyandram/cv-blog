@@ -1,4 +1,4 @@
-// Facts for the `ctc-decoding` lab (DLCV 11A): a toy per-frame probability matrix for a word with a double letter, decoded greedily
+// Facts for the `ctc-decoding` lab (DLCV 06): a toy per-frame probability matrix for a word with a double letter, decoded greedily
 // (best path) and by prefix beam search, with the exact text probabilities and the CTC forward algorithm. Pure computation is
 // exported so that scripts/tests/lab-ctc.test.ts can check it against brute-force enumeration of every alignment.
 import type { LabDef } from './types.ts';
@@ -226,7 +226,7 @@ export function describe(lang: Lang, a: Analysis, decoder: string): string {
 // ---------------------------------------------------------------------------------------------- the lab
 export const lab: LabDef = {
   kind: 'image', id: 'ctc-decoding', track: 'deep-learning',
-  title: L('DLCV 11A · How does CTC write a double letter?', 'DLCV 11A・CTC 要怎麼寫出連續兩個相同的字母？'),
+  title: L('DLCV 06 · How does CTC write a double letter?', 'DLCV 06・CTC 要怎麼寫出連續兩個相同的字母？'),
   description: L('Edit the blank probability in the frames between two equal letters of a toy recognizer output, and watch greedy best-path decoding and prefix beam search read it.', '在玩具辨識器的輸出中，改變兩個相同字母之間畫格的空白機率，觀察貪婪（最佳路徑）解碼與前綴束搜尋怎麼讀它。'),
   challenge: L(
     'At the default setting (blank 0.45 and O 0.55 in each of the two frames between the O\u2019s, greedy decoding) the largest entry of every frame gives the path B O O O O K, which merges to BOK: one O is lost. Yet the correct word has the largest total probability, 0.410, against 0.310 for BOK, because every alignment with a blank in either gap frame reads BOOK. Switch to prefix beam search (beam 3): it writes BOOK. Now move the blank probability. At 0.50 greedy decoding also writes BOOK (a tie goes to the blank). With beam search, 0.40 still gives BOOK, but at 0.35 it writes BOK (0.377 against 0.343 for BOOK). At 0.05 the network almost surely saw one long O: both decoders write BOK and the loss \u2212ln p(BOOK) is 2.819. Finally choose SEE: greedy decoding flips at 0.50 and beam search between 0.35 and 0.40, just as for BOOK. Why can the sum over alignments recover a double letter that no single frame votes for?',

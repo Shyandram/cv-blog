@@ -245,7 +245,7 @@ function drawSweep(canvas: HTMLCanvasElement, lang: Lang, sw: Sweep, k: number) 
 const pct = (v: number) => (Number.isFinite(v) ? `${fmt(v, 1)}%` : '—');
 export const lab: LabDef = {
   kind: 'image', id: 'stereo-matching', track: 'deep-learning',
-  title: L('DLCV 08A · Is a bigger matching window always better?', 'DLCV 08A・匹配視窗越大一定越好嗎？'),
+  title: L('DLCV 11A · Is a bigger matching window always better?', 'DLCV 11A・匹配視窗越大一定越好嗎？'),
   description: L('Run block matching on a synthetic stereo pair with known disparity, and see small windows turn noisy while large windows fatten the foreground.', '在已知視差的合成立體影像對上執行區塊匹配，看小視窗變得雜亂，而大視窗讓前景變胖。'),
   challenge: L(
     'At the default 3 × 3 window the map is noisy, most of all inside the textureless patch. Grow the window one step at a time and watch the three curves: where is the all-pixel error lowest? What happens to the white outline of the disc once the window reaches 31 × 31? Then raise the noise to 0.06 and see how much a 3 × 3 window suffers. Finally switch the left–right check on: which pixels turn pink, and what happens to bad-1?',

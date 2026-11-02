@@ -37,11 +37,11 @@ renaming a tutorial or heading (CI runs it with `--check`). Rules for editing li
 | Natural Language Processing (NLP) | 12 | [nlp.md](nlp.md) |
 | Pattern Recognition (PR) | 10 | [pattern-recognition.md](pattern-recognition.md) |
 | Machine Learning (ML) | 15 | [ml.md](ml.md) |
-| Deep Learning for Computer Vision (DLCV) | 27 | [deep-learning.md](deep-learning.md) |
+| Deep Learning for Computer Vision (DLCV) | 29 | [deep-learning.md](deep-learning.md) |
 | Optimization (OPT) | 8 | [optimization.md](optimization.md) |
 | Information Theory (IT) | 8 | [information-theory.md](information-theory.md) |
 
-Total: 95 tutorials (95 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
+Total: 97 tutorials (97 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
 
 ## Where things are in the repo
 

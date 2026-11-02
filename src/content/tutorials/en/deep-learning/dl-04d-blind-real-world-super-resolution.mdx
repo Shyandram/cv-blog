@@ -1,0 +1,1314 @@
+---
+title: "Blind and Real-World Image Super-Resolution"
+description: "How super-resolution copes with damage nobody measured: estimating or conditioning on the blur kernel, learning degradation embeddings, synthesizing realistic training data, capturing real pairs, and borrowing generative priors, with honest evaluation when there is no ground truth."
+track: deep-learning
+order: 48
+level: advanced
+prereqs: [deep-learning/dl-04a-super-resolution, deep-learning/dl-04c-generative-restoration]
+tags: [super-resolution, blind-super-resolution, real-world-super-resolution, degradation-model, kernel-estimation, diffusion-models, image-quality-assessment]
+published: 2026-11-02
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import mismatchFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/kernel-mismatch.png';
+import samplesFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/degradation-samples.png';
+import metricFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/metric-disagreement.png';
+import sincFig from '../../../../assets/deep-learning/dl-04d-blind-real-world-super-resolution/sinc-ringing.png';
+
+## What you'll learn
+
+- What **blind** and **real-world** super-resolution (SR) mean, and why a network trained on one fixed way of shrinking images fails on real photos.
+- A **map** of the field built on two survey taxonomies: explicit versus implicit modelling of the degradation, external data versus the single input image, plus the newer generative-prior family.
+- The **explicit** route: networks that are told the blur kernel (SRMD), that estimate and correct it (IKC, DAN), or that estimate it from the test image alone (KernelGAN), and what a wrong kernel does to the output, reproduced in a small NumPy experiment.
+- The **implicit** routes: contrastive degradation embeddings (DASR), synthetic degradation pipelines (BSRGAN's random shuffle, Real-ESRGAN's second-order pipeline with sinc filters), captured real pairs and unpaired domain translation.
+- How pretrained **diffusion priors** are attached to SR (StableSR, DiffBIR, PASD, SeeSR, SUPIR, ResShift), what each conditions on, and where fidelity and hallucination trade off.
+- How to **evaluate** when there is no ground truth: full-reference metrics on synthetic sets, no-reference metrics, user studies and the real-world SR challenges, and why their rankings disagree.
+
+## The big picture
+
+[DLCV 09A](/en/learn/deep-learning/super-resolution/) treats super-resolution with a known degradation: we shrink HR images in a fixed way, train a network to undo exactly that, and measure the result against the original. Real photos do not come with a recipe. Their blur depends on the lens, the focus and a shaking hand; their noise depends on the sensor and the light; they were sharpened, resized and compressed by software we never saw. Blind and real-world SR is about making SR work anyway.
+
+<Callout type="tip" title="Explain like I'm five">
+Imagine a friend sends you a smudged, shrunken photo and asks you to make it big and sharp. If you knew *exactly* how it got smudged (wet thumb, cheap printer, coffee spill), you could undo that one thing carefully. But you were not there. So you can (1) guess what happened and undo your guess, (2) practise on thousands of photos you smudged yourself in every way you can think of, so that you get good at fixing any smudge, or (3) ask a talented painter who knows what photos usually look like to repaint the missing parts. This chapter is about those three strategies, and about how to check the work when you have no clean copy to compare with.
+</Callout>
+
+Why it matters: almost every SR model people actually use (phone zoom, old-photo restoration, upscaling of web images and video frames) faces unknown degradations. A model that is excellent on a bicubic benchmark can be useless on a real JPEG, and a model that looks excellent on a real JPEG can be inventing details. Knowing which family a method belongs to tells you what it assumes, what it can repair, and how it will fail.
+
+**Where this chapter sits.** The degradation model, the perception–distortion trade-off and the standard benchmarks are introduced in [DLCV 09A](/en/learn/deep-learning/super-resolution/#setup-and-notation); generic diffusion-based restoration (posterior sampling, latent diffusion, hallucination) is in [DLCV 09B](/en/learn/deep-learning/generative-restoration/); no-reference quality metrics are defined in [DLCV 09](/en/learn/deep-learning/image-restoration/#no-reference-metrics). We link to them instead of repeating them. One-step and few-step diffusion SR has its own chapter, [DLCV 09A.2](/en/learn/deep-learning/one-step-diffusion-super-resolution/). Selected key papers have detailed introductions in the Paper guides; the main text explains the families and their assumptions. All code uses NumPy, SciPy, scikit-image and OpenCV, runs on a CPU in seconds, and uses images from `skimage.data`.
+
+## The problem: damage nobody measured
+
+**Plain version.** Super-resolution undoes a damage process. When you know the process, the problem is hard but well defined. When you do not, you have two unknowns, the sharp image and the damage, and only one observation.
+
+### The degradation model, briefly
+
+The classical model, introduced in [DLCV 09A](/en/learn/deep-learning/super-resolution/#setup-and-notation), writes the low-resolution (LR) image $y$ as
+
+$$
+y = (x \circledast k)\downarrow_s + n,
+$$
+
+where $x$ is the high-resolution (HR) image, $k$ a blur kernel (lens, defocus, motion, pixel integration or an anti-aliasing filter), $\circledast$ 2-D convolution applied per color channel, $\downarrow_s$ downsampling by the scale factor $s$ (keeping one pixel per $s \times s$ block, or a bicubic resize), and $n$ additive noise. Real photos add steps that this model leaves out, most importantly JPEG compression $\mathcal C_q$ at quality $q$, whose position can vary in a processing chain, and camera processing (demosaicking, denoising, sharpening, tone curves) that makes the noise signal-dependent and spatially varying. A more complete but still simplified chain is $y = \mathcal C_q\bigl((x \circledast k)\downarrow_s + n\bigr)$.
+
+### What "blind" and "real-world" mean
+
+The words are used loosely, so it helps to fix them:
+
+- **Non-blind SR**: $k$, $s$ and the noise level are known at test time, either fixed by the task or given to the method. The bicubic benchmark is the special case where they are the same for every image.
+- **Blind SR**: at least one of them, usually $k$ and the noise level, is unknown and differs from image to image. Most blind-SR papers still assume the classical model with a Gaussian-like kernel and Gaussian noise; only the parameters are unknown.
+- **Real-world SR** (often written Real-ISR): the input is a real photo whose degradation is not only unknown but also *not of the assumed form*: compression, processing, spatially varying blur and noise. There is usually no ground-truth HR image at all.
+
+The distinction matters because methods that are excellent at blind SR in the narrow sense (the right family, unknown parameters) can fail completely in the real-world sense (the wrong family).
+
+### Why bicubic-trained models fail on real photos
+
+**Plain version.** A network trained on one shrinking recipe learns to undo that recipe and nothing else. Feed it a different recipe and it applies the wrong correction with full confidence.
+
+[DLCV 09A](/en/learn/deep-learning/super-resolution/#setup-and-notation) shows the effect with a tiny linear model: trained on sharp inputs and tested on blurry ones it under-corrects; trained on blurry inputs and tested on sharp ones it over-sharpens. Two classical observations explain why this matters so much. Efrat et al. showed that an accurate blur model matters more for SR than a sophisticated image prior [1]. And a model trained without noise treats sensor noise and JPEG blocks as fine detail and amplifies them. The SRMD paper states the sign of the blur error precisely: if the assumed kernel is smoother (wider) than the true one, the result shows ringing; if it is sharper (narrower), the result is over-smoothed [2]. We reproduce both cases in the explicit-modelling section below.
+
+## A map of the field
+
+**Plain version.** Every blind or real-world method answers two questions: *does it write the degradation down* (explicit) or *let a network absorb it from data* (implicit)? And *where does it get its knowledge*: from a large external dataset, or only from the one image it is given?
+
+Liu et al. organize blind SR along exactly these two axes: explicit modelling (the classical kernel-and-noise model or a variant, with or without kernel estimation) versus implicit modelling (a degradation learned from data distributions), and external datasets versus a single input image; they note that the fourth cell, implicit modelling from a single image, was empty at the time [3]. Chen et al. group real-world SR into four families: degradation-modelling-based, image-pairs-based (captured data), domain-translation-based and self-learning-based (the test image itself) [4]. Both surveys predate the diffusion era, so the last row of the table adds the generative-prior family that has expanded since 2023 [5].
+
+| Family | What is estimated or learned | Representative methods | Strengths | Typical failure modes |
+| --- | --- | --- | --- | --- |
+| Explicit, kernel given (non-blind conditioning) | Nothing at test time; the network is conditioned on a supplied kernel and noise level | SRMD [2], UDVD [6], USRNet [7] | One model for many known degradations; interpretable controls | Needs the kernel from somewhere; a wrong one gives ringing or blur |
+| Explicit, kernel estimated with external data | A kernel code, then the SR image, often in alternation | IKC [8], DAN [9], DCLS [10] | Accurate when the degradation really is Gaussian-like blur plus noise | Breaks on JPEG, camera processing and spatially varying blur |
+| Explicit, single image (internal statistics) | The image's own kernel, from recurrence of patches across scales | Michaeli–Irani [11], KernelGAN [12], ZSSR [13] | No training data; adapts to each image | Slow (training per image); weak prior; struggles with noise |
+| Degradation representation learning | An abstract embedding that tells degradations apart | DASR [14], KDSR [15] | No kernel labels; one fast forward pass | Embedding only covers the training degradation family |
+| Implicit, synthetic degradation pipelines | Nothing explicit; one network trained on a very wide random degradation distribution | BSRGAN [16], Real-ESRGAN [17], Liang et al.'s DASR [18] | Works on many real photos with one model | Over-smoothing or GAN artifacts; out-of-distribution damage is amplified |
+| Implicit, captured real pairs | The mapping of one specific camera pair | RealSR [19], DRealSR [20], City100 [21] | Truly realistic training and test data | Small, camera-specific, alignment errors |
+| Implicit, unpaired domain translation | A degradation generator or a real-to-clean translator learned with GANs | CinCGAN [22], Bulat et al. [23], FSSR [24], Ji et al. [25] | Learns from real LR images without HR partners | Unstable GAN training, fake textures |
+| Generative priors (2023–2026) | A pretrained text-to-image diffusion prior steered by the LR image | StableSR [26], DiffBIR [27], PASD [28], SeeSR [29], SUPIR [30], ResShift [31] | Realistic texture on severely degraded photos | Hallucinated content, low PSNR, slow sampling, color shifts |
+
+Two warnings about the map. First, the boundaries are porous: DAN is explicit but learns its estimator from external data; BSRGAN is "implicit" yet its pipeline is a hand-written explicit model, used only for training. Second, the name **DASR** belongs to two different papers: Wang et al.'s degradation-aware SR with contrastive embeddings [14], and Liang et al.'s efficient degradation-adaptive network [18]. Always check which one a comparison table means.
+
+## Explicit degradation modelling
+
+**Plain version.** Keep the classical recipe $y = (x \circledast k)\downarrow_s + n$ and treat the kernel and the noise level as knobs. Either someone turns the knobs for the network, or the network learns to read the knob settings off the image.
+
+### Telling the network the kernel
+
+One early approach is a single network that can serve many *known* degradations. **SRMD** reduces a $p \times p$ blur kernel to a short vector with principal component analysis (PCA), appends the noise level, and "stretches" each number into a constant map of the LR image's size; these maps are concatenated with the LR image as extra input channels, so one plain CNN learns $\hat x = F(y, k, \sigma)$ instead of $F(y)$ [2]. Because the maps can vary across the image, the same network also handles spatially varying blur and noise. **UDVD** replaces concatenation by dynamic convolutions whose filters depend on the degradation, to cope with variation both across and within images [6]. **USRNet** unfolds a classical maximum a posteriori (MAP) solver into a network: a data step that uses the given kernel, scale and noise level in closed form alternates with a learned denoising prior step, so one model serves arbitrary kernels and scale factors [7]. The plug-and-play splitting behind it is explained in [DLCV 09](/en/learn/deep-learning/image-restoration/notes/#plug-and-play-priors-and-half-quadratic-splitting).
+
+What to remember: these models are *non-blind*. They move the problem from "learn to undo one degradation" to "be told the degradation", which is only useful if a good estimate exists.
+
+*Optional: [SRMD](#srmd-one-network-for-many-known-degradations-cvpr-2018) (in the Paper guides). Dimensionality stretching, the training degradations and the experiments that show what a mismatched model loses.*
+
+### Estimating and correcting the kernel
+
+**Plain version.** A wrong kernel leaves a recognizable signature in the output: too narrow gives blur, too wide gives ringing. So look at the output, read the signature, and fix the kernel.
+
+**IKC** (iterative kernel correction) predicts an initial kernel code from the LR image, super-resolves with a kernel-conditioned network, and then repeatedly applies a corrector network that looks at the current SR result and the current kernel estimate and outputs a correction; its kernel-conditioned SR network, SFTMD, injects the kernel through spatial feature transform layers at every residual block instead of only at the input [8], [32]. **DAN** (deep alternating network) folds the alternation into one end-to-end network: an *Estimator* predicts the kernel from the LR image *and* the current SR image, a *Restorer* super-resolves with the current kernel, and the two alternate for a fixed number of rounds with shared weights; because the Restorer is trained on estimated rather than true kernels, it learns to tolerate the Estimator's errors [9]. **DCLS** reformulates the degradation so that the kernel estimation and a least-squares deblurring step happen in LR feature space [10].
+
+In the notation of the classical model, the alternation solves
+
+$$
+k^{(i+1)} = \arg\min_{k} \bigl\| y - (x^{(i)} \circledast k)\downarrow_s \bigr\|_1, \qquad
+x^{(i+1)} = \arg\min_{x} \bigl\| y - (x \circledast k^{(i+1)})\downarrow_s \bigr\|_1 + \phi(x),
+$$
+
+where $i$ counts rounds, $x^{(i)}$ and $k^{(i)}$ are the current image and kernel estimates, and $\phi$ is an image prior; DAN writes it this way and replaces both minimizations by learned modules [9].
+
+*Optional: [IKC](#ikc-iterative-kernel-correction-cvpr-2019) and [DAN](#dan-unfolding-the-alternating-optimization-neurips-2020) (in the Paper guides). The predictor and corrector, SFTMD, the Gaussian8 test protocol, and why end-to-end alternation beats a two-step pipeline.*
+
+### Estimating the kernel from the image itself
+
+**Plain version.** Small patches of a natural image repeat at different scales: a corner of a window looks like a smaller corner elsewhere. The right SR kernel is the one that, when you shrink the image with it, keeps those repeating patches looking the same.
+
+Michaeli and Irani turned this observation into a nonparametric kernel estimator: the correct SR kernel is the downscaling kernel that maximizes the similarity of patches across scales of the LR image [11]. **KernelGAN** learns that downscaler with an image-specific GAN trained only on the test image: a deep *linear* generator downscales the image by 2, a fully convolutional discriminator tries to tell its $7 \times 7$ patches from patches of the original, and the kernel is read off the trained generator and handed to a non-blind SR method such as ZSSR or SRMD [12]. **ZSSR** itself is the internal-learning counterpart for the SR step: it trains a small CNN at test time on LR–lower-resolution pairs made from the input image alone [13]. The price is time: KernelGAN reports about a minute per image on a GPU, and the per-image training of ZSSR adds more.
+
+*Optional: [KernelGAN](#kernelgan-kernel-estimation-with-an-internal-gan-neurips-2019) (in the Paper guides). Why the generator is deep but linear, the four kernel regularizers, the DIV2KRK benchmark and the ×4-from-×2 trick.*
+
+*Optional: [Why the kernel is hard to identify](#why-the-kernel-is-hard-to-identify) (in the Supplementary notes). Two exact ambiguities, a shift and a blur trade, checked numerically.*
+
+### What goes wrong: kernel mismatch
+
+**Plain version.** Give a non-blind solver the wrong kernel and it does exactly what you asked: it undoes the wrong blur. Too little assumed blur leaves the image soft; too much assumed blur sharpens edges that were already sharp until they ring.
+
+The snippet makes this concrete with the simplest possible non-blind ×2 SR: it solves
+
+$$
+\hat x_{\sigma_a} = \arg\min_x \; \bigl\| (x \circledast g_{\sigma_a})\downarrow_2 - y \bigr\|_2^2 + \lambda \|\nabla x\|_2^2
+$$
+
+with conjugate gradients, where $g_{\sigma_a}$ is a Gaussian kernel of the *assumed* width $\sigma_a$, $y$ was produced with a *true* width $\sigma$, $\nabla$ is the image gradient (implemented through the Laplacian in the normal equations), and $\lambda = 2 \times 10^{-3}$ weights the smoothness prior.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from scipy.sparse.linalg import LinearOperator, cg
+from skimage import data, img_as_float64
+
+s = 2                                                   # scale factor
+x = img_as_float64(data.camera())[128:384, 128:384]     # HR test crop (256 x 256)
+H, W = x.shape
+
+def blur(z, sigma):                                     # circular Gaussian blur (self-adjoint)
+    return ndi.gaussian_filter(z, sigma, mode="wrap")
+
+def A(z, sigma):                                        # degradation: blur, then keep every s-th pixel
+    return blur(z, sigma)[::s, ::s]
+
+def At(r, sigma):                                       # its adjoint: zero-fill upsampling, then blur
+    up = np.zeros((H, W)); up[::s, ::s] = r
+    return blur(up, sigma)
+
+def lap(z):                                             # discrete Laplacian (smoothness prior)
+    return ndi.laplace(z, mode="wrap")
+
+def nonblind_sr(y, sigma, lam=2e-3):
+    """Solve min_x ||A_sigma x - y||^2 + lam ||grad x||^2 with conjugate gradients."""
+    op = LinearOperator((H * W, H * W), dtype=float,
+                        matvec=lambda v: (At(A(v.reshape(H, W), sigma), sigma) - lam * lap(v.reshape(H, W))).ravel())
+    sol, _ = cg(op, At(y, sigma).ravel(), maxiter=200)
+    return sol.reshape(H, W)
+
+def psnr(a, b):
+    return 10 * np.log10(1.0 / np.mean((a - np.clip(b, 0, 1)) ** 2))
+
+rng = np.random.default_rng(0)
+assumed = [0.6, 1.0, 1.6, 2.2, 2.8]
+print("true \\ assumed " + "".join(f"{a:7.1f}" for a in assumed))
+for true in [1.0, 1.6, 2.2]:
+    y = A(x, true) + 0.003 * rng.standard_normal((H // s, W // s))   # LR observation
+    row = [psnr(x, nonblind_sr(y, a)) for a in assumed]
+    print(f"sigma = {true:.1f}      " + "".join(f"{p:7.2f}" for p in row))
+```
+
+```text
+true \ assumed     0.6    1.0    1.6    2.2    2.8
+sigma = 1.0        26.80  28.43  24.59  19.84  16.91
+sigma = 1.6        24.22  25.30  27.23  24.13  19.83
+sigma = 2.2        22.45  22.92  24.11  25.51  23.43
+```
+
+Every row peaks on the diagonal, where the assumed width equals the true one (our own toy numbers, in dB). The losses are **asymmetric**: assuming too wide a kernel is punished much harder than assuming too narrow a kernel (for true $\sigma = 1.0$, assuming 2.8 costs 11.5 dB, assuming 0.6 costs 1.6 dB), because over-deblurring amplifies noise and creates ringing, while under-deblurring only leaves blur. Figure 1 shows the three cases for true $\sigma = 1.6$. This is the signature IKC learns to read [8].
+
+<Figure src={mismatchFig} alt="Five grayscale crops of the cameraman image and a line chart. Top: the HR crop and the blurry LR input with true kernel width 1.6. Bottom: reconstructions assuming width 0.6, which is blurry at 24.22 dB; 1.6, which is the sharpest at 27.23 dB; and 2.8, which has strong dark and bright ringing bands around every edge at 19.83 dB. The chart shows PSNR against the assumed width for true widths 1.0, 1.6 and 2.2; each curve peaks at its true width and falls faster to the right than to the left." caption="Figure 1 — Kernel mismatch in non-blind ×2 SR (our toy). Assuming a narrower kernel than the true one leaves the result soft; assuming a wider one over-sharpens and rings. PSNR on the full 256 × 256 crop." />
+
+## Degradation representation learning
+
+**Plain version.** You do not need to know the kernel's exact shape to fix it; you need to know *which kind of damage* this image has, well enough to tell it apart from other kinds. So learn a compact "fingerprint" of the damage, without ever being told the true kernel.
+
+**DASR** (Wang et al.) learns such a fingerprint with contrastive learning [14]. Its assumption is that the degradation is the same everywhere in one image and differs between images. Two patches from the same LR image are therefore a *positive* pair, and patches from other images are *negatives*. An encoder maps each patch to a vector, and an InfoNCE loss with a queue of negatives (as in MoCo [33]) pulls positives together and pushes negatives apart; the resulting representation then predicts the weights of depth-wise convolutions and channel-wise scaling factors inside the SR network. KDSR keeps the "implicit representation" idea but trains a teacher that sees the HR–LR pair and distils its representation into a student that sees only the LR image, which lets the representation cover combinations of blur, noise and JPEG for which no explicit label exists [15]. The other DASR, by Liang et al., goes the opposite way: a tiny regression network predicts explicit degradation parameters and uses them to mix several convolutional experts into one efficient SR network [18].
+
+What to remember: a degradation embedding replaces "estimate the kernel, pixel by pixel" with "recognize the kind of degradation", which avoids explicit kernel labels but still depends on the degradation diversity of the training data and does not guarantee robustness to an unseen family.
+
+*Optional: [DASR](#dasr-contrastive-degradation-representations-cvpr-2021) (in the Paper guides). The contrastive loss with every symbol, the degradation-aware convolution, and the ablation that removes each part.*
+
+## Implicit modelling by degradation synthesis
+
+**Plain version.** Stop trying to describe one image's damage. Instead, write a damage generator that is wild enough to produce almost any damage a real photo could have, use it to make millions of training pairs, and train one network on all of them.
+
+### BSRGAN: shuffle the steps
+
+**BSRGAN** argues that blur, downsampling and noise are the key factors, but that real images do not apply them in one fixed order [16]. Its practical degradation model widens each factor (two blurs, one isotropic and one anisotropic Gaussian; several downsamplers including nearest, bilinear, bicubic and a down-up resize; Gaussian noise, JPEG noise and processed camera sensor noise generated with a reverse-forward camera pipeline) and applies them in a **randomly shuffled order**, followed by a final JPEG compression. The bicubic and classical degradation models become special cases. The same ESRGAN-style network [34] is then trained on these pairs, first with an L1 loss (BSRNet) and then with added perceptual and adversarial losses (BSRGAN).
+
+### Real-ESRGAN: repeat the steps
+
+**Real-ESRGAN** keeps the classical order but applies it **twice**, a "second-order" degradation, arguing that a real web image was typically degraded by a camera, then by editing, then by one or more rounds of compression and resizing [17]. Each round draws blur (Gaussian, generalized Gaussian, plateau-shaped or sinc kernels), a random resize, Gaussian or Poisson noise and JPEG compression with fresh parameters; a final resize and **sinc filter** are treated as a pair whose order relative to JPEG is randomly swapped. Its finite sinc kernels approximate an ideal low-pass filter and can produce ringing and overshoot, which real images acquire from sharpening and compression; training on it teaches the network to remove such halos instead of amplifying them. Because the degradation space is so large, Real-ESRGAN also replaces ESRGAN's discriminator with a U-Net-shaped one [35] that judges every pixel, stabilized with spectral normalization [36].
+
+*Optional: [The high-order degradation pipeline, step by step](#the-high-order-degradation-pipeline-step-by-step) and [Sinc filters and ringing](#sinc-filters-and-ringing) (in the Supplementary notes). The full sampling procedure, and why an ideal low-pass filter rings.*
+
+*Optional: [BSRGAN](#bsrgan-a-practical-degradation-model-iccv-2021) and [Real-ESRGAN](#real-esrgan-high-order-degradation-with-pure-synthetic-data-iccvw-2021) (in the Paper guides). Every step and parameter range, the losses, the test sets and the ablations.*
+
+### How training pairs are produced
+
+The snippet implements a compact second-order pipeline in the spirit of Real-ESRGAN: two rounds of blur, random resize, noise and JPEG, then swapping JPEG with a final resize-and-sinc pair. The blur sizes, the noise ranges of the first round and the JPEG qualities follow the paper [17]. This teaching version simplifies the resize distribution, shot-noise model and kernel family; it sometimes skips the whole second round, whereas the official pipeline skips only its blur. It is not a reproduction of the training recipe.
+
+```python
+import numpy as np, cv2
+from scipy import ndimage as ndi
+from scipy.special import j1
+from skimage import data, img_as_float32
+
+def gaussian_kernel(rng, size, smax):
+    """Random isotropic or anisotropic Gaussian: k(c) ~ exp(-0.5 c^T S^-1 c), normalized."""
+    s1, s2 = rng.uniform(0.2, smax, 2)
+    if rng.random() < 0.5:
+        s2 = s1                                                     # isotropic half of the time
+    th = rng.uniform(0, np.pi)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    S = R @ np.diag([s1**2, s2**2]) @ R.T
+    ax = np.arange(size) - size // 2
+    C = np.stack(np.meshgrid(ax, ax, indexing="ij"), -1)
+    k = np.exp(-0.5 * np.einsum("...i,ij,...j", C, np.linalg.inv(S), C))
+    return k / k.sum(), f"gauss({s1:.1f},{s2:.1f})"
+
+def sinc_kernel(size, wc):
+    """2-D sinc low-pass: k(r) = wc J1(wc r) / (2 pi r), with k(0) = wc^2 / (4 pi)."""
+    ax = np.arange(size) - size // 2
+    r = np.hypot(*np.meshgrid(ax, ax, indexing="ij"))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        k = np.where(r == 0, wc**2 / (4 * np.pi), wc * j1(wc * r) / (2 * np.pi * r))
+    return k / k.sum()
+
+def jpeg(img, q):
+    ok, buf = cv2.imencode(".jpg", (np.clip(img, 0, 1) * 255).round().astype(np.uint8)[..., ::-1],
+                           [cv2.IMWRITE_JPEG_QUALITY, int(q)])
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)[..., ::-1].astype(np.float32) / 255
+
+def one_round(img, rng, log, smax, nmax):
+    """blur -> random resize -> noise -> JPEG: one 'classical' degradation."""
+    size = int(rng.choice(np.arange(7, 22, 2)))
+    if rng.random() < 0.1:
+        k, name = sinc_kernel(size, rng.uniform(np.pi / 3, np.pi)), "sinc"
+    else:
+        k, name = gaussian_kernel(rng, size, smax)
+    img = np.stack([ndi.convolve(img[..., c], k, mode="reflect") for c in range(3)], -1)
+    f = rng.uniform(0.3, 1.2)                                       # resize factor (illustrative range)
+    interp = rng.choice([cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC])
+    img = cv2.resize(img, None, fx=f, fy=f, interpolation=interp)
+    if rng.random() < 0.5:                                          # Gaussian noise, sigma in 1..nmax (8-bit units)
+        sig = rng.uniform(1, nmax) / 255
+        shape = img.shape[:2] + ((1,) if rng.random() < 0.4 else (3,))   # gray or color noise
+        img = img + sig * rng.standard_normal(shape); noise = f"gauss{sig * 255:.0f}"
+    else:                                                           # shot noise with a random photon count
+        peak = 10 ** rng.uniform(1.5, 3)
+        img = rng.poisson(np.clip(img, 0, 1) * peak) / peak; noise = f"poisson{peak:.0f}"
+    q = rng.uniform(30, 95)
+    img = jpeg(img, q)
+    log.append(f"{name} x{f:.2f} {noise} q{q:.0f}")
+    return img
+
+def degrade(hr, rng, scale=4):
+    """Second-order pipeline in the spirit of Real-ESRGAN (parameter ranges partly our own)."""
+    log = []
+    img = one_round(hr, rng, log, smax=3.0, nmax=30)
+    if rng.random() < 0.8:
+        img = one_round(img, rng, log, smax=1.5, nmax=25)          # second, milder round
+    h, w = hr.shape[0] // scale, hr.shape[1] // scale
+    def resize_sinc(z):
+        z = cv2.resize(z, (w, h), interpolation=cv2.INTER_AREA)
+        k = sinc_kernel(15, rng.uniform(np.pi / 3, np.pi))  # same kernel for all color channels
+        return np.stack([ndi.convolve(z[..., c], k, mode="reflect") for c in range(3)], -1)
+    final = [lambda z: jpeg(z, rng.uniform(30, 95)), resize_sinc]
+    if rng.random() < 0.5:
+        final = final[::-1]                                         # swap JPEG with the resize-and-sinc pair
+    for op in final:
+        img = op(img)
+    return np.clip(img, 0, 1), log
+
+hr = img_as_float32(data.astronaut())                               # (512, 512, 3)
+for seed in range(3):
+    lr, log = degrade(hr, np.random.default_rng(seed))
+    print(f"seed {seed}: LR {lr.shape} | " + " ; ".join(log))
+```
+
+```text
+seed 0: LR (128, 128, 3) | gauss(0.3,0.2) x0.85 poisson207 q64 ; gauss(0.9,0.9) x0.84 gauss5 q90
+seed 1: LR (128, 128, 3) | gauss(0.6,0.6) x1.04 gauss17 q71 ; gauss(1.4,0.6) x0.40 poisson42 q40
+seed 2: LR (128, 128, 3) | gauss(2.5,0.5) x0.47 gauss9 q67 ; gauss(0.3,1.1) x1.04 gauss19 q50
+```
+
+Each line is one training input: two rounds with different kernels (`gauss(σ1,σ2)` lists the two axis widths), resize factors, noise types and JPEG qualities. In training, the HR patch is paired with its LR version and a fresh degradation is drawn every time, so the network repeatedly encounters newly sampled damage. Figure 2 shows seven such inputs from one face; they differ much more than the bicubic inputs of [DLCV 09A](/en/learn/deep-learning/super-resolution/) would. Real-ESRGAN generates its pairs on the GPU and keeps a pool of 180 recent pairs from which batches are drawn, because a batch produced in one call would otherwise share one resize factor [17].
+
+<Figure src={samplesFig} alt="Eight color crops of the astronaut's face. The first is the sharp HR crop. The other seven are low-resolution versions shown with large pixels: some are mildly blurred, some are grainy with colored noise, some show JPEG blocks and blotchy skin, and two are much blurrier because only one degradation round happened but with a wide kernel." caption="Figure 2 — Seven ×4 training inputs drawn from one HR image by the second-order pipeline of the snippet (seeds 0 to 6). One network has to restore all of them." />
+
+### Later refinements
+
+Synthetic degradation is an important data source for the real-world SR methods discussed here. StableSR, SeeSR, SUPIR and ResShift all train on the Real-ESRGAN pipeline [26], [29], [30], [31]. Two lessons came later. **Range can matter more than complexity**: DiffBIR trains the restoration stage that produces its diffusion model's conditions on a classical first-order model with *wide* parameter ranges, and reports better no-reference scores than with the Real-ESRGAN pipeline, which it describes as complex but with smaller ranges [27]. **GAN artifacts need their own treatment**: LDL computes an artifact map from local residual statistics and uses it to penalize artifact regions during GAN training, improving both fidelity and perceptual quality [37].
+
+## Real paired and unpaired data
+
+**Plain version.** Instead of imitating camera damage, photograph it. Either capture the same scene at two zoom levels to get true LR–HR pairs, or, if pairs are impossible, learn from unpaired collections of real low-quality and high-quality images.
+
+### Captured pairs
+
+**RealSR** photographs each scene with a DSLR at several focal lengths; the long-focal-length shot is the HR image and the short one, after registration and color correction, is the LR image [19]. **DRealSR** extends the capture to five DSLR cameras for more diverse degradations [20]. **City100** collects pairs for both a DSLR and a smartphone by changing the focal length or the shooting distance, to study the trade-off between resolution and field of view [21]. The DPED photos, taken simultaneously with phones and a DSLR, are often used as real low-quality test inputs without ground truth [38]. Captured pairs offer reference images for measuring fidelity on real degradations, but they are small, specific to the cameras used, and slightly misaligned, and a model trained on one camera pair does not cover a phone image from the internet.
+
+### Unpaired learning and domain translation
+
+When no pairs exist, GANs can translate between domains. **CinCGAN** first maps a noisy, blurry real LR image to a clean LR domain with a cycle-consistent GAN, super-resolves it with a pretrained network and then fine-tunes both stages end to end [22]. **Bulat et al.** go the other way: a High-to-Low GAN learns, from unpaired HR and real LR face images, how to *degrade* HR images realistically, and its outputs train a Low-to-High network with paired supervision [23]. **Lugmayr et al.** learn to put natural sensor characteristics back into bicubically downscaled images, again to synthesize realistic pairs [39]; **frequency separation** (DSGAN and FSSR) applies the adversarial loss only to high frequencies, because downsampling preserves the low ones [24]. **Ji et al.** estimate real blur kernels and extract real noise patches from the test-domain images and inject both into the classical model, which won the NTIRE 2020 real-world SR challenge [25], [40]. Liu et al. note that this data-distribution family is data-hungry and that GAN-based training often produces severe artifacts and fake textures [3].
+
+## Real-world SR with generative priors
+
+**Plain version.** The networks above learn what photos look like from a few thousand training images. Large text-to-image diffusion models supply priors learned from broad image collections. Since about 2023, several real-world SR methods keep such a model (almost) frozen and add a small network that shows it the LR image, so that it "paints in" detail that fits.
+
+### Why a generative prior
+
+When the input is badly damaged, most of the HR detail is simply not in the LR image, and an L2 regression network targets a conditional mean, which can average incompatible details; other losses target different statistics. A generative model instead returns one plausible answer. [DLCV 09B](/en/learn/deep-learning/generative-restoration/#the-perceptiondistortion-trade-off) explains why this costs PSNR, how diffusion sampling works ([diffusion in one page](/en/learn/deep-learning/generative-restoration/#diffusion-in-one-page)), and why a strong prior can invent content ([the hallucination problem](/en/learn/deep-learning/generative-restoration/#the-hallucination-problem)). Here we concentrate on what is specific to SR: how each method feeds the LR image to the prior, what extra condition it uses, and what knob it offers between fidelity and realism.
+
+All methods in this section train on synthetic pairs from the Real-ESRGAN pipeline or a similar one, and most build on Stable Diffusion, a latent diffusion model: an autoencoder compresses a $512 \times 512$ image into a $64 \times 64$ latent (a factor of 8 per side), and the denoising network works in that latent space [41]. Many adapt ControlNet, which attaches a trainable copy of the denoiser's encoder to a frozen model through zero-initialized convolutions [42].
+
+### What each method conditions on
+
+| Method | Prior | How the LR image enters | Extra condition | Fidelity knob | Steps (as reported) |
+| --- | --- | --- | --- | --- | --- |
+| StableSR [26] | Stable Diffusion 2.1, frozen | Time-aware encoder + spatial feature transform (SFT) layers in every residual block | none (null prompt) | Controllable feature wrapping weight $w$ in the decoder | 200 (DDPM) |
+| DiffBIR [27] | Stable Diffusion 2.1, frozen | First cleaned by a restoration network, then the *cleaned* image enters an IRControlNet | negative prompt | Region-adaptive restoration guidance scale | 50 |
+| PASD [28] | Stable Diffusion | Degradation-removal module and pixel-aware cross-attention | high-level semantic features and captions | Adjustable noise schedule | 20 |
+| SeeSR [29] | Stable Diffusion 2, frozen | ControlNet on the LR latent; LR latent also mixed into the starting noise | Degradation-aware tags (hard prompts) and tagger embeddings (soft prompts) | — | 50 |
+| SUPIR [30] | SDXL, frozen | Degradation-robust encoder, trimmed ControlNet with ZeroSFT connectors | Captions from a multimodal LLM; negative-quality prompts | Restoration-guided sampling $\tau_r$ | 100 (EDM) |
+| ResShift [31] | Trained from scratch (latent space of a VQGAN) | The chain *starts* at the LR image and shifts the residual | none | Noise schedule $\kappa$, $p$ | 15 |
+
+Step counts are the defaults reported in each paper; the SeeSR supplementary material times them side by side on one V100 GPU for a $128 \to 512$ task: 18.70 s for StableSR (200 steps), 5.85 s for DiffBIR (50), 6.07 s for PASD (20), 7.24 s for SeeSR (50) and 1.12 s for ResShift (15), against 0.09 s for Real-ESRGAN [29].
+
+Three design ideas recur:
+
+- **Conditioning strength must vary with the noise level.** StableSR adds a time embedding to its condition encoder and finds that the encoder supplies its strongest guidance around a signal-to-noise ratio of about $5 \times 10^{-2}$, where image content is formed [26].
+- **Do not show the prior the raw degradation.** DiffBIR observes that a diffusion model conditioned directly on noisy or compressed inputs turns the artifacts into content, so it removes the degradation first with an ordinary restoration network and only then regenerates detail [27]. SUPIR fine-tunes its autoencoder's encoder to be robust to degradations for the same reason [30].
+- **Semantics help where pixels are gone.** PASD and SeeSR extract text from the LR image and feed it to the prior; SeeSR trains its tagger to give the same tags for degraded and clean images, so that a blurry ship is not "recognized" and then painted as a bird [28], [29]. SUPIR uses a multimodal large language model to caption the input and lets users steer restoration with text [30].
+
+*Optional: [StableSR](#stablesr-a-time-aware-encoder-for-a-frozen-diffusion-prior-ijcv-2024), [DiffBIR](#diffbir-remove-the-degradation-then-regenerate-eccv-2024), [SeeSR](#seesr-degradation-aware-semantic-prompts-cvpr-2024), [SUPIR](#supir-scaling-up-the-prior-the-data-and-the-text-cvpr-2024) (in the Paper guides). Components, training and verified experiments; ResShift is introduced in the [one-step SR chapter](/en/learn/deep-learning/one-step-diffusion-super-resolution/).*
+
+### Diffusion transformers and newer priors
+
+**Plain version.** The denoiser inside the prior is changing from a U-Net to a transformer, and SR methods follow.
+
+DreamClear builds a restorer on a diffusion transformer (DiT), curates one million synthetic high-quality training images with a generative pipeline, and mixes restoration experts with token-wise degradation priors [43]. DiT4SR feeds the LR latent into the attention of a large DiT as its own stream, so that the LR guidance evolves with the diffusion process instead of being injected once, plus a cross-stream convolution for local detail [44]. The trend is the same as in text-to-image generation: bigger and better priors, with the conditioning moved deeper inside the model.
+
+### Fidelity, hallucination and the knob
+
+**Plain version.** A stronger prior paints more convincingly, and paints more that was not there. Methods therefore use controls between "stay close to the input" and "look real".
+
+The knobs differ in form but not in purpose: StableSR's $w \in [0, 1]$ blends encoder features of the LR image into the decoder [26]; DiffBIR's guidance scale $s$ pulls each intermediate estimate toward the cleaned image, more strongly in flat regions [27]; SUPIR's $\tau_r$ interpolates each step's prediction toward the LR latent with a weight that decays during sampling [30]; ResShift's $p$ controls how fast the residual is shifted [31]. These controls change the balance of reference fidelity and generated texture; individual metric curves need not be monotonic. StableSR’s coefficient sweep even improves several scores together for some settings [26]. Two hallucination patterns are specific to SR: **semantic errors**, where a degraded object is reconstructed as a different object (SeeSR's examples of a ship turned into a bird or a fish), and **texture invention in flat regions**, where the random starting noise of a sampler is turned into detail on sky or walls (the reason for SeeSR's LR-embedding start and for SUPIR's restoration-guided sampling) [29], [30]. Small text and small faces remain difficult for all of them; StableSR, SeeSR and OSEDiff each name these as limitations [26], [29], [45].
+
+### Fewer steps
+
+**Plain version.** Fifty or two hundred network evaluations per image is too slow for a phone or for video. For SR, the LR image already fixes most of the content, so a diffusion model does not need to start from pure noise, and a few steps, or one, can be enough.
+
+ResShift's 15-step chain is the bridge: it starts from the LR image instead of noise [31]. Distilled and one-step methods go further: SinSR distils ResShift into a single step [46], and OSEDiff fine-tunes Stable Diffusion with low-rank adapters to map the LR latent to the HR latent in one step, regularized by variational score distillation [45]. These one-step and few-step methods, and how their speed is measured, have their own chapter: [DLCV 09A.2](/en/learn/deep-learning/one-step-diffusion-super-resolution/).
+
+## Evaluation in the blind and real-world setting
+
+**Plain version.** On real photos there is no ground truth, so you cannot compute an error. You can test on synthetic damage where the truth is known, score real outputs with a model of human judgement, or ask people. Each answer is partial, and rankings can disagree.
+
+### Full-reference metrics on synthetic test sets
+
+Blind-SR papers in the explicit family use fixed synthetic protocols so that kernels are known: **Gaussian8** (eight isotropic Gaussian kernels per scale, applied before bicubic downsampling, defined in IKC [8]) and **DIV2KRK** (the 100 DIV2K validation images [47], each with its own random anisotropic, noise-perturbed kernel, defined in KernelGAN [12]). Real-world methods use synthetic test sets made with their own training pipeline, for example 3,000 DIV2K-validation crops degraded with the Real-ESRGAN pipeline in StableSR, SeeSR and OSEDiff [26], [29], [45], or BSRGAN's DIV2K4D with four degradation types [16]. On these sets PSNR and SSIM [48] measure distortion, and LPIPS [49] and DISTS [50] measure perceptual distance to the reference. A caveat: a test set made with a method's own training pipeline favors that method.
+
+For captured pairs (RealSR, DRealSR) the same metrics apply, but misalignment between the two zoom levels lowers every method's PSNR and rewards blur; KernelGAN gives the same reason for not using the NTIRE 2018 blind-SR data [12].
+
+### No-reference metrics
+
+**Plain version.** A no-reference (NR) metric predicts how good an image looks without seeing the original. It is a learned or hand-made model of human opinion, and it can be fooled.
+
+The common NR metrics in real-world SR papers are **NIQE** (distance of an image's natural-scene statistics from those of pristine images; lower is better) [51], **MUSIQ** (a multi-scale transformer trained on human ratings; higher is better) [52], **MANIQA** (an attention-based model that won an NTIRE 2022 IQA challenge track; higher is better) [53] and **CLIPIQA** (similarity of the image's CLIP embedding to the prompts "Good photo." and "Bad photo."; higher is better) [54]. Their definitions and validation are in [DLCV 09](/en/learn/deep-learning/image-restoration/#no-reference-metrics). FID, a distance between feature distributions of a set of outputs and a set of real images, is also reported on paired sets [55].
+
+The snippet shows in miniature why such scores must be read with care. It compares a blurry output, an unsharp-masked output and a blurry output with added fine noise, and scores each with PSNR and with a deliberately crude NR "crispness" score, the mean gradient magnitude. Real NR metrics are far better than this, but they share its basic weakness: they score the look of an image, not its correctness.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+from skimage.color import rgb2gray
+
+hr = img_as_float64(rgb2gray(data.astronaut()))
+rng = np.random.default_rng(0)
+
+def psnr(a, b):
+    return 10 * np.log10(1.0 / np.mean((a - np.clip(b, 0, 1)) ** 2))
+
+def crispness(img):
+    """A crude no-reference score: mean gradient magnitude (higher = 'sharper looking')."""
+    return np.mean(np.hypot(ndi.sobel(img, 0), ndi.sobel(img, 1)))
+
+smooth = ndi.gaussian_filter(hr, 1.5)                               # a cautious, blurry restoration
+candidates = {
+    "smooth (posterior-mean-like)": smooth,
+    "unsharp-masked x2": smooth + 2.0 * (smooth - ndi.gaussian_filter(smooth, 2)),
+    "smooth + fake fine texture": smooth + 0.04 * rng.standard_normal(hr.shape),
+}
+for name, img in candidates.items():
+    img = np.clip(img, 0, 1)
+    print(f"{name:28s} PSNR {psnr(hr, img):6.2f} dB | crispness {crispness(img):.3f}")
+print(f"{'ground truth':28s} PSNR    -     | crispness {crispness(hr):.3f}")
+```
+
+```text
+smooth (posterior-mean-like) PSNR  26.82 dB | crispness 0.170
+unsharp-masked x2            PSNR  28.42 dB | crispness 0.259
+smooth + fake fine texture   PSNR  24.48 dB | crispness 0.262
+ground truth                 PSNR    -     | crispness 0.246
+```
+
+Both "sharpened" outputs score *crisper than the ground truth* (our toy numbers), and the one with fake texture is the crispest of all while having the lowest PSNR. PSNR, in turn, prefers the unsharp-masked output only because sharpening partly undid the blur; it would also prefer a slightly blurry correct image to a sharp image with shifted texture. Figure 3 shows the crops.
+
+<Figure src={metricFig} alt="Four grayscale face crops. The ground truth with crispness 0.246; a smooth blurred version with PSNR 26.82 dB and crispness 0.170; an unsharp-masked version with halos at the edges, PSNR 28.42 dB, crispness 0.259; and a smooth version covered in fine noise, PSNR 24.48 dB, crispness 0.262." caption="Figure 3 — A crude no-reference score rewards sharpening and fake texture above the ground truth, while PSNR penalizes the fake texture. Real NR metrics are more sophisticated, but the same tension appears in published comparisons." />
+
+### Why rankings disagree
+
+The published tables show the same tension at full scale:
+
+- **NR metrics versus visual quality.** On BSRGAN's 20 real images (RealSRSet), BSRGAN has the worst NIQE of the methods it compares (5.60, against 3.99 to 4.95 for the others), although its authors find its results visually better; they conclude that these NR metrics "do not always match perceptual visual quality" and should be updated for new degradation types [16].
+- **Fidelity versus realism.** In StableSR's comparison on DIV2K validation crops, StableSR has the best FID, CLIPIQA and MUSIQ but a lower PSNR (23.26 dB) than several GAN methods (up to 24.62 dB) [26]. In SUPIR's synthetic tests SUPIR leads every NR metric and trails in PSNR, SSIM and LPIPS, and its authors show cases where the metrics prefer a visibly worse result [30].
+- **NR metrics versus each other.** In OSEDiff's tables, multi-step methods (SeeSR, PASD) score better on NIQE, MUSIQ and MANIQA, while OSEDiff is better on LPIPS, DISTS, FID and CLIPIQA [45]. Which method "wins" depends on the metric chosen.
+- **Prompts move NR scores.** StableSR shows that classifier-free guidance with negative prompts raises CLIPIQA and MUSIQ, and that too strong guidance over-sharpens [26]. A score that a sampling trick can raise is not an independent judge.
+
+Rule of thumb: report at least one full-reference metric on a synthetic or captured set, two NR metrics from different families on real images, and a user study for headline claims; state the test resolution and crop protocol, because methods trained at $512 \times 512$ behave differently on small crops (StableSR reports that SUPIR does poorly on its small crops but better at large resolutions [26]).
+
+### User studies and challenges
+
+User studies measure perceived quality or preference, not whether an invented detail belongs to the scene. For example, StableSR collected 1,400 votes from 35 participants on 40 real images [26]; SeeSR measured how often 20 participants confused its output with the ground truth (a confusion rate of 38.6%) and how often they chose it as the best real-world result (57.1%) [29]. Good practice (hidden method names, randomized order, enough images and raters) is described in [DLCV 09](/en/learn/deep-learning/image-restoration/#user-studies-and-paired-comparisons).
+
+The challenges trace the field's shift from known to unknown degradations:
+
+- **NTIRE 2018** SR had one bicubic track and three tracks with realistic unknown downgrading operators that simulated a camera pipeline, learnable from provided training pairs [56].
+- **NTIRE 2019** Real Image SR used captured pairs, introducing RealSR (DSLR images at two focal lengths) [57].
+- **AIM 2019** and **NTIRE 2020** Real-World SR provided no pairs at all, only source-domain LR images (and in one track unpaired high-quality targets), and ranked entries by perceptual quality, in 2020 through a human study [58], [40].
+- **AIM 2020** Real Image SR used captured pairs at ×2, ×3 and ×4 and ranked by PSNR and SSIM [59].
+- **NTIRE 2025** ×4 SR returned to bicubic inputs but added a perceptual track ranked by a perceptual score next to the PSNR-ranked restoration track [60].
+
+## Failure modes
+
+**Plain version.** Real-world SR fails in two directions: it misreads the damage (and so removes too little or too much), or it trusts its prior too much (and so invents).
+
+- **Out-of-distribution degradations.** A synthesis-trained model has no guarantee of handling damage outside its training pipeline; Real-ESRGAN lists unknown, out-of-distribution degradations among its limitations and notes that it may even amplify them [17].
+- **Kernel misestimation.** In explicit methods a wrong kernel gives the blur or ringing of Figure 1; spatially varying blur breaks the assumption of a single kernel.
+- **GAN textures and artifacts.** Real-ESRGAN reports twisted lines from aliasing and unpleasant GAN artifacts [17]; BSRGAN reports "bubble" artifacts in texture regions [16]; LDL was designed to suppress such artifacts [37].
+- **Semantic hallucination.** Diffusion-prior methods can reconstruct the wrong object or invent texture in flat regions; degraded small text and faces are the hardest cases [29], [26].
+- **Color shifts.** Diffusion models can shift colors; StableSR corrects them by matching each output channel's mean and variance to the input, or by replacing the output's low-frequency wavelet band with the input's [26].
+- **Tiling seams and resolution effects.** Models trained on $512 \times 512$ crops need tiling for large images; StableSR shows block inconsistency without its aggregation sampling, and performance depends on the test resolution [26].
+- **Metric gaming.** Sharpening, added grain or prompt tricks can raise NR scores without improving fidelity (Figure 3).
+
+A cheap sanity check works for every method: degrade the SR output back to the input size with a plausible model and compare it with the input. Large differences in flat regions or on text mean that the method changed content the input did measure. As [DLCV 09B](/en/learn/deep-learning/generative-restoration/#the-hallucination-problem) explains, passing this check is a useful diagnostic but not a proof of correctness: the true degradation is itself unknown.
+
+## Modern view
+
+### Survey papers
+
+**Plain version.** Two surveys define the vocabulary of this chapter, one for blind SR and one for real-world SR; a diffusion-SR survey and a broad recent SR survey extend them.
+
+- **Liu et al., "Blind Image Super-Resolution: A Survey and Beyond" (TPAMI)** [3]. *Covers*: blind SR methods, datasets and earlier challenges, with a comparison on synthetic and real images. *Taxonomy*: explicit modelling with external data (image-specific adaptation without kernel estimation, such as SRMD, UDVD and USRNet, and with kernel estimation, such as IKC and DAN), explicit modelling with a single image (internal statistics: KernelGAN, ZSSR), and implicit modelling with external data (data-distribution learning with GANs: CinCGAN, FSSR and others). *Takeaways*: the taxonomy reveals a gap, implicit modelling from a single image; data-distribution methods are data-hungry and produce GAN artifacts; fair comparison is hard because methods assume different degradations.
+- **Chen et al., "Real-World Single Image Super-Resolution: A Brief Review" (Information Fusion 2022)** [4]. *Covers*: real-world datasets (RealSR, City100, DRealSR and others) and metrics, with comparisons of quality and speed. *Taxonomy*: degradation-modelling-based (IKC, DAN, KernelGAN), image-pairs-based, domain-translation-based (CinCGAN) and self-learning-based (ZSSR). *Takeaway*: results on synthetic data overestimate how well methods super-resolve real images.
+- **Moser et al., "Diffusion Models, Image Super-Resolution, and Everything" (TNNLS 2025)** [5]. *Covers*: diffusion foundations and SR methods by input domain, conditioning, guidance and corruption space. *Takeaways*: realism has improved greatly; compute, comparability across papers and color shifts remain open.
+- **Zhang et al., "Deep-Learning-Empowered Super Resolution: A Comprehensive Survey and Future Prospects" (Proceedings of the IEEE 2025)** [61]. *Covers*: single-image, video, stereo and light-field SR, with a taxonomy by backbone (CNN, transformer, GAN, diffusion), datasets, evaluation protocols and complexity. *Use*: a wide index into the literature, including the real-world and diffusion methods of this chapter.
+
+### State of the art, 2023–2026
+
+1. **Generative priors form an important family of real-world SR methods.** StableSR, DiffBIR, PASD, SeeSR and SUPIR attach a frozen text-to-image model through encoders, ControlNet variants and SFT-style connectors [26], [27], [28], [29], [30]; DiT-based restorers such as DreamClear and DiT4SR follow the move of generators to transformers [43], [44].
+2. **Semantics enter as conditions**: degradation-aware tags, captions from multimodal models, and text control [29], [30].
+3. **Synthetic pipelines are still the data source**: almost every method trains on BSRGAN- or Real-ESRGAN-style degradations, with the training images scaled up (SUPIR reports 20 million images with text; DreamClear one million curated synthetic images) [30], [43].
+4. **Speed is an important engineering objective**: from 200 steps to 15 (ResShift) and to one step (SinSR, OSEDiff and later methods; see [DLCV 09A.2](/en/learn/deep-learning/one-step-diffusion-super-resolution/)) [31], [46], [45].
+5. **Explicit blind SR continues in the classical setting** with better estimators and representations (DCLS, KDSR), benchmarked on Gaussian8 and DIV2KRK [10], [15].
+
+### Open problems
+
+- **Faithfulness.** No metric reliably separates "sharp and correct" from "sharp and invented"; recent proposals score hallucination directly with multimodal models [62].
+- **Degradations beyond the pipeline.** Spatially varying blur, camera processing, repeated social-media compression and video codecs are only partly covered by synthetic pipelines.
+- **Evaluation without ground truth.** NR metrics disagree with each other and with people, can be raised by sampling tricks, and were not designed for diffusion outputs [16], [26].
+- **Cost.** Large priors (billions of parameters) and multi-step sampling remain far from phone budgets.
+- **Implicit modelling from a single image**, was a gap highlighted by Liu et al.’s survey; it is a useful historical distinction, not evidence that no later method addresses it [3].
+
+## Key takeaways
+
+- **Blind** SR has unknown parameters of a known degradation family; **real-world** SR has an unknown family too, usually with no ground truth.
+- Methods differ in whether they model the degradation **explicitly** (a kernel and noise level, given, estimated or learned per image) or **implicitly** (a network absorbs it from data), and in whether they use external data or only the test image.
+- A wrong kernel is punished asymmetrically: too wide gives ringing and a large PSNR loss, too narrow gives blur. IKC and DAN exploit this signature to correct their estimates; KernelGAN estimates the kernel from the image's own patch recurrence.
+- **Degradation synthesis** (BSRGAN's shuffle, Real-ESRGAN's second-order pipeline with sinc filters) is the most widely used data source: one network trained on a very wide damage distribution works on many real photos but not on damage the pipeline cannot produce.
+- **Generative priors** (StableSR, DiffBIR, PASD, SeeSR, SUPIR, ResShift) give the a strong route to realistic texture; they differ in how the LR image and semantic information enter, and each exposes a fidelity knob. They lose PSNR and can hallucinate.
+- Evaluate with full-reference metrics on synthetic or captured sets, two kinds of NR metrics on real images, and a user study; expect the rankings to disagree.
+
+## Exercises
+
+1. **The asymmetry of kernel errors.** In the kernel-mismatch snippet, (a) set the noise to zero and repeat the table; (b) increase $\lambda$ to $10^{-2}$. How does the penalty for assuming too wide a kernel change in each case, and why?
+
+<details>
+<summary>
+Hint
+</summary>
+
+Too wide an assumed kernel asks the solver to amplify frequencies that the true kernel did not attenuate, so it boosts noise and creates overshoot. Without noise the loss on the right of each curve shrinks (only ringing remains); a larger $\lambda$ damps the amplification and flattens both sides of the curve, at the cost of a lower peak. Print the full rows and compare the drop from the diagonal entry to the entry two steps to the right with the drop two steps to the left.
+
+</details>
+
+2. **Shuffle versus repeat.** Modify `degrade` in the pipeline snippet so that it can also run in a BSRGAN-like mode: build a list of operations (isotropic blur, anisotropic blur, downsampling by 4, noise, JPEG), shuffle it with `rng.permutation`, apply it, and finish with JPEG. Compare the two modes by the average PSNR of the bicubic upsampling of 50 random LR images against the HR image. Which mode produces harder inputs on average?
+
+<details>
+<summary>
+Hint
+</summary>
+
+Downsampling placed *before* blur or noise means the blur acts on LR pixels and the noise is not smoothed by the resize, so shuffled sequences include some very hard cases. Report the mean and the spread over the 50 images; the spread tells you more about the coverage of the degradation space than the mean.
+
+</details>
+
+3. **Reading a no-reference metric.** Extend the evaluation snippet with two more candidates: the ground truth with mild JPEG compression (quality 50) and the ground truth shifted by one pixel. Rank all candidates by PSNR and by crispness. Which candidate shows best that PSNR punishes things a viewer would never notice?
+
+<details>
+<summary>
+Hint
+</summary>
+
+A one-pixel shift can look very similar to the ground truth but has a much lower PSNR; JPEG at quality 50 reduces crispness slightly and adds block edges that may even raise it. This is why captured pairs, which are never perfectly aligned, reward blurrier methods.
+
+</details>
+
+4. **Choosing a method.** For each scenario, choose a family from the map and justify it in two sentences: (a) restoring scanned 1990s family photos for a print album; (b) enlarging microscope images for cell counting; (c) a phone's 2× digital zoom that must run in 30 ms; (d) super-resolving frames from one known security camera model for which you can capture calibration pairs.
+
+<details>
+<summary>
+Hint
+</summary>
+
+(a) A generative-prior method with a moderate fidelity knob: unknown, mixed damage and a goal of pleasant images. (b) Not a generative prior: counts must not be invented; use a non-blind or captured-pair model with a measured point spread function. (c) Start by measuring a compact synthesis-trained regression or GAN network. Compare a one-step diffusion model only after including its encoder, decoder and memory costs in the target-device budget. (d) Captured pairs for that camera, possibly combined with an explicit kernel measured from calibration targets.
+
+</details>
+
+5. **The KernelGAN ×4 kernel.** KernelGAN estimates a ×2 kernel $k_2$ and derives the ×4 kernel as $k_4 = k_2 \circledast k_2^{\uparrow}$, where $k_2^{\uparrow}$ is $k_2$ with zeros inserted between its taps. Using two 1-D Gaussians, verify numerically that downscaling by 2 with $k_2$ twice equals downscaling by 4 once with $k_4$, and find the width of $k_4$ when $k_2$ has width $\sigma$.
+
+<details>
+<summary>
+Hint
+</summary>
+
+Downscaling twice means $\bigl((y \circledast k_2)\downarrow_2 \circledast k_2\bigr)\downarrow_2$. Moving the second convolution in front of the first decimation dilates it by 2. For Gaussians the widths add in quadrature: $\sqrt{\sigma^2 + (2\sigma)^2} = \sqrt 5\,\sigma$. Test with a random 1-D signal of length 256 and `np.convolve`.
+
+</details>
+
+## Supplementary notes
+
+These notes are optional: each takes one point of the main text and treats it in more detail. Nothing in the main text, code or exercises depends on them.
+
+### The high-order degradation pipeline, step by step
+
+This note lists exactly what one Real-ESRGAN training input goes through, using the paper and the released x4-plus training configuration [17], [63], and contrasts it with BSRGAN's shuffled model [16].
+
+**Notation.** Let $y$ be an HR training patch (Real-ESRGAN uses $256 \times 256$ HR patches) and $\mathcal D_j$ one "classical" degradation round, $\mathcal D_j(z) = \mathcal C_{q_j}\bigl(\mathcal R_j(z \circledast k_j) + n_j\bigr)$, where $k_j$ is a blur kernel, $\mathcal R_j$ a random resize, $n_j$ noise and $\mathcal C_{q_j}$ JPEG at quality $q_j$. An $n$-order model applies $x = (\mathcal D_n \circ \dots \circ \mathcal D_1)(y)$; Real-ESRGAN uses $n = 2$ and describes "order" as the number of times the same operation is repeated, not a mathematical order.
+
+**Round 1 and round 2** (the second round uses the narrower ranges in brackets):
+
+1. **Blur.** With probabilities 0.7, 0.15 and 0.15, draw a Gaussian, a generalized Gaussian or a plateau-shaped kernel; the kernel size is drawn from $\{7, 9, \dots, 21\}$, the standard deviation from $[0.2, 3]$ ($[0.2, 1.5]$), and the shape parameter $\beta$ from $[0.5, 4]$ (generalized Gaussian) or $[1, 2]$ (plateau). The Gaussian density is $k(i, j) \propto \exp\bigl(-\tfrac12 C^\top \Sigma^{-1} C\bigr)$ with $C = [i, j]^\top$ and $\Sigma = R_\theta \operatorname{diag}(\sigma_1^2, \sigma_2^2) R_\theta^\top$, where $R_\theta$ rotates by $\theta$ and $\sigma_1, \sigma_2$ are the widths along the principal axes; the generalized Gaussian raises $C^\top \Sigma^{-1} C$ to the power $\beta$, which gives flatter or more peaked kernels. With probability 0.1 the kernel is a sinc filter instead (next note). The second blur is skipped with probability 0.2.
+2. **Resize.** A random up- or downscale with area, bilinear or bicubic interpolation; nearest-neighbor is excluded because it shifts the image.
+3. **Noise.** Gaussian or Poisson with probability 0.5 each; Gaussian $\sigma \in [1, 30]$ ($[1, 25]$) in 8-bit units, Poisson scale in $[0.05, 3]$ ($[0.05, 2.5]$); with probability 0.4 the same noise is applied to all three channels ("gray noise").
+4. **JPEG** with quality $q \in [30, 95]$, simulated on the GPU in PyTorch. The released model constructs `DiffJPEG(differentiable=False)`; gradient propagation through the degradation generator is not required [63].
+
+**Final step.** Randomly choose between (resize to target LR size → final sinc → JPEG) and (JPEG → resize to target LR size → final sinc). Resize and sinc remain a pair in this final ordering; the final sinc is sampled with probability 0.8 [63]. This is more specific than independently shuffling all three operations.
+
+**Training-pair pool.** All steps run on the GPU on whole batches, which forces one resize factor per batch; a pool of 180 pairs mixes batches to restore diversity.
+
+**BSRGAN's model** differs in three ways [16]. (1) **Order**: the sequence $\{B_{\text{iso}}, B_{\text{aniso}}, D_s, N_G, N_{\text{JPEG}}, N_S\}$ (isotropic and anisotropic blur, downsampling, Gaussian noise, JPEG noise, processed camera sensor noise) is randomly permuted, then a final JPEG saves the image; in a permutation the LR image can be "noisy, then downsampled, then blurred". (2) **Downsampling**: nearest (with a half-pixel-corrected Gaussian prefilter), bilinear, bicubic, or a down-up resize with an intermediate factor $a$. (3) **Camera noise**: an RGB image is mapped to RAW with an inverse camera pipeline, noise is added in RAW, and the forward pipeline (demosaicking, exposure, white balance, color matrices, tone curve, gamma) is reapplied, with parameters pooled from five real cameras; this happens with probability 0.25. Real-ESRGAN argues that "not all shuffled degradations are necessary" and that repeating the plausible order is closer to how real images are produced [17]. Neither paper reports a direct numerical comparison of the two pipelines under the same network and training budget.
+
+### Sinc filters and ringing
+
+This note explains why an ideal low-pass filter produces the ringing that Real-ESRGAN teaches its network to remove.
+
+An ideal 2-D low-pass filter keeps all spatial frequencies inside a disk of radius $\omega_c$ (radians per pixel) and removes the rest. Its impulse response, the inverse Fourier transform of that disk, is the radially symmetric "jinc" function
+
+$$
+k(i, j) = \frac{\omega_c}{2\pi \sqrt{i^2 + j^2}}\, J_1\!\left(\omega_c \sqrt{i^2 + j^2}\right), \qquad k(0, 0) = \frac{\omega_c^2}{4\pi},
+$$
+
+where $(i, j)$ is the pixel offset from the kernel center, $J_1$ is the Bessel function of the first kind of order 1, and the center value is the limit as the radius goes to zero; Real-ESRGAN calls it a sinc filter and uses this formula [17]. This ideal response has infinite support. A finite sampled kernel, such as the normalized $21\times21$ example here, approximates it and changes the frequency response. The kernel has a positive center surrounded by alternating negative and positive rings (Figure 4, left). Convolving a step edge with it produces an overshoot on the bright side and an undershoot on the dark side, followed by decaying ripples: the 2-D version of the Gibbs phenomenon of truncated Fourier series. In our run with $\omega_c = \pi/3$ and a $21 \times 21$ kernel, the edge overshoots by about 0.10 above 1 and undershoots by about 0.10 below 0 (our numbers; a Gaussian blur of the same edge has no overshoot at all).
+
+<Figure src={sincFig} alt="Left two panels: 21 by 21 sinc kernels in a red-blue color map for cutoff 0.33 pi and 0.67 pi, each a red center with faint blue and red rings, wider for the lower cutoff. Right: profiles across a step edge; the black sharp step, a blue Gaussian-blurred ramp without overshoot, and a red sinc-filtered curve that dips below zero before the edge, overshoots above one after it, and ripples." caption="Figure 4 — Sinc (jinc) kernels and their effect on a step edge. The ideal low-pass filter rings; a Gaussian of similar width does not. Real images acquire such halos from sharpening, compression and resizing." />
+
+Why this matters for SR: a network trained only on Gaussian-blurred inputs has never seen halos and treats them as real edges, so it sharpens them further (Real-ESRGAN shows this in its sinc ablation). Lower $\omega_c$ gives wider rings; Real-ESRGAN draws the cutoff at random so the network sees halos of many widths. The pipeline snippet in the main text draws $\omega_c \in [\pi/3, \pi]$, our own choice.
+
+### Why the kernel is hard to identify
+
+This note shows that the kernel and the image cannot be separated from one LR image without assumptions, which is why every blind method needs a prior on one or both.
+
+**Two exact ambiguities.** With $y = (x \circledast k)\downarrow_s$:
+
+1. **Shift.** Shifting the scene by one pixel and the kernel by one pixel in the opposite direction leaves $x \circledast k$, and so $y$, unchanged: $\bigl(x(\cdot - \delta)\bigr) \circledast \bigl(k(\cdot + \delta)\bigr) = x \circledast k$ for any offset $\delta$. SRMD uses exactly this argument to explain why a blind network trained on many kernels averages over shifted HR candidates and over-smooths [2]. KernelGAN's regularizer that keeps the kernel's center of mass at the center removes this ambiguity by convention [12].
+2. **Blur trade.** Convolution is associative, so a soft scene $x \circledast g$ blurred by $k$ equals a sharp scene $x$ blurred by $g \circledast k$. For Gaussians, $g_{\sigma_1} \circledast g_{\sigma_2} = g_{\sqrt{\sigma_1^2 + \sigma_2^2}}$, so "a defocused photo of a sharp poster" and "a sharp photo of a soft painting" can produce the same LR image.
+
+```python
+import numpy as np
+from scipy import ndimage as ndi
+from skimage import data, img_as_float64
+
+x = img_as_float64(data.camera())
+s = 4
+
+def lr(img, sigma, shift=0):
+    """Blur with a Gaussian kernel centred at `shift` pixels, then keep every s-th pixel."""
+    k = ndi.gaussian_filter(img, sigma, mode="wrap")
+    return np.roll(k, shift, axis=1)[::s, ::s]
+
+# 1) Shift ambiguity: move the scene one pixel right and the kernel one pixel left.
+a = lr(x, 1.5)
+b = lr(np.roll(x, 1, axis=1), 1.5, shift=-1)
+print("shifted scene + shifted kernel, max |difference|:", f"{np.abs(a - b).max():.1e}")
+
+# 2) Blur ambiguity: a soft scene with a sharp kernel vs a sharp scene with a wide kernel.
+soft_scene = ndi.gaussian_filter(x, 1.0, mode="wrap")
+c = lr(soft_scene, 1.2)
+d = lr(x, np.hypot(1.0, 1.2))                     # Gaussian widths add in quadrature
+print("soft scene + sigma 1.2 vs sharp scene + sigma 1.56, max |difference|:", f"{np.abs(c - d).max():.1e}")
+```
+
+```text
+shifted scene + shifted kernel, max |difference|: 0.0e+00
+soft scene + sigma 1.2 vs sharp scene + sigma 1.56, max |difference|: 2.2e-05
+```
+
+The first difference is exactly zero; the second is at the level of the discretization error of sampled Gaussians.
+
+**What breaks the tie.** Each family resolves the ambiguity with a different assumption. Explicit methods restrict $k$ (Gaussian-shaped, centered, summing to 1) and rely on the network's learned image prior to prefer sharp, natural $x$. KernelGAN assumes that natural images are self-similar across scales, so the right kernel is the one that preserves the patch distribution when the image is shrunk [12], [11]. Implicit methods never estimate $k$ at all; they learn a direct mapping whose output is, in effect, the most plausible sharp image for the training distribution of kernels. The ambiguity is the deep reason why blind SR cannot be solved from the data alone, and why a method's assumptions decide which answer it gives.
+
+## Paper guides
+
+These paper introductions are optional: each walks through one paper the chapter builds on — the challenge it takes on, every part of its method, its results and ablations, its conclusion and the problems it leaves.
+
+### SRMD: one network for many known degradations (CVPR 2018)
+
+#### Challenge
+
+By 2017, CNN super-resolvers were trained and tested almost only on bicubic downsampling, and their quality collapsed when the real blur differed. Classical MAP methods could handle any kernel and noise level but needed slow optimization and hand-tuned parameters. Zhang, Zuo and Zhang ask whether *one* feed-forward CNN can handle many degradations, including spatially varying ones, if it is told what the degradation is, and whether such a model trained on synthetic data is useful on real images [2].
+
+#### Method
+
+**Degradation model.** The paper uses
+
+$$
+y = (x \circledast k)\downarrow_s + n,
+$$
+
+where $x$ is the HR image, $k$ the blur kernel, $\downarrow_s$ the *bicubic* downsampler with scale factor $s$, and $n$ additive white Gaussian noise of level $\sigma$. With $k$ a delta kernel and $\sigma = 0$ this is exactly the bicubic benchmark, so the bicubic setting is a special case. The authors also discuss the alternative order $y = (x\downarrow_s) \circledast k + n$ but use the first model.
+
+**The MAP view, and why the network needs the kernel.** The MAP estimate is
+
+$$
+\hat x = \arg\min_x \; \frac{1}{2\sigma^2}\bigl\| (x \circledast k)\downarrow_s - y \bigr\|^2 + \lambda \Phi(x),
+$$
+
+where the first term is data fidelity, $\Phi$ an image prior and $\lambda$ a trade-off weight. Its solution is a function $\hat x = F(y, k, \sigma, \lambda)$; since $\lambda$ can be absorbed into $\sigma$, the goal is to learn $F(y, k, \sigma; \Theta)$ with network parameters $\Theta$. A bicubic-trained network instead learns $F(y; \Theta)$ for one fixed $k$, which is why it fails elsewhere.
+
+**Dimensionality stretching.** The three inputs have different shapes: an image of size $W \times H \times C$, a $p \times p$ kernel and a scalar. SRMD (1) vectorizes the kernel into $p^2$ numbers, (2) projects it with PCA onto $t$ dimensions, (3) appends $\sigma$ to get a vector $v$ of length $t + 1$, and (4) "stretches" each entry $v_i$ into a constant $W \times H$ map. The result, a $W \times H \times (t + 1)$ tensor of **degradation maps**, is concatenated with the LR image. For the training kernels, $t = 15$ keeps about 99.8% of the energy. Because the maps need not be constant, the same network accepts spatially varying kernels and noise.
+
+**Network.** A plain CNN of 12 $3 \times 3$ convolution layers with 128 channels (Conv + batch normalization + ReLU, except the last layer) maps the $(C + t + 1)$-channel input to $s^2 C$ channels, and a sub-pixel convolution (pixel shuffle) rearranges them into the $sW \times sH \times C$ output. There is no residual learning and no bicubic pre-upsampling, the latter because interpolating a noisy input makes the noise harder to model. One model is trained per scale factor. A noise-free variant, **SRMDNF**, removes the noise-map input and is fine-tuned on noise-free data.
+
+**Training data.** Isotropic Gaussian kernels of fixed size $15 \times 15$ with widths in $[0.2, 2]$, $[0.2, 3]$ and $[0.2, 4]$ for $\times 2$, $\times 3$, $\times 4$ (step 0.1), plus anisotropic Gaussians (rotation in $[0, \pi]$, eigenvalue scaling from 0.5 to 6, 8 and 10); for $\times 3$ the paper also includes kernels that approximate a direct (non-bicubic) downsampler, fitted by solving $k_b = \arg\min \| (x \circledast k_b)\downarrow^{\text{bic}}_s - (x \circledast k_d)\downarrow^{\text{dir}}_s \|^2$. Noise levels lie in $[0, 75]$. HR images: 800 DIV2K training images [47] plus 5,144 images from two other public photo collections, used in RGB. Each epoch samples $128 \times 3{,}000$ LR patches of $40 \times 40$ with a random kernel and noise level; the loss is the mean squared error, optimized with Adam [64].
+
+**Why not a blind model?** The paper argues against simply training one network on all degradations without the maps: shifting the HR image by a pixel and the kernel by a pixel the other way gives the same LR image, so a blind network averages over shifted candidates and over-smooths, and it generalizes poorly. The maps "anchor" the network and let a user trade fidelity against smoothness by changing the supplied noise level.
+
+#### Results
+
+**Bicubic degradation** (PSNR on Set5 [65], Set14 [66], BSD100 [67], Urban100 [68] in RGB). SRMDNF reaches 37.79 / 34.12 / 31.96 dB on Set5 at $\times 2$ / $\times 3$ / $\times 4$, against 37.56 / 33.67 / 31.35 dB for VDSR [69], and SRMD (with noise maps) 37.53 / 33.86 / 31.59 dB. So the general model is competitive even in the setting specialized networks were built for.
+
+**General degradations** (Set5, Table 2). The decisive comparison uses isotropic kernels of width 0.2, 1.3 and 2.6 and noise levels 0, 15, 50. With width 1.3 and no noise, the bicubic-trained VDSR drops to 30.57 / 30.24 / 29.72 dB ($\times 2$ / $\times 3$ / $\times 4$), while SRMD gets 37.04 / 33.77 / 31.56 dB and SRMDNF 37.45 / 34.16 / 31.99 dB. With width 2.6 and noise 15, SRMD reaches 28.48 / 27.55 / 26.82 dB, ahead of a cascade of a separate denoiser and SRMDNF (21.33 / 23.85 dB at $\times 3$ / $\times 4$) and of a model-based method that uses a CNN denoiser as its prior (26.44 / 25.67 / 24.36 dB). For the classical $7 \times 7$ Gaussian of width 1.6 with direct downsampling at $\times 3$, SRMDNF reaches 34.01 dB against 33.38 dB for that model-based method.
+
+**Speed.** Under the paper’s MATLAB/MatConvNet setup on a Titan X Pascal GPU, SRMD takes 0.084, 0.042 and 0.027 s for a $1024 \times 1024$ output at $\times 2$, $\times 3$, $\times 4$, against 0.174 s for VDSR, because it works at LR resolution.
+
+**Spatially variant and real images.** With noise and kernel-width maps that vary across the image, SRMD restores the image when given the matching maps. On real images (a JPEG-compressed cat, the "Chip" image) the authors search a grid of kernel widths (0.1 to 2.4) and noise levels (0 to 75) by eye and obtain sharper, cleaner results than VDSR and two other baselines; there is no ground truth for these.
+
+#### Ablations
+
+The paper has no separate ablation table. The closest controlled comparisons are: (1) SRMD versus SRMDNF on noise-free inputs, where removing the noise channel and fine-tuning gains 0.26 to 0.37 dB on Set5 at width 0.2 (37.53 to 37.79 dB at $\times 2$; 31.59 to 31.96 dB at $\times 4$), showing a small cost of the generality; (2) the cascade "denoiser + SRMDNF" versus joint SRMD, where the gap grows with kernel width, showing the benefit of joint denoising and SR; and (3) a Y-channel SRMDNF retrained on 291 images for $\times 3$, which still reaches 33.97 dB on Set5, showing that the gain is not only due to more training data.
+
+#### Conclusion
+
+A single plain CNN conditioned on stretched degradation maps matches specialized bicubic networks and handles many kernels, noise levels and spatial variation. The key idea, concatenating degradation information as constant maps, became a standard way of conditioning restoration networks on degradation parameters.
+
+#### Problems
+
+- **The kernel must come from somewhere.** SRMD is non-blind; on real images the authors chose parameters by visual grid search. Errors in the supplied kernel produce ringing (too wide) or blur (too narrow), as the paper itself notes. IKC adds an estimator and corrector for this ([IKC](#ikc-iterative-kernel-correction-cvpr-2019)).
+- **Conditioning only at the input** weakens in deep networks; IKC's SFTMD injects the kernel at every block and gains up to several dB.
+- **Narrow degradation family.** Gaussian kernels and Gaussian noise do not cover JPEG or camera processing, which BSRGAN and Real-ESRGAN later model ([BSRGAN](#bsrgan-a-practical-degradation-model-iccv-2021)).
+- **Batch normalization and MSE** reflect 2017 practice; later networks drop BN and use L1 or perceptual losses.
+
+### IKC: iterative kernel correction (CVPR 2019)
+
+#### Challenge
+
+Non-blind networks such as SRMD work well when given the right kernel, but a predicted kernel is never exactly right, and small errors are magnified into visible artifacts. Gu et al. observe that these artifacts are *regular*: if the kernel used for SR is sharper than the true one, the result is over-smoothed; if it is smoother, the result shows ringing [8]. Can a network learn to read this signature and correct the kernel?
+
+#### Method
+
+**Problem setting.** $I^{LR} = (k \otimes I^{HR})\downarrow_s + n$ with isotropic Gaussian kernels and bicubic downsampling; a noisy version uses Gaussian noise. Kernels are $21 \times 21$ and, as in SRMD, are reduced by a PCA matrix $M \in \mathbb R^{b \times l^2}$ to a code $h = M k \in \mathbb R^b$, where $l = 21$ is the kernel size and $b$ the code length.
+
+**Three networks.**
+
+1. **SR model $F$ (SFTMD).** An SRResNet-style network [70] with **spatial feature transform** (SFT) layers [32] after every convolution in the residual blocks and after the global residual connection. The kernel code is stretched into maps $H$ of size $b \times H \times W$; for feature maps $F$ of size $C_f \times H \times W$, a small CNN takes the concatenation of $F$ and $H$ and outputs a scale $\gamma$ and a shift $\beta$, and the layer outputs $\mathrm{SFT}(F, H) = \gamma \odot F + \beta$, with $\odot$ the elementwise product. Unlike SRMD's input concatenation, the kernel influences every layer, and the image features are modulated rather than mixed with constant maps.
+2. **Predictor $P$.** Four convolution layers with leaky ReLU and global average pooling give an initial code $h_0 = P(I^{LR})$, trained with $\theta_P = \arg\min \| k - P(I^{LR}; \theta_P) \|_2^2$ (in code space).
+3. **Corrector $C$.** It takes the current SR image $I^{SR}$ and the current code $h$. Five convolution layers extract features of $I^{SR}$ (where blur or ringing is visible); two fully connected layers process $h$, which is then stretched into maps; the two are concatenated and three $1 \times 1$ convolutions plus global average pooling output a correction $\Delta h$. It is trained so that $h + C(I^{SR}, h)$ approaches the true code.
+
+**Algorithm.** $h_0 = P(I^{LR})$, $I_0^{SR} = F(I^{LR}, h_0)$; then for $i = 1, \dots, t$: $\Delta h_i = C(I_{i-1}^{SR}, h_{i-1})$, $h_i = h_{i-1} + \Delta h_i$, $I_i^{SR} = F(I^{LR}, h_i)$. Small corrections repeated many times avoid the over- or under-correction of a single step.
+
+**Training.** SFTMD is pretrained with MSE on synthetic pairs (kernel widths in $[0.2, 2]$, $[0.2, 3]$, $[0.2, 4]$ for $\times 2, 3, 4$; 3,450 DIV2K and Flickr2K images [47], [71]); it is then frozen, and $P$ and $C$ are trained alternately with $t = 7$ iterations, Adam [64] and learning rate $10^{-4}$.
+
+**Gaussian8 benchmark.** To compare blind methods on known kernels, the paper defines eight isotropic kernels per scale with widths in $[0.80, 1.60]$, $[1.35, 2.40]$ and $[1.80, 3.20]$ for $\times 2$, $\times 3$, $\times 4$, applied before bicubic downsampling of Set5, Set14, BSD100, Urban100 and Manga109 [72].
+
+#### Results
+
+On Gaussian8 at $\times 4$, IKC reaches 31.52 dB on Set5, 28.26 on Set14, 27.29 on BSD100, 25.33 on Urban100 and 29.90 on Manga109, against 26.45, 24.78, 24.97, 22.11 and 23.53 dB for ZSSR and 24.57, 22.79, 23.29, 20.35 and 21.50 dB for bicubic interpolation. Running the SR model with only the predictor's initial kernel ("P + SFTMD") gives 29.29 dB on Set5 at $\times 4$, so correction adds 2.23 dB there. At $\times 2$ the Set5 result is 36.62 dB. Deblurring the LR image with a blind deblurring method before a bicubic-trained SR network performs far worse (18.10 dB on Set5 at $\times 4$), and deblurring after SR is better but still below IKC (28.69 dB). With a direct downsampler that IKC was not trained on, it still leads on BSD100 (27.06 dB at kernel width 2.0 in the paper's Table 3). On real images (a historic photo, "Chip") IKC gives artifact-free results without manual kernel search.
+
+#### Ablations
+
+- **SFT versus concatenation** (non-blind, ground-truth kernels). On Set5 $\times 4$ with width 1.3, SFTMD gets 32.39 dB, SRMDNF 32.00, the same SRResNet backbone with SFT layers replaced by direct concatenation 31.69, and the backbone with the kernel concatenated only at the first layer 29.11 dB. In this architecture and experiment, repeated affine modulation preserves the conditioning better than these concatenation variants.
+- **Number of iterations.** On the intermediate results of one image, PSNR rises from 23.60 dB (initial prediction) to 25.65, 27.75, 27.94 and 27.97 dB after one to four corrections; a curve on Set14 shows PSNR and SSIM increasing and then converging. One correction step is not enough.
+- **PCA codes versus kernel widths.** Learning the PCA code instead of the Gaussian width generalizes better to the unseen direct downsampler: 27.06 versus 26.85 dB on BSD100 at width 2.0, and 26.98 versus 26.75 dB at width 3.0.
+
+#### Conclusion
+
+Kernel mismatch leaves regular artifacts, and a network can use them to correct the kernel iteratively. Together with SFT-based conditioning this made blind SR with Gaussian kernels several dB better than earlier blind methods.
+
+#### Problems
+
+- **Isotropic Gaussians only.** The authors note that real kernels include slight motion blur and leave anisotropic kernels to future work.
+- **Three separately trained networks** and seven SR passes make IKC slow (about 3.93 s per image in DAN's measurements) and the predictor, corrector and SR model are never optimized jointly. [DAN](#dan-unfolding-the-alternating-optimization-neurips-2020) unfolds the alternation into one end-to-end network.
+- **The SR model is trained with true kernels** but used with estimated ones; DAN trains the restorer on estimates instead.
+- **No JPEG or processing**: like SRMD, IKC stays inside the classical model.
+
+### KernelGAN: kernel estimation with an internal GAN (NeurIPS 2019)
+
+#### Challenge
+
+Non-blind SR methods that accept a kernel (ZSSR, SRMD) are only useful if the kernel of the *specific* image is known; it depends on the optics and even on camera shake, so it changes from image to image. Earlier estimation by nearest-neighbor patch search across scales (Michaeli and Irani [11]) failed above $\times 2$ and took about 45 minutes per image. Bell-Kligler, Shocher and Irani want an unsupervised, image-specific kernel estimator that needs no training data except the test image [12].
+
+#### Method
+
+**Principle.** The correct SR kernel is the downscaling kernel that best preserves the distribution of small patches across scales of the LR image. So *generate* a downscaled version of the LR image such that its patches are indistinguishable from the patches of the LR image itself: this is distribution matching, a GAN's job.
+
+**Objective.** Let $u$ and $v$ be crops from the input LR image, $G$ its learned downscaler, and $D$ a patch discriminator. The released code alternates minimization of
+
+$$
+\mathcal L_D=\tfrac12\mathbb E\bigl[\lvert D(u)-1\rvert+\lvert D(G(v))\rvert\bigr],\qquad
+\mathcal L_G=\mathbb E\lvert D(G(v))-1\rvert+R(k).
+$$
+
+The absolute values are averaged over the discriminator’s spatial map, and $R(k)$ regularizes the effective kernel $k$. Real crops target label 1, generated crops target 0 when training $D$, and the generator targets 1 when training $G$. Gradients through generated crops are stopped during the discriminator update. The paper’s printed minimax shorthand is not a literal implementation of these alternating losses; the released `GANLoss` uses mean L1 [73], in the spirit of label-regression adversarial training [74]. Training runs 3,000 alternating updates with Adam [64], learning rate $2\times10^{-4}$ and the published decay schedule, using image crops sampled to favor gradient-rich regions.
+
+**Discriminator.** Fully convolutional, without pooling or strides: one $7 \times 7$ convolution followed by six $1 \times 1$ convolutions with spectral normalization [36], batch normalization, ReLU and a final sigmoid. Its receptive field is a $7 \times 7$ patch, so it judges each patch separately and outputs a "D-map" of the input's size; labels are all-ones maps for crops of $I_{LR}$ and all-zeros for crops of $G$'s output, with a pixel-wise loss.
+
+**Deep linear generator.** Downscaling by convolution and subsampling is linear, so $G$ has no non-linearities (a non-linear $G$ could fool $D$ by, for example, tiling valid patches without any downscaling relation). A single strided convolution is expressive enough for the assumed linear downsampler, but the paper observes worse optimization. A **deep linear network** admits many factorizations of the same effective kernel; the authors propose this overparameterization as an explanation for its better behavior. This is an optimization argument, not a guarantee that the estimated kernel is unique or correct. $G$ has five hidden convolution layers with 64 channels; the first three filters are $7 \times 7$, $5 \times 5$ and $3 \times 3$ and the rest $1 \times 1$, giving a $13 \times 13$ receptive field and so a $13 \times 13$ kernel. For the first iterations $G$'s output is constrained to be close to a bicubic downscaling, as a starting point.
+
+**Extracting the kernel.** Convolving all filters of $G$ in sequence with stride 1 gives the kernel $k$. This extraction is differentiable, so priors on $k$ can be imposed during training:
+
+$$
+R = \alpha \mathcal L_{\text{sum\_to\_1}} + \beta \mathcal L_{\text{boundaries}} + \gamma \mathcal L_{\text{sparse}} + \delta \mathcal L_{\text{center}}, \qquad \alpha = 0.5,\ \beta = 0.5,\ \gamma = 5,\ \delta = 1,
+$$
+
+where $\mathcal L_{\text{sum\_to\_1}} = \bigl|1 - \sum_{i,j} k_{i,j}\bigr|$ keeps the kernel normalized, $\mathcal L_{\text{boundaries}} = \sum_{i,j} |k_{i,j} m_{i,j}|$ penalizes mass far from the center with a mask $m$ that grows exponentially with distance, $\mathcal L_{\text{sparse}} = \sum_{i,j} |k_{i,j}|^{1/2}$ discourages over-smooth kernels, and $\mathcal L_{\text{center}} = \bigl\| (x_0, y_0) - \sum_{i,j} k_{i,j}(i, j) / \sum_{i,j} k_{i,j} \bigr\|_2$ penalizes displacement from the chosen center $(x_0, y_0)$. These are the paper’s stated regularizers. The released implementation uses a scale-aware center, an MSE center penalty and a sparsity exponent of 0.2 rather than the paper’s 0.5, with scheduled coefficients [73]; reproducing its run requires that implementation, not just this symbolic summary.
+
+**From $\times 2$ to $\times 4$.** KernelGAN only learns $k_2$; downscaling twice by 2 equals downscaling once by 4 with $k_4 = k_2 \circledast k_2^{\text{dil}}$, where $k_2^{\text{dil}}[n_1, n_2] = k_2[n_1/2, n_2/2]$ for even $n_1, n_2$ and 0 otherwise. This also avoids training on a tiny $\times 4$-downscaled image.
+
+**DIV2KRK benchmark.** Because the NTIRE 2018 blind data have sub-pixel misalignments that favor blurry outputs, the paper builds DIV2KRK: each of the 100 DIV2K validation images is blurred with its own $11 \times 11$ anisotropic Gaussian (axis lengths $\lambda_1, \lambda_2 \sim U(0.6, 5)$, angle $\theta \sim U[-\pi, \pi]$), perturbed by up to 25% uniform multiplicative noise and renormalized, then subsampled.
+
+#### Results
+
+On DIV2KRK (PSNR / SSIM), KernelGAN + ZSSR reaches 30.363 / 0.8669 at $\times 2$ and 26.810 / 0.7316 at $\times 4$. Bicubic-trained networks barely beat interpolation (RCAN+ 29.198 / 0.8223 and 25.659 / 0.6936, interpolation 28.731 / 0.8040 and 25.330 / 0.6795), and the best NTIRE 2018 blind entry reached 26.340 / 0.7190 at $\times 4$. Replacing the KernelGAN kernel by Michaeli and Irani's kernel costs about 1 dB and 0.73 dB with ZSSR (29.368 and 26.080 dB), and about 4 dB and 2.4 dB with SRMD. With the *ground-truth* kernel the upper bounds are 32.436 dB ($\times 2$) and 27.527 dB ($\times 4$) for ZSSR, so a gap remains. KernelGAN + SRMD at $\times 4$ (25.711 dB) ranks below the best NTIRE entry in PSNR but above it in SSIM (0.7265). Runtime is 61 s per image on a Tesla V100 (102 s on a K80), independent of image size because a fixed number of crops is used.
+
+#### Ablations
+
+- **Depth of the linear generator.** A single-layer generator instead of the deep linear one is worse by 3.8 dB at $\times 2$ and 1.6 dB at $\times 4$ on DIV2KRK, and its kernels look wrong. Depth matters even without non-linearity.
+- **Kernel source** (Table 1 as a controlled study): with SR method fixed, bicubic kernel < Michaeli–Irani < KernelGAN < ground truth, showing that SR quality tracks kernel accuracy.
+- An ablation of the four kernel constraints is reported only on the project website, not in the paper.
+
+#### Conclusion
+
+An image-specific GAN with a deep linear generator recovers the SR kernel from the test image alone, and plugging it into off-the-shelf non-blind SR gives the best blind results on DIV2KRK at the time.
+
+#### Problems
+
+- **About a minute per image** of test-time training, plus the non-blind SR step (DAN measured 415.7 s per image for KernelGAN + ZSSR); feed-forward estimators are much faster ([DAN](#dan-unfolding-the-alternating-optimization-neurips-2020)).
+- **Noise and compression are outside the model**: the discriminator compares patches that contain noise and JPEG blocks, and the downscaler cannot represent them.
+- **Assumes patch recurrence** and one spatially uniform kernel; images without repeating structure or with varying blur are hard cases.
+- **The estimator and the SR network are separate**, and a good kernel can still be mismatched to the SR network's expectations (DAN reports KernelGAN + USRNet at 20.06 dB on DIV2KRK $\times 4$).
+
+### DAN: unfolding the alternating optimization (NeurIPS 2020)
+
+#### Challenge
+
+Two-step blind SR (estimate the kernel, then run a non-blind SR network) has three weaknesses, according to Luo et al.: two or more models must be trained separately; the estimator sees only the LR image, although the kernel is better determined with the help of the HR image; and the SR network is trained with true kernels but tested with estimated ones, so small estimation errors cause large drops [9].
+
+#### Method
+
+**Alternating optimization.** Assuming noise is handled separately, blind SR is written as alternating minimization of the L1 reconstruction error:
+
+$$
+k_{i+1} = \arg\min_k \; \bigl\| y - (x_i \otimes k)\downarrow_s \bigr\|_1, \qquad
+x_{i+1} = \arg\min_x \; \bigl\| y - (x \otimes k_{i+1})\downarrow_s \bigr\|_1 + \phi(x),
+$$
+
+where $\downarrow_s$ keeps the upper-left pixel of each $s \times s$ block, $\phi$ is an image prior and $i$ counts iterations. Both sub-problems are solved by networks: an **Estimator** for $k$ and a **Restorer** for $x$. The kernel is initialized as a Dirac delta, reduced by PCA as in IKC, and the loop is unfolded for $T = 4$ iterations with weights shared across iterations; only the final outputs are supervised with an L1 loss. An analytic solution for $k$ exists but was slower and less robust to residual noise.
+
+**Conditional residual block (CRB).** Each module has a *basic* input that stays fixed (the LR image) and a *conditional* input that changes every iteration (the SR image for the Estimator, the kernel for the Restorer). If a module ignored its conditional input, the loop would collapse to a fixed point after one iteration. The CRB repeatedly exposes the conditional features to the residual mapping:
+
+$$
+f_{\text{out}} = R\bigl(\operatorname{Concat}([f_{\text{basic}}, f_{\text{cond}}])\bigr) + f_{\text{basic}},
+$$
+
+where $R$ is a residual mapping of two $3 \times 3$ convolutions and a channel-attention layer, and $f_{\text{basic}}, f_{\text{cond}}$ are the basic and conditional features.
+
+**Estimator.** The SR image is downsampled by a stride-$s$ convolution and fed as conditional input to all 5 CRBs (32 channels each); global average pooling outputs the PCA code of the kernel. **Restorer.** The kernel code is stretched to the LR size and fed to all 40 CRBs (64 basic and 10 conditional channels); pixel-shuffle layers upscale the output.
+
+**Training.** 3,450 DIV2K and Flickr2K images, $64 \times 64$ LR inputs, batch 64, $4 \times 10^5$ iterations with Adam (learning rate $2 \times 10^{-4}$, halved every $10^5$ iterations). Setting 1 follows IKC (isotropic $21 \times 21$ kernels, widths in $[0.2, 4.0]$, $[0.2, 3.0]$, $[0.2, 2.0]$ for $\times 4, 3, 2$; tested on Gaussian8). Setting 2 follows KernelGAN ($11 \times 11$ irregular anisotropic kernels; tested on DIV2KRK). For real images a separate model is trained with added Gaussian noise.
+
+#### Results
+
+**Setting 1 (Gaussian8, Y channel).** At $\times 4$ DAN reaches 31.89 dB on Set5, 28.43 on Set14, 27.51 on BSD100, 25.86 on Urban100 and 30.50 on Manga109, against IKC's 31.52, 28.26, 27.29, 25.33 and 29.90 dB. The largest gap is on Manga109 at $\times 3$: 33.16 versus 28.21 dB, 4.95 dB. At $\times 2$, DAN reaches 37.33 dB on Set5 against 36.62 dB for IKC.
+
+**Setting 2 (DIV2KRK).** DAN reaches 32.56 / 0.8997 at $\times 2$ and 27.55 / 0.7582 at $\times 4$, against 30.36 / 0.8669 and 26.81 / 0.7316 for KernelGAN + ZSSR, that is 2.20 dB and 0.74 dB better. KernelGAN + USRNet reaches only 20.06 dB at $\times 4$: a good estimator and a good non-blind network do not combine well when trained separately.
+
+**Speed.** On an RTX 2080 Ti, on the 40 Gaussian8 images from Set5, DAN takes 0.75 s per image, IKC 3.93 s and KernelGAN + ZSSR 415.7 s.
+
+#### Ablations
+
+- **Ground-truth kernels.** Replacing the Estimator's output by the true kernel (one Restorer pass) changes almost nothing: 31.85 versus 31.89 dB on Set5 and 25.87 versus 25.86 dB on Urban100 at $\times 4$. The Restorer has adapted to the Estimator's kernels, so a "better" kernel does not help.
+- **Kernel accuracy.** The L1 error of DAN's predicted kernel codes on Urban100 is much lower than IKC's at every kernel width, and the PSNR gap to IKC grows with the width.
+- **Iterations at test time.** Trained with 4 iterations, DAN tested with 1 to 7 iterations first improves quickly and then converges, without degrading beyond 4 (on Set14, 20.43 dB at 5 iterations versus 20.42 dB at 4 in the plotted example). The modules learned to cooperate rather than memorize the iteration count.
+
+#### Conclusion
+
+Unfolding the estimate-then-restore alternation into one end-to-end network, with shared weights and conditional residual blocks, gives a blind SR model that is more accurate and much faster than separately trained estimators and restorers.
+
+#### Problems
+
+- **Still the classical model.** Gaussian-like kernels, a fixed downsampler and AWGN; real compression and processing are not modelled, which motivates broader synthesis-based training for real photographs ([BSRGAN](#bsrgan-a-practical-degradation-model-iccv-2021)).
+- **Kernel codes are PCA projections** of the training family; a kernel outside that family cannot be represented.
+- **Noise is handled by retraining**, not by the formulation.
+- Later work in this line (DCLS [10], KDSR [15]) refines estimation and representation but keeps the same benchmarks.
+
+### DASR: contrastive degradation representations (CVPR 2021)
+
+#### Challenge
+
+Explicit degradation estimation is slow (iterative correction, or test-time training as in KernelGAN) and fragile: estimation errors become artifacts. Wang et al. ask whether an SR network needs the kernel at all, or only a representation that *distinguishes* one degradation from another, learned without kernel labels [14].
+
+#### Method
+
+**Assumption.** The degradation is the same within an image and differs between images. Then two patches of the same LR image share a degradation, and patches of different images do not.
+
+**Degradation encoder and contrastive loss.** A six-layer CNN encodes an LR patch; a two-layer MLP projection head maps the encoding to $x$ (query), $x^+$ (positive, another patch of the same image) and $x^-_n$ (negatives, patches of other images). The InfoNCE loss
+
+$$
+\mathcal L_x = -\log \frac{\exp(x \cdot x^+ / \tau)}{\exp(x \cdot x^+ / \tau) + \sum_{n=1}^{N} \exp(x \cdot x^-_n / \tau)}
+$$
+
+pulls the query toward its positive and away from negatives, where $\cdot$ is the dot product, $N$ the number of negatives and $\tau$ a temperature. In training, $B$ LR images (that is, $B$ degradations) are sampled and two patches are cropped from each; their embeddings $p_i^1, p_i^2 \in \mathbb R^{256}$ are query and positive for image $i$, and a queue of $N_{\text{queue}}$ embeddings from earlier batches (as in MoCo [33]) supplies negatives with many contents and degradations:
+
+$$
+\mathcal L_{\text{degrad}} = \frac{1}{B}\sum_{i=1}^{B} -\log \frac{\exp(p_i^1 \cdot p_i^2 / \tau)}{\exp(p_i^1 \cdot p_i^2 / \tau) + \sum_{j=1}^{N_{\text{queue}}} \exp(p_i^1 \cdot p_{\text{queue}}^j / \tau)},
+$$
+
+with $\tau = 0.07$ and $N_{\text{queue}} = 8192$. Embeddings are L2-normalized before the dot products. These equations spell out the positive-included softmax and batch-mean reduction used by the released implementation: it concatenates one positive logit with the queued negatives and applies cross-entropy with target zero [75]. The paper’s Equations 2–3 print the denominator using negatives-only queue notation. Different patches of one synthetically degraded image share a degradation but can have different content; this encourages, rather than guarantees, content-invariant features. “Unsupervised” refers to degradation representation learning without kernel labels; the SR network still trains with HR–LR pairs.
+
+**Degradation-aware SR network.** The SR network follows RCAN's high-level structure [76] with 5 residual groups of 5 **DA blocks**. Each DA block has two **DA convolution** layers. In each, the representation $R$ passes (a) through two fully connected layers and a reshape to a depth-wise kernel $w \in \mathbb R^{C \times 1 \times 3 \times 3}$, which filters the features $F$ followed by a $1 \times 1$ convolution to give $F_1$; and (b) through two fully connected layers and a sigmoid to channel-wise coefficients $v$ that rescale $F$ to give $F_2$. The output is $F_1 + F_2$ passed to the next layer. Predicting kernels and coefficients from $R$ avoids the interference that the paper attributes to concatenating degradation maps with image features.
+
+**Training.** 800 DIV2K and 2,650 Flickr2K images; $21 \times 21$ Gaussian kernels with bicubic downsampling; first isotropic widths in $[0.2, 2.0]$, $[0.2, 3.0]$, $[0.2, 4.0]$ for $\times 2, 3, 4$, then anisotropic kernels ($\lambda_1, \lambda_2 \sim U(0.2, 4)$, $\theta \sim U(0, \pi)$) with noise levels in $[0, 25]$. Each batch: 32 HR images, 32 random kernels, two $48 \times 48$ LR patches per image. The encoder is first trained alone with $\mathcal L_{\text{degrad}}$ for 100 epochs, then the whole network for 500 epochs with $\mathcal L = \mathcal L_{\text{SR}} + \mathcal L_{\text{degrad}}$, where $\mathcal L_{\text{SR}}$ is the L1 loss.
+
+#### Results
+
+**Noise-free isotropic kernels** (PSNR). At $\times 4$ on Set14 with kernel widths 0, 1.2, 2.4 and 3.6, DASR reaches 28.50, 28.45, 28.28 and 27.45 dB; IKC 28.52, 28.45, 28.16 and 26.81 dB; SRMDNF with IKC's predictor 27.74, 26.15, 26.20 and 26.17 dB; and the bicubic-trained RCAN 28.87, 27.48, 24.93 and 23.41 dB. On Urban100 at width 3.6: DASR 24.66 dB, IKC 24.06 dB. The paper’s Table 2 lists 70 ms for DASR and 517 ms for IKC; the table does not fully specify a portable timing protocol, so these values should not be compared with timings from another paper or device. At $\times 2$ on Set5 DASR reaches 37.87 dB at width 0 and 35.43 dB at width 1.8.
+
+**Anisotropic kernels with noise** ($\times 4$, Set14, nine kernels). With noise level 0, DASR reaches 26.21 to 27.99 dB across the nine kernels, against 25.33 to 27.78 dB for a denoiser followed by IKC (fine-tuned on anisotropic kernels); with noise level 10, 24.43 to 26.57 dB against 23.01 to 26.16 dB. DASR has 5.8 M parameters; the same table reports 70 ms for DASR and 520 ms for IKC with a denoiser, with the timing caveat above. In 2-D embedding plots, the learned representations cluster clearly by noise level and roughly by blur kernel. On real images DASR (trained on isotropic kernels) gives visually sharper results with fewer artifacts.
+
+#### Ablations
+
+All on Set14 at $\times 4$, kernel widths 0.2, 1.0, 1.8, 2.6 and 3.4 (Table 1):
+
+- **Without degradation representation learning** (Model 1: $\mathcal L_{\text{degrad}}$ removed, network trained end to end): 28.46, 28.40, 28.30, 27.77, 26.79 dB against 28.50, 28.45, 28.40, 28.16, 27.58 dB for the full model. The contrastive loss matters most for large kernels, and the 2-D embedding plot without it does not separate kernel widths.
+- **Concatenation instead of DA convolution** (Model 2: representation stretched and concatenated as in SRMD): 28.49, 28.38, 27.99, 27.54, 26.72 dB.
+- **Without channel modulation** (Model 3: predicted kernels only): 28.42, 28.30, 28.21, 27.97, 27.33 dB. Both branches contribute.
+- **Oracle degradation** (Model 5: the true kernel fed through five fully connected layers): 28.60, 28.67, 28.69, 28.48, 27.90 dB, an upper bound for the same network. In comparison, SRMDNF drops from 27.55 dB with the true kernel to 26.66 dB with KernelGAN's estimate and 26.18 dB with IKC's predictor at width 3.4: explicit estimation errors cost more than DASR's implicit representation.
+- **Content invariance.** Representations extracted from nine other images with the same kernel give nearly the same PSNR when used to super-resolve a given image.
+
+#### Conclusion
+
+Contrastive learning on "same image = same degradation" yields a degradation-discriminative representation encouraged to be content-invariant without kernel labels, and predicting convolution kernels and channel scales from it gives a blind SR network that matches or beats iterative kernel estimation at a fraction of the time.
+
+#### Problems
+
+- **The representation only spans the training family** (Gaussian kernels and noise); it can tell degradations apart, not describe ones it never saw. KDSR distils a representation learned with HR access to cover blur, noise and JPEG combinations [15].
+- **The per-image uniformity assumption** fails for spatially varying blur and noise.
+- In the anisotropic-noisy comparison the baselines needed a separate denoiser; a stronger single-model baseline would make the comparison cleaner.
+- **Name clash.** Liang et al.'s ECCV 2022 "DASR" is a different, degradation-adaptive real-world model [18].
+
+### BSRGAN: a practical degradation model (ICCV 2021)
+
+#### Challenge
+
+A super-resolution network learns the inverse of the training degradation, not a universal operation called “make sharp.” BSRGAN asks whether an ordinary restoration backbone becomes useful on real photographs when its training inputs cover more realistic damage [16]. This changes the research question: a higher score on bicubic downsampling is not enough if compression, sensor noise and resizing interact differently at deployment.
+
+The contribution is principally a **training-data generator**. It does not estimate a physically unique history for a particular photograph, and it does not require captured LR–HR pairs. Clean images supply targets; randomized processing supplies aligned degraded observations. Keeping the network familiar makes the effect of changing this observation distribution easier to understand, although the complete training recipe also changes the image collection and losses.
+
+#### Method
+
+**Two blurs.** The pipeline includes an isotropic Gaussian and an anisotropic Gaussian, rather than choosing just one. Kernel support is sampled from odd sizes 7 through 21. For ×4, isotropic widths range from 0.1 to 2.8; anisotropic axis widths range from 0.5 to 8, with a random orientation. These are widths in the coordinate system where that operation occurs. A blur applied after shrinking therefore has a different HR-equivalent footprint from the same blur applied before it.
+
+**Four downsampling choices.** The scale reduction uses bilinear, bicubic, nearest-neighbor with a shifted Gaussian prefilter, or a down-up sequence. The prefilter compensates for the nearest-neighbor sampling-grid displacement. In the down-up option, an intermediate enlargement can introduce interpolation blur at LR resolution. Its two operations may be separated by other degradations. These choices model more than uncertainty about a single Gaussian width.
+
+**Three noise mechanisms.** Gaussian noise can be independent across channels, shared as grayscale noise, or correlated across channels. JPEG creates block and quantization artifacts. Processed sensor noise is synthesized by approximately reversing a camera pipeline, injecting noise in RAW space, then applying forward processing. The camera-pipeline pool comes from five cameras; this branch is used with probability 0.25. Reverse processing is an approximation, not recovery of the original sensor measurement.
+
+**Random order.** Write the operation list as $\mathcal O=\{B_i,B_a,D_s,N_g,N_j,N_c\}$. A random permutation $\pi$ produces
+
+$$
+y=N_{j,\mathrm{final}}\circ\mathcal O_{\pi(6)}\circ\cdots\circ\mathcal O_{\pi(1)}(x).
+$$
+
+Here $x$ is the HR target, $y$ the LR input, $B_i,B_a$ the two blurs, $D_s$ the scale change, and $N_g,N_j,N_c$ Gaussian, JPEG and processed-camera noise operations. The final JPEG operation saves a compressed observation. Order matters because these operators do not commute: downsampling can suppress noise already present, whereas adding noise afterward leaves it visible at the final pixel scale.
+
+**Restoration and losses.** An ESRGAN-style residual-in-residual dense-block generator [34] is first trained as BSRNet with L1 loss, then fine-tuned as BSRGAN with pixel, perceptual and adversarial objectives. The reported weights are 1, 1 and 0.1. The perceptual feature is taken before activation in the fourth convolution before the fourth pooling layer of VGG-19 [77]. The discriminator uses spectral normalization [36] and a least-squares adversarial objective [74]. These losses encourage different things: pixel alignment, feature similarity and locally plausible appearance. None verifies that a generated texture existed in the scene.
+
+#### Results
+
+The synthetic DIV2K4D benchmark has four degradation subsets made from 100 DIV2K validation images [47]. In Table 1, the following are Y-channel PSNR values in dB; LPIPS is unitless and lower is better:
+
+| Degradation | BSRNet PSNR / LPIPS | BSRGAN PSNR / LPIPS |
+| --- | --- | --- |
+| I: bicubic | 29.07 / 0.331 | 27.30 / 0.236 |
+| II | 27.76 / 0.397 | 26.26 / 0.284 |
+| III | 27.59 / 0.419 | 26.28 / 0.284 |
+| IV: proposed pipeline | 25.67 / 0.506 | 24.58 / 0.361 |
+
+The table exposes the expected distinction between pixel fidelity and perceptual reconstruction. It also exposes a limitation of the evaluation: subset IV uses the proposed data model. Generalization to that subset is useful evidence, but not independent proof of coverage of all real cameras.
+
+On 20 real images, Table 2 gives BSRGAN a NIQE of 5.60, worse than the compared methods’ 3.99–4.95. The authors nevertheless prefer its images visually. This disagreement is part of the result; it should not be edited into an across-the-board numerical victory.
+
+#### Ablations
+
+The paper does not provide a component-by-component quantitative ablation that independently removes every blur, noise source and ordering choice under a fixed budget. Its comparisons establish the usefulness of the full system and show degradation mismatch, but do not identify an isolated causal gain for each operation. The BSRNet/BSRGAN rows above show the effect of the perception-oriented training stage; they do not isolate the shuffling strategy. Real-ESRGAN subsequently supplies controlled first-order/second-order and sinc-filter comparisons [17].
+
+#### Conclusion
+
+A practical synthetic observation distribution can matter as much as a new restoration backbone. BSRGAN makes operation order, camera processing and degradation diversity explicit parts of the training design.
+
+#### Problems
+
+The synthetic space can include unlikely processing histories while still omitting real ones. Unaligned compression grids, spatial variation and unfamiliar image-processing software remain difficult. GAN training can create bubble-like textures, and perceptual scores can disagree with inspection. There is also no unique inverse for severe damage: broad training improves robustness, not evidential certainty about the missing scene detail.
+
+### Real-ESRGAN: high-order degradation with pure synthetic data (ICCVW 2021)
+
+#### Challenge
+
+Real-ESRGAN addresses a practical failure of bicubic-trained perceptual SR: a model may enhance JPEG blocks, ringing and noise as if they were useful texture [17]. A training pipeline must reproduce these defects before a network can learn to suppress them. The work also asks whether a discriminator designed for a relatively narrow synthetic task provides enough spatial feedback when the degradation distribution becomes much wider.
+
+Its “high-order” model means repeating degradation processes. It does not mean taking higher derivatives or using a higher-order numerical solver. The published system uses two rounds, with milder ranges in the second round, to approximate repeated camera and image-editing operations without reconstructing each photograph’s actual history.
+
+#### Method
+
+**Repeated observation synthesis.** Each round includes blur, random resize, Gaussian or Poisson noise and JPEG. Blur is sampled from ordinary Gaussian, generalized Gaussian and plateau-shaped kernels, with probabilities 0.7, 0.15 and 0.15 before the sinc alternative. Kernel support uses odd sizes 7–21. The first Gaussian width range is 0.2–3; the second is 0.2–1.5. Additional shapes expand the family beyond Gaussian blur. Noise includes grayscale and color cases; resizing can enlarge, shrink or retain dimensions, because an intermediate enlargement is a plausible part of a multi-stage processing history.
+
+**Ringing synthesis.** Finite radial sinc kernels generate overshoot around edges. They can replace a blur kernel and also appear in the final processing stage. In the released implementation, the final choice swaps JPEG with the pair “resize to target size, then sinc” [63]. It does not independently shuffle all three operations. The sinc filter’s negative lobes matter: a positive Gaussian kernel only smooths a step, whereas alternating lobes can overshoot it. Training on these halos discourages their subsequent enhancement.
+
+**Generator.** The main ×4 model keeps the ESRGAN residual-in-residual dense-block architecture [34]. Learned processing mainly takes place at LR resolution before output enlargement. The paper also describes pixel-unshuffle variants for smaller scale factors. A familiar backbone makes the data-generation and discriminator changes central to the design.
+
+**Discriminator.** A U-Net structure [35] produces spatial realness feedback instead of one global image-style judgment. Skip connections combine local details and broader context. Spectral normalization constrains layer amplification and stabilizes adversarial training [36]. A dense discriminator alone can make training less stable and encourage unnatural texture; the normalization is therefore part of the design, not a cosmetic addition.
+
+**Two-stage training.** Real-ESRNet is trained with L1 loss, then initializes the Real-ESRGAN generator. The second stage minimizes
+
+$$
+\mathcal L_G=\mathcal L_1+\mathcal L_{\mathrm{perceptual}}+0.1\mathcal L_{\mathrm{GAN}}.
+$$
+
+Here $\mathcal L_1$ measures pixel error, the perceptual term compares pretrained VGG features [77], and the adversarial term encourages realistic local appearance. The paper uses multiple pre-activation feature levels with weights 0.1, 0.1, 1, 1, 1. A pool of 180 training pairs mixes samples generated in different batches, improving degradation diversity when a batch shares a resize factor. Sharpening training targets produces the Real-ESRGAN+ variant; this is a changed target distribution, not an extra postprocessing stage.
+
+#### Results
+
+The original experiments emphasize real images and visual comparisons. The supplementary NIQE table reports:
+
+| Set | BSRGAN | Real-ESRGAN | Real-ESRGAN+ |
+| --- | --- | --- | --- |
+| RealSR Canon | 5.7489 | 4.5899 | 4.5314 |
+| RealSR Nikon | 5.9920 | 5.0753 | 5.0247 |
+| DRealSR | 6.1362 | 4.9796 | 4.8458 |
+| DPED iPhone | 5.9906 | 5.4352 | 5.2631 |
+
+Lower is better for NIQE [51]; these are the paper’s benchmark outputs, not measurements from this tutorial. The images come from the cited real-data collections [19], [20], [38]. A lower no-reference score measures agreement with that metric’s image statistics. It is not a guarantee of identity preservation, correct text or absence of hallucination.
+
+#### Ablations
+
+Four controlled visual studies explain the design. Replacing the second-order model with a first-order model leaves more wall noise and field blur. Removing sinc kernels amplifies existing ringing around text and lines. Replacing the normalized U-Net discriminator with the earlier discriminator loses local texture; an unnormalized U-Net introduces unnatural texture and instability. Removing generalized Gaussian and plateau kernels changes most examples only slightly, but leaves some real blur insufficiently corrected. The paper presents these mainly as image comparisons, without a numerical effect size for each component; assigning a universal PSNR gain to them would misrepresent the evidence.
+
+#### Conclusion
+
+The method combines realistic training defects with spatial adversarial feedback. Its practical advance is that a standard feed-forward generator can handle varied real inputs when training includes repeated degradation and ringing.
+
+#### Problems
+
+The paper explicitly shows twisted lines, GAN artifacts and failures on out-of-distribution damage. A discriminator can reward convincing false detail. The teaching pipeline earlier in this chapter is deliberately simplified; matching its output does not reproduce the official training distribution. For controlled reproduction, use the released model and configuration, including degradation ranges, target sharpening and the exact choice of checkpoint [63].
+
+### StableSR: a time-aware encoder for a frozen diffusion prior (IJCV 2024)
+
+#### Challenge
+
+A pretrained diffusion model knows much about natural appearance but does not automatically know which details belong to one degraded photograph. StableSR seeks to retain that prior while adding enough image guidance to preserve the input’s structure [26]. Retraining the complete model risks changing the useful prior and increases adaptation cost. Using an unchanged conditioning signal at every noise level is also questionable: early and late denoising stages need different information.
+
+The work therefore separates three jobs: condition the frozen denoiser, control reconstruction fidelity at decoding, and coordinate patches when the image is larger than the training resolution. These jobs address different failure modes and should not be collapsed into a single “diffusion upscaler” box.
+
+#### Method
+
+**Time-aware image encoder.** The degraded input, enlarged to the desired output size, enters an encoder with a diffusion-time embedding. At multiple scales it supplies features to spatial feature transform layers inside the frozen denoiser. A representative modulation is
+
+$$
+\widetilde F_n=(1+\alpha_n)\odot F_n+\beta_n,
+\qquad (\alpha_n,\beta_n)=M_n(E_n(y,t)).
+$$
+
+Here $y$ is the conditioning image, $t$ the noise level’s timestep, $E_n$ the encoder feature at scale $n$, $F_n$ a frozen denoiser feature tensor, and $M_n$ a trainable convolutional mapping. The scale and shift tensors match the feature dimensions; $\odot$ multiplies corresponding entries. The encoder and modulation layers learn while the pretrained diffusion parameters stay fixed. The time input lets conditioning adapt as image content emerges, rather than assuming the same correction is useful at all noise levels.
+
+**Controllable feature wrapping.** Random sampling and autoencoder compression can move the output away from the input. A separately trained decoder connector uses input encoder features $F_e$ and decoder features $F_d$:
+
+$$
+F_m=F_d+wC(F_e,F_d;\theta),\qquad 0\leq w\leq1.
+$$
+
+Here $C$ is a learned residual correction with parameters $\theta$, $F_m$ the modified decoder feature, and $w$ a user-set coefficient. This is a feature correction, not pixel blending with a bicubic output. The authors generate latent reconstruction examples first, then train this connector while keeping the diffusion stage fixed. Its memory cost makes it optional.
+
+**Color correction.** Per-channel mean/variance alignment corrects global color drift. An alternative replaces low-frequency components of the generated image with those of the input using a wavelet decomposition. Neither operation restores missing high-frequency evidence. They constrain color appearance after generation and can preserve input defects if those defects occupy the retained frequencies.
+
+**Aggregation sampling.** Independent patch generation can create incompatible overlapping textures. StableSR instead predicts denoising updates for overlapping latent patches at every step, combines them with normalized Gaussian weights, and advances one shared latent image. This couples overlap regions throughout sampling. It is different from generating complete tiles independently and blending only the final images.
+
+**Training and inference.** The prior is Stable Diffusion 2.1 [41]; image guidance uses the diffusion noise-prediction objective. The default inference reported here uses 200 denoising steps and a null text prompt. Training pairs use the Real-ESRGAN degradation pipeline [17]. At a 512 × 512 output resolution the latent grid has 64 × 64 spatial positions; conditioning must align with those positions and the denoiser’s multi-scale feature grids.
+
+#### Results
+
+On the paper’s 3,000 synthetic DIV2K validation pairs, Table 1 reports PSNR 23.26 dB, LPIPS 0.3114, FID 24.44, CLIPIQA 0.6771 and MUSIQ 65.92. Real-ESRGAN+ in the same table gives PSNR 24.47 dB and FID 49.16. These show a trade in that comparison, not superiority on every measure. RealSR results are 24.65 dB PSNR and 0.3002 LPIPS; DRealSR results are 28.03 dB and 0.3284. Resolution, crop selection and degradation settings belong with these numbers: another paper’s different synthetic benchmark is not directly comparable.
+
+#### Ablations
+
+Table 3 compares time awareness and color correction. With time awareness but no color correction, RealSR PSNR is 22.24 dB and LPIPS 0.3180; the default with pixel color correction gives 24.65 dB and 0.3002. Removing time awareness while retaining pixel correction gives 24.65 dB but worse LPIPS 0.3157. Equal PSNR therefore hides a perceptual difference.
+
+Table 4 sweeps feature-wrapping strength. On synthetic DIV2K, $w=0$ gives PSNR 22.68 and FID 25.83; $w=0.5$ gives 23.26 and 24.44; $w=0.75$ gives 24.17 and 24.05; $w=1$ gives 23.14 and 26.14. The control is **not a monotonic metric slider**. An intermediate setting can improve several measurements simultaneously, while excessive feature correction can worsen them. The paper also shows that patch aggregation reduces visible tile inconsistency.
+
+#### Conclusion
+
+Frozen generative priors can be adapted with time-dependent image guidance, and fidelity can be controlled separately at decoding. Coordinating tiles during sampling is essential for large-image use.
+
+#### Problems
+
+Inference remains expensive, color correction is imperfect, and the learned prior can invent text, faces or texture. The connector adds memory use, and test resolution changes behavior. Improved perceptual ratings do not certify scene accuracy. One-step methods reduce the repeated denoising cost, but introduce their own approximation and training constraints; see the following SR chapter.
+
+### DiffBIR: remove the degradation, then regenerate (ECCV 2024)
+
+#### Challenge
+
+Conditioning a generative model on a damaged image can make the model faithfully reproduce the damage. DiffBIR separates degradation removal from detail generation [27]. A conventional restoration module first produces a cleaner, structurally informative image; a diffusion module then adds plausible detail. The intended generality spans blind SR and other restoration tasks, although the benchmark numbers below concern SR.
+
+This separation is a useful design hypothesis, not proof that all two-stage pipelines outperform all joint models. The first stage may already erase content. The second stage cannot recover evidence that neither the observation nor its condition retains, and may replace it with a learned guess.
+
+#### Method
+
+**Restoration module.** Synthetic HR–LR pairs train a regression model to suppress degradation and keep image structure. The paper uses a broad first-order degradation family for this module rather than assuming that more degradation stages automatically give the best conditions. During deployment the module can be replaced by a task-specific restorer. Thus the diffusion stage learns to consume restored conditions, not the exact internals of one preceding network.
+
+**Condition encoding.** The restored image $r=R(y)$ is encoded by the pretrained, frozen autoencoder encoder $E$ to obtain $c_r=E(r)$. Here $y$ is the observed input and $R$ the first-stage restorer. Encoding the image with the same representation used by the generative prior helps preserve spatial and color relationships. A new shallow image encoder need not produce an equally compatible latent space.
+
+**IRControlNet.** A trainable copy of the pretrained denoiser’s encoder and middle block receives the concatenation $[z_t,c_r]$, where $z_t$ is the current noisy latent. Extra input-channel weights start at zero. Multi-scale control features enter the frozen denoiser’s middle and skip features through zero-initialized convolutional connectors [42]. Including $z_t$ lets the control path respond to the current noisy state; copying pretrained weights supplies a useful initialization rather than learning the whole condition path from scratch.
+
+**Generation objective.** With prompt condition $c$, noise $\epsilon$ and timestep $t$, the adaptation minimizes
+
+$$
+\mathcal L_{\mathrm{diff}}=\mathbb E\|\epsilon-\epsilon_\theta(z_t,c,t,c_r)\|_2^2.
+$$
+
+The expectation is over training images, sampled timesteps and noise. Only the control path and its connectors are updated; $\epsilon_\theta$ denotes the complete conditioned predictor, including its frozen backbone. A clean-condition representation helps direct the prior without asking it to interpret every noise pattern as image content.
+
+**Region-adaptive guidance.** At inference, predict a clean latent $\widetilde z_0$, decode it with $D$, and compare it with $r$ using
+
+$$
+\mathcal L_{\mathrm{guide}}=\frac{1}{HWC}\|W\odot(D(\widetilde z_0)-r)\|_2^2.
+$$
+
+Here $H,W,C$ in the denominator are image dimensions, while the tensor $W$ inside the norm is a spatial weight map; to avoid this overloaded notation in an implementation, name the latter `weight_map`. It is large in smooth regions and smaller in regions with strong patch-level gradients. A gradient update of the clean latent therefore discourages invented sky texture more strongly than detailed texture in a textured region. A user-selected guidance scale controls this correction at sampling time. This control needs decoder evaluation and gradients; it is not a free postprocessing slider.
+
+#### Results
+
+Table 2 on the paper’s synthetic DIV2K validation benchmark gives the following guidance-scale sweep:
+
+| Scale | PSNR ↑ | SSIM ↑ | LPIPS ↓ | MUSIQ ↑ |
+| --- | --- | --- | --- | --- |
+| 0 | 20.5824 | 0.4277 | 0.3939 | 73.1019 |
+| 0.5 | 21.5808 | 0.4794 | 0.3935 | 68.6657 |
+| 1 | 21.9154 | 0.4986 | 0.4263 | 61.1476 |
+
+The stronger pull improves pixel fidelity while reducing this no-reference quality score; LPIPS is slightly better at the middle setting than at either endpoint. RealSRSet without reference images is evaluated using predicted quality. A favorable predicted score on that set cannot establish that the invented details are correct.
+
+#### Ablations
+
+Table 6 removes the restoration module. On the synthetic validation experiment, PSNR changes from 23.0078 to 22.8481, SSIM from 0.5198 to 0.5039, and LPIPS from 0.4026 to 0.4076. On RealSRSet, MUSIQ changes from 64.7319 to 62.5683. These are ablation settings, not the same row as the main benchmark above.
+
+The condition-network studies remove the noisy-latent input, copied initialization, or skip-feature control. On the paper’s validation set, the default has PSNR 22.9865 and MANIQA 0.2689; removing $z_t$ gives 23.1461 and 0.2611. Removing copied initialization gives 22.8818 and 0.2384. Controlling decoder features instead gives 22.9721 and 0.2686, with more channel-related overhead. Higher PSNR for the first variant is not a refutation of conditioning’s role: the paper also observes smoother outputs and slower convergence. Separate experiments compare the pretrained condition encoder with a shallow alternative and compare degradation distributions; these support representation compatibility and appropriate range, not a universal preference for a fixed pipeline order.
+
+#### Conclusion
+
+Removing visible damage before applying a powerful generative prior makes the condition easier to interpret. Compatible latent encoding, pretrained control initialization and spatially selective sampling guidance each serve a different purpose.
+
+#### Problems
+
+The first-stage image can be wrong; region guidance then pulls toward that error. Stronger guidance can suppress realistic texture, while weaker guidance permits semantic changes. The model remains multi-step and inherits pretrained-prior biases. Prompt choices, crop sizes and guidance settings must accompany comparisons. Its output is a reconstruction hypothesis, not recovered high-resolution evidence.
+
+### SeeSR: degradation-aware semantic prompts (CVPR 2024)
+
+#### Challenge
+
+A blurred object can be consistent with several semantic interpretations. A text-to-image prior guided by the wrong label may generate sharp, coherent detail for the wrong object. SeeSR treats semantic conditioning as a degradation-sensitive estimation problem [29]. A general captioner or tagger trained on clean photographs is not automatically reliable on blurry, noisy LR inputs.
+
+The design combines image structure, discrete text tags and continuous semantic features. The three conditions have different jobs: structure constrains position, tags identify concepts, and feature embeddings retain information that a short list of labels discards. The method also changes the starting latent so that pure-noise sampling does not encourage unnecessary texture in smooth input regions.
+
+#### Method
+
+**Degradation-aware prompt extractor (DAPE).** A pretrained image-tagging model [78] supplies a frozen clean-image teacher and an adapted degraded-image branch. Given an HR image $x$ and synthetic LR partner $y$, their representation and tag-logit vectors are aligned through
+
+$$
+\mathcal L_{\mathrm{DAPE}}=\|f^{\mathrm{rep}}_y-f^{\mathrm{rep}}_x\|_2^2+\lambda\|f^{\mathrm{logit}}_y-f^{\mathrm{logit}}_x\|_2^2.
+$$
+
+Here $f^{\mathrm{rep}}$ denotes an image representation, $f^{\mathrm{logit}}$ the vector of pre-threshold tag scores, and $\lambda$ the relative weight. Each pair of vectors has matching dimensionality. The clean branch is fixed; the degraded branch learns to produce clean-like semantics despite damage. Low-rank adapters are used to limit adaptation cost [79]. This supervision is available because the training degradation supplies aligned HR–LR partners.
+
+**Hard and soft prompts.** Thresholded predicted tags become text that enters the frozen text encoder. The unthresholded image representation becomes a soft condition. Increasing the tag threshold trades recall for precision; the soft representation partly avoids the information discarded by that threshold. The two are complementary, but neither can infer an unrecognizable object with certainty.
+
+**Image and representation control.** A ControlNet-style path receives image features [42]. Representation cross-attention modules follow text cross-attention and inject the soft semantic features into the denoiser. In attention notation, queries come from denoising features, while keys and values come from the semantic condition. This gives spatially evolving image features access to a richer representation than a tag string alone. The pretrained diffusion backbone stays frozen; the added image encoder, control path and attention modules learn with the usual noise-prediction objective.
+
+**LR embedding at inference.** Let $z_y$ be the autoencoded, enlarged LR image and $\bar\alpha_T$ the terminal signal coefficient of the pretrained noise schedule. Start from
+
+$$
+z_T=\sqrt{\bar\alpha_T}\,z_y+\sqrt{1-\bar\alpha_T}\,\epsilon,
+\qquad \epsilon\sim\mathcal N(0,I).
+$$
+
+Here $z_T$ has the latent shape expected by the diffusion model. The LR signal replaces an all-noise start with a condition-compatible starting point. This is especially relevant when the pretrained training schedule retains a small terminal signal. It is an inference strategy, not a new likelihood or a guarantee that every hallucination disappears.
+
+#### Results
+
+The main paper tests ×4 SR on synthetic and captured-pair datasets and a collection of real low-quality images. Its user study reports a 38.6% confusion rate against ground truth for synthetic examples and a 57.1% best-selection rate for real examples. These answer different questions and have different candidate sets; they are not interchangeable accuracy scores.
+
+The supplementary timing experiment uses one 32 GB V100 for 128 × 128 input to 512 × 512 output. SeeSR uses 50 steps and 7.24 seconds, compared with 18.70 seconds for 200-step StableSR and 0.09 seconds for Real-ESRGAN. These are reported system measurements, not predictions for a phone or current GPU. Counting denoiser steps alone also omits the semantic extractor and image encoder.
+
+#### Ablations
+
+Supplementary Table 1 removes LR embedding. On DRealSR, adding it changes PSNR from 26.55 to 27.90 and LPIPS from 0.3952 to 0.3299, while CLIPIQA decreases from 0.7248 to 0.6708. Better agreement with a reference can therefore lower a predicted-quality score. On synthetic DIV2K, FID slightly worsens from 32.53 to 32.79 even as PSNR improves from 20.58 to 21.04: not every metric improves together.
+
+Table 3 compares the prompt paths. Without DAPE and representation cross-attention, DIV2K FID is 37.35; substituting the original clean-image tagger gives 46.34. Hard prompts alone give 38.92, soft prompts alone 38.77, and the complete model 32.79. Soft-only conditioning has slightly lower LPIPS than the complete model in that table, while visual examples show semantic mistakes. Thus the complementarity claim concerns semantic preservation and the collection of measures, not a win in every table cell. The degraded-image tagging experiment separately supports improved tag prediction, rather than assuming the SR outputs themselves prove tag accuracy.
+
+#### Conclusion
+
+Reliable semantic conditions need training for the damage they will encounter. Combining structure, tags and continuous features gives the prior more useful guidance than supplying generic clean-image labels.
+
+#### Problems
+
+DAPE can still misclassify severe damage, and the generative prior can amplify that mistake. Image-to-text and image-feature alignment remain imperfect. Small text and faces are difficult, while the additional tagger costs memory and runtime. LR embedding reduces some unnecessary texture but does not make synthesized detail factual. One-step descendants reuse prompt extraction, so their speed reports must include its cost when it is part of deployment.
+
+### SUPIR: scaling up the prior, the data and the text (CVPR 2024)
+
+#### Challenge
+
+A larger generative prior can provide more convincing texture, but restoration needs control over the observed image as well as visual realism. SUPIR investigates model scaling, a much larger restoration-training collection and language guidance together [30]. Simply attaching a standard controller to a powerful text-to-image generator can produce attractive details that drift from the input.
+
+Three difficulties motivate its components: the ordinary autoencoder can misread degraded images, a large controller is expensive, and aggressive generative sampling can invent structure. Its answer is a degradation-robust encoder, a trimmed controller with stronger feature modulation, and restoration-guided sampling. The system targets perceptual restoration; exact recovery of the original high-frequency scene is not assured.
+
+#### Method
+
+**Pretrained prior.** The backbone is SDXL [80], kept frozen during adaptation. The paper discusses a 2.6-billion-parameter generative prior; this should not be read as the complete deployment footprint, which also includes conditioning, image encoding and text processing. Larger prior capacity is useful only if image guidance can keep it tied to the particular observation.
+
+**Degradation-robust encoding.** Starting from the pretrained encoder, train an encoder $E_{\mathrm{dr}}$ so that a fixed decoder $D$ produces similar reconstructions from degraded and clean partners:
+
+$$
+\mathcal L_E=\|D(E_{\mathrm{dr}}(y))-D(E_{\mathrm{dr}}(x))\|_2^2.
+$$
+
+Here $x$ is an HR training image and $y$ its degraded, enlarged partner. Both are encoded into the prior’s latent coordinate system. The decoded comparison encourages damage invariance in the conditioning representation, rather than asking the diffusion network to decide whether a JPEG block is meaningful content. This does not imply that identical codes are possible for every ambiguous pair.
+
+**Trimmed controller and ZeroSFT.** A copy of the generative encoder supplies a control path, but the authors remove half of the transformer blocks within its encoder blocks to reduce overhead. The ZeroSFT connector combines zero-initialized convolution, normalization and spatial feature transformation. It supplies stronger affine image guidance than a residual-only connector while preserving stable initialization. This is a distinction between the control-path architecture and the frozen generator; trimming the controller does not remove half the frozen prior.
+
+**Image–text training.** The paper collects 20 million high-quality image–text examples and additional face data, then generates degraded inputs with a Real-ESRGAN-style pipeline [17]. Captioning helps describe the intended content. Negative-quality examples teach the model what undesirable low-quality appearance means. Without these training examples, a negative prompt alone is not guaranteed to have the intended restoration effect. At inference, a multimodal captioning model [81] can describe the processed input, and a user may edit the text. Such text is extra conditioning, not an independent observation of the photographed scene.
+
+**Restoration-guided sampling.** The method modifies an EDM sampler [82]. At noise level $\sigma_t$, its denoised prediction is pulled toward the degraded-image latent $z_y$ with a weight
+
+$$
+k_t=(\sigma_t/\sigma_T)^{\tau_r},
+\qquad \widetilde z=\widehat z+k_t(z_y-\widehat z).
+$$
+
+Here $\widehat z$ is the denoised estimate, $\sigma_T$ the starting noise scale, and $\tau_r$ the restoration-control exponent. The sampler uses the corrected estimate to compute its update direction; this is not simply overwriting the final image. The pull is stronger at high noise levels and fades as detail forms. A smaller exponent maintains stronger input influence later. The reported default uses 100 sampling steps and $\tau_r=4$.
+
+#### Results
+
+Table 2a reports scores on 60 real low-quality images: SUPIR has CLIPIQA 0.8232, MUSIQ 73.00 and MANIQA 0.4295. StableSR in that comparison has 0.7654, 70.70 and 0.3035. The metrics predict preferred appearance; they cannot confirm that a generated texture is correct. On the synthetic ×4 task in Table 1, SUPIR gives PSNR 22.66, SSIM 0.5763 and LPIPS 0.2662, whereas BSRGAN gives 24.97, 0.6572 and 0.2261. Strong no-reference scores can coexist with worse reference fidelity.
+
+These tables use the paper’s input and output processing. SUPIR’s larger-resolution operating point differs from small-crop benchmarks used by other papers. Do not combine scores from those protocols into a single ranking without rerunning the methods consistently.
+
+#### Ablations
+
+Table 2c replaces ZeroSFT with zero convolution. PSNR changes from 20.66 to 19.47, SSIM from 0.4763 to 0.4261 and LPIPS from 0.3412 to 0.3969. Yet MUSIQ rises from 73.66 to 74.00, again demonstrating that extra attractive detail can raise an NR score while harming fidelity.
+
+Table 2b studies prompts and negative examples. With negative training samples but neither positive nor negative quality prompts, MUSIQ is 68.94. With both prompts it is 73.66, while PSNR changes from 22.90 to 20.66. Removing negative training examples but keeping both prompts gives MUSIQ 72.68 and MANIQA 0.3180, versus 0.4740 for the complete setting. Other visual ablations study model scale, degradation-robust encoding and the restoration exponent; their effects should be read under the associated training conditions, not attributed to scale alone.
+
+#### Conclusion
+
+Scaling a restoration prior is a system-design problem. Representation robustness, controller strength, image–text data and sampling constraints are all needed to make the larger generator useful for a specific degraded input.
+
+#### Problems
+
+The system is large and multi-step. Caption generation adds work and can supply incorrect semantics. Prompt edits may change image attributes rather than recover them, and strong guidance can retain input defects. Metric improvements may reflect aesthetics instead of correctness. Its value is perceptually convincing restoration under stated assumptions; applications that depend on factual detail need stronger measurement constraints and explicit uncertainty handling.
+
+## References
+
+1. N. Efrat, D. Glasner, A. Apartsin, B. Nadler and A. Levin, "Accurate Blur Models vs. Image Priors in Single Image Super-Resolution," in *Proc. IEEE ICCV*, 2013, pp. 2832–2839. [doi](https://doi.org/10.1109/ICCV.2013.352) · [CVF](https://openaccess.thecvf.com/content_iccv_2013/html/Efrat_Accurate_Blur_Models_2013_ICCV_paper.html)
+2. K. Zhang, W. Zuo and L. Zhang, "Learning a Single Convolutional Super-Resolution Network for Multiple Degradations," *CVPR*, 2018. [paper](https://openaccess.thecvf.com/content_cvpr_2018/papers/Zhang_Learning_a_Single_CVPR_2018_paper.pdf)
+3. A. Liu, Y. Liu, J. Gu, Y. Qiao, C. Dong, "Blind Image Super-Resolution: A Survey and Beyond," *IEEE TPAMI (early access)*, 2022. [source](https://arxiv.org/abs/2107.03055)
+4. Honggang Chen, Xiaohai He, Linbo Qing, Yuanyuan Wu, Chao Ren, Ray E. Sheriff, Ce Zhu, "Real-world single image super-resolution: A brief review," *Information Fusion*, 2022. [source](https://doi.org/10.1016/j.inffus.2021.09.005)
+5. B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+6. Y. Xu, S. R. Tseng, Y. Tseng, H. Kuo, Y. Tsai, "Unified Dynamic Convolutional Network for Super-Resolution with Variational Degradations," *CVPR*, 2020. [source](https://arxiv.org/abs/2004.06965)
+7. K. Zhang, L. Van Gool, R. Timofte, "Deep Unfolding Network for Image Super-Resolution," *CVPR*, 2020. [source](https://arxiv.org/abs/2003.10428)
+8. J. Gu, H. Lu, W. Zuo and C. Dong, "Blind Super-Resolution With Iterative Kernel Correction," *CVPR*, 2019. [paper](https://openaccess.thecvf.com/content_CVPR_2019/papers/Gu_Blind_Super-Resolution_With_Iterative_Kernel_Correction_CVPR_2019_paper.pdf)
+9. Z. Luo, Y. Huang, S. Li, L. Wang and T. Tan, "Unfolding the Alternating Optimization for Blind Super Resolution," *NeurIPS*, 2020. [paper](https://proceedings.neurips.cc/paper_files/paper/2020/file/3d2d8ccb37df977cb6d9da15b76c3f3a-Paper.pdf)
+10. Z. Luo, H. Huang, L. Yu, Y. Li, H. Fan and S. Liu, "Deep Constrained Least Squares for Blind Image Super-Resolution," *CVPR*, 2022. [paper](https://openaccess.thecvf.com/content/CVPR2022/papers/Luo_Deep_Constrained_Least_Squares_for_Blind_Image_Super-Resolution_CVPR_2022_paper.pdf)
+11. T. Michaeli, M. Irani, "Nonparametric Blind Super-resolution," *Proceedings of the IEEE International Conference on Computer Vision*, 2013. [source](https://openaccess.thecvf.com/content_iccv_2013/html/Michaeli_Nonparametric_Blind_Super-resolution_2013_ICCV_paper.html)
+12. S. Bell-Kligler, A. Shocher and M. Irani, "Blind Super-Resolution Kernel Estimation using an Internal-GAN," *NeurIPS*, 2019. [paper](https://papers.nips.cc/paper_files/paper/2019/file/5fd0b37cd7dbbb00f97ba6ce92bf5add-Paper.pdf)
+13. A. Shocher, N. Cohen and M. Irani, "‘Zero-Shot’ Super-Resolution Using Deep Internal Learning," in *Proc. IEEE/CVF CVPR*, 2018, pp. 3118–3126. [doi](https://doi.org/10.1109/CVPR.2018.00329) · [arXiv](https://arxiv.org/abs/1712.06087)
+14. L. Wang, Y. Wang, X. Dong, Q. Xu, J. Yang, W. An and Y. Guo, "Unsupervised Degradation Representation Learning for Blind Super-Resolution," *CVPR*, 2021. [paper](https://openaccess.thecvf.com/content/CVPR2021/papers/Wang_Unsupervised_Degradation_Representation_Learning_for_Blind_Super-Resolution_CVPR_2021_paper.pdf)
+15. B. Xia, Y. Zhang, Y. Wang, Y. Tian, W. Yang, R. Timofte and L. Van Gool, "Knowledge Distillation Based Degradation Estimation for Blind Super-Resolution," *ICLR*, 2023. [paper](https://arxiv.org/pdf/2211.16928)
+16. K. Zhang, J. Liang, L. Van Gool, R. Timofte, "Designing a Practical Degradation Model for Deep Blind Image Super-Resolution," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021/html/Zhang_Designing_a_Practical_Degradation_Model_for_Deep_Blind_Image_Super-Resolution_ICCV_2021_paper.html)
+17. X. Wang, L. Xie, C. Dong, Y. Shan, "Real-ESRGAN: Training Real-World Blind Super-Resolution With Pure Synthetic Data," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Wang_Real-ESRGAN_Training_Real-World_Blind_Super-Resolution_With_Pure_Synthetic_Data_ICCVW_2021_paper.html)
+18. J. Liang, H. Zeng, L. Zhang, "Efficient and Degradation-Adaptive Network for Real-World Image Super-Resolution," *ECCV*, 2022. [source](https://arxiv.org/abs/2203.14216)
+19. J. Cai, H. Zeng, H. Yong, Z. Cao, L. Zhang, "Toward Real-World Single Image Super-Resolution: A New Benchmark and a New Model," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2019. [source](https://openaccess.thecvf.com/content_ICCV_2019/html/Cai_Toward_Real-World_Single_Image_Super-Resolution_A_New_Benchmark_and_a_ICCV_2019_paper.html)
+20. P. Wei, Z. Xie, H. Lu, Z. Zhan, Q. Ye, W. Zuo, L. Lin, "Component Divide-and-Conquer for Real-World Image Super-Resolution," *ECCV*, 2020. [source](https://arxiv.org/abs/2008.01928)
+21. C. Chen, Z. Xiong, X. Tian, Z. Zha, F. Wu, "Camera Lens Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2019. [source](https://openaccess.thecvf.com/content_CVPR_2019/html/Chen_Camera_Lens_Super-Resolution_CVPR_2019_paper.html)
+22. Y. Yuan, S. Liu, J. Zhang, Y. Zhang, C. Dong, L. Lin, "Unsupervised Image Super-Resolution using Cycle-in-Cycle Generative Adversarial Networks," *CVPR Workshops*, 2018. [source](https://arxiv.org/abs/1809.00437)
+23. A. Bulat, J. Yang, G. Tzimiropoulos, "To learn image super-resolution, use a GAN to learn how to do image degradation first," *ECCV*, 2018. [source](https://arxiv.org/abs/1807.11458)
+24. M. Fritsche, S. Gu, R. Timofte, "Frequency Separation for Real-World Super-Resolution," *ICCV Workshops*, 2019. [source](https://arxiv.org/abs/1911.07850)
+25. X. Ji, Y. Cao, Y. Tai, C. Wang, J. Li, F. Huang, "Real-World Super-Resolution via Kernel Estimation and Noise Injection," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops*, 2020. [source](https://openaccess.thecvf.com/content_CVPRW_2020/html/w31/Ji_Real-World_Super-Resolution_via_Kernel_Estimation_and_Noise_Injection_CVPRW_2020_paper.html)
+26. J. Wang, Z. Yue, S. Zhou, K. C. K. Chan, C. C. Loy, "Exploiting Diffusion Prior for Real-World Image Super-Resolution," *IJCV*, 2024. [source](https://arxiv.org/abs/2305.07015)
+27. X. Lin, J. He, Z. Chen, et al., "DiffBIR: Towards Blind Image Restoration with Generative Diffusion Prior," *ECCV*, 2024. [source](https://arxiv.org/abs/2308.15070)
+28. T. Yang, R. Wu, P. Ren, X. Xie, L. Zhang, "Pixel-Aware Stable Diffusion for Realistic Image Super-resolution and Personalized Stylization," *ECCV*, 2024. [source](https://arxiv.org/abs/2308.14469)
+29. R. Wu, T. Yang, L. Sun, Z. Zhang, S. Li, L. Zhang, "SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2024. [source](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_SeeSR_Towards_Semantics-Aware_Real-World_Image_Super-Resolution_CVPR_2024_paper.html) · [supplementary experiments](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_SeeSR_Towards_Semantics-Aware_CVPR_2024_supplemental.pdf)
+30. F. Yu, J. Gu, Z. Li, et al., "Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration In the Wild," *CVPR*, 2024. [source](https://arxiv.org/abs/2401.13627)
+31. Z. Yue, J. Wang, C. C. Loy, "ResShift: Efficient Diffusion Model for Image Super-resolution by Residual Shifting," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2307.12348)
+32. X. Wang, K. Yu, C. Dong, C. C. Loy, "Recovering Realistic Texture in Image Super-Resolution by Deep Spatial Feature Transform," *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition*, 2018. [source](https://openaccess.thecvf.com/content_cvpr_2018/html/Wang_Recovering_Realistic_Texture_CVPR_2018_paper.html)
+33. K. He, H. Fan, Y. Wu, S. Xie, R. Girshick, "Momentum Contrast for Unsupervised Visual Representation Learning," *CVPR*, 2020. [source](https://arxiv.org/abs/1911.05722)
+34. X. Wang, K. Yu, S. Wu, J. Gu, Y. Liu, C. Dong, Y. Qiao and C. C. Loy, "ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks," in *Proc. ECCV Workshops*, 2018 (Lecture Notes in Computer Science, 2019), pp. 63–79. [doi](https://doi.org/10.1007/978-3-030-11021-5_5) · [arXiv](https://arxiv.org/abs/1809.00219)
+35. O. Ronneberger, P. Fischer and T. Brox, "U-Net: Convolutional Networks for Biomedical Image Segmentation," in *Proc. MICCAI*, 2015, pp. 234–241. [doi](https://doi.org/10.1007/978-3-319-24574-4_28) · [arXiv](https://arxiv.org/abs/1505.04597)
+36. T. Miyato, T. Kataoka, M. Koyama, Y. Yoshida, "Spectral Normalization for Generative Adversarial Networks," *ICLR*, 2018. [source](https://arxiv.org/abs/1802.05957)
+37. J. Liang, H. Zeng, L. Zhang, "Details or Artifacts: A Locally Discriminative Learning Approach to Realistic Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2022. [source](https://openaccess.thecvf.com/content/CVPR2022/html/Liang_Details_or_Artifacts_A_Locally_Discriminative_Learning_Approach_to_Realistic_CVPR_2022_paper.html)
+38. A. Ignatov, N. Kobyshev, R. Timofte, K. Vanhoey, L. Van Gool, "DSLR-Quality Photos on Mobile Devices with Deep Convolutional Networks," *ICCV*, 2017. [source](https://arxiv.org/abs/1704.02470)
+39. A. Lugmayr, M. Danelljan, R. Timofte, "Unsupervised Learning for Real-World Super-Resolution," *arXiv preprint*, 2019. [source](https://arxiv.org/abs/1909.09629)
+40. A. Lugmayr, M. Danelljan, R. Timofte, et al., "NTIRE 2020 Challenge on Real-World Image Super-Resolution: Methods and Results," *CVPR Workshops*, 2020. [source](https://arxiv.org/abs/2005.01996)
+41. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+42. L. Zhang, A. Rao, M. Agrawala, "Adding Conditional Control to Text-to-Image Diffusion Models," *ICCV*, 2023. [source](https://arxiv.org/abs/2302.05543)
+43. Y. Ai, X. Zhou, H. Huang, X. Han, Z. Chen, Q. You, H. Yang, "DreamClear: High-Capacity Real-World Image Restoration with Privacy-Safe Dataset Curation," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2410.18666)
+44. Z. Duan, J. Zhang, X. Jin, et al., "DiT4SR: Taming Diffusion Transformer for Real-World Image Super-Resolution," *ICCV*, 2025. [source](https://arxiv.org/abs/2503.23580)
+45. R. Wu, L. Sun, Z. Ma, L. Zhang, "One-Step Effective Diffusion Network for Real-World Image Super-Resolution," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2406.08177)
+46. Y. Wang, W. Yang, X. Chen, et al., "SinSR: Diffusion-Based Image Super-Resolution in a Single Step," *CVPR*, 2024. [source](https://arxiv.org/abs/2311.14760)
+47. E. Agustsson and R. Timofte, "NTIRE 2017 Challenge on Single Image Super-Resolution: Dataset and Study," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1122–1131. [doi](https://doi.org/10.1109/CVPRW.2017.150) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Agustsson_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+48. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+49. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+50. K. Ding, K. Ma, S. Wang, E. P. Simoncelli, "Image Quality Assessment: Unifying Structure and Texture Similarity," *IEEE TPAMI*, 2022. [source](https://arxiv.org/abs/2004.07728)
+51. A. Mittal, R. Soundararajan and A. C. Bovik, "Making a “Completely Blind” Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+52. J. Ke, Q. Wang, Y. Wang, P. Milanfar, F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," *ICCV*, 2021. [source](https://arxiv.org/abs/2108.05997)
+53. S. Yang, T. Wu, S. Shi, S. Lao, Y. Gong, M. Cao, J. Wang, Y. Yang, "MANIQA: Multi-dimension Attention Network for No-Reference Image Quality Assessment," *CVPR Workshops*, 2022. [source](https://arxiv.org/abs/2204.08958)
+54. J. Wang, K. C. K. Chan, C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," *AAAI*, 2023. [source](https://arxiv.org/abs/2207.12396)
+55. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [source](https://arxiv.org/abs/1706.08500)
+56. R. Timofte, S. Gu, J. Wu, L. Van Gool, "NTIRE 2018 Challenge on Single Image Super-Resolution: Methods and Results," *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition Workshops*, 2018. [source](https://openaccess.thecvf.com/content_cvpr_2018_workshops/w13/html/Timofte_NTIRE_2018_Challenge_CVPR_2018_paper.html)
+57. J. Cai, S. Gu, R. Timofte, L. Zhang, "NTIRE 2019 Challenge on Real Image Super-Resolution: Methods and Results," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops*, 2019. [source](https://openaccess.thecvf.com/content_CVPRW_2019/html/NTIRE/Cai_NTIRE_2019_Challenge_on_Real_Image_Super-Resolution_Methods_and_Results_CVPRW_2019_paper.html)
+58. A. Lugmayr, M. Danelljan, R. Timofte, et al., "AIM 2019 Challenge on Real-World Image Super-Resolution: Methods and Results," *ICCV Workshops*, 2019. [source](https://arxiv.org/abs/1911.07783)
+59. P. Wei, H. Lu, R. Timofte, et al., "AIM 2020 Challenge on Real Image Super-Resolution: Methods and Results," *ECCV Workshops*, 2020. [source](https://arxiv.org/abs/2009.12072)
+60. Z. Chen, K. Liu, J. Gong, J. Wang, L. Sun, Z. Wu, R. Timofte, Y. Zhang et al., "NTIRE 2025 Challenge on Image Super-Resolution (×4): Methods and Results," in *Proc. IEEE/CVF CVPR Workshops*, 2025, pp. 1525–1535. [doi](https://doi.org/10.1109/CVPRW67362.2025.00141) · [arXiv](https://arxiv.org/abs/2504.14582)
+61. Le Zhang, Ao Li, Qibin Hou, Ce Zhu, Yonina C. Eldar, "Deep-Learning-Empowered Super Resolution: A Comprehensive Survey and Future Prospects," *Proceedings of the IEEE*, 2025. [source](https://doi.org/10.1109/JPROC.2025.3613233)
+62. W. Ren, R. Goyal, Z. Hu, T. T. Aumentado-Armstrong, I. Mohomed and A. Levinshtein, "Hallucination Score: Towards Mitigating Hallucinations in Generative Image Super-Resolution," arXiv:2507.14367, 2025. [arXiv](https://arxiv.org/abs/2507.14367)
+63. Real-ESRGAN contributors, “Real-ESRGAN model and ×4-plus training configuration,” official source, accessed 2026-11-02. [model](https://github.com/xinntao/Real-ESRGAN/blob/master/realesrgan/models/realesrgan_model.py) · [configuration](https://github.com/xinntao/Real-ESRGAN/blob/master/options/train_realesrgan_x4plus.yml)
+64. D. P. Kingma, J. Ba, "Adam: A Method for Stochastic Optimization," *ICLR*, 2015. [source](https://arxiv.org/abs/1412.6980)
+65. M. Bevilacqua, A. Roumy, C. Guillemot and M.-L. Alberi Morel, "Low-Complexity Single-Image Super-Resolution based on Nonnegative Neighbor Embedding," in *Proc. BMVC*, 2012, pp. 135.1–135.10. [doi](https://doi.org/10.5244/C.26.135)
+66. R. Zeyde, M. Elad and M. Protter, "On Single Image Scale-Up Using Sparse-Representations," in *Curves and Surfaces*, Lecture Notes in Computer Science, Springer, 2012, pp. 711–730. [doi](https://doi.org/10.1007/978-3-642-27413-8_47)
+67. D. Martin, C. Fowlkes, D. Tal and J. Malik, "A Database of Human Segmented Natural Images and Its Application to Evaluating Segmentation Algorithms and Measuring Ecological Statistics," in *Proc. IEEE ICCV*, 2001, vol. 2, pp. 416–423. [doi](https://doi.org/10.1109/ICCV.2001.937655)
+68. J.-B. Huang, A. Singh and N. Ahuja, "Single Image Super-Resolution from Transformed Self-Exemplars," in *Proc. IEEE CVPR*, 2015, pp. 5197–5206. [doi](https://doi.org/10.1109/CVPR.2015.7299156) · [CVF](https://openaccess.thecvf.com/content_cvpr_2015/html/Huang_Single_Image_Super-Resolution_2015_CVPR_paper.html)
+69. J. Kim, J. K. Lee and K. M. Lee, "Accurate Image Super-Resolution Using Very Deep Convolutional Networks," in *Proc. IEEE CVPR*, 2016, pp. 1646–1654. [doi](https://doi.org/10.1109/CVPR.2016.182) · [arXiv](https://arxiv.org/abs/1511.04587)
+70. C. Ledig, L. Theis, F. Huszár, J. Caballero, A. Cunningham, A. Acosta, A. Aitken, A. Tejani, J. Totz, Z. Wang and W. Shi, "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network," in *Proc. IEEE CVPR*, 2017, pp. 105–114. [doi](https://doi.org/10.1109/CVPR.2017.19) · [arXiv](https://arxiv.org/abs/1609.04802)
+71. R. Timofte, E. Agustsson, L. Van Gool, M.-H. Yang, L. Zhang et al., "NTIRE 2017 Challenge on Single Image Super-Resolution: Methods and Results," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1110–1121. [doi](https://doi.org/10.1109/CVPRW.2017.149) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Timofte_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+72. Y. Matsui, K. Ito, Y. Aramaki, A. Fujimoto, T. Ogawa, T. Yamasaki and K. Aizawa, "Sketch-Based Manga Retrieval Using Manga109 Dataset," *Multimedia Tools and Applications*, vol. 76, no. 20, pp. 21811–21838, 2017. [doi](https://doi.org/10.1007/s11042-016-4020-z)
+73. KernelGAN contributors, “Adversarial losses and kernel constraints,” official source, accessed 2026-11-02. [loss definitions](https://github.com/sefibk/KernelGAN/blob/master/loss.py) · [alternating updates](https://github.com/sefibk/KernelGAN/blob/master/kernelGAN.py)
+74. X. Mao, Q. Li, H. Xie, R. Y. K. Lau, Z. Wang, S. P. Smolley, "Least Squares Generative Adversarial Networks," *ICCV*, 2017. [source](https://arxiv.org/abs/1611.04076)
+75. DASR contributors, “MoCo logits and contrastive cross-entropy implementation,” official DASR source, commit `51524af8021c94a502ee002e135867a1b75dc7d0`, accessed 2026-11-02. [encoder](https://github.com/SYSU-SAIL/DASR/blob/51524af8021c94a502ee002e135867a1b75dc7d0/moco/builder.py) · [loss](https://github.com/SYSU-SAIL/DASR/blob/51524af8021c94a502ee002e135867a1b75dc7d0/trainer.py)
+76. Y. Zhang, K. Li, K. Li, L. Wang, B. Zhong and Y. Fu, "Image Super-Resolution Using Very Deep Residual Channel Attention Networks," in *Proc. ECCV*, 2018, pp. 294–310. [doi](https://doi.org/10.1007/978-3-030-01234-2_18) · [arXiv](https://arxiv.org/abs/1807.02758)
+77. K. Simonyan and A. Zisserman, "Very Deep Convolutional Networks for Large-Scale Image Recognition," in *Proc. ICLR*, 2015. [arXiv](https://arxiv.org/abs/1409.1556)
+78. Y. Zhang, X. Huang, J. Ma, et al., "Recognize Anything: A Strong Image Tagging Model," *CVPR Workshops*, 2024. [source](https://arxiv.org/abs/2306.03514)
+79. E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, W. Chen, "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [source](https://arxiv.org/abs/2106.09685)
+80. D. Podell, Z. English, K. Lacey, A. Blattmann, T. Dockhorn, J. Müller, J. Penna, R. Rombach, "SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis," *ICLR*, 2024. [source](https://arxiv.org/abs/2307.01952)
+81. H. Liu, C. Li, Q. Wu, Y. J. Lee, "Visual Instruction Tuning," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2304.08485)
+82. T. Karras, M. Aittala, T. Aila, S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [source](https://arxiv.org/abs/2206.00364)

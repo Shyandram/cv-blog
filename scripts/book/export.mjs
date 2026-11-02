@@ -76,7 +76,11 @@ for (const lang of langs) {
  for (const volume of volumes) {
   const entries = allEntries.filter(e => e.kind === 'posts' ? volume.posts : volume.tracks.includes(e.data.track));
   const stats = { tutorials: entries.filter(e => e.kind === 'tutorials').length, posts: entries.filter(e => e.kind === 'posts').length, figures: 0, comparisons: 0, interactiveLinks: 0, codeBlocks: 0, displayEquations: 0, chapters: [] };
-  const routeLabels = new Map(entries.map(e => [`/${lang}/${e.kind === 'tutorials' ? 'learn' : 'blog'}/${e.slug}/`, label(e.kind, e.slug)]));
+  const routeLabels = new Map(entries.flatMap(e => {
+   const route = `/${lang}/${e.kind === 'tutorials' ? 'learn' : 'blog'}/${e.slug}/`;
+   const destination = label(e.kind, e.slug);
+   return [[route, destination], [chapterPath(route), destination]];
+  }));
   let lastPart;
   const content = [];
   for (const entry of entries) {
