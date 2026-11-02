@@ -16,6 +16,7 @@ import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import { rehypeHeadingIds } from '@astrojs/markdown-remark';
+import rehypePaperHeadingIds from '../src/lib/rehypePaperHeadingIds.mjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { curriculum } from '../src/content/curriculum.ts';
@@ -72,7 +73,7 @@ async function headings(path, body) {
   await compile({ value: body, path }, {
     format: path.endsWith('.md') ? 'md' : 'mdx',
     remarkPlugins: [remarkGfm, remarkMath, remarkCjkFriendly],
-    rehypePlugins: [[rehypeKatex, { strict: false }], rehypeHeadingIds, collect],
+    rehypePlugins: [[rehypeKatex, { strict: false }], rehypePaperHeadingIds, rehypeHeadingIds, collect],
   });
   return out;
 }

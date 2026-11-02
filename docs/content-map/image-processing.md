@@ -63,7 +63,7 @@ How eyes and cameras turn light into numbers, how sampling and quantization shap
 - Files: `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-02-fundamentals.mdx`
 - Pages: `/en/learn/image-processing/fundamentals/`, `/en/learn/image-processing/fundamentals/notes/`, `/en/learn/image-processing/fundamentals/papers/`
 - Level beginner · depth 1 · needs: `image-processing/dip-01-introduction` · tags: dip, sampling, quantization, interpolation, visual-perception
-- Figures: 10 · references: 20 · experiments: pixel-sampling
+- Figures: 11 · references: 20 · experiments: pixel-sampling
 
 - [What you'll learn](/en/learn/image-processing/fundamentals/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/fundamentals/#the-big-picture) `the-big-picture`
@@ -119,7 +119,7 @@ Remap pixel values with curves and histograms, then smooth and sharpen images wi
 - Files: `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-03-intensity-spatial-filtering.mdx`
 - Pages: `/en/learn/image-processing/intensity-spatial-filtering/`, `/en/learn/image-processing/intensity-spatial-filtering/notes/`, `/en/learn/image-processing/intensity-spatial-filtering/papers/`
 - Level beginner · depth 1 · needs: `image-processing/dip-02-fundamentals` · tags: dip, histogram-equalization, gamma-correction, spatial-filtering, sharpening
-- Figures: 10 · references: 18 · experiments: kernel-filter
+- Figures: 11 · references: 18 · experiments: kernel-filter
 
 - [What you'll learn](/en/learn/image-processing/intensity-spatial-filtering/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/intensity-spatial-filtering/#the-big-picture) `the-big-picture`
@@ -175,7 +175,7 @@ How the Fourier transform turns an image into a recipe of waves, and how editing
 - Files: `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-04-frequency-domain.mdx`
 - Pages: `/en/learn/image-processing/frequency-domain/`, `/en/learn/image-processing/frequency-domain/notes/`, `/en/learn/image-processing/frequency-domain/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-03-intensity-spatial-filtering` · tags: dip, fourier-transform, dft, sampling, frequency-filtering
-- Figures: 10 · references: 20 · experiments: frequency-filter
+- Figures: 11 · references: 20 · experiments: frequency-filter
 
 - [What you'll learn](/en/learn/image-processing/frequency-domain/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/frequency-domain/#the-big-picture) `the-big-picture`
@@ -252,7 +252,7 @@ Model how an image was damaged by blur and noise, then undo it with order-statis
 - Files: `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-05-restoration-reconstruction.mdx`
 - Pages: `/en/learn/image-processing/restoration-reconstruction/`, `/en/learn/image-processing/restoration-reconstruction/notes/`, `/en/learn/image-processing/restoration-reconstruction/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-04-frequency-domain` · tags: dip, restoration, denoising, deconvolution, wiener-filter, computed-tomography
-- Figures: 8 · references: 22 · experiments: inverse-regularization
+- Figures: 9 · references: 22 · experiments: inverse-regularization
 
 - [What you'll learn](/en/learn/image-processing/restoration-reconstruction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/restoration-reconstruction/#the-big-picture) `the-big-picture`
@@ -313,7 +313,7 @@ How color is measured and encoded, how to convert between RGB, HSI and L*a*b*, a
 - Files: `src/content/tutorials/en/image-processing/dip-06-color.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-06-color.mdx`
 - Pages: `/en/learn/image-processing/color/`, `/en/learn/image-processing/color/notes/`, `/en/learn/image-processing/color/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-05-restoration-reconstruction` · tags: dip, color, color-models, white-balance, pseudocolor, segmentation
-- Figures: 10 · references: 20 · experiments: color-clipping
+- Figures: 11 · references: 20 · experiments: color-clipping
 
 - [What you'll learn](/en/learn/image-processing/color/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/color/#the-big-picture) `the-big-picture`
@@ -372,7 +372,7 @@ Treat every image transform as a change of basis, then build up from the DCT and
 - Files: `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-07-wavelets-transforms.mdx`
 - Pages: `/en/learn/image-processing/wavelets-transforms/`, `/en/learn/image-processing/wavelets-transforms/notes/`, `/en/learn/image-processing/wavelets-transforms/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-06-color` · tags: dip, wavelets, dct, transforms, multiresolution, denoising
-- Figures: 9 · references: 20
+- Figures: 10 · references: 20
 
 - [What you'll learn](/en/learn/image-processing/wavelets-transforms/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/wavelets-transforms/#the-big-picture) `the-big-picture`
@@ -422,7 +422,7 @@ How images are squeezed into fewer bits, from entropy and Huffman codes to JPEG,
 - Files: `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-08-compression-watermarking.mdx`
 - Pages: `/en/learn/image-processing/compression-watermarking/`, `/en/learn/image-processing/compression-watermarking/notes/`, `/en/learn/image-processing/compression-watermarking/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-07-wavelets-transforms` · tags: dip, compression, huffman, jpeg, wavelets, watermarking
-- Figures: 9 · references: 20 · experiments: transform-coding
+- Figures: 10 · references: 20 · experiments: transform-coding
 
 - [What you'll learn](/en/learn/image-processing/compression-watermarking/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/compression-watermarking/#the-big-picture) `the-big-picture`
@@ -484,7 +484,7 @@ Probe shapes with small structuring elements: erosion, dilation, opening, closin
 - Files: `src/content/tutorials/en/image-processing/dip-09-morphology.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-09-morphology.mdx`
 - Pages: `/en/learn/image-processing/morphology/`, `/en/learn/image-processing/morphology/notes/`, `/en/learn/image-processing/morphology/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-08-compression-watermarking` · tags: dip, morphology, erosion-dilation, skeleton, top-hat, reconstruction
-- Figures: 9 · references: 17 · experiments: morphology-shapes
+- Figures: 10 · references: 17 · experiments: morphology-shapes
 
 - [What you'll learn](/en/learn/image-processing/morphology/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/morphology/#the-big-picture) `the-big-picture`
@@ -551,7 +551,7 @@ Split an image into meaningful parts: find edges with gradients, LoG and Canny, 
 - Files: `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-10-segmentation.mdx`
 - Pages: `/en/learn/image-processing/segmentation/`, `/en/learn/image-processing/segmentation/notes/`, `/en/learn/image-processing/segmentation/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-09-morphology` · tags: dip, segmentation, edge-detection, thresholding, watershed, superpixels
-- Figures: 10 · references: 22 · experiments: segmentation-threshold
+- Figures: 11 · references: 22 · experiments: segmentation-threshold
 
 - [What you'll learn](/en/learn/image-processing/segmentation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/segmentation/#the-big-picture) `the-big-picture`
@@ -612,7 +612,7 @@ Segment objects with curves that move: parametric snakes, gradient vector flow, 
 - Files: `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-11-active-contours.mdx`
 - Pages: `/en/learn/image-processing/active-contours/`, `/en/learn/image-processing/active-contours/notes/`, `/en/learn/image-processing/active-contours/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-10-segmentation` · tags: dip, segmentation, active-contours, level-sets, variational-methods
-- Figures: 6 · references: 20 · experiments: contour-energy
+- Figures: 7 · references: 20 · experiments: contour-energy
 
 - [What you'll learn](/en/learn/image-processing/active-contours/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/active-contours/#the-big-picture) `the-big-picture`
@@ -662,7 +662,7 @@ Turn regions, boundaries and whole images into compact numbers that stay the sam
 - Files: `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-12-feature-extraction.mdx`
 - Pages: `/en/learn/image-processing/feature-extraction/`, `/en/learn/image-processing/feature-extraction/notes/`, `/en/learn/image-processing/feature-extraction/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-11-active-contours` · tags: dip, feature-extraction, shape-descriptors, texture, sift
-- Figures: 8 · references: 22 · experiments: corner-tensor
+- Figures: 9 · references: 22 · experiments: corner-tensor
 
 - [What you'll learn](/en/learn/image-processing/feature-extraction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/feature-extraction/#the-big-picture) `the-big-picture`
@@ -724,7 +724,7 @@ From minimum-distance and Bayes classifiers to perceptrons, backpropagation and 
 - Files: `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-13-pattern-classification.mdx`
 - Pages: `/en/learn/image-processing/pattern-classification/`, `/en/learn/image-processing/pattern-classification/notes/`, `/en/learn/image-processing/pattern-classification/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-12-feature-extraction` · tags: dip, classification, bayes-classifier, neural-networks, cnn
-- Figures: 9 · references: 20 · experiments: neighbor-geometry
+- Figures: 10 · references: 20 · experiments: neighbor-geometry
 
 - [What you'll learn](/en/learn/image-processing/pattern-classification/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/pattern-classification/#the-big-picture) `the-big-picture`

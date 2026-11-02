@@ -45,7 +45,7 @@ How deep learning reorganizes image processing, image analysis and computer visi
 - Pages: `/en/learn/deep-learning/deep-learning-for-image-processing/`, `/en/learn/deep-learning/deep-learning-for-image-processing/notes/`, `/en/learn/deep-learning/deep-learning-for-image-processing/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-01a-training-practice`, `deep-learning/dl-01b-building-blocks`, `deep-learning/dl-01c-model-compression`
 - Level intermediate · depth 1 · needs: `ml/ml-02-neural-networks`, `image-processing/dip-03-intensity-spatial-filtering` · tags: deep-learning, cnn, vision-transformer, self-supervised-learning, foundation-models
-- Figures: 8 (script `scripts/figures/dl_01_deep_learning_for_image_processing.py`) · references: 39 · experiments: receptive-field
+- Figures: 9 (script `scripts/figures/dl_01_deep_learning_for_image_processing.py`) · references: 39 · experiments: receptive-field
 
 - [What you'll learn](/en/learn/deep-learning/deep-learning-for-image-processing/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/deep-learning-for-image-processing/#the-big-picture) `the-big-picture`
@@ -105,7 +105,7 @@ A practical workflow for training vision networks: data pipelines and augmentati
 - Pages: `/en/learn/deep-learning/training-practice/`, `/en/learn/deep-learning/training-practice/notes/`, `/en/learn/deep-learning/training-practice/papers/`
 - Course tree: under `deep-learning/dl-01-deep-learning-for-image-processing`
 - Level advanced · depth 2 · needs: `deep-learning/dl-01-deep-learning-for-image-processing` · tags: training, learning-rate-schedules, data-augmentation, fine-tuning, debugging, reproducibility
-- Figures: 7 (script `scripts/figures/dl_01a_training_practice.py`) · references: 47
+- Figures: 9 (script `scripts/figures/dl_01a_training_practice.py`) · references: 47
 
 - [What you'll learn](/en/learn/deep-learning/training-practice/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/training-practice/#the-big-picture) `the-big-picture`
@@ -163,7 +163,7 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 - Pages: `/en/learn/deep-learning/building-blocks/`, `/en/learn/deep-learning/building-blocks/notes/`, `/en/learn/deep-learning/building-blocks/papers/`
 - Course tree: under `deep-learning/dl-01-deep-learning-for-image-processing`
 - Level advanced · depth 2 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `ml/ml-04-vision-transformers` · tags: architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces
-- Figures: 5 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 60
+- Figures: 9 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 60
 
 - [What you'll learn](/en/learn/deep-learning/building-blocks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/building-blocks/#the-big-picture) `the-big-picture`
@@ -220,7 +220,7 @@ How to make a trained vision model smaller and faster without fooling yourself: 
 - Pages: `/en/learn/deep-learning/model-compression/`, `/en/learn/deep-learning/model-compression/notes/`, `/en/learn/deep-learning/model-compression/papers/`
 - Course tree: under `deep-learning/dl-01-deep-learning-for-image-processing`
 - Level advanced · depth 2 · needs: `deep-learning/dl-01a-training-practice`, `deep-learning/dl-01b-building-blocks` · tags: deep-learning, model-compression, pruning, quantization, knowledge-distillation, efficient-inference, low-rank, neural-architecture-search
-- Figures: 3 (script `scripts/figures/dl_01c_model_compression.py`) · references: 72
+- Figures: 5 (script `scripts/figures/dl_01c_model_compression.py`) · references: 72
 
 - [What you'll learn](/en/learn/deep-learning/model-compression/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/model-compression/#the-big-picture) `the-big-picture`
@@ -289,7 +289,7 @@ How deep networks decide what an image shows: losses and metrics, datasets, the 
 - Pages: `/en/learn/deep-learning/image-classification/`, `/en/learn/deep-learning/image-classification/notes/`, `/en/learn/deep-learning/image-classification/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-02a-face-metric-learning`
 - Level advanced · depth 1 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `image-processing/dip-13-pattern-classification` · tags: image-classification, cnn, vision-transformer, self-supervised-learning, calibration, robustness
-- Figures: 10 (script `scripts/figures/dl_02_image_classification.py`) · references: 73 · experiments: classification-threshold, temperature-calibration
+- Figures: 11 (script `scripts/figures/dl_02_image_classification.py`) · references: 73 · experiments: classification-threshold, temperature-calibration
 
 - [What you'll learn](/en/learn/deep-learning/image-classification/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-classification/#the-big-picture) `the-big-picture`
@@ -363,7 +363,7 @@ How deep networks recognize people they never saw in training: verification and 
 - Pages: `/en/learn/deep-learning/face-metric-learning/`, `/en/learn/deep-learning/face-metric-learning/notes/`, `/en/learn/deep-learning/face-metric-learning/papers/`
 - Course tree: under `deep-learning/dl-02-image-classification`
 - Level advanced · depth 2 · needs: `deep-learning/dl-02-image-classification` · tags: face-recognition, metric-learning, arcface, cosface, verification, open-set, fairness
-- Figures: 7 (script `scripts/figures/dl_02a_face_metric_learning.py`) · references: 41
+- Figures: 10 (script `scripts/figures/dl_02a_face_metric_learning.py`) · references: 41
 
 - [What you'll learn](/en/learn/deep-learning/face-metric-learning/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/face-metric-learning/#the-big-picture) `the-big-picture`
@@ -430,7 +430,7 @@ How deep networks find and label every object in an image: box regression, IoU, 
 - Pages: `/en/learn/deep-learning/object-detection/`, `/en/learn/deep-learning/object-detection/notes/`, `/en/learn/deep-learning/object-detection/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-03a-real-time-detection`, `deep-learning/dl-09-3d-object-detection`
 - Level advanced · depth 1 · needs: `deep-learning/dl-02-image-classification`, `image-processing/dip-12-feature-extraction` · tags: object-detection, faster-rcnn, yolo, detr, mean-average-precision
-- Figures: 7 (script `scripts/figures/dl_03_object_detection.py`) · references: 46 · experiments: detection-nms
+- Figures: 8 (script `scripts/figures/dl_03_object_detection.py`) · references: 46 · experiments: detection-nms
 
 - [What you'll learn](/en/learn/deep-learning/object-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/object-detection/#the-big-picture) `the-big-picture`
@@ -485,7 +485,7 @@ A detailed introduction to YOLOv4 as the representative one-stage detector: its 
 - Pages: `/en/learn/deep-learning/real-time-detection/`, `/en/learn/deep-learning/real-time-detection/notes/`, `/en/learn/deep-learning/real-time-detection/papers/`
 - Course tree: under `deep-learning/dl-03-object-detection`
 - Level advanced · depth 2 · needs: `deep-learning/dl-03-object-detection` · tags: object-detection, real-time, yolo, yolov4, one-stage, rt-detr, label-assignment, nms
-- Figures: 6 (script `scripts/figures/dl_03a_real_time_detection.py`) · references: 87 · experiments: detection-nms
+- Figures: 28 (script `scripts/figures/dl_03a_real_time_detection.py`) · references: 87 · experiments: detection-nms
 
 - [What you'll learn](/en/learn/deep-learning/real-time-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/real-time-detection/#the-big-picture) `the-big-picture`
@@ -577,7 +577,7 @@ How machines find cars, people and cyclists in 3D: point clouds and coordinate f
 - Pages: `/en/learn/deep-learning/3d-object-detection/`, `/en/learn/deep-learning/3d-object-detection/notes/`, `/en/learn/deep-learning/3d-object-detection/papers/`
 - Course tree: under `deep-learning/dl-03-object-detection`
 - Level advanced · depth 2 · needs: `deep-learning/dl-03-object-detection`, `deep-learning/dl-08-3d-reconstruction` · tags: 3d-object-detection, lidar, point-clouds, birds-eye-view, sensor-fusion, autonomous-driving
-- Figures: 7 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61 · experiments: bev-iou
+- Figures: 10 (script `scripts/figures/dl_09_3d_object_detection.py`) · references: 61 · experiments: bev-iou
 
 - [What you'll learn](/en/learn/deep-learning/3d-object-detection/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/3d-object-detection/#the-big-picture) `the-big-picture`
@@ -638,7 +638,7 @@ How deep networks label every pixel: the three segmentation tasks, fully convolu
 - Files: `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-03b-image-segmentation.mdx`
 - Pages: `/en/learn/deep-learning/image-segmentation/`, `/en/learn/deep-learning/image-segmentation/notes/`, `/en/learn/deep-learning/image-segmentation/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-03-object-detection`, `image-processing/dip-10-segmentation` · tags: semantic-segmentation, instance-segmentation, panoptic-segmentation, deeplab, mask2former, mean-iou, panoptic-quality
-- Figures: 5 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41 · experiments: segmentation-metrics
+- Figures: 7 (script `scripts/figures/dl_03b_image_segmentation.py`) · references: 41 · experiments: segmentation-metrics
 
 - [What you'll learn](/en/learn/deep-learning/image-segmentation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-segmentation/#the-big-picture) `the-big-picture`
@@ -692,7 +692,7 @@ How deep networks find the joints of every person in an image: skeletons and vis
 - Files: `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-06a-pose-keypoints.mdx`
 - Pages: `/en/learn/deep-learning/pose-keypoints/`, `/en/learn/deep-learning/pose-keypoints/notes/`, `/en/learn/deep-learning/pose-keypoints/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-03-object-detection` · tags: pose-estimation, keypoints, heatmaps, hrnet, openpose, object-keypoint-similarity, 3d-human-pose
-- Figures: 5 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43 · experiments: heatmap-decoding
+- Figures: 8 (script `scripts/figures/dl_06a_pose_keypoints.py`) · references: 43 · experiments: heatmap-decoding
 
 - [What you'll learn](/en/learn/deep-learning/pose-keypoints/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/pose-keypoints/#the-big-picture) `the-big-picture`
@@ -750,7 +750,7 @@ How machines read text in photos, scans and screenshots: the detection, recognit
 - Files: `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11a-text-in-images.mdx`
 - Pages: `/en/learn/deep-learning/text-in-images/`, `/en/learn/deep-learning/text-in-images/notes/`, `/en/learn/deep-learning/text-in-images/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-03-object-detection` · tags: ocr, scene-text, text-detection, text-recognition, ctc, document-understanding, layout-analysis, ocr-free, evaluation-metrics
-- Figures: 8 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51 · experiments: ctc-decoding
+- Figures: 12 (script `scripts/figures/dl_11a_text_in_images.py`) · references: 51 · experiments: ctc-decoding
 
 - [What you'll learn](/en/learn/deep-learning/text-in-images/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/text-in-images/#the-big-picture) `the-big-picture`
@@ -816,7 +816,7 @@ How computer vision follows objects through video: re-identification, single-obj
 - Files: `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-06-object-tracking.mdx`
 - Pages: `/en/learn/deep-learning/object-tracking/`, `/en/learn/deep-learning/object-tracking/notes/`, `/en/learn/deep-learning/object-tracking/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-03-object-detection`, `image-processing/dip-10-segmentation`, `image-processing/dip-12-feature-extraction` · tags: object-tracking, multi-object-tracking, re-identification, kalman-filter, video
-- Figures: 6 (script `scripts/figures/dl_06_object_tracking.py`) · references: 55 · experiments: tracking-association
+- Figures: 7 (script `scripts/figures/dl_06_object_tracking.py`) · references: 55 · experiments: tracking-association
 
 - [What you'll learn](/en/learn/deep-learning/object-tracking/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/object-tracking/#the-big-picture) `the-big-picture`
@@ -876,7 +876,7 @@ How deep networks recognize what happens in a video: the tasks (clip classificat
 - Files: `src/content/tutorials/en/deep-learning/dl-06b-video-understanding.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-06b-video-understanding.mdx`
 - Pages: `/en/learn/deep-learning/video-understanding/`, `/en/learn/deep-learning/video-understanding/notes/`, `/en/learn/deep-learning/video-understanding/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-02-image-classification` · tags: video-understanding, action-recognition, 3d-convolution, slowfast, video-transformers, videomae, temporal-action-localization, scene-bias, kinetics
-- Figures: 6 (script `scripts/figures/dl_06b_video_understanding.py`) · references: 55
+- Figures: 9 (script `scripts/figures/dl_06b_video_understanding.py`) · references: 55
 
 - [What you'll learn](/en/learn/deep-learning/video-understanding/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/video-understanding/#the-big-picture) `the-big-picture`
@@ -933,7 +933,7 @@ One degradation model, many tasks: how deep networks undo blur, noise, low resol
 - Pages: `/en/learn/deep-learning/image-restoration/`, `/en/learn/deep-learning/image-restoration/notes/`, `/en/learn/deep-learning/image-restoration/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-04a-super-resolution`, `deep-learning/dl-04c-generative-restoration`, `deep-learning/dl-05-low-light-enhancement`
 - Level advanced · depth 1 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `image-processing/dip-05-restoration-reconstruction` · tags: image-restoration, low-level-vision, super-resolution, denoising, all-in-one-restoration, diffusion-models
-- Figures: 9 (script `scripts/figures/dl_04_image_restoration.py`) · references: 118 · experiments: restoration-ambiguity
+- Figures: 22 (script `scripts/figures/dl_04_image_restoration.py`) · references: 122 · experiments: restoration-ambiguity
 
 - [What you'll learn](/en/learn/deep-learning/image-restoration/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-restoration/#the-big-picture) `the-big-picture`
@@ -1004,6 +1004,17 @@ One degradation model, many tasks: how deep networks undo blur, noise, low resol
 
 *Paper guides (one page each, index `papers/`):*
 
+- [Restormer: global channel relationships without pixel-wise attention](/en/learn/deep-learning/image-restoration/papers/restormer-global-channel-relationships-without-pixel-wise-attention/) `papers/restormer-global-channel-relationships-without-pixel-wise-attention/`
+- [AirNet: infer the degradation before conditioning restoration](/en/learn/deep-learning/image-restoration/papers/airnet-infer-the-degradation-before-conditioning-restoration/) `papers/airnet-infer-the-degradation-before-conditioning-restoration/`
+- [TransWeather: learned weather queries for a shared restoration model](/en/learn/deep-learning/image-restoration/papers/transweather-learned-weather-queries-for-a-shared-restoration-model/) `papers/transweather-learned-weather-queries-for-a-shared-restoration-model/`
+- [PromptIR: input-conditioned feature prompts, without language instructions](/en/learn/deep-learning/image-restoration/papers/promptir-input-conditioned-feature-prompts-without-language-instructions/) `papers/promptir-input-conditioned-feature-prompts-without-language-instructions/`
+- [AdaIR: adaptively separate and exchange frequency information](/en/learn/deep-learning/image-restoration/papers/adair-adaptively-separate-and-exchange-frequency-information/) `papers/adair-adaptively-separate-and-exchange-frequency-information/`
+- [DA-CLIP: separate content guidance from degradation guidance](/en/learn/deep-learning/image-restoration/papers/da-clip-separate-content-guidance-from-degradation-guidance/) `papers/da-clip-separate-content-guidance-from-degradation-guidance/`
+- [InstructIR: route image features with a human instruction](/en/learn/deep-learning/image-restoration/papers/instructir-route-image-features-with-a-human-instruction/) `papers/instructir-route-image-features-with-a-human-instruction/`
+- [AutoDIR: diagnose degradation, guide diffusion, then correct structure](/en/learn/deep-learning/image-restoration/papers/autodir-diagnose-degradation-guide-diffusion-then-correct-structure/) `papers/autodir-diagnose-degradation-guide-diffusion-then-correct-structure/`
+- [AgenticIR: plan, inspect and revise a sequence of restoration tools](/en/learn/deep-learning/image-restoration/papers/agenticir-plan-inspect-and-revise-a-sequence-of-restoration-tools/) `papers/agenticir-plan-inspect-and-revise-a-sequence-of-restoration-tools/`
+- [4KAgent: select restoration experts for a configured fidelity goal](/en/learn/deep-learning/image-restoration/papers/4kagent-select-restoration-experts-for-a-configured-fidelity-goal/) `papers/4kagent-select-restoration-experts-for-a-configured-fidelity-goal/`
+- [PromptFix: combine instructions, visual diagnosis and high-frequency preservation](/en/learn/deep-learning/image-restoration/papers/promptfix-combine-instructions-visual-diagnosis-and-high-frequency-preservation/) `papers/promptfix-combine-instructions-visual-diagnosis-and-high-frequency-preservation/`
 - [Deep Image Prior: the network as the prior](/en/learn/deep-learning/image-restoration/papers/deep-image-prior-the-network-as-the-prior/) `papers/deep-image-prior-the-network-as-the-prior/`
 - [Survey papers in detail](/en/learn/deep-learning/image-restoration/papers/survey-papers-in-detail/) `papers/survey-papers-in-detail/`
 
@@ -1074,7 +1085,7 @@ How super-resolution copes with damage nobody measured: estimating or conditioni
 - Pages: `/en/learn/deep-learning/blind-real-world-super-resolution/`, `/en/learn/deep-learning/blind-real-world-super-resolution/notes/`, `/en/learn/deep-learning/blind-real-world-super-resolution/papers/`
 - Course tree: under `deep-learning/dl-04a-super-resolution`
 - Level advanced · depth 3 · needs: `deep-learning/dl-04a-super-resolution`, `deep-learning/dl-04c-generative-restoration` · tags: super-resolution, blind-super-resolution, real-world-super-resolution, degradation-model, kernel-estimation, diffusion-models, image-quality-assessment
-- Figures: 4 (script `scripts/figures/dl_04d_blind_real_world_super_resolution.py`) · references: 82
+- Figures: 15 (script `scripts/figures/dl_04d_blind_real_world_super_resolution.py`) · references: 82
 
 - [What you'll learn](/en/learn/deep-learning/blind-real-world-super-resolution/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/blind-real-world-super-resolution/#the-big-picture) `the-big-picture`
@@ -1145,7 +1156,7 @@ Understand LR-latent starts, residual-shift distillation, score regularization a
 - Pages: `/en/learn/deep-learning/one-step-diffusion-super-resolution/`, `/en/learn/deep-learning/one-step-diffusion-super-resolution/notes/`, `/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/`
 - Course tree: under `deep-learning/dl-04a-super-resolution`
 - Level advanced · depth 3 · needs: `deep-learning/dl-04d-blind-real-world-super-resolution`, `deep-learning/dl-10b-one-step-generation` · tags: super-resolution, one-step-diffusion, score-distillation, lora, real-world-super-resolution
-- Figures: 2 (script `scripts/figures/dl_04e_one_step_diffusion_super_resolution.py`) · references: 37
+- Figures: 10 (script `scripts/figures/dl_04e_one_step_diffusion_super_resolution.py`) · references: 37
 
 - [What you'll learn](/en/learn/deep-learning/one-step-diffusion-super-resolution/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/one-step-diffusion-super-resolution/#the-big-picture) `the-big-picture`
@@ -1197,7 +1208,7 @@ How video super-resolution uses several misaligned low-resolution frames to reco
 - Pages: `/en/learn/deep-learning/video-super-resolution/`, `/en/learn/deep-learning/video-super-resolution/notes/`, `/en/learn/deep-learning/video-super-resolution/papers/`
 - Course tree: under `deep-learning/dl-04a-super-resolution`
 - Level advanced · depth 3 · needs: `deep-learning/dl-04-image-restoration`, `deep-learning/dl-04a-super-resolution` · tags: video-super-resolution, optical-flow, deformable-convolution, temporal-consistency, recurrent-networks, low-level-vision
-- Figures: 8 (script `scripts/figures/dl_04b_video_super_resolution.py`) · references: 47 · experiments: pixel-sampling
+- Figures: 10 (script `scripts/figures/dl_04b_video_super_resolution.py`) · references: 47 · experiments: pixel-sampling
 
 - [What you'll learn](/en/learn/deep-learning/video-super-resolution/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/video-super-resolution/#the-big-picture) `the-big-picture`
@@ -1264,7 +1275,7 @@ Why regression-trained restorers blur, what it means to sample from the posterio
 - Pages: `/en/learn/deep-learning/generative-restoration/`, `/en/learn/deep-learning/generative-restoration/notes/`, `/en/learn/deep-learning/generative-restoration/papers/`
 - Course tree: under `deep-learning/dl-04-image-restoration`
 - Level advanced · depth 2 · needs: `deep-learning/dl-04-image-restoration`, `ml/ml-06-generative-models` · tags: generative-restoration, posterior-sampling, perception-distortion, diffusion-models, gan-prior, inverse-problems, hallucination, image-restoration
-- Figures: 5 (script `scripts/figures/dl_04c_generative_restoration.py`) · references: 48 · experiments: restoration-ambiguity
+- Figures: 11 (script `scripts/figures/dl_04c_generative_restoration.py`) · references: 49 · experiments: restoration-ambiguity
 
 - [What you'll learn](/en/learn/deep-learning/generative-restoration/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/generative-restoration/#the-big-picture) `the-big-picture`
@@ -1304,6 +1315,8 @@ Why regression-trained restorers blur, what it means to sample from the posterio
 
 - [Blau and Michaeli, "The Perception-Distortion Tradeoff" (CVPR 2018)](/en/learn/deep-learning/generative-restoration/papers/blau-and-michaeli-the-perception-distortion-tradeoff-cvpr-2018/) `papers/blau-and-michaeli-the-perception-distortion-tradeoff-cvpr-2018/`
 - [Chung et al., "Diffusion Posterior Sampling for General Noisy Inverse Problems" (ICLR 2023)](/en/learn/deep-learning/generative-restoration/papers/chung-et-al-diffusion-posterior-sampling-for-general-noisy-inverse-problems-iclr-2023/) `papers/chung-et-al-diffusion-posterior-sampling-for-general-noisy-inverse-problems-iclr-2023/`
+- [DDNM: preserve measured components and generate the null space](/en/learn/deep-learning/generative-restoration/papers/ddnm-preserve-measured-components-and-generate-the-null-space/) `papers/ddnm-preserve-measured-components-and-generate-the-null-space/`
+- [BlindDPS: infer an image and its degradation together](/en/learn/deep-learning/generative-restoration/papers/blinddps-infer-an-image-and-its-degradation-together/) `papers/blinddps-infer-an-image-and-its-degradation-together/`
 - [Li et al., "Diffusion Models for Image Restoration and Enhancement: A Comprehensive Survey" (IJCV 2025)](/en/learn/deep-learning/generative-restoration/papers/li-et-al-diffusion-models-for-image-restoration-and-enhancement-a-comprehensive-survey-ijcv-2025/) `papers/li-et-al-diffusion-models-for-image-restoration-and-enhancement-a-comprehensive-survey-ijcv-2025/`
 
 ## dl-05-low-light-enhancement
@@ -1315,7 +1328,7 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 - Pages: `/en/learn/deep-learning/low-light-enhancement/`, `/en/learn/deep-learning/low-light-enhancement/notes/`, `/en/learn/deep-learning/low-light-enhancement/papers/`
 - Course tree: under `deep-learning/dl-04-image-restoration`
 - Level advanced · depth 2 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-03-intensity-spatial-filtering`, `image-processing/dip-06-color` · tags: low-light-enhancement, retinex, zero-dce, image-restoration, image-quality-assessment
-- Figures: 18 (script `scripts/figures/dl_05_low_light_enhancement.py`) · references: 102 · experiments: lowlight-photons, lut-trilinear
+- Figures: 31 (script `scripts/figures/dl_05_low_light_enhancement.py`) · references: 103 · experiments: lowlight-photons, lut-trilinear
 
 - [What you'll learn](/en/learn/deep-learning/low-light-enhancement/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/low-light-enhancement/#the-big-picture) `the-big-picture`
@@ -1379,12 +1392,17 @@ From histogram equalization and Retinex to curve estimation, Retinex transformer
 
 *Paper guides (one page each, index `papers/`):*
 
+- [KinD: repair reflectance while controlling illumination](/en/learn/deep-learning/low-light-enhancement/papers/kind-repair-reflectance-while-controlling-illumination/) `papers/kind-repair-reflectance-while-controlling-illumination/`
 - [Retinex-Net: decompose, adjust and denoise](/en/learn/deep-learning/low-light-enhancement/papers/retinex-net-decompose-adjust-and-denoise/) `papers/retinex-net-decompose-adjust-and-denoise/`
 - [EnlightenGAN: unpaired appearance learning with content constraints](/en/learn/deep-learning/low-light-enhancement/papers/enlightengan-unpaired-appearance-learning-with-content-constraints/) `papers/enlightengan-unpaired-appearance-learning-with-content-constraints/`
 - [Zero-DCE and Zero-DCE++: learn curves without reference images](/en/learn/deep-learning/low-light-enhancement/papers/zero-dce-and-zero-dce-learn-curves-without-reference-images/) `papers/zero-dce-and-zero-dce-learn-curves-without-reference-images/`
 - [RUAS: search the priors inside an unrolled enhancement model](/en/learn/deep-learning/low-light-enhancement/papers/ruas-search-the-priors-inside-an-unrolled-enhancement-model/) `papers/ruas-search-the-priors-inside-an-unrolled-enhancement-model/`
 - [SCI: train with calibration, deploy one illumination block](/en/learn/deep-learning/low-light-enhancement/papers/sci-train-with-calibration-deploy-one-illumination-block/) `papers/sci-train-with-calibration-deploy-one-illumination-block/`
 - [Retinexformer: illumination guides restoration](/en/learn/deep-learning/low-light-enhancement/papers/retinexformer-illumination-guides-restoration/) `papers/retinexformer-illumination-guides-restoration/`
+- [IAT: local affine maps and a global camera-style transform](/en/learn/deep-learning/low-light-enhancement/papers/iat-local-affine-maps-and-a-global-camera-style-transform/) `papers/iat-local-affine-maps-and-a-global-camera-style-transform/`
+- [Multinex: fuse analytic priors into a Retinex residual](/en/learn/deep-learning/low-light-enhancement/papers/multinex-fuse-analytic-priors-into-a-retinex-residual/) `papers/multinex-fuse-analytic-priors-into-a-retinex-residual/`
+- [CPGA-Net: channel priors, gamma estimation and learned fusion](/en/learn/deep-learning/low-light-enhancement/papers/cpga-net-channel-priors-gamma-estimation-and-learned-fusion/) `papers/cpga-net-channel-priors-gamma-estimation-and-learned-fusion/`
+- [CPGA-Net+: attention, BDSF and stronger variants](/en/learn/deep-learning/low-light-enhancement/papers/cpga-net-attention-bdsf-and-stronger-variants/) `papers/cpga-net-attention-bdsf-and-stronger-variants/`
 - [HDRNet: deep bilateral learning for real-time image enhancement](/en/learn/deep-learning/low-light-enhancement/papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/) `papers/hdrnet-deep-bilateral-learning-for-real-time-image-enhancement/`
 - [Image-adaptive 3D LUTs (Zeng et al., TPAMI 2022)](/en/learn/deep-learning/low-light-enhancement/papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/) `papers/image-adaptive-3d-luts-zeng-et-al-tpami-2022/`
 
@@ -1396,7 +1414,7 @@ How to combine several images of one scene into a single better image: what infr
 - Files: `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-05b-image-fusion.mdx`
 - Pages: `/en/learn/deep-learning/image-fusion/`, `/en/learn/deep-learning/image-fusion/notes/`, `/en/learn/deep-learning/image-fusion/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-04-image-restoration`, `image-processing/dip-07-wavelets-transforms` · tags: image-fusion, infrared-visible-fusion, multi-focus-fusion, multi-exposure-fusion, laplacian-pyramid, exposure-fusion, unsupervised-learning, evaluation
-- Figures: 6 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 67 · experiments: image-fusion
+- Figures: 17 (script `scripts/figures/dl_05b_image_fusion.py`) · references: 68 · experiments: image-fusion
 
 - [What you'll learn](/en/learn/deep-learning/image-fusion/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-fusion/#the-big-picture) `the-big-picture`
@@ -1464,7 +1482,7 @@ How a set of photos becomes a 3D model: camera geometry, structure from motion a
 - Pages: `/en/learn/deep-learning/3d-reconstruction/`, `/en/learn/deep-learning/3d-reconstruction/notes/`, `/en/learn/deep-learning/3d-reconstruction/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-08a-depth-optical-flow`
 - Level advanced · depth 1 · needs: `image-processing/dip-12-feature-extraction`, `deep-learning/dl-01-deep-learning-for-image-processing` · tags: 3d-reconstruction, structure-from-motion, multi-view-stereo, nerf, gaussian-splatting, neural-implicit-surfaces, dust3r
-- Figures: 7 (script `scripts/figures/dl_08_3d_reconstruction.py`) · references: 49
+- Figures: 10 (script `scripts/figures/dl_08_3d_reconstruction.py`) · references: 49
 
 - [What you'll learn](/en/learn/deep-learning/3d-reconstruction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/3d-reconstruction/#the-big-picture) `the-big-picture`
@@ -1540,7 +1558,7 @@ Dense correspondence for depth and motion: rectified stereo and disparity, match
 - Pages: `/en/learn/deep-learning/depth-optical-flow/`, `/en/learn/deep-learning/depth-optical-flow/notes/`, `/en/learn/deep-learning/depth-optical-flow/papers/`
 - Course tree: under `deep-learning/dl-08-3d-reconstruction`
 - Level advanced · depth 2 · needs: `deep-learning/dl-08-3d-reconstruction` · tags: depth-estimation, stereo-matching, monocular-depth, optical-flow, scene-flow, raft, self-supervised-learning
-- Figures: 6 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56 · experiments: stereo-matching
+- Figures: 9 (script `scripts/figures/dl_08a_depth_optical_flow.py`) · references: 56 · experiments: stereo-matching
 
 - [What you'll learn](/en/learn/deep-learning/depth-optical-flow/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/depth-optical-flow/#the-big-picture) `the-big-picture`
@@ -1606,7 +1624,7 @@ How image generators are built and judged as vision systems: the task and what g
 - Pages: `/en/learn/deep-learning/image-generation/`, `/en/learn/deep-learning/image-generation/notes/`, `/en/learn/deep-learning/image-generation/papers/`
 - Course tree: main chapter · sub-chapters: `deep-learning/dl-10a-video-generation`, `deep-learning/dl-10b-one-step-generation`
 - Level advanced · depth 1 · needs: `ml/ml-06-generative-models`, `ml/ml-07-diffusion-flow-matching` · tags: image-generation, text-to-image, diffusion-models, gan, autoregressive-models, cross-attention, controlnet, image-editing, evaluation, provenance
-- Figures: 4 (script `scripts/figures/dl_10_image_generation.py`) · references: 75
+- Figures: 7 (script `scripts/figures/dl_10_image_generation.py`) · references: 75
 
 - [What you'll learn](/en/learn/deep-learning/image-generation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/image-generation/#the-big-picture) `the-big-picture`
@@ -1652,6 +1670,7 @@ How image generators are built and judged as vision systems: the task and what g
 
 *Paper guides (one page each, index `papers/`):*
 
+- [Latent Diffusion: compress perception before learning the image distribution](/en/learn/deep-learning/image-generation/papers/latent-diffusion-compress-perception-before-learning-the-image-distribution/) `papers/latent-diffusion-compress-perception-before-learning-the-image-distribution/`
 - [Esser et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis" (ICML 2024)](/en/learn/deep-learning/image-generation/papers/esser-et-al-scaling-rectified-flow-transformers-for-high-resolution-image-synthesis-icml-2024/) `papers/esser-et-al-scaling-rectified-flow-transformers-for-high-resolution-image-synthesis-icml-2024/`
 - [Ghosh et al., "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment" (NeurIPS 2023)](/en/learn/deep-learning/image-generation/papers/ghosh-et-al-geneval-an-object-focused-framework-for-evaluating-text-to-image-alignment-neurips-2023/) `papers/ghosh-et-al-geneval-an-object-focused-framework-for-evaluating-text-to-image-alignment-neurips-2023/`
 
@@ -1664,7 +1683,7 @@ How video generators are built and judged: video autoencoders and tokenizers, fa
 - Pages: `/en/learn/deep-learning/video-generation/`, `/en/learn/deep-learning/video-generation/notes/`, `/en/learn/deep-learning/video-generation/papers/`
 - Course tree: under `deep-learning/dl-10-image-generation`
 - Level advanced · depth 2 · needs: `deep-learning/dl-10-image-generation` · tags: video-generation, text-to-video, image-to-video, diffusion-models, video-vae, spatiotemporal-attention, temporal-consistency, fvd, vbench, camera-control
-- Figures: 5 (script `scripts/figures/dl_10a_video_generation.py`) · references: 53
+- Figures: 7 (script `scripts/figures/dl_10a_video_generation.py`) · references: 53
 
 - [What you'll learn](/en/learn/deep-learning/video-generation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/video-generation/#the-big-picture) `the-big-picture`
@@ -1727,7 +1746,7 @@ Learn what a one-step generator must predict, compare trajectory distillation, c
 - Pages: `/en/learn/deep-learning/one-step-generation/`, `/en/learn/deep-learning/one-step-generation/notes/`, `/en/learn/deep-learning/one-step-generation/papers/`
 - Course tree: under `deep-learning/dl-10-image-generation`
 - Level advanced · depth 2 · needs: `ml/ml-07-diffusion-flow-matching`, `deep-learning/dl-10-image-generation` · tags: diffusion-distillation, consistency-models, rectified-flow, one-step-generation, distribution-matching
-- Figures: 2 (script `scripts/figures/dl_10b_one_step_generation.py`) · references: 31
+- Figures: 9 (script `scripts/figures/dl_10b_one_step_generation.py`) · references: 31
 
 - [What you'll learn](/en/learn/deep-learning/one-step-generation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/one-step-generation/#the-big-picture) `the-big-picture`
@@ -1824,7 +1843,7 @@ Why vision models fail outside their test set and what to do about it: kinds of 
 - Files: `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx`, `src/content/tutorials/zh-tw/deep-learning/dl-11-robustness.mdx`
 - Pages: `/en/learn/deep-learning/robustness/`, `/en/learn/deep-learning/robustness/notes/`, `/en/learn/deep-learning/robustness/papers/`
 - Level advanced · depth 1 · needs: `deep-learning/dl-02-image-classification` · tags: robustness, distribution-shift, adversarial-examples, adversarial-training, out-of-distribution-detection, anomaly-detection, test-time-adaptation, domain-adaptation
-- Figures: 5 (script `scripts/figures/dl_11_robustness.py`) · references: 50 · experiments: adversarial-budget
+- Figures: 8 (script `scripts/figures/dl_11_robustness.py`) · references: 50 · experiments: adversarial-budget
 
 - [What you'll learn](/en/learn/deep-learning/robustness/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/robustness/#the-big-picture) `the-big-picture`
