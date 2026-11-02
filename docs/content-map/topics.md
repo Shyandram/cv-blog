@@ -2020,6 +2020,7 @@
 - Representing digital images — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/fundamentals/#representing-digital-images`
 - Reproducibility and documentation — ML 11 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/evaluation-deployment/#reproducibility-and-documentation`
 - Reproducibility and fair experiments — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/training-practice/#reproducibility-and-fair-experiments`
+- RepVGG: training with branches, deploying a plain network — DLCV 01B (papers) · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/papers/repvgg-training-with-branches-deploying-a-plain-network/`
 - Requantization with a fixed-point multiplier — DLCV 01C (notes) · `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` · `/en/learn/deep-learning/model-compression/notes/requantization-with-a-fixed-point-multiplier/`
 - Residual blocks and normalization — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/convolutional-networks/#residual-blocks-and-normalization`
 - Residual connections and residual scaling — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#residual-connections-and-residual-scaling`

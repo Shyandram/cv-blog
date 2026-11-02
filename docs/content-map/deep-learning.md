@@ -161,7 +161,7 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 - Pages: `/en/learn/deep-learning/building-blocks/`, `/en/learn/deep-learning/building-blocks/notes/`, `/en/learn/deep-learning/building-blocks/papers/`
 - Course tree: under `deep-learning/dl-01-deep-learning-for-image-processing`
 - Level advanced · depth 2 · needs: `deep-learning/dl-01-deep-learning-for-image-processing`, `ml/ml-04-vision-transformers` · tags: architecture-design, residual-blocks, attention, normalization, upsampling, skip-connections, image-restoration, image-classification, design-spaces
-- Figures: 5 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 53
+- Figures: 5 (script `scripts/figures/dl_01b_building_blocks.py`) · references: 60
 
 - [What you'll learn](/en/learn/deep-learning/building-blocks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/building-blocks/#the-big-picture) `the-big-picture`
@@ -207,6 +207,7 @@ A catalogue of the blocks deep vision networks are built from, the rules for com
 - [Simple Baselines for Image Restoration (NAFNet)](/en/learn/deep-learning/building-blocks/papers/simple-baselines-for-image-restoration-nafnet/) `papers/simple-baselines-for-image-restoration-nafnet/`
 - [Designing Network Design Spaces (RegNet)](/en/learn/deep-learning/building-blocks/papers/designing-network-design-spaces-regnet/) `papers/designing-network-design-spaces-regnet/`
 - [A Comparative Study of Image Restoration Networks for General Backbone Network Design (X-Restormer)](/en/learn/deep-learning/building-blocks/papers/a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer/) `papers/a-comparative-study-of-image-restoration-networks-for-general-backbone-network-design-x-restormer/`
+- [RepVGG: training with branches, deploying a plain network](/en/learn/deep-learning/building-blocks/papers/repvgg-training-with-branches-deploying-a-plain-network/) `papers/repvgg-training-with-branches-deploying-a-plain-network/`
 
 ## dl-01c-model-compression
 

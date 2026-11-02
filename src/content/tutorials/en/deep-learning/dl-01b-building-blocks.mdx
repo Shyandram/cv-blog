@@ -98,6 +98,10 @@ Several designs control $\alpha$ explicitly. EDSR found training numerically uns
 
 Skips also come at two scales. **Short skips** wrap one block; **long skips** wrap a group of blocks or the whole body. RCAN's "residual in residual" structure uses both: residual groups with long skip connections, each containing blocks with short skip connections [15].
 
+Training and inference can also use different block graphs: RepVGG [54] trains with additional affine branches and converts them into one convolution for deployment.
+
+*Optional: [RepVGG: training with branches, deploying a plain network](#repvgg-training-with-branches-deploying-a-plain-network) (in the Paper guides). The exact conversion, architecture choices and measured trade-offs.*
+
 ### Bottlenecks, inverted residuals and depthwise separable convolutions
 
 **Plain version.** Spatial filtering and channel mixing need not happen in one expensive layer. Bottlenecks run the expensive $3 \times 3$ on fewer channels; depthwise convolutions filter each channel alone and leave mixing to cheap $1 \times 1$ layers. These blocks change cost by large factors, so it pays to count.
@@ -864,6 +868,113 @@ Chen, Li, Pu, Liu, Zhou, Qiao and Dong, ECCV 2024 [22].
 
 **Why it matters here.** It is the restoration counterpart of the side-by-side tables: it links each composition choice to the kind of degradation it serves.
 
+### RepVGG: training with branches, deploying a plain network
+
+RepVGG [54] separates the network that is convenient to train from the network that is convenient to run. Its contribution is an exact conversion of trained blocks, rather than a claim that one convolution can reproduce arbitrary nonlinear branches.
+
+#### Challenge
+
+A deployment engine can execute a sequence of ordinary convolutions efficiently, yet that simple inference graph is not necessarily the easiest graph to optimize during training. A residual branch supplies an additional route for information and gradients; it also requires intermediate activations and an addition when the model runs. RepVGG asks whether those training benefits can be retained without retaining the branches at inference.
+
+The paper targets throughput on GPUs and possible specialized hardware. It emphasizes that operation counts alone do not describe memory access, kernel support or parallel execution. Its argument is therefore about a measured deployment trade-off, not about making every model as small as possible. In particular, it does not establish that a dense convolutional network is preferable on every mobile processor.
+
+#### Method
+
+**The training block.** A block adds three branches: a $3\times3$ convolution followed by batch normalization (BN), a $1\times1$ convolution followed by BN, and an identity followed by BN. One ReLU follows their **sum**. The identity branch exists only when the spatial stride is one and the input and output channel counts agree. Downsampling blocks use the two convolutional branches. The convolutions use compatible stride, padding and grouping so that their outputs can be added.
+
+That placement of the nonlinearity is essential. BN with frozen inference statistics is an affine transform, so all three branches can become affine convolutions. A ReLU inside each branch would prevent their replacement by one linear convolution followed by one ReLU. During training, BN uses batch statistics; the conversion is not an equivalence between the training dynamics of a branched block and those of a plain convolution.
+
+**Fold each convolution–BN pair.** Write a branch's convolution as $z_o=W_o*x+b_o$, where $x$ is the input, $o$ indexes output channels, $W_o$ is that output channel's kernel, $*$ denotes convolution and $b_o$ is its optional bias. Let $\mu_o$ and $v_o$ be BN's stored mean and variance, $\gamma_o$ and $\beta_o$ its learned scale and shift, and $\epsilon$ its stability constant. Evaluation-mode BN is absorbed into
+
+$$
+s_o=\frac{\gamma_o}{\sqrt{v_o+\epsilon}},\qquad
+\widehat W_o=s_oW_o,\qquad
+\widehat b_o=\beta_o+s_o(b_o-\mu_o).
+$$
+
+Here $s_o$ scales every weight of output channel $o$; $\widehat W_o$ and $\widehat b_o$ are the converted kernel and bias. A convolution without a bias has $b_o=0$. These are stored-statistic calculations, with no calibration batch needed for the algebra itself.
+
+**Put the branches in the same kernel space.** Place the folded $1\times1$ kernel at the centre of a zero-filled $3\times3$ kernel. For a dense identity branch, construct a kernel with a one at the centre for matching input/output channels and zeros elsewhere, then fold its BN with the same formula. Grouped blocks require the corresponding identity within each group; the identity branch cannot mix groups. The paper uses the same group count in the two convolutional branches.
+
+If $P(\cdot)$ centre-pads a $1\times1$ kernel, $\widehat W_3$ and $\widehat W_1$ are the folded convolution kernels, and $\widehat W_I$ is the folded identity kernel, the deployed parameters are
+
+$$
+W_{\rm deploy}=\widehat W_3+P(\widehat W_1)+\widehat W_I,\qquad
+b_{\rm deploy}=\widehat b_3+\widehat b_1+\widehat b_I.
+$$
+
+A missing identity contributes zero kernel and bias. $W_{\rm deploy}$ and $b_{\rm deploy}$ define one $3\times3$ convolution; the original post-sum ReLU remains after it. This conversion removes the branches and their BN operators from the inference graph. It is not an approximation or a further learning stage. Floating-point evaluation can differ slightly because the order of arithmetic changes.
+
+The [step-by-step folding note](/en/learn/deep-learning/lightweight-enhancement/notes/structural-re-parameterization-step-by-step/) already checks a complete three-branch block. This smaller check isolates a detail that is easy to get wrong: an identity **with BN** becomes a channel-scaled centre kernel **and a bias**, not just an identity kernel.
+
+```python
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+rng = np.random.default_rng(4)
+x = rng.normal(size=(1, 2, 5, 5))  # batch, channels, height, width
+gamma = np.array([1.2, -0.7])
+beta = np.array([0.1, 0.3])
+mean = np.array([0.2, -0.4])
+variance = np.array([0.5, 1.3])
+scale = gamma / np.sqrt(variance + 1e-5)
+kernel = np.zeros((2, 2, 3, 3))  # output, input, kernel height/width
+kernel[np.arange(2), np.arange(2), 1, 1] = scale
+bias = beta - scale * mean
+windows = sliding_window_view(
+    np.pad(x, ((0, 0), (0, 0), (1, 1), (1, 1))), (3, 3), axis=(2, 3)
+)
+fused = np.einsum("nchwkl,ockl->nohw", windows, kernel) + bias[None, :, None, None]
+branch = (
+    gamma[None, :, None, None] * (x - mean[None, :, None, None])
+    / np.sqrt(variance[None, :, None, None] + 1e-5)
+    + beta[None, :, None, None]
+)
+print(f"max error: {np.max(np.abs(fused - branch)):.3e}")
+assert np.allclose(fused, branch, rtol=1e-12, atol=1e-12)
+```
+
+The tested output is `max error: 4.441e-16`. This is an arithmetic check with synthetic inputs, not a trained-model accuracy experiment.
+
+**The whole architecture.** The body has five stages, each beginning with a stride-two convolution; global average pooling and a classifier follow it. Table 2 gives stage block counts of $(1,2,4,14,1)$ for the A family and $(1,4,6,16,1)$ for B. For width multipliers $a$ and $b$, the stage widths are $\min(64,64a)$, $64a$, $128a$, $256a$ and $512b$. The first stage is capped rather than widened to avoid expensive processing of large feature maps. A separate multiplier for the final stage permits a wider low-resolution representation.
+
+Table 3 sets $(a,b)$ to $(0.75,2.5)$, $(1,2.5)$ and $(1.5,2.75)$ for A0/A1/A2, and $(1,2.5)$, $(2,4)$, $(2.5,5)$ and $(3,5)$ for B0/B1/B2/B3. The g2/g4 variants use two/four groups in selected alternating convolution layers, with dense convolutions between them to allow inter-channel exchange. They are deployment variants with a different accuracy/cost balance, not a different folding principle.
+
+**Training and timing.** The simple ImageNet recipe uses random crops and horizontal flips, SGD, a global batch of 256, initial learning rate 0.1, cosine decay over 120 epochs, momentum 0.9 and weight decay $10^{-4}$ on convolution/classifier kernels. The stronger 200-epoch recipe adds five warmup epochs, AutoAugment [59], label smoothing and mixup [60]. Throughput uses one GTX 1080 Ti, FP32 and batch size 128, after 50 warmup batches followed by 50 timed batches. Baseline convolution–BN sequences are fused too. These settings matter when interpreting the results.
+
+#### Results
+
+Tables 4 and 5 report the following ImageNet top-1 accuracy and throughput. The rows retain their training recipe; a higher score after a stronger recipe is not an architecture-only improvement.
+
+| Model | Training epochs | Top-1 (%) | Images/s |
+| --- | --- | --- | --- |
+| RepVGG-A0 | 120 | 72.41 | 3256 |
+| ResNet-18 | 120 | 71.16 | 2442 |
+| RepVGG-A2 | 120 | 76.48 | 1322 |
+| ResNet-50 | 120 | 76.31 | 719 |
+| RepVGG-B1g4 | 120 | 77.58 | 868 |
+| ResNet-101 | 120 | 77.21 | 430 |
+| RepVGG-B3 | 200 | 80.52 | 363 |
+| RegNetX-12GF | 200 | 80.55 | 277 |
+
+All rows shown use $224\times224$ ImageNet inputs. Those are throughput measurements under the paper's batch-128 protocol, not batch-one latency or a guarantee for another device. In the Cityscapes [58] validation experiment, Table 8 reports a PSPNet [57] with RepVGG-B1g2-fast at 78.88% mIoU and 10.9 images/s, versus the ResNet-50 backbone at 77.17% and 10.4 images/s. This timing instead uses FP32, batch 16 and $713\times713$ inputs on the same GPU. The “fast” variant limits dilation to the final five layers; the comparison therefore includes a concrete dilation choice, rather than showing that all deployment operators have equal efficiency.
+
+#### Ablations
+
+**Branch removal, Table 6.** With the same final B0 inference structure, training without either auxiliary branch reaches 72.39% top-1. Adding only identity–BN gives 74.79%; adding only $1\times1$–BN gives 73.15%; using both gives 75.14%. The full block runs at 1061 images/s before conversion, versus the deployed B0's 1817 in Table 4. Thus the extra training graph helps optimization, and removing it after training recovers throughput; the final architecture alone does not explain the accuracy difference.
+
+**Placement and nonlinearities, Table 7.** Removing BN from the identity branch gives 74.18%; moving BN after the branch sum gives 73.52%, against 75.14% for the proposed block. Adding a ReLU inside each branch reaches 75.69%, but destroys the one-convolution conversion. This is an instructive trade-off: an accuracy gain is not a valid replacement when it breaks the deployment constraint.
+
+**Alternative parameterizations, Table 7 and Section 4.2.** The paper's B0 comparisons report 73.97% for DiracNet-style parameterization [55], 73.51% for directly adding an identity kernel, 73.58% for the asymmetric convolution block [56] and 74.56% for reorganizing the layers into residual blocks. These comparisons concern the variants trained in this experiment; they do not rank every possible training recipe for those methods. Replacing ResNet-50 convolutions with RepVGG blocks gives 76.34%, versus the 76.31% baseline. The nearly unchanged result is evidence against treating the block as a universal accuracy upgrade for an already residual network.
+
+#### Conclusion
+
+The useful design pattern is to choose a trainable graph whose linear inference branches can be converted exactly into a simpler graph. RepVGG demonstrates that pattern for plain convolutional classifiers and segmentation backbones. The proof of equivalence, the accuracy comparison and the hardware timing answer three different questions; a sound deployment decision needs all three.
+
+#### Problems
+
+The paper explicitly prioritizes GPU throughput over the smallest parameter count. Its results do not settle low-power or batch-one deployment, and the training branches still require memory and computation. Folding relies on frozen, meaningful BN statistics; it does not repair a poorly calibrated model. Subsequent quantization can introduce rounding error, so floating-point folding equivalence is not a proof of integer-inference equivalence. See [DLCV 01C](/en/learn/deep-learning/model-compression/) for the separate quantization and deployment questions, and [DLCV 03A](/en/learn/deep-learning/real-time-detection/) for detector designs where training and inference structures can differ. Neither the paper's accuracy nor its images/s should be carried into those tasks without a new evaluation.
+
 ## References
 
 1. K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1512.03385)
@@ -919,3 +1030,12 @@ Chen, Li, Pu, Liu, Zhou, Qiao and Dong, ECCV 2024 [22].
 51. X. Chen, X. Wang, J. Zhou, Y. Qiao and C. Dong, "Activating More Pixels in Image Super-Resolution Transformer," in *Proc. IEEE/CVF CVPR*, 2023. [CVF](https://openaccess.thecvf.com/content/CVPR2023/html/Chen_Activating_More_Pixels_in_Image_Super-Resolution_Transformer_CVPR_2023_paper.html) · [arXiv](https://arxiv.org/abs/2205.04437)
 52. H. Guo, Y. Guo, Y. Zha, Y. Zhang, W. Li, T. Dai, S.-T. Xia and Y. Li, "MambaIRv2: Attentive State Space Restoration," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Guo_MambaIRv2_Attentive_State_Space_Restoration_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2411.15269)
 53. A. Araujo, W. Norris and J. Sim, "Computing Receptive Fields of Convolutional Neural Networks," *Distill*, vol. 4, no. 11, 2019. [Distill](https://distill.pub/2019/computing-receptive-fields/) · [doi](https://doi.org/10.23915/distill.00021)
+
+54. X. Ding, X. Zhang, N. Ma, J. Han, G. Ding and J. Sun, "RepVGG: Making VGG-style ConvNets Great Again," in *Proc. IEEE/CVF CVPR*, pp. 13733–13742, 2021. [CVF paper](https://openaccess.thecvf.com/content/CVPR2021/papers/Ding_RepVGG_Making_VGG-Style_ConvNets_Great_Again_CVPR_2021_paper.pdf)
+
+55. S. Zagoruyko and N. Komodakis, "DiracNets: Training Very Deep Neural Networks Without Skip-Connections," arXiv:1706.00388, 2017. [arXiv](https://arxiv.org/abs/1706.00388)
+56. X. Ding, Y. Guo, G. Ding and J. Han, "ACNet: Strengthening the Kernel Skeletons for Powerful CNN via Asymmetric Convolution Blocks," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Ding_ACNet_Strengthening_the_Kernel_Skeletons_for_Powerful_CNN_via_Asymmetric_ICCV_2019_paper.html)
+57. H. Zhao, J. Shi, X. Qi, X. Wang and J. Jia, "Pyramid Scene Parsing Network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Zhao_Pyramid_Scene_Parsing_CVPR_2017_paper.html)
+58. M. Cordts, M. Omran, S. Ramos, T. Rehfeld, M. Enzweiler, R. Benenson, U. Franke, S. Roth and B. Schiele, "The Cityscapes Dataset for Semantic Urban Scene Understanding," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Cordts_The_Cityscapes_Dataset_CVPR_2016_paper.html)
+59. E. D. Cubuk, B. Zoph, D. Mane, V. Vasudevan and Q. V. Le, "AutoAugment: Learning Augmentation Strategies From Data," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Cubuk_AutoAugment_Learning_Augmentation_Strategies_From_Data_CVPR_2019_paper.html)
+60. H. Zhang, M. Cisse, Y. N. Dauphin and D. Lopez-Paz, "mixup: Beyond Empirical Risk Minimization," in *Proc. ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.09412)

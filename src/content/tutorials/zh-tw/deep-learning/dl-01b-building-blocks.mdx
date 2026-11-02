@@ -98,6 +98,10 @@ $$
 
 跳接也有兩種尺度。**短跳接**包住一個區塊；**長跳接**包住一組區塊或整個主體。RCAN 的「residual in residual」結構兩種都用：殘差群組帶有長跳接，每個群組裡的區塊再帶有短跳接 [15]。
 
+訓練與推論也可以使用不同的模組計算圖：RepVGG [54] 在訓練時加入額外的仿射分支，部署前再合併成一個卷積。
+
+*選讀：[RepVGG：訓練用分支，部署用直線網路](#repvgg訓練用分支部署用直線網路)（見「論文導讀」頁）。說明精確轉換、架構選擇與實測取捨。*
+
 ### 瓶頸、反向殘差與深度可分離卷積
 
 **白話版。** 空間濾波與通道混合不必擠在同一個昂貴的層裡完成。瓶頸讓昂貴的 $3 \times 3$ 在較少的通道上執行；深度卷積讓每個通道各自濾波，把混合通道的工作留給便宜的 $1 \times 1$ 層。這些區塊的成本會差上很多倍，所以值得算清楚。
@@ -864,6 +868,113 @@ Chen、Li、Pu、Liu、Zhou、Qiao 與 Dong，ECCV 2024 [22]。
 
 **為什麼放在這裡。** 它是並排比較表在復原方面的對應：把每個組合上的選擇，連到它所服務的退化種類。
 
+### RepVGG：訓練用分支，部署用直線網路
+
+RepVGG [54] 把「容易訓練的網路」與「容易執行的網路」分開設計。它的重點是精確轉換已訓練的模組，而不是宣稱任意非線性分支都能用一個卷積取代。
+
+#### 挑戰
+
+部署引擎可能很擅長執行一連串普通卷積，但這種簡單的推論圖，不一定是訓練時最容易最佳化的計算圖。殘差分支能提供額外的資訊與梯度路徑；執行時卻也需要保留中間激活值，並進行加法。RepVGG 要解決的問題是：能否保留分支對訓練的好處，卻不把分支帶進推論階段？
+
+論文著重 GPU 吞吐量與可能的專用硬體。運算次數無法單獨描述記憶體存取、運算核支援與平行執行，因此它討論的是實際量測的部署取捨，而非一味減少參數。這些結果也不能證明密集卷積網路在所有行動處理器上都比較適合。
+
+#### 方法
+
+**訓練模組。** 一個模組把三條分支相加：$3\times3$ 卷積接批次正規化（batch normalization，BN）、$1\times1$ 卷積接 BN，以及恆等映射接 BN。只有在三者**相加之後**才套用一次 ReLU。恆等分支只用於步幅為一、輸入與輸出通道數相同的模組；降取樣模組只有兩條卷積分支。兩條卷積的步幅、填補與分組方式必須相容，讓輸出形狀可以相加。
+
+非線性的位置是轉換能否成立的關鍵。BN 使用固定的推論統計量時，是一個仿射轉換，因此三條分支都能寫成仿射卷積。如果每條分支內各自放 ReLU，就無法用「一個線性卷積加一個 ReLU」取代。訓練時 BN 使用批次統計量，所以這個轉換並不表示分支模組與直線卷積具有相同的訓練動態。
+
+**把卷積與 BN 合併。** 將一條分支的卷積寫成 $z_o=W_o*x+b_o$。其中 $x$ 為輸入，$o$ 是輸出通道索引，$W_o$ 是該輸出通道的卷積核，$*$ 表示卷積，$b_o$ 是可省略的偏差。令 $\mu_o$ 與 $v_o$ 為 BN 儲存的平均與變異數，$\gamma_o$ 與 $\beta_o$ 為學得的縮放與位移，$\epsilon$ 為數值穩定常數。評估模式的 BN 可合併為
+
+$$
+s_o=\frac{\gamma_o}{\sqrt{v_o+\epsilon}},\qquad
+\widehat W_o=s_oW_o,\qquad
+\widehat b_o=\beta_o+s_o(b_o-\mu_o).
+$$
+
+其中 $s_o$ 會縮放輸出通道 $o$ 的所有權重；$\widehat W_o$ 與 $\widehat b_o$ 是合併後的卷積核與偏差。原本沒有卷積偏差時，令 $b_o=0$。這些都是使用儲存統計量的代數計算，合併運算本身不需要額外的校準批次。
+
+**把所有分支放進同一個卷積核空間。** 將合併後的 $1\times1$ 卷積核放在全零 $3\times3$ 核的中心。對密集恆等分支，建立一個只有「相同輸入／輸出通道的中心位置」為一、其他位置全零的卷積核，再用同一公式合併它的 BN。分組模組必須在每一組內建立相對應的恆等映射，不能跨組連接；論文也讓兩條卷積分支使用相同的分組數。
+
+令 $P(\cdot)$ 表示把 $1\times1$ 核置中補零，$\widehat W_3$ 與 $\widehat W_1$ 為合併 BN 後的卷積核，$\widehat W_I$ 為合併 BN 後的恆等核，部署參數就是
+
+$$
+W_{\rm deploy}=\widehat W_3+P(\widehat W_1)+\widehat W_I,\qquad
+b_{\rm deploy}=\widehat b_3+\widehat b_1+\widehat b_I.
+$$
+
+沒有恆等分支時，其卷積核與偏差都視為零。$W_{\rm deploy}$ 與 $b_{\rm deploy}$ 定義一個 $3\times3$ 卷積；原本位於加法之後的 ReLU 仍保留在它後面。因此推論圖不再需要那些分支與 BN 運算。這不是近似，也不是額外的學習階段；浮點運算順序改變時，數值可能有微小差異。
+
+[重參數化折疊的逐步補充](/zh-tw/learn/deep-learning/lightweight-enhancement/notes/結構重參數化逐步說明/) 已有完整三分支模組的檢查。下面只隔離一個容易漏掉的細節：恆等映射**加上 BN**，會變成通道縮放的中心卷積核**以及偏差**，不只是恆等核。
+
+```python
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+rng = np.random.default_rng(4)
+x = rng.normal(size=(1, 2, 5, 5))  # batch, channels, height, width
+gamma = np.array([1.2, -0.7])
+beta = np.array([0.1, 0.3])
+mean = np.array([0.2, -0.4])
+variance = np.array([0.5, 1.3])
+scale = gamma / np.sqrt(variance + 1e-5)
+kernel = np.zeros((2, 2, 3, 3))  # output, input, kernel height/width
+kernel[np.arange(2), np.arange(2), 1, 1] = scale
+bias = beta - scale * mean
+windows = sliding_window_view(
+    np.pad(x, ((0, 0), (0, 0), (1, 1), (1, 1))), (3, 3), axis=(2, 3)
+)
+fused = np.einsum("nchwkl,ockl->nohw", windows, kernel) + bias[None, :, None, None]
+branch = (
+    gamma[None, :, None, None] * (x - mean[None, :, None, None])
+    / np.sqrt(variance[None, :, None, None] + 1e-5)
+    + beta[None, :, None, None]
+)
+print(f"max error: {np.max(np.abs(fused - branch)):.3e}")
+assert np.allclose(fused, branch, rtol=1e-12, atol=1e-12)
+```
+
+實際輸出為 `max error: 4.441e-16`。這是在合成輸入上驗證代數等價性的計算，不是訓練模型的準確率實驗。
+
+**整體架構。** 主體分成五個階段，各階段第一個卷積以步幅二降取樣；後面接全域平均池化與分類器。表 2 列出 A 系列各階段的模組數為 $(1,2,4,14,1)$，B 系列則為 $(1,4,6,16,1)$。若寬度倍率為 $a$ 與 $b$，五個階段的通道數依序是 $\min(64,64a)$、$64a$、$128a$、$256a$、$512b$。第一階段設上限，避免在高解析度特徵上花太多計算；最後階段另用一個倍率，讓低解析度表示可以更寬。
+
+表 3 對 A0／A1／A2 採用的 $(a,b)$ 分別是 $(0.75,2.5)$、$(1,2.5)$、$(1.5,2.75)$；B0／B1／B2／B3 則是 $(1,2.5)$、$(2,4)$、$(2.5,5)$、$(3,5)$。g2／g4 變體在特定的交替卷積層使用二組／四組分組卷積，並在中間保留密集卷積，讓不同通道仍能交換資訊。它們改變的是準確率與成本的平衡，不是合併原理。
+
+**訓練與計時。** 簡單的 ImageNet 配方使用隨機裁切與水平翻轉、SGD、全域批次大小 256、初始學習率 0.1、120 個 epoch 的餘弦衰減、動量 0.9，以及對卷積／分類器卷積核施加 $10^{-4}$ 權重衰減。較強的 200-epoch 配方加入五個 epoch 暖身、AutoAugment [59]、標籤平滑與 mixup [60]。吞吐量在單張 GTX 1080 Ti 上，以 FP32 與批次大小 128 量測，先暖身 50 個批次，再計時 50 個批次。基準模型的卷積與 BN 也會先合併。解讀結果時，不能省略這些條件。
+
+#### 結果
+
+表 4 與表 5 的 ImageNet top-1 準確率、吞吐量如下。表中保留訓練配方的差異；較強配方下的分數提升，不等於單純的架構改進。
+
+| 模型 | 訓練 epoch 數 | Top-1（%） | 每秒影像數 |
+| --- | --- | --- | --- |
+| RepVGG-A0 | 120 | 72.41 | 3256 |
+| ResNet-18 | 120 | 71.16 | 2442 |
+| RepVGG-A2 | 120 | 76.48 | 1322 |
+| ResNet-50 | 120 | 76.31 | 719 |
+| RepVGG-B1g4 | 120 | 77.58 | 868 |
+| ResNet-101 | 120 | 77.21 | 430 |
+| RepVGG-B3 | 200 | 80.52 | 363 |
+| RegNetX-12GF | 200 | 80.55 | 277 |
+
+以上各列皆使用 $224\times224$ 的 ImageNet 輸入。這些是在論文批次 128 設定下的吞吐量，不是單張影像延遲，也不保證其他裝置有相同結果。Cityscapes [58] 驗證實驗的表 8 中，以 RepVGG-B1g2-fast 為骨幹的 PSPNet [57] 得到 78.88% mIoU、每秒 10.9 張影像；ResNet-50 骨幹則為 77.17%、每秒 10.4 張。這裡的計時改用 FP32、批次 16 與 $713\times713$ 輸入，GPU 相同。「fast」變體只在最後五層使用擴張卷積，因此比較中包含了明確的擴張設定，不能解讀成所有部署運算都一樣有效率。
+
+#### 消融
+
+**移除分支，表 6。** 最終 B0 推論結構相同時，訓練不加兩條輔助分支的 top-1 為 72.39%；只加恆等–BN 為 74.79%，只加 $1\times1$–BN 為 73.15%，兩者都有則為 75.14%。完整模組在轉換前為每秒 1061 張影像，表 4 部署後的 B0 則為 1817 張。因此額外的訓練圖能幫助最佳化，訓練後移除分支則恢復吞吐量；準確率差異不能只用最終架構來解釋。
+
+**位置與非線性，表 7。** 拿掉恆等分支的 BN 後得到 74.18%，把 BN 移到分支加法之後則為 73.52%，原模組為 75.14%。在每條分支內加入 ReLU 可達 75.69%，卻會破壞合併成一個卷積的條件。這項消融也提醒我們：若提升準確率的修改違反了部署限制，就不是可以直接替換的方案。
+
+**其他參數化方式，表 7 與第 4.2 節。** 論文的 B0 比較得到：DiracNet 式參數化 [55] 為 73.97%，直接加入恆等核為 73.51%，非對稱卷積模組 [56] 為 73.58%，把各層重組成殘差模組為 74.56%。這些是該實驗配方下的比較，並非所有可能訓練方式的全面排名。把 ResNet-50 的卷積換成 RepVGG 模組後為 76.34%，基準為 76.31%。幾乎不變的結果，不支持把這個模組視為已具殘差路徑的網路都能使用的通用準確率升級。
+
+#### 結論
+
+有用的設計原則是：先選一個容易訓練、而且推論線性分支能精確轉換成簡單計算圖的結構。RepVGG 在直線卷積分類器與分割骨幹上展示了這個原則。等價性證明、準確率比較與硬體計時分別回答不同問題；合理的部署決策需要把三者一起檢查。
+
+#### 問題
+
+論文明確優先考慮 GPU 吞吐量，而非最小參數量。結果不能直接解決低功耗或單張影像部署的選型；訓練分支仍要花記憶體與計算。合併依賴固定且有意義的 BN 統計量，無法修復校準不良的模型。後續量化又會帶來捨入誤差，因此浮點合併等價，不代表整數推論也等價。量化與部署的獨立問題見 [DLCV 01C](/zh-tw/learn/deep-learning/model-compression/)；訓練與推論結構可能不同的偵測器則見 [DLCV 03A](/zh-tw/learn/deep-learning/real-time-detection/)。不能未經重新評估，就把論文的準確率或每秒影像數套用到那些任務。
+
 ## 參考文獻
 
 1. K. He, X. Zhang, S. Ren and J. Sun, "Deep Residual Learning for Image Recognition," in *Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html) · [arXiv](https://arxiv.org/abs/1512.03385)
@@ -920,3 +1031,12 @@ Chen、Li、Pu、Liu、Zhou、Qiao 與 Dong，ECCV 2024 [22]。
 52. H. Guo, Y. Guo, Y. Zha, Y. Zhang, W. Li, T. Dai, S.-T. Xia and Y. Li, "MambaIRv2: Attentive State Space Restoration," in *Proc. IEEE/CVF CVPR*, 2025. [CVF](https://openaccess.thecvf.com/content/CVPR2025/html/Guo_MambaIRv2_Attentive_State_Space_Restoration_CVPR_2025_paper.html) · [arXiv](https://arxiv.org/abs/2411.15269)
 53. A. Araujo, W. Norris and J. Sim, "Computing Receptive Fields of Convolutional Neural Networks," *Distill*, vol. 4, no. 11, 2019. [Distill](https://distill.pub/2019/computing-receptive-fields/) · [doi](https://doi.org/10.23915/distill.00021)
 
+
+54. X. Ding, X. Zhang, N. Ma, J. Han, G. Ding and J. Sun, "RepVGG: Making VGG-style ConvNets Great Again," in *Proc. IEEE/CVF CVPR*, pp. 13733–13742, 2021. [CVF paper](https://openaccess.thecvf.com/content/CVPR2021/papers/Ding_RepVGG_Making_VGG-Style_ConvNets_Great_Again_CVPR_2021_paper.pdf)
+
+55. S. Zagoruyko and N. Komodakis, "DiracNets: Training Very Deep Neural Networks Without Skip-Connections," arXiv:1706.00388, 2017. [arXiv](https://arxiv.org/abs/1706.00388)
+56. X. Ding, Y. Guo, G. Ding and J. Han, "ACNet: Strengthening the Kernel Skeletons for Powerful CNN via Asymmetric Convolution Blocks," in *Proc. IEEE/CVF ICCV*, 2019. [CVF](https://openaccess.thecvf.com/content_ICCV_2019/html/Ding_ACNet_Strengthening_the_Kernel_Skeletons_for_Powerful_CNN_via_Asymmetric_ICCV_2019_paper.html)
+57. H. Zhao, J. Shi, X. Qi, X. Wang and J. Jia, "Pyramid Scene Parsing Network," in *Proc. IEEE CVPR*, 2017. [CVF](https://openaccess.thecvf.com/content_cvpr_2017/html/Zhao_Pyramid_Scene_Parsing_CVPR_2017_paper.html)
+58. M. Cordts, M. Omran, S. Ramos, T. Rehfeld, M. Enzweiler, R. Benenson, U. Franke, S. Roth and B. Schiele, "The Cityscapes Dataset for Semantic Urban Scene Understanding," in *Proc. IEEE CVPR*, 2016. [CVF](https://openaccess.thecvf.com/content_cvpr_2016/html/Cordts_The_Cityscapes_Dataset_CVPR_2016_paper.html)
+59. E. D. Cubuk, B. Zoph, D. Mane, V. Vasudevan and Q. V. Le, "AutoAugment: Learning Augmentation Strategies From Data," in *Proc. IEEE/CVF CVPR*, 2019. [CVF](https://openaccess.thecvf.com/content_CVPR_2019/html/Cubuk_AutoAugment_Learning_Augmentation_Strategies_From_Data_CVPR_2019_paper.html)
+60. H. Zhang, M. Cisse, Y. N. Dauphin and D. Lopez-Paz, "mixup: Beyond Empirical Risk Minimization," in *Proc. ICLR*, 2018. [arXiv](https://arxiv.org/abs/1710.09412)

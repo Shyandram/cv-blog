@@ -3,7 +3,7 @@
 Goal: finish the paused chapter tasks recorded in 2026-11-01-paused.md, integrate them into the course tree, and validate bilingual content, navigation, figures, citations, snippets and PDFs. No remote push or deployment.
 
 - [x] Major-heading folding: keyboard, mobile, deep links and printing.
-- [ ] RepVGG detailed introduction in building blocks.
+- [x] RepVGG detailed introduction in building blocks (EN/zh-tw; six-part format, Tables 2–8 checked, NumPy maximum error 4.441e-16, MDX/build/link checks pass).
 - [ ] Non-blind ISR rewrite and incoming links (saved dl-04a branch).
 - [ ] Blind and real-world SR chapter (saved dl-04d drafts and figures).
 - [ ] YOLOv4-led detection rewrite with RT-DETR, YOLOR and YOLOv7 introductions.
