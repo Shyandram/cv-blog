@@ -1,5 +1,7 @@
 # Completed chapter work
 
+Latest follow-up: [remaining supplements audit](remaining-supplements-audit.md). Entries below preserve the earlier chronological progress; FusionGAN original results are now verified there, while SeAFusion original numerical tables remain open.
+
 Goal: reorganize the complete curriculum and navigation so beginners know where to start, what prerequisites they need, and what to learn next. Provide progressive expansion, clear location and next steps, collapsible major headings and usable mobile navigation. Finish every paused chapter task recorded in 2026-11-01-paused.md and validate bilingual content, figures, citations, examples, links, builds and PDFs. No remote push or deployment.
 
 - [x] Major-heading folding: keyboard, mobile, deep links and printing.

@@ -98,7 +98,8 @@ for (const lang of langs) {
    const opening = depth === 1 ? `\\bookchapter{${tex(data.title)}}{${label(kind, slug)}}`
      : `\\booksubchapter{${tex(data.title)}}{${label(kind, slug)}}{${['section', 'subsection', 'subsubsection'][Math.min(depth, 4) - 2]}}{${Math.min(depth, 4) - 1}}`;
    content.push(`${opening}\n\n${tex(data.description)}\n\n\\booksource{${zh ? '網站版本' : 'Online edition'}}{${online}}\n\n`);
-   if (data.notebook) content.push(`\\booksource{${zh ? '筆記本' : 'Notebook'}}{https://github.com/Shyandram/cv-blog/blob/${revision}/${data.notebook}}\n\n`);
+   // The book checkpoint may be local; notebook links use the public branch, as on the website.
+   if (data.notebook) content.push(`\\booksource{${zh ? '筆記本' : 'Notebook'}}{https://github.com/Shyandram/cv-blog/blob/main/${data.notebook}}\n\n`);
    const parser = createProcessor({ format: file.endsWith('.mdx') ? 'mdx' : 'md', remarkPlugins: [remarkMath, remarkGfm, remarkCjkFriendly] });
    const ast = parser.parse(entry.body), imports = new Map();
    // Leave out the optional sections; remember which page on the site holds each of their ids (an item is a ### and

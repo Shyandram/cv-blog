@@ -1,15 +1,15 @@
 # Course navigation goal
 
-Status: completed and validated for the 95 currently available tutorials, including all eight downloadable PDF volumes.
+Status: completed and validated for all 97 currently available tutorials and all eight downloadable PDF volumes. The remaining source-verification item is tracked separately in [the supplements audit](remaining-supplements-audit.md).
 
 重新編排完整課程與導覽，讓新手知道從哪裡開始、需要哪些先備知識，以及接下來可以學什麼。
 
 Completion criteria: one course tree controls ordering and numbering; main chapters expand into sub-chapters; prerequisites and previous/next navigation remain visible; bilingual mobile and desktop navigation works; legacy URLs and fragments resolve; search, retrieval and the content map use canonical URLs; website build and internal-link checks pass.
 
-Implemented for all 95 currently available tutorials. Other paused content-writing branches remain separate; this change reorganizes the published curriculum without inventing missing chapters. Source filenames remain stable identifiers while public URLs omit numbers. The low-light parent and lightweight-enhancement child remain separate until their content merge; new SR chapters can be inserted into the existing restoration branch when written.
+The accepted tree includes the completed non-blind, blind/real-world and one-step super-resolution chapters, the one-step generation chapter, standalone image fusion, and merged low-light/lightweight enhancement. Source filenames remain stable identifiers while public URLs omit numbers. Major headings on the main learning path and individual supplementary-note/paper pages can fold; keyboard navigation, hash reveal, printing and reading without JavaScript are preserved.
 
-Validation: Astro build succeeds; Astro check reports 0 errors and 0 warnings; all tutorial MDX validates; 28 Node test files pass; playground coverage passes; 28 bilingual layouts at 1440/375 px pass with no horizontal overflow; old main-page, notes-index and numbered-URL bookmark fragments forward correctly in Chromium; 1,846 HTML pages and 103,487 internal links pass with zero broken targets/fragments. Search excludes redirects and indexes 921 content pages. Screenshots and machine-readable results are under artifacts/ (local, not committed).
+Validated curriculum checkpoint: `2edb518`. Astro check reports zero errors and warnings; all 28 Node test files pass; playground coverage includes 97 tutorials, 73 experiments and 26 image labs. Desktop/mobile browser checks cover 307 old bookmarks, 56 updated chapter/optional-page layouts and language switches, eight folding layouts, search/overview and all image labs. The built site contains 1,076 content pages; Pagefind indexes 1,075. The cycle-aware link check passes 2,041 HTML pages and 130,512 internal links with no broken targets or fragments. Local screenshots and machine-readable browser results are under `artifacts/`.
 
-All eight PDF volumes have been compiled with XeLaTeX (three passes per volume), using curriculum hierarchy and online-only optional-item links. No missing glyphs or undefined references remain; all 1,219 internal PDF destinations resolve to valid pages. Files range from 1.7 to 14.4 MiB, below the 25 MiB limit, and local download metadata points to source checkpoint b7e4395. The source export used Pandoc 3.1.11.1 and xeCJK 3.9.1; Tectonic’s remote bundle returned HTTP 403 in this environment, so the installed XeLaTeX engine was used instead.
+All eight PDFs were validated at the checkpoint above: 97 tutorials and two original posts per language, 4,392 pages, 12,139 links, embedded fonts and valid page destinations; largest file 14.44 MiB. The final artifact hashes and edition metadata are recorded in `pdf-validation-2026-11-02.json` and `src/data/books.json`. Optional notes and paper guides remain online and are linked from the PDFs. Subsequent supplement-audit changes and their validation are recorded in the supplements audit.
 
-No remote push, merge or deployment is authorized by this work.
+No remote push, merge or deployment was performed. `main` is unchanged.
