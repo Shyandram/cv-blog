@@ -1,4 +1,4 @@
-# Remaining chapter work
+# Completed chapter work
 
 Goal: reorganize the complete curriculum and navigation so beginners know where to start, what prerequisites they need, and what to learn next. Provide progressive expansion, clear location and next steps, collapsible major headings and usable mobile navigation. Finish every paused chapter task recorded in 2026-11-01-paused.md and validate bilingual content, figures, citations, examples, links, builds and PDFs. No remote push or deployment.
 
@@ -12,7 +12,7 @@ Goal: reorganize the complete curriculum and navigation so beginners know where 
 - [x] One-Step Generation chapter.
 - [x] One-Step Diffusion SR chapter, including full OSEDiff introduction.
 - [x] Complete corresponding Traditional Chinese versions, preserving citation and section parity.
-- [ ] Final curriculum slots, canonical/legacy URLs, content map, RAG, search and PDF updates.
+- [x] Final curriculum slots, canonical/legacy URLs, content map, RAG, search and PDF updates.
 - [x] Full build, type checks, content/lab tests, links and bilingual browser verification.
 
 The original prompts are preserved in prompts/. Their old temporary paths and historical agent/session attribution are not execution instructions for this session. Sources and numerical claims must be reverified before unfinished drafts are used.
@@ -62,3 +62,11 @@ The final browser sweep exposed 16 self redirects affecting retained optional pa
 The expanded browser check passes all 56 rewritten chapter/optional-page layouts and language switches. It also exposed competing navigation when a retained optional heading was handled both by its built-in forwarding card and by the new migration map. The legacy handler now yields to equivalent built-in forwarding; an executed check of the transpiled handler covers relative optional URLs, unchanged hashes and cross-chapter targets. The final rebuilt bookmark sweep remains the gate before the source commit.
 
 Source validation complete: final build has 1,076 content pages / 1,075 Pagefind pages. The cycle-aware link checker reports 2,041 HTML pages, 130,512 internal links and zero broken links. All 307 old-bookmark/redirect browser cases pass, as do the repeated eight folding layouts and all 56 updated chapter/optional-page layouts with language switching. Search, overview, all image labs and the 28 existing test files pass. RAG contains 7,924 chunks; English and Traditional Chinese queries retrieve the new canonical chapters and section URLs. Remaining work is the eight final PDF volumes from the validated local source commit and their final download metadata/build. No remote mutation.
+
+Final PDF artifacts: eight volumes built from source commit `2edb518`, dated 2026-11-02, with 97 tutorials and two original posts in each language. All 4,392 pages and 12,139 PDF links validate; all fonts are embedded, glyphs and chapter coverage are complete, internal/named destinations resolve, and no text exceeds page bounds. Largest file: 14.44 MiB. Three XeLaTeX passes were used with the standard Pandoc export; optional notes/paper introductions remain online. The validator now counts hierarchical subchapter macros as well as main chapters. File hashes and per-volume results are saved in `pdf-validation-2026-11-02.json`. Local download files and metadata are updated; the final post-PDF site build/download-page check is in progress.
+
+## Completed, 2026-11-02
+
+The full authorized chapter/curriculum/navigation task is complete on local branch `local/site-subchapters-tree`. Content source commit: `2edb518`; all eight PDF editions identify that source revision. Final build with the new downloads passes: 1,076 content pages, 1,075 Pagefind pages. The final cycle-aware HTML check passes 2,041 pages and 130,512 internal links with zero failures. Final Astro check: zero errors, zero warnings, three existing hints. Both download languages pass at 1440/375 px, all eight built PDF copies match the validated files, and their source metadata is correct. The 307 bookmark, 56 updated-layout/language-switch, eight folding-layout, search/overview, 26 image-lab and 28 test-file checks are all passing.
+
+All requested curriculum slots, bilingual chapter work, independent optional pages, major-heading folding, prerequisites/next steps/mobile navigation, canonical and legacy links, indexes/RAG/search and eight downloadable PDFs are finished. The original personal posts are unchanged. The stated FusionGAN/SeAFusion original-table access limitation remains explicitly documented; no numerical results were fabricated. No push, PR merge or deployment was performed, and `main` was not changed.
