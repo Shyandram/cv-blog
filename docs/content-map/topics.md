@@ -401,6 +401,7 @@
 - Bias, variance and noise — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/#bias-variance-and-noise`
 - BIC and AIC for mixtures — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/clustering-mixtures/#bic-and-aic-for-mixtures`
 - Bidirectional recurrent — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#bidirectional-recurrent`
+- Bilateral filtering: average nearby pixels without crossing a strong edge — IP 03 (papers) · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/`
 - Bilateral grids and color-table mathematics — DLCV 09C (notes) · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/notes/bilateral-grids-and-color-table-mathematics/`
 - BiLSTM-CRF: scoring the whole label sequence — NLP 06 · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/sequence-labeling/#bilstm-crf-scoring-the-whole-label-sequence`
 - Binary sources with Hamming error — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/rate-distortion/#binary-sources-with-hamming-error`
@@ -417,6 +418,7 @@
 - Block probabilities and average surprise — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/typicality-entropy-rates/#block-probabilities-and-average-surprise`
 - Block transform coding — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/compression-watermarking/#block-transform-coding`
 - Blur, edges and sharpening — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/convolutional-networks/#blur-edges-and-sharpening`
+- BM3D: denoise groups of similar patches collaboratively — IP 05 (papers) · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/papers/bm3d-denoise-groups-of-similar-patches-collaboratively/`
 - Boosting changes the next learner's job — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/#boosting-changes-the-next-learners-job`
 - Border clearing — IP 09 · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/morphology/#border-clearing`
 - Border handling — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/convolutional-networks/#border-handling`
@@ -481,6 +483,7 @@
 - Challenges — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/object-tracking/#challenges`
 - Challenges — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#challenges`
 - Challenges: NTIRE 2024 and 2025 — DLCV 09C · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/#challenges-ntire-2024-and-2025`
+- Chan–Vese: locate a boundary by fitting the regions on both sides — IP 11 (papers) · `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` · `/en/learn/image-processing/active-contours/papers/chanvese-locate-a-boundary-by-fitting-the-regions-on-both-sides/`
 - Change of variables — ML 07 · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/generative-models/#change-of-variables`
 - Change of variables for densities — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/probability-information/#change-of-variables-for-densities`
 - Channels and 1×1 convolutions — ML 03 · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/convolutional-networks/#channels-and-11-convolutions`
@@ -1283,6 +1286,7 @@
 - Guide to the Modern view surveys — DLCV 08 (papers) · `src/content/tutorials/en/deep-learning/dl-06b-video-understanding.mdx` · `/en/learn/deep-learning/video-understanding/papers/guide-to-the-modern-view-surveys/`
 - Guide to the Modern view surveys — DLCV 11 (papers) · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/3d-reconstruction/papers/guide-to-the-modern-view-surveys/`
 - Guide to the Modern view surveys — DLCV 11A (papers) · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/depth-optical-flow/papers/guide-to-the-modern-view-surveys/`
+- Guided Filter: fit local linear models instead of comparing every pair — IP 03 (papers) · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/papers/guided-filter-fit-local-linear-models-instead-of-comparing-every-pair/`
 - Gulrajani and Lopez-Paz, "In Search of Lost Domain Generalization" (ICLR 2021) — DLCV 14 (papers) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/robustness/papers/gulrajani-and-lopez-paz-in-search-of-lost-domain-generalization-iclr-2021/`
 
 ## H
@@ -1767,6 +1771,7 @@
 - Noise, clean data, velocity and the score — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#noise-clean-data-velocity-and-the-score`
 - Non-deep-learning LLIE and the characteristics of low-light images — DLCV 09C · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/#non-deep-learning-llie-and-the-characteristics-of-low-light-images`
 - Non-local means denoising — IP 05 (notes) · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/notes/non-local-means-denoising/`
+- Non-Local Means: use similar patches to decide which pixels to average — IP 05 (papers) · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/papers/non-local-means-use-similar-patches-to-decide-which-pixels-to-average/`
 - Non-maximum suppression (NMS) and Soft-NMS — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/object-detection/#non-maximum-suppression-nms-and-soft-nms`
 - Non-parametric estimation: one formula, three estimators — PR 02 · `src/content/tutorials/en/pattern-recognition/pr-02-density-estimation.mdx` · `/en/learn/pattern-recognition/density-estimation/#non-parametric-estimation-one-formula-three-estimators`
 - Nonflat structuring elements — IP 09 (notes) · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/morphology/notes/nonflat-structuring-elements/`
@@ -2234,6 +2239,7 @@
 - Shrinking and expanding text polygons — DLCV 06 (notes) · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/notes/shrinking-and-expanding-text-polygons/`
 - Siamese trackers — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/object-tracking/#siamese-trackers`
 - Side by side: what changed and why — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#side-by-side-what-changed-and-why`
+- SIFT: make local features repeatable before trying to match them — IP 12 (papers) · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/papers/sift-make-local-features-repeatable-before-trying-to-match-them/`
 - SigLIP: a sigmoid instead of a softmax — ML 10 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/#siglip-a-sigmoid-instead-of-a-softmax`
 - Sigmoid and tanh — ML 02 · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/neural-networks/#sigmoid-and-tanh`
 - Signatures — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/#signatures`

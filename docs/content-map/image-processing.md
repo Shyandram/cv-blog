@@ -119,7 +119,7 @@ Remap pixel values with curves and histograms, then smooth and sharpen images wi
 - Files: `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-03-intensity-spatial-filtering.mdx`
 - Pages: `/en/learn/image-processing/intensity-spatial-filtering/`, `/en/learn/image-processing/intensity-spatial-filtering/notes/`, `/en/learn/image-processing/intensity-spatial-filtering/papers/`
 - Level beginner · depth 1 · needs: `image-processing/dip-02-fundamentals` · tags: dip, histogram-equalization, gamma-correction, spatial-filtering, sharpening
-- Figures: 11 · references: 18 · experiments: kernel-filter
+- Figures: 13 · references: 18 · experiments: kernel-filter
 
 - [What you'll learn](/en/learn/image-processing/intensity-spatial-filtering/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/intensity-spatial-filtering/#the-big-picture) `the-big-picture`
@@ -166,6 +166,8 @@ Remap pixel values with curves and histograms, then smooth and sharpen images wi
 *Paper guides (one page each, index `papers/`):*
 
 - [The Modern view in more detail](/en/learn/image-processing/intensity-spatial-filtering/papers/the-modern-view-in-more-detail/) `papers/the-modern-view-in-more-detail/`
+- [Bilateral filtering: average nearby pixels without crossing a strong edge](/en/learn/image-processing/intensity-spatial-filtering/papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/) `papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/`
+- [Guided Filter: fit local linear models instead of comparing every pair](/en/learn/image-processing/intensity-spatial-filtering/papers/guided-filter-fit-local-linear-models-instead-of-comparing-every-pair/) `papers/guided-filter-fit-local-linear-models-instead-of-comparing-every-pair/`
 
 ## dip-04-frequency-domain
 
@@ -252,7 +254,7 @@ Model how an image was damaged by blur and noise, then undo it with order-statis
 - Files: `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-05-restoration-reconstruction.mdx`
 - Pages: `/en/learn/image-processing/restoration-reconstruction/`, `/en/learn/image-processing/restoration-reconstruction/notes/`, `/en/learn/image-processing/restoration-reconstruction/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-04-frequency-domain` · tags: dip, restoration, denoising, deconvolution, wiener-filter, computed-tomography
-- Figures: 9 · references: 22 · experiments: inverse-regularization
+- Figures: 11 · references: 23 · experiments: inverse-regularization
 
 - [What you'll learn](/en/learn/image-processing/restoration-reconstruction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/restoration-reconstruction/#the-big-picture) `the-big-picture`
@@ -304,6 +306,8 @@ Model how an image was damaged by blur and noise, then undo it with order-statis
 *Paper guides (one page each, index `papers/`):*
 
 - [The Modern view surveys in more detail](/en/learn/image-processing/restoration-reconstruction/papers/the-modern-view-surveys-in-more-detail/) `papers/the-modern-view-surveys-in-more-detail/`
+- [Non-Local Means: use similar patches to decide which pixels to average](/en/learn/image-processing/restoration-reconstruction/papers/non-local-means-use-similar-patches-to-decide-which-pixels-to-average/) `papers/non-local-means-use-similar-patches-to-decide-which-pixels-to-average/`
+- [BM3D: denoise groups of similar patches collaboratively](/en/learn/image-processing/restoration-reconstruction/papers/bm3d-denoise-groups-of-similar-patches-collaboratively/) `papers/bm3d-denoise-groups-of-similar-patches-collaboratively/`
 
 ## dip-06-color
 
@@ -612,7 +616,7 @@ Segment objects with curves that move: parametric snakes, gradient vector flow, 
 - Files: `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-11-active-contours.mdx`
 - Pages: `/en/learn/image-processing/active-contours/`, `/en/learn/image-processing/active-contours/notes/`, `/en/learn/image-processing/active-contours/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-10-segmentation` · tags: dip, segmentation, active-contours, level-sets, variational-methods
-- Figures: 7 · references: 20 · experiments: contour-energy
+- Figures: 8 · references: 20 · experiments: contour-energy
 
 - [What you'll learn](/en/learn/image-processing/active-contours/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/active-contours/#the-big-picture) `the-big-picture`
@@ -653,6 +657,7 @@ Segment objects with curves that move: parametric snakes, gradient vector flow, 
 *Paper guides (one page each, index `papers/`):*
 
 - [The four surveys in more detail](/en/learn/image-processing/active-contours/papers/the-four-surveys-in-more-detail/) `papers/the-four-surveys-in-more-detail/`
+- [Chan–Vese: locate a boundary by fitting the regions on both sides](/en/learn/image-processing/active-contours/papers/chanvese-locate-a-boundary-by-fitting-the-regions-on-both-sides/) `papers/chanvese-locate-a-boundary-by-fitting-the-regions-on-both-sides/`
 
 ## dip-12-feature-extraction
 
@@ -662,7 +667,7 @@ Turn regions, boundaries and whole images into compact numbers that stay the sam
 - Files: `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-12-feature-extraction.mdx`
 - Pages: `/en/learn/image-processing/feature-extraction/`, `/en/learn/image-processing/feature-extraction/notes/`, `/en/learn/image-processing/feature-extraction/papers/`
 - Level advanced · depth 1 · needs: `image-processing/dip-11-active-contours` · tags: dip, feature-extraction, shape-descriptors, texture, sift
-- Figures: 9 · references: 22 · experiments: corner-tensor
+- Figures: 10 · references: 22 · experiments: corner-tensor
 
 - [What you'll learn](/en/learn/image-processing/feature-extraction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/feature-extraction/#the-big-picture) `the-big-picture`
@@ -715,6 +720,7 @@ Turn regions, boundaries and whole images into compact numbers that stay the sam
 *Paper guides (one page each, index `papers/`):*
 
 - [Guide to the Modern view surveys](/en/learn/image-processing/feature-extraction/papers/guide-to-the-modern-view-surveys/) `papers/guide-to-the-modern-view-surveys/`
+- [SIFT: make local features repeatable before trying to match them](/en/learn/image-processing/feature-extraction/papers/sift-make-local-features-repeatable-before-trying-to-match-them/) `papers/sift-make-local-features-repeatable-before-trying-to-match-them/`
 
 ## dip-13-pattern-classification
 

@@ -21,3 +21,8 @@ Distribution acceptance passed: all eight books were regenerated from source com
 Research and draft files are under /workspace/scratch/cvblog-work/requested-paper-guides/. The immutable baseline inventory is baseline-inventory.json there; global-audit/inventory.json reflects the expanded inventory. Paper PDFs are not committed. Prior detailed guides and primary-source caches remain under /workspace/scratch/cvblog-work/research/cvblog-papers/.
 
 Content, figure, bilingual, navigation, build, link and distribution acceptance checks are complete. SeAFusion original numerical tables remain an explicit source-verification gap until an authentic accessible full text is found; never substitute another paper's figures or results. Its argument, official framework figure, detailed method, qualitative discussion and independently executed objective example are present. No original numerical comparison/ablation values are fabricated. No push, merge or deployment.
+
+
+## 2026-11-04 IP expansion and named-paper review
+
+The current inventory extends the baseline above to 155 guide units with six original-source IP algorithm guides. The 22 named new guides were re-read and given method-specific reading checkpoints. See [paper-review-ip-expansion.md](paper-review-ip-expansion.md) for the scientific-review scope and current validation; this is not a new full scientific audit of all 155 guides. Historical acceptance counts above describe their original checkpoint.
