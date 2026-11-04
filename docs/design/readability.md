@@ -1,10 +1,12 @@
-# Reading interface — 2026-11-04
+# Site interface — 2026-11-04
 
-Goal: make the bilingual course and its paper guides comfortable for beginners to read, locate and navigate on phones and desktops. The visual direction is minimalist: neutral surfaces, whitespace and typography carry the hierarchy; decoration stays secondary.
+Goal: apply a clear, minimalist interface across the entire bilingual website, while making the course and paper guides comfortable for beginners to read, locate and navigate on phones and desktops. The visual direction is minimalist: neutral surfaces, whitespace and typography carry the hierarchy; decoration stays secondary.
 
 Applied skill: [UI/UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/blob/main/.claude/skills/ui-ux-pro-max/SKILL.md). The initial broad design-system search returned a marketing/testimonial pattern unsuitable for this course. A narrower product search, `documentation knowledge base`, matched Knowledge Base/Documentation with Minimalism & Swiss Style + Accessible & Ethical. Typography searches matched bounded line length, adequate line height and balanced headings. Astro guidance confirmed preserving static/no-JS navigation. No marketing pattern or new font dependency was adopted.
 
 Decisions:
+- Apply the same visual language to home, course overview/tree, blog list/articles, playground, search, downloads, about and error pages. Use shared neutral tokens, 4px control corners and 6px contained-media corners.
+- Prefer text-led lists and light separators for articles, downloads, statistics and experiments. Use underlines for active filters, and preserve visible form boundaries, keyboard focus and meaningful plot colors. Controls that were restyled retain at least 44px touch targets.
 - Use white and neutral charcoal surfaces with a restrained link accent; keep track colors for identification rather than enclosing every section; test primary and secondary text against both page and surface backgrounds at 4.5:1.
 - Bound prose to 40rem. Use 19px desktop / 18px phone text, 1.8 line height, and 1.85 for Traditional Chinese. The CJK system font leads Chinese paragraphs for a consistent reading texture; Latin technical names retain available system fallbacks.
 - Give paper-guide h4 headings their own 20px tier and clear section spacing. Maintain independently wide figures, equations, tables and code.
