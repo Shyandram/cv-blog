@@ -26,28 +26,39 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
   handle.innerHTML = '<svg viewBox="0 0 16 24" width="16" height="24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="6" r="1.4"/><circle cx="11" cy="6" r="1.4"/><circle cx="5" cy="12" r="1.4"/><circle cx="11" cy="12" r="1.4"/><circle cx="5" cy="18" r="1.4"/><circle cx="11" cy="18" r="1.4"/></svg>';
   handle.setAttribute('aria-label', zh ? '移動控制台：方向鍵移動，Home 歸位' : 'Move console: arrow keys to move, Home to reset');
   handle.title = zh ? '拖曳移動；方向鍵微調，Home 歸位' : 'Drag to move; arrow keys to adjust, Home to reset';
-  const action = (name: string, symbol: string, className: string) => {
+  // Static outline icons share a viewBox and stroke; names remain available to assistive technology.
+  const icons = {
+    contents: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+    collapse: '<path d="m8 3 4 4 4-4M8 21l4-4 4 4M4 12h16"/>',
+    expand: '<path d="m8 7 4-4 4 4m-8 10 4 4 4-4M4 12h16"/>',
+    code: '<path d="m8 7-5 5 5 5m8-10 5 5-5 5M14 4l-4 16"/>',
+    top: '<path d="M5 4h14M12 20V8m-6 6 6-6 6 6"/>',
+  };
+  const iconMarkup = (kind: keyof typeof icons) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icons[kind]}</svg>`;
+  const action = (name: string, symbol: keyof typeof icons, className: string) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = className;
     const icon = document.createElement('span');
     icon.className = 'reader-console-icon';
-    icon.textContent = symbol;
+    icon.innerHTML = iconMarkup(symbol);
     icon.setAttribute('aria-hidden', 'true');
     const label = document.createElement('span');
-    label.className = 'reader-console-label';
+    label.className = 'reader-console-label sr-only';
     label.textContent = name;
     button.append(icon, label);
+    button.title = name;
     return button;
   };
-  const toggle = action(zh ? '目錄' : 'Contents', '☰', 'reader-console-toggle');
+  const toggle = action(zh ? '目錄' : 'Contents', 'contents', 'reader-console-toggle');
   toggle.setAttribute('aria-controls', 'reader-console-body');
-  const sectionsButton = action(zh ? '章節' : 'Sections', '−', 'reader-console-fold-sections');
-  const codeButton = action(zh ? '程式碼' : 'Code', '‹/›', 'reader-console-fold-code');
+  const sectionsButton = action(zh ? '章節' : 'Sections', 'collapse', 'reader-console-fold-sections');
+  const codeButton = action(zh ? '程式碼' : 'Code', 'code', 'reader-console-fold-code');
   sectionsButton.disabled = true;
   codeButton.disabled = true;
-  const top = action(zh ? '頁首' : 'Top', '↑', 'reader-console-top');
+  const top = action(zh ? '頁首' : 'Top', 'top', 'reader-console-top');
   top.setAttribute('aria-label', zh ? '回到頁首' : 'Back to top');
+  top.title = top.getAttribute('aria-label')!;
   header.append(handle, toggle, sectionsButton, codeButton, top);
   const body = document.createElement('div');
   body.id = 'reader-console-body';
@@ -110,6 +121,7 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
     body.hidden = value;
     panel.classList.toggle('is-collapsed', value);
     toggle.setAttribute('aria-label', value ? (zh ? '展開章節目錄' : 'Open section contents') : (zh ? '收合章節目錄' : 'Close section contents'));
+    toggle.title = toggle.getAttribute('aria-label')!;
     toggle.setAttribute('aria-expanded', String(!value));
     place();
     if (persist) remember();
@@ -228,7 +240,7 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
         button.setAttribute('aria-pressed', count === 0 ? 'false' : count === folds.length ? 'true' : 'mixed');
         button.title = label;
         button.querySelector('.reader-console-label')!.textContent = zh ? (kind === 'sections' ? '章節' : '程式碼') : (kind === 'sections' ? 'Sections' : 'Code');
-        if (kind === 'sections') button.querySelector('.reader-console-icon')!.textContent = expanded ? '−' : '+';
+        if (kind === 'sections') button.querySelector('.reader-console-icon')!.innerHTML = iconMarkup(expanded ? 'collapse' : 'expand');
       };
       button.addEventListener('click', () => { setOpen(!folds.some((fold) => fold.open)); sync(); });
       folds.forEach((fold) => fold.addEventListener('toggle', sync));
