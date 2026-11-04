@@ -227,7 +227,7 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
         button.setAttribute('aria-label', `${label} (${count}/${folds.length})`);
         button.setAttribute('aria-pressed', count === 0 ? 'false' : count === folds.length ? 'true' : 'mixed');
         button.title = label;
-        button.querySelector('.reader-console-label')!.textContent = zh ? `${expanded ? '收' : '展'}${kind === 'sections' ? '章節' : '程式'}` : (kind === 'sections' ? 'Sections' : 'Code');
+        button.querySelector('.reader-console-label')!.textContent = zh ? (kind === 'sections' ? '章節' : '程式碼') : (kind === 'sections' ? 'Sections' : 'Code');
         if (kind === 'sections') button.querySelector('.reader-console-icon')!.textContent = expanded ? '−' : '+';
       };
       button.addEventListener('click', () => { setOpen(!folds.some((fold) => fold.open)); sync(); });
