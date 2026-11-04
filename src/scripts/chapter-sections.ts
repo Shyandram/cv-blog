@@ -1,4 +1,5 @@
 import './legacy-fragments';
+import { mountReadingControls } from './reading-controls';
 // Enhance the page's major sections while preserving content, ids and source heading levels.
 const prose = document.querySelector<HTMLElement>('.prose[data-fold-sections]');
 if (prose) {
@@ -50,7 +51,7 @@ if (prose) {
       button.addEventListener('click', () => sections.forEach((section) => { section.open = open; }));
       controls.append(button);
     }
-    prose.before(controls);
+    mountReadingControls(prose, controls, sections, 'sections');
   }
   const reveal = (hash: string, scroll = false) => {
     let id: string;
