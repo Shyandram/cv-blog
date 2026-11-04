@@ -11,7 +11,7 @@ Decisions:
 - Show complete chapter titles with wrapping. Use distinct 44px disclosure targets without hit-area overlap, 44px chapter tabs, and larger mobile navigation rows.
 - Align desktop contents disclosures beside their headings in a two-column grid, keeping nested lists across both columns.
 - Make prerequisite information easy to find and stack previous/next cards on small screens.
-- Place an always-visible 44px copy button above each code block, so it cannot cover the code. Keep no-JS code reading and print behavior.
+- Code starts folded using native HTML disclosures. Show the language and line count before opening, with a separate 44px copy button usable while closed. Page-level code controls and a short usage hint support readers who want to try the examples or search all code. Keep no-JS disclosure and full-code printing; restore the reader's open/closed choices after printing. These controls apply to course, optional-reading and blog prose without changing source text.
 - Retain keyboard controls, fragment reveal, reduced-motion support and existing course URLs.
 - Allow unusually long unbroken reference/API names to wrap within prose; keep code and wide equations in their own horizontal scrollers.
 

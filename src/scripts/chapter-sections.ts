@@ -43,7 +43,7 @@ if (prose) {
     const controls = document.createElement('div');
     controls.className = 'section-controls';
     controls.dataset.pagefindIgnore = '';
-    for (const [label, open] of [[zh ? '全部展開' : 'Expand all sections', true], [zh ? '全部摺疊' : 'Collapse all sections', false]] as const) {
+    for (const [label, open] of [[zh ? '展開本頁章節' : 'Expand all sections', true], [zh ? '收合本頁章節' : 'Collapse all sections', false]] as const) {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = label;

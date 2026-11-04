@@ -33,6 +33,7 @@ with sync_playwright() as p:
      copy=page.locator('.rt-copy').first
      if copy.count():
       copy.scroll_into_view_if_needed();assert copy.bounding_box()['height']>=44
+      copy.locator('..').locator('.code-fold > summary').click()
       pre=copy.locator('..').locator('pre');assert copy.bounding_box()['y']+copy.bounding_box()['height'] <= pre.bounding_box()['y']+1
      page.locator('.section-controls button').nth(1).click()
      assert page.locator('.chapter-section[open]').count()==0
