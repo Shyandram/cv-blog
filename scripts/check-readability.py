@@ -1,6 +1,7 @@
 """Reading layout regression checks against the locally served production build."""
 import json
 from pathlib import Path
+from reader_test_helpers import set_reader_group
 from playwright.sync_api import sync_playwright
 BASE='http://127.0.0.1:4322'
 root=Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ with sync_playwright() as p:
      size=page.locator('.prose').evaluate('(e)=>parseFloat(getComputedStyle(e).fontSize)')
      assert size >= (18 if width<=620 else 19),size
      assert page.evaluate('getComputedStyle(document.documentElement).scrollBehavior')!='smooth'
-     for e in page.locator('.chapter-tabs a, .section-controls button').all():
+     for e in page.locator('.chapter-tabs a, .reader-console-header button').all():
       assert e.bounding_box()['height']>=44
      if width>=1200:
       for toggle in page.locator('.toc .toc-more').all():
@@ -35,9 +36,9 @@ with sync_playwright() as p:
       copy.scroll_into_view_if_needed();assert copy.bounding_box()['height']>=44
       copy.locator('..').locator('.code-fold > summary').click()
       pre=copy.locator('..').locator('pre');assert copy.bounding_box()['y']+copy.bounding_box()['height'] <= pre.bounding_box()['y']+1
-     page.locator('.section-controls button').nth(1).click()
+     set_reader_group(page, 'sections', False)
      assert page.locator('.chapter-section[open]').count()==0
-     page.locator('.section-controls button').first.click()
+     set_reader_group(page, 'sections', True)
      assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
      if width<1200:
       summary=page.locator('.rt-mnav > summary');summary.click()

@@ -1,6 +1,7 @@
 """Verify CNN live controls and the FusionGAN/SeAFusion examples at both viewport sizes."""
 import json
 from pathlib import Path
+from reader_test_helpers import set_reader_group
 from playwright.sync_api import sync_playwright
 root=Path(__file__).resolve().parents[1]
 index=json.loads((root/'docs/content-index.json').read_text())
@@ -38,9 +39,9 @@ with sync_playwright() as p:
     else:
      assert page.locator('.prose pre').count()==2
      assert 'intensity=0.0000 gradient=0.2625 total=2.6250' in page.locator('.prose').inner_text()
-    page.locator('.section-controls button').nth(1).click()
+    set_reader_group(page, 'sections', False)
     assert page.locator('.chapter-section[open]').count()==0
-    page.locator('.section-controls button').first.click()
+    set_reader_group(page, 'sections', True)
     assert page.locator('.chapter-section:not([open])').count()==0
     assert not page.evaluate('document.documentElement.scrollWidth>innerWidth'), (route,width)
     assert not errors,errors

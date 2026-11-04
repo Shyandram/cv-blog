@@ -1,5 +1,6 @@
 """Check folding, keyboard controls, anchor navigation and printing on both tutorial languages."""
 from pathlib import Path
+from reader_test_helpers import set_reader_group
 from playwright.sync_api import sync_playwright
 BASE='http://127.0.0.1:4322'
 with sync_playwright() as p:
@@ -17,28 +18,28 @@ with sync_playwright() as p:
    first=sections.first;summary=first.locator(':scope > summary')
    summary.click();assert first.get_attribute('open') is None
    summary.focus();summary.press('Enter');assert first.get_attribute('open') is not None
-   page.locator('.section-controls button').nth(1).click()
+   set_reader_group(page, 'sections', False)
    assert page.locator('.chapter-section[open]').count()==0
    target=page.locator('.section-body h3[id]').first.get_attribute('id')
    page.evaluate('(id)=>{location.hash=id}',target)
    page.wait_for_function('(id)=>document.getElementById(id).closest("details").open',arg=target)
    assert page.locator('.notes-teaser').first.is_visible()
-   page.locator('.section-controls button').nth(1).click()
+   set_reader_group(page, 'sections', False)
    page.evaluate('dispatchEvent(new Event("beforeprint"))')
    assert page.locator('.chapter-section[open]').count()==count
    page.evaluate('dispatchEvent(new Event("afterprint"))')
    assert page.locator('.chapter-section[open]').count()==0
-   page.locator('.section-controls button').first.click()
+   set_reader_group(page, 'sections', True)
    assert page.locator('.chapter-section[open]').count()==count
    assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
    assert not errors,errors
-   page.locator('.section-controls button').nth(1).click()
+   set_reader_group(page, 'sections', False)
    page.screenshot(path=f'artifacts/{lang}-{width}-folded.png')
    page.close()
   page=b.new_page(java_script_enabled=False)
   page.goto(BASE+f'/{lang}/learn/deep-learning/image-classification/')
   assert page.locator('.prose h2').count()>10
-  assert page.locator('.section-controls').count()==0
+  assert page.locator('.reader-console').count()==0
   page.close()
  # Paper items retain h4 headings in the source but have the same folding controls.
  paper_paths={
@@ -53,7 +54,7 @@ with sync_playwright() as p:
    page.wait_for_selector('.chapter-section > summary > h4')
    sections=page.locator('.chapter-section');count=sections.count()
    assert page.locator('.chapter-section > summary > h4').count()==6
-   page.locator('.section-controls button').nth(1).click()
+   set_reader_group(page, 'sections', False)
    assert page.locator('.chapter-section[open]').count()==0
    heading=page.locator('.chapter-section > summary > h4').nth(1)
    target=heading.get_attribute('id')
@@ -73,7 +74,7 @@ with sync_playwright() as p:
   page=b.new_page(java_script_enabled=False)
   assert page.goto(BASE+path).status==200
   assert page.locator('.prose h4').count()==6
-  assert page.locator('.section-controls').count()==0
+  assert page.locator('.reader-console').count()==0
   page.close()
  b.close()
 print('8 folding layouts, keyboard, deep links, print restore and no-JS reading passed')

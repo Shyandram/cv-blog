@@ -16,28 +16,10 @@ if (prose && folds.length) {
       if (parent instanceof HTMLDetailsElement) parent.open = true;
     }
   };
-  const controls = document.createElement('div');
-  controls.className = 'code-controls';
-  controls.dataset.pagefindIgnore = '';
-  for (const [label, open] of [[t('tut.codeExpand'), true], [t('tut.codeCollapse'), false]] as const) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
-    button.addEventListener('click', () => folds.forEach((fold) => {
-      if (open) openParents(fold);
-      fold.open = open;
-    }));
-    controls.append(button);
-  }
-  mountReadingControls(prose, controls, folds, 'code');
-  const help = document.createElement('details');
-  help.className = 'reader-help';
-  const helpTitle = document.createElement('summary');
-  helpTitle.textContent = t('tut.codeHow');
-  const helpBody = document.createElement('p');
-  helpBody.textContent = t('tut.codeHelp');
-  help.append(helpTitle, helpBody);
-  controls.parentElement?.append(help);
+  mountReadingControls(prose, folds, 'code', (open) => folds.forEach((fold) => {
+    if (open) openParents(fold);
+    fold.open = open;
+  }));
 
   folds.forEach((fold) => {
     const pre = fold.querySelector('pre');

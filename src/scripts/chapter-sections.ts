@@ -40,19 +40,7 @@ if (prose) {
     section.append(summary, body);
     sections.push(section);
   }
-  if (sections.length) {
-    const controls = document.createElement('div');
-    controls.className = 'section-controls';
-    controls.dataset.pagefindIgnore = '';
-    for (const [label, open] of [[zh ? '展開本頁章節' : 'Expand all sections', true], [zh ? '收合本頁章節' : 'Collapse all sections', false]] as const) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = label;
-      button.addEventListener('click', () => sections.forEach((section) => { section.open = open; }));
-      controls.append(button);
-    }
-    mountReadingControls(prose, controls, sections, 'sections');
-  }
+  if (sections.length) mountReadingControls(prose, sections, 'sections', (open) => sections.forEach((section) => { section.open = open; }));
   const reveal = (hash: string, scroll = false) => {
     let id: string;
     try { id = decodeURIComponent(hash.slice(1)); } catch { return; }

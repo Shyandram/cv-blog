@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 from urllib.parse import unquote
+from reader_test_helpers import set_reader_group
 from playwright.sync_api import sync_playwright
 BASE='http://127.0.0.1:4322'
 slugs={'dl-03a-real-time-detection','dl-04a-super-resolution','dl-04d-blind-real-world-super-resolution','dl-04e-one-step-diffusion-super-resolution','dl-05-low-light-enhancement','dl-05b-image-fusion','dl-10b-one-step-generation'}
@@ -29,9 +30,9 @@ with sync_playwright() as p:
      expected=main.replace('/'+lang+'/','/'+other+'/') if route==main else (paper['urlZh'] if lang=='en' else paper['url'])
      assert unquote(alternate)==unquote(expected),(route,alternate,expected)
      if page.locator('.chapter-section').count():
-      page.locator('.section-controls button').nth(1).click()
+      set_reader_group(page, 'sections', False)
       assert page.locator('.chapter-section[open]').count()==0,route
-      page.locator('.section-controls button').first.click()
+      set_reader_group(page, 'sections', True)
       assert page.locator('.chapter-section:not([open])').count()==0,route
      else:
       assert route != main,route

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from reader_test_helpers import set_reader_group
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get('CVBLOG_BASE', 'http://127.0.0.1:4322')
@@ -77,7 +78,7 @@ def check_layout(setting):
             parent = url.split('/papers/')[0] + '/'
             assert unquote(parent) in links, ('parent chapter', url)
             assert not page.evaluate('document.documentElement.scrollWidth>innerWidth'), url
-            page.locator('.section-controls button').nth(1).click()
+            set_reader_group(page, 'sections', False)
             assert page.locator('.chapter-section[open]').count() == 0, url
             heading = folds.first
             target = heading.get_attribute('id')
@@ -85,7 +86,7 @@ def check_layout(setting):
             page.wait_for_function('(id)=>document.getElementById(id).closest("details").open', arg=target)
             summary = heading.locator('..'); summary.focus(); summary.press('Enter')
             assert summary.locator('..').get_attribute('open') is None, url
-            page.locator('.section-controls button').first.click()
+            set_reader_group(page, 'sections', True)
             assert page.locator('.chapter-section:not([open])').count() == 0, url
             assert not page.evaluate('document.documentElement.scrollWidth>innerWidth'), ('after reopening', url)
             if any(s in g['title'].lower() for s in ['restormer:', 'iat:', 'cpga-net+:', 'nafnet:', 'kind:', 'mathematical morphology', 'agenticir:', 'yolox:', 'yolov10:', 'yolo26:']):

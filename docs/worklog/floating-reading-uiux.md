@@ -1,5 +1,7 @@
 # Floating reading tools and visual polish — 2026-11-04
 
+Historical implementation, superseded by the [compact floating console](floating-console.md) after the user clarified that they wanted a persistent console with a few buttons. The validation below describes this earlier implementation.
+
 The course's separate chapter/code actions now share one reading toolbar. Each group shows its open/total count, short action labels retain contextual accessible names, and code instructions appear on demand. Rounded surfaces, restrained track-color highlights, grouped chapter tabs, a clear current-course marker and next-page cards create a consistent reading interface.
 
 After the inline toolbar scrolls above the viewport, a floating entry opens the same controls in a native nonmodal popover. `@floating-ui/dom` is loaded on demand and uses offset, flip, shift and available-height sizing. A placeholder preserves document space while the original toolbar moves into the popover. It is restored on close and before printing, preserving fold states and listeners.

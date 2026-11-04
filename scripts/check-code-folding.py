@@ -3,7 +3,8 @@ import json
 import re
 from pathlib import Path
 from html.parser import HTMLParser
-from playwright.sync_api import sync_playwright
+from reader_test_helpers import set_reader_group
+from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = 'http://127.0.0.1:4322'
@@ -81,16 +82,16 @@ with sync_playwright() as p:
                     first.locator('..').screenshot(path=str(ROOT / f'artifacts/code-{lang}-{theme}-{width}-open.png'))
                 summary.press('Space'); assert first.get_attribute('open') is None
                 # Code expansion makes its ancestors visible; chapter-only controls do not change code state.
-                page.locator('.section-controls button').nth(1).click()
-                page.locator('.code-controls button').first.click()
+                set_reader_group(page, 'sections', False)
+                set_reader_group(page, 'code', True)
                 assert page.locator('.code-fold[open]').count() == count and pre.is_visible()
-                page.locator('.code-controls button').nth(1).click()
+                set_reader_group(page, 'code', False)
                 assert page.locator('.code-fold[open]').count() == 0
-                page.locator('.section-controls button').first.click()
+                set_reader_group(page, 'sections', True)
                 assert page.locator('.code-fold[open]').count() == 0
                 # Restore a mix of open and closed code, as well as closed parent sections, after printing.
                 summary.click()
-                page.locator('.section-controls button').nth(1).click()
+                set_reader_group(page, 'sections', False)
                 page.evaluate('dispatchEvent(new Event("beforeprint"))')
                 assert page.locator('.code-fold[open]').count() == count
                 assert pre.is_visible()
@@ -123,6 +124,22 @@ with sync_playwright() as p:
         page.emulate_media(media='print')
         assert first.locator('pre').is_visible()
         page.close()
+    # Retain pending/success feedback coverage from the previous floating-tools suite.
+    page = browser.new_page()
+    page.goto(BASE + '/en/learn/deep-learning/image-classification/')
+    page.evaluate('()=>{window.copyCalls=0;navigator.clipboard.writeText=()=>{window.copyCalls++;return new Promise(r=>window.finishCopy=r)}}')
+    copy = page.locator('.rt-copy').first
+    copy.click()
+    expect(copy).to_have_attribute('aria-busy', 'true')
+    expect(copy).to_have_attribute('data-state', 'copying')
+    copy.click()
+    assert page.evaluate('window.copyCalls') == 1
+    page.evaluate('window.finishCopy()')
+    expect(copy).to_have_attribute('data-state', 'success')
+    expect(copy).to_have_text('Copied')
+    expect(copy).not_to_have_attribute('aria-busy', 'true')
+    expect(copy).to_have_text('Copy', timeout=4000)
+    page.close()
     # Search must still index text inside native closed disclosures.
     page = browser.new_page()
     page.goto(BASE + '/en/learn/deep-learning/image-classification/')
