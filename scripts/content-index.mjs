@@ -178,7 +178,7 @@ for (const lang of ['en', 'zh-tw']) {
   if (!existsSync(dir)) continue;
   for (const f of readdirSync(dir).filter((x) => /\.mdx?$/.test(x) && !x.startsWith('_')).sort()) {
     const { fm } = frontmatter(readFileSync(join(dir, f), 'utf8'));
-    posts.push({ lang, file: rel(join(dir, f)), title: fm.title ?? f, published: fm.published ?? '' });
+    posts.push({ lang, file: rel(join(dir, f)), title: fm.title ?? f, published: fm.published ?? '', category: fm.category ?? 'site', ...(fm.topicOrder ? { topicOrder: Number(fm.topicOrder) } : {}) });
   }
 }
 
