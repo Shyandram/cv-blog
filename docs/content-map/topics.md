@@ -355,6 +355,7 @@
 - Backward warping with bilinear sampling — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#backward-warping-with-bilinear-sampling`
 - Baek et al., "What Is Wrong With Scene Text Recognition Model Comparisons?" (ICCV 2019) — DLCV 06 (papers) · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/papers/baek-et-al-what-is-wrong-with-scene-text-recognition-model-comparisons-iccv-2019/`
 - Bagging and random forests — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/#bagging-and-random-forests`
+- Bahdanau attention — Jointly Learning to Align and Translate — NLP 08 (papers) · `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` · `/en/learn/nlp/seq2seq-transformers/papers/bahdanau-attention--jointly-learning-to-align-and-translate/`
 - Banding, halos and temporal stability — DLCV 09C (notes) · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/notes/banding-halos-and-temporal-stability/`
 - Bandreject and bandpass filters — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/frequency-domain/#bandreject-and-bandpass-filters`
 - Barlow Twins and VICReg: regularize the statistics directly — ML 06 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/#barlow-twins-and-vicreg-regularize-the-statistics-directly`
@@ -389,6 +390,7 @@
 - Benchmarks that probe shift — ML 11 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/evaluation-deployment/#benchmarks-that-probe-shift`
 - Benchmarks: GLUE and SuperGLUE — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/classification-bert/#benchmarks-glue-and-superglue`
 - Bernoulli — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/probability-information/#bernoulli`
+- BERT — Pre-training of Deep Bidirectional Transformers for Language Understanding — NLP 10 (papers) · `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` · `/en/learn/nlp/pretrained-bert/papers/bert--pre-training-of-deep-bidirectional-transformers-for-language-understanding/`
 - BERT applications: choose the output head — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/classification-bert/#bert-applications-choose-the-output-head`
 - BEV IoU and 3D IoU of rotated boxes — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/3d-object-detection/#bev-iou-and-3d-iou-of-rotated-boxes`
 - Beyond FID — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#beyond-fid`
@@ -403,6 +405,7 @@
 - Bidirectional recurrent — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#bidirectional-recurrent`
 - Bilateral filtering: average nearby pixels without crossing a strong edge — IP 03 (papers) · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/`
 - Bilateral grids and color-table mathematics — DLCV 09C (notes) · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/notes/bilateral-grids-and-color-table-mathematics/`
+- BiLSTM-CRF — Bidirectional LSTM-CRF Models for Sequence Tagging — NLP 06 (papers) · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/sequence-labeling/papers/bilstm-crf--bidirectional-lstm-crf-models-for-sequence-tagging/`
 - BiLSTM-CRF: scoring the whole label sequence — NLP 06 · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/sequence-labeling/#bilstm-crf-scoring-the-whole-label-sequence`
 - Binary sources with Hamming error — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/rate-distortion/#binary-sources-with-hamming-error`
 - Biorthogonal bases — IP 07 · `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` · `/en/learn/image-processing/wavelets-transforms/#biorthogonal-bases`
@@ -435,6 +438,7 @@
 - Box filter — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/#box-filter`
 - Box loss: from IoU to CIoU — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/real-time-detection/#box-loss-from-iou-to-ciou`
 - Box parameterization and regression targets — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/object-detection/#box-parameterization-and-regression-targets`
+- BPE — Neural Machine Translation of Rare Words with Subword Units — NLP 02 (papers) · `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` · `/en/learn/nlp/linguistic-essentials/papers/bpe--neural-machine-translation-of-rare-words-with-subword-units/`
 - Bridge to learned and foundation features — PR 10 · `src/content/tutorials/en/pattern-recognition/pr-10-recognition-capstone.mdx` · `/en/learn/pattern-recognition/recognition-capstone/#bridge-to-learned-and-foundation-features`
 - Brightness adaptation and discrimination — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/fundamentals/#brightness-adaptation-and-discrimination`
 - Brightness constancy and the classical flow solvers — DLCV 09A.3 (notes) · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/notes/brightness-constancy-and-the-classical-flow-solvers/`
@@ -756,6 +760,7 @@
 - Coordinate changes alter differential entropy — IT 05 · `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx` · `/en/learn/information-theory/continuous-gaussian-channels/#coordinate-changes-alter-differential-entropy`
 - Coordinate classification and likelihood-based regression — DLCV 05 (notes) · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/pose-keypoints/notes/coordinate-classification-and-likelihood-based-regression/`
 - Core building blocks — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/object-detection/#core-building-blocks`
+- Coreference — End-to-end Neural Coreference Resolution — NLP 12 (papers) · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/syntactic-semantic-tasks/papers/coreference--end-to-end-neural-coreference-resolution/`
 - Corpus design before model choice — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/#corpus-design-before-model-choice`
 - Correlation — IP 07 · `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` · `/en/learn/image-processing/wavelets-transforms/#correlation`
 - Correlation versus convolution — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/#correlation-versus-convolution`
@@ -1243,6 +1248,7 @@
 - Getting meshes — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/3d-reconstruction/#getting-meshes`
 - Ghosh et al., "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment" (NeurIPS 2023) — DLCV 12 (papers) · `src/content/tutorials/en/deep-learning/dl-10-image-generation.mdx` · `/en/learn/deep-learning/image-generation/papers/ghosh-et-al-geneval-an-object-focused-framework-for-evaluating-text-to-image-alignment-neurips-2023/`
 - Gibbs sampling — PR 08 · `src/content/tutorials/en/pattern-recognition/pr-08-approximate-inference.mdx` · `/en/learn/pattern-recognition/approximate-inference/#gibbs-sampling`
+- GloVe — Global Vectors for Word Representation — NLP 04 (papers) · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/papers/glove--global-vectors-for-word-representation/`
 - GloVe: fit log co-occurrence counts directly — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#glove-fit-log-co-occurrence-counts-directly`
 - Goal and difficulty — DLCV 09C · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/#goal-and-difficulty`
 - Golomb coding — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/compression-watermarking/#golomb-coding`
@@ -1415,6 +1421,7 @@
 - InstaFlow: reflow, then endpoint distillation (ICLR 2024) — DLCV 12B (papers) · `src/content/tutorials/en/deep-learning/dl-10b-one-step-generation.mdx` · `/en/learn/deep-learning/one-step-generation/papers/instaflow-reflow-then-endpoint-distillation-iclr-2024/`
 - Instance segmentation — DLCV 04 · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/image-segmentation/#instance-segmentation`
 - Instantaneous velocity versus interval velocity — DLCV 12B (notes) · `src/content/tutorials/en/deep-learning/dl-10b-one-step-generation.mdx` · `/en/learn/deep-learning/one-step-generation/notes/instantaneous-velocity-versus-interval-velocity/`
+- InstructGPT — Training Language Models to Follow Instructions with Human Feedback — NLP 09 (papers) · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/papers/instructgpt--training-language-models-to-follow-instructions-with-human-feedback/`
 - InstructIR: route image features with a human instruction — DLCV 09 (papers) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/papers/instructir-route-image-features-with-a-human-instruction/`
 - Integer kernels and runtime support — DLCV 01C · `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` · `/en/learn/deep-learning/model-compression/#integer-kernels-and-runtime-support`
 - Intensity slicing — IP 06 · `src/content/tutorials/en/image-processing/dip-06-color.mdx` · `/en/learn/image-processing/color/#intensity-slicing`
@@ -1882,6 +1889,10 @@
 - Paired fidelity and a learned prior — DLCV 09A.2 · `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx` · `/en/learn/deep-learning/one-step-diffusion-super-resolution/#paired-fidelity-and-a-learned-prior`
 - Panoptic segmentation — DLCV 04 · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/image-segmentation/#panoptic-segmentation`
 - Panoptic Segmentation: a reading guide — DLCV 04 (papers) · `src/content/tutorials/en/deep-learning/dl-03b-image-segmentation.mdx` · `/en/learn/deep-learning/image-segmentation/papers/panoptic-segmentation-a-reading-guide/`
+- Paper route 1 · Units and word vectors — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#paper-route-1--units-and-word-vectors`
+- Paper route 2 · Local and sequential decisions — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#paper-route-2--local-and-sequential-decisions`
+- Paper route 3 · Attention and pretraining — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#paper-route-3--attention-and-pretraining`
+- Paper route 4 · Task objectives and structure — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#paper-route-4--task-objectives-and-structure`
 - Parallel channels and water-filling — IT 05 · `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx` · `/en/learn/information-theory/continuous-gaussian-channels/#parallel-channels-and-water-filling`
 - Parallel Gaussian sources use reverse water-filling — IT 06 · `src/content/tutorials/en/information-theory/it-06-rate-distortion.mdx` · `/en/learn/information-theory/rate-distortion/#parallel-gaussian-sources-use-reverse-water-filling`
 - Parameter-efficient fine-tuning (PEFT) — ML 10 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/#parameter-efficient-fine-tuning-peft`
@@ -2221,9 +2232,11 @@
 - Semidefinite programming — OPT 03 · `src/content/tutorials/en/optimization/opt-03-convex-programs.mdx` · `/en/learn/optimization/convex-programs/#semidefinite-programming`
 - Sensitivity and the value of a constraint — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/duality-kkt/#sensitivity-and-the-value-of-a-constraint`
 - Sensors and coordinate frames — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/3d-object-detection/#sensors-and-coordinate-frames`
+- Sentence-BERT — Sentence Embeddings using Siamese BERT-Networks — NLP 11 (papers) · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/classification-bert/papers/sentence-bert--sentence-embeddings-using-siamese-bert-networks/`
 - Separability — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/frequency-domain/#separability`
 - Separable kernels — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/#separable-kernels`
 - Separating pixel and semantic enhancement — DLCV 09A.2 · `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx` · `/en/learn/deep-learning/one-step-diffusion-super-resolution/#separating-pixel-and-semantic-enhancement`
+- Seq2Seq — Sequence to Sequence Learning with Neural Networks — NLP 05 (papers) · `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` · `/en/learn/nlp/recurrent-neural-networks/papers/seq2seq--sequence-to-sequence-learning-with-neural-networks/`
 - Sequence classification and text-pair decisions — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/classification-bert/#sequence-classification-and-text-pair-decisions`
 - Sequence labels and span prediction — NLP 06 · `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx` · `/en/learn/nlp/sequence-labeling/#sequence-labels-and-span-prediction`
 - Set and logical operations — IP 02 · `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` · `/en/learn/image-processing/fundamentals/#set-and-logical-operations`
@@ -2429,6 +2442,7 @@
 - Text recognition — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/#text-recognition`
 - Text-to-image as translation: Parti — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#text-to-image-as-translation-parti`
 - Text-to-video — DLCV 12A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/video-generation/#text-to-video`
+- TextCNN — Convolutional Neural Networks for Sentence Classification — NLP 03 (papers) · `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx` · `/en/learn/nlp/neural-networks-for-nlp/papers/textcnn--convolutional-neural-networks-for-sentence-classification/`
 - Textural segmentation — IP 09 (notes) · `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` · `/en/learn/image-processing/morphology/notes/textural-segmentation/`
 - Texture — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/#texture`
 - TF–IDF and vector normalization — NLP 03 · `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx` · `/en/learn/nlp/neural-networks-for-nlp/#tfidf-and-vector-normalization`
@@ -2709,6 +2723,7 @@
 - Transfer learning and fine-tuning strategies — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/training-practice/#transfer-learning-and-fine-tuning-strategies`
 - Transfer learning: pretrain once, reuse many times — ML 06 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/#transfer-learning-pretrain-once-reuse-many-times`
 - Transform selection — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/compression-watermarking/#transform-selection`
+- Transformer — Attention Is All You Need — NLP 07 (papers) · `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx` · `/en/learn/nlp/attention-transformers/papers/transformer--attention-is-all-you-need/`
 - Transformer one-stream trackers — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/object-tracking/#transformer-one-stream-trackers`
 - Transformer recognizers — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/#transformer-recognizers`
 - Transformers and recurrent–transformer hybrids — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#transformers-and-recurrenttransformer-hybrids`
@@ -2971,6 +2986,7 @@
 - Without negatives: why matching alone can collapse — ML 06 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/#without-negatives-why-matching-alone-can-collapse`
 - Word forms, lemmas and senses — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#word-forms-lemmas-and-senses`
 - Word segmentation — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#word-segmentation`
+- word2vec — Efficient Estimation of Word Representations in Vector Space — NLP 04 (papers) · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/papers/word2vec--efficient-estimation-of-word-representations-in-vector-space/`
 - Word2Vec: learn a word by predicting its neighbors — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#word2vec-learn-a-word-by-predicting-its-neighbors`
 - WordNet: a hand-built lexical database — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#wordnet-a-hand-built-lexical-database`
 - WordPiece — NLP 10 · `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` · `/en/learn/nlp/pretrained-bert/#wordpiece`

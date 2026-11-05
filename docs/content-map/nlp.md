@@ -46,6 +46,10 @@ What NLP is, why language is hard for computers, how the field moved from rules 
   - [Use a small baseline to diagnose the representation](/en/learn/nlp/introduction/#use-a-small-baseline-to-diagnose-the-representation) `use-a-small-baseline-to-diagnose-the-representation`
 - [9. Evaluate the output and diagnose the cause](/en/learn/nlp/introduction/#9-evaluate-the-output-and-diagnose-the-cause) `9-evaluate-the-output-and-diagnose-the-cause`
 - [10. Roadmap of the NLP track](/en/learn/nlp/introduction/#10-roadmap-of-the-nlp-track) `10-roadmap-of-the-nlp-track`
+- [Paper route 1 · Units and word vectors](/en/learn/nlp/introduction/#paper-route-1--units-and-word-vectors) `paper-route-1--units-and-word-vectors`
+- [Paper route 2 · Local and sequential decisions](/en/learn/nlp/introduction/#paper-route-2--local-and-sequential-decisions) `paper-route-2--local-and-sequential-decisions`
+- [Paper route 3 · Attention and pretraining](/en/learn/nlp/introduction/#paper-route-3--attention-and-pretraining) `paper-route-3--attention-and-pretraining`
+- [Paper route 4 · Task objectives and structure](/en/learn/nlp/introduction/#paper-route-4--task-objectives-and-structure) `paper-route-4--task-objectives-and-structure`
 - [Modern view](/en/learn/nlp/introduction/#modern-view) `modern-view`
 - [Key takeaways](/en/learn/nlp/introduction/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/introduction/#exercises) `exercises`
@@ -56,9 +60,9 @@ What NLP is, why language is hard for computers, how the field moved from rules 
 The language structure every NLP system works with: units and morphology, tokens and subwords, parts of speech, phrase and dependency structure, meaning, context and discourse, corpora, annotation and Zipf's law.
 
 - Files: `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-02-linguistic-essentials.mdx`
-- Pages: `/en/learn/nlp/linguistic-essentials/`
+- Pages: `/en/learn/nlp/linguistic-essentials/`, `/en/learn/nlp/linguistic-essentials/papers/`
 - Level beginner · depth 1 · needs: `nlp/nlp-01-introduction` · tags: nlp, linguistics, morphology, tokenization, subwords, part-of-speech, syntax, semantics, pragmatics, corpora
-- Figures: 4 (script `scripts/figures/nlp_02_linguistic_essentials.py`) · references: 30 · experiments: quantifier-scope, subword-merges
+- Figures: 5 (script `scripts/figures/nlp_02_linguistic_essentials.py`) · references: 30 · experiments: quantifier-scope, subword-merges
 
 - [What you'll learn](/en/learn/nlp/linguistic-essentials/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/linguistic-essentials/#the-big-picture) `the-big-picture`
@@ -101,15 +105,19 @@ The language structure every NLP system works with: units and morphology, tokens
 - [Key takeaways](/en/learn/nlp/linguistic-essentials/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/linguistic-essentials/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [BPE — Neural Machine Translation of Rare Words with Subword Units](/en/learn/nlp/linguistic-essentials/papers/bpe--neural-machine-translation-of-rare-words-with-subword-units/) `papers/bpe--neural-machine-translation-of-rare-words-with-subword-units/`
+
 ## nlp-03-neural-networks-for-nlp
 
 **NLP 03 · Neural Networks for NLP** · NLP 03・自然語言處理的類神經網路  
 From count features and logistic classification to embedding layers, the neural probabilistic language model and 1-D convolutional text classifiers, with padding, masking, regularization and a complete PyTorch experiment.
 
 - Files: `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-03-neural-networks-for-nlp.mdx`
-- Pages: `/en/learn/nlp/neural-networks-for-nlp/`
+- Pages: `/en/learn/nlp/neural-networks-for-nlp/`, `/en/learn/nlp/neural-networks-for-nlp/papers/`
 - Level beginner · depth 1 · needs: `nlp/nlp-02-linguistic-essentials`, `ml/ml-02-neural-networks` · tags: nlp, text-classification, tf-idf, logistic-regression, embeddings, neural-language-model, cnn, masking, regularization, pytorch
-- Figures: 4 (script `scripts/figures/nlp_03_neural_networks_for_nlp.py`) · references: 18 · experiments: nonlinear-network, pooling-order
+- Figures: 5 (script `scripts/figures/nlp_03_neural_networks_for_nlp.py`) · references: 18 · experiments: nonlinear-network, pooling-order
 
 - [What you'll learn](/en/learn/nlp/neural-networks-for-nlp/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/neural-networks-for-nlp/#the-big-picture) `the-big-picture`
@@ -137,15 +145,19 @@ From count features and logistic classification to embedding layers, the neural 
 - [Key takeaways](/en/learn/nlp/neural-networks-for-nlp/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/neural-networks-for-nlp/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [TextCNN — Convolutional Neural Networks for Sentence Classification](/en/learn/nlp/neural-networks-for-nlp/papers/textcnn--convolutional-neural-networks-for-sentence-classification/) `papers/textcnn--convolutional-neural-networks-for-sentence-classification/`
+
 ## nlp-04-lexical-semantics-word-embeddings
 
 **NLP 04 · Lexical Semantics and Word Embeddings** · NLP 04・詞彙語意與詞嵌入  
 From word senses, lexical relations and WordNet to distributional vectors: PPMI, Word2Vec, GloVe and fastText, how to evaluate them, the biases they absorb, sentence embeddings and the step to contextual representations.
 
 - Files: `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-04-lexical-semantics-word-embeddings.mdx`
-- Pages: `/en/learn/nlp/lexical-semantics-word-embeddings/`
+- Pages: `/en/learn/nlp/lexical-semantics-word-embeddings/`, `/en/learn/nlp/lexical-semantics-word-embeddings/papers/`
 - Level beginner · depth 1 · needs: `nlp/nlp-03-neural-networks-for-nlp` · tags: nlp, lexical-semantics, wordnet, distributional-semantics, word-embeddings, word2vec, glove, fasttext, embedding-bias, sentence-embeddings
-- Figures: 2 · references: 25 · experiments: pooling-order, contrastive-alignment
+- Figures: 4 · references: 25 · experiments: pooling-order, contrastive-alignment
 
 - [What you'll learn](/en/learn/nlp/lexical-semantics-word-embeddings/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/lexical-semantics-word-embeddings/#the-big-picture) `the-big-picture`
@@ -178,15 +190,20 @@ From word senses, lexical relations and WordNet to distributional vectors: PPMI,
 - [Key takeaways](/en/learn/nlp/lexical-semantics-word-embeddings/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/lexical-semantics-word-embeddings/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [word2vec — Efficient Estimation of Word Representations in Vector Space](/en/learn/nlp/lexical-semantics-word-embeddings/papers/word2vec--efficient-estimation-of-word-representations-in-vector-space/) `papers/word2vec--efficient-estimation-of-word-representations-in-vector-space/`
+- [GloVe — Global Vectors for Word Representation](/en/learn/nlp/lexical-semantics-word-embeddings/papers/glove--global-vectors-for-word-representation/) `papers/glove--global-vectors-for-word-representation/`
+
 ## nlp-05-recurrent-neural-networks
 
 **NLP 05 · Recurrent Neural Networks for Language** · NLP 05・用於語言的循環神經網路  
 Start from n-gram language models and their memory ceiling, then build, train and evaluate recurrent language models: Elman RNNs, LSTMs and GRUs, character-level modeling, sampling and practical training.
 
 - Files: `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-05-recurrent-neural-networks.mdx`
-- Pages: `/en/learn/nlp/recurrent-neural-networks/`
+- Pages: `/en/learn/nlp/recurrent-neural-networks/`, `/en/learn/nlp/recurrent-neural-networks/papers/`
 - Level intermediate · depth 1 · needs: `nlp/nlp-04-lexical-semantics-word-embeddings`, `ml/ml-03a-recurrent-recursive-networks` · tags: nlp, language-models, ngrams, smoothing, perplexity, rnn, lstm, gru, character-level
-- Figures: 4 (script `scripts/figures/nlp_05_recurrent_neural_networks.py`) · references: 24 · experiments: selective-memory
+- Figures: 5 (script `scripts/figures/nlp_05_recurrent_neural_networks.py`) · references: 25 · experiments: selective-memory
 
 - [What you'll learn](/en/learn/nlp/recurrent-neural-networks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/recurrent-neural-networks/#the-big-picture) `the-big-picture`
@@ -215,15 +232,19 @@ Start from n-gram language models and their memory ceiling, then build, train an
 - [Key takeaways](/en/learn/nlp/recurrent-neural-networks/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/recurrent-neural-networks/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Seq2Seq — Sequence to Sequence Learning with Neural Networks](/en/learn/nlp/recurrent-neural-networks/papers/seq2seq--sequence-to-sequence-learning-with-neural-networks/) `papers/seq2seq--sequence-to-sequence-learning-with-neural-networks/`
+
 ## nlp-06-sequence-labeling
 
 **NLP 06 · Sequence Labeling with RNNs (POS Tagging, Information Extraction)** · NLP 06・以 RNN 做序列標註（詞性標註、資訊擷取）  
 Label every token of a sentence: part-of-speech tags with HMMs and Viterbi decoding, entity spans with BIO labels and exact span evaluation, and neural taggers built from BiLSTMs, character features and a CRF output layer.
 
 - Files: `src/content/tutorials/en/nlp/nlp-06-sequence-labeling.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-06-sequence-labeling.mdx`
-- Pages: `/en/learn/nlp/sequence-labeling/`
+- Pages: `/en/learn/nlp/sequence-labeling/`, `/en/learn/nlp/sequence-labeling/papers/`
 - Level intermediate · depth 1 · needs: `nlp/nlp-05-recurrent-neural-networks` · tags: nlp, sequence-labeling, pos-tagging, named-entities, information-extraction, hmm, viterbi, crf, bilstm
-- Figures: 4 (script `scripts/figures/nlp_06_sequence_labeling.py`) · references: 23 · experiments: sequence-decoding
+- Figures: 5 (script `scripts/figures/nlp_06_sequence_labeling.py`) · references: 23 · experiments: sequence-decoding
 
 - [What you'll learn](/en/learn/nlp/sequence-labeling/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/sequence-labeling/#the-big-picture) `the-big-picture`
@@ -250,15 +271,19 @@ Label every token of a sentence: part-of-speech tags with HMMs and Viterbi decod
 - [Key takeaways](/en/learn/nlp/sequence-labeling/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/sequence-labeling/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [BiLSTM-CRF — Bidirectional LSTM-CRF Models for Sequence Tagging](/en/learn/nlp/sequence-labeling/papers/bilstm-crf--bidirectional-lstm-crf-models-for-sequence-tagging/) `papers/bilstm-crf--bidirectional-lstm-crf-models-for-sequence-tagging/`
+
 ## nlp-07-attention-transformers
 
 **NLP 07 · Attention Mechanism and Transformers** · NLP 07・注意力機制與 Transformer  
 From the encoder–decoder bottleneck to Bahdanau and Luong attention, scaled dot-product and multi-head attention, masks, positions and the Transformer encoder and decoder blocks, with attention and an encoder block built from scratch.
 
 - Files: `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-07-attention-transformers.mdx`
-- Pages: `/en/learn/nlp/attention-transformers/`
+- Pages: `/en/learn/nlp/attention-transformers/`, `/en/learn/nlp/attention-transformers/papers/`
 - Level intermediate · depth 1 · needs: `nlp/nlp-06-sequence-labeling` · tags: nlp, attention, transformers, self-attention, cross-attention, positional-encoding, masks
-- Figures: 4 (script `scripts/figures/nlp_07_attention_transformers.py`) · references: 21 · experiments: attention
+- Figures: 5 (script `scripts/figures/nlp_07_attention_transformers.py`) · references: 21 · experiments: attention
 
 - [What you'll learn](/en/learn/nlp/attention-transformers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/attention-transformers/#the-big-picture) `the-big-picture`
@@ -280,15 +305,19 @@ From the encoder–decoder bottleneck to Bahdanau and Luong attention, scaled do
 - [Key takeaways](/en/learn/nlp/attention-transformers/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/attention-transformers/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Transformer — Attention Is All You Need](/en/learn/nlp/attention-transformers/papers/transformer--attention-is-all-you-need/) `papers/transformer--attention-is-all-you-need/`
+
 ## nlp-08-seq2seq-transformers
 
 **NLP 08 · Sequence-to-Sequence Models with Transformers (Machine Translation, Chatbots)** · NLP 08・以 Transformer 建構序列到序列模型（機器翻譯、聊天機器人）  
 Build and train an encoder–decoder Transformer for translation, decode it with greedy and beam search, score it with BLEU written from scratch, and carry the same conditional-generation ideas into dialogue state, clarification and conversation evaluation.
 
 - Files: `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-08-seq2seq-transformers.mdx`
-- Pages: `/en/learn/nlp/seq2seq-transformers/`
+- Pages: `/en/learn/nlp/seq2seq-transformers/`, `/en/learn/nlp/seq2seq-transformers/papers/`
 - Level intermediate · depth 1 · needs: `nlp/nlp-07-attention-transformers` · tags: nlp, seq2seq, machine-translation, transformers, beam-search, bleu, dialogue, chatbots
-- Figures: 3 (script `scripts/figures/nlp_08_seq2seq_transformers.py`) · references: 30 · experiments: attention, decoding-controls
+- Figures: 4 (script `scripts/figures/nlp_08_seq2seq_transformers.py`) · references: 30 · experiments: attention, decoding-controls
 
 - [What you'll learn](/en/learn/nlp/seq2seq-transformers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/seq2seq-transformers/#the-big-picture) `the-big-picture`
@@ -317,15 +346,19 @@ Build and train an encoder–decoder Transformer for translation, decode it with
 - [Key takeaways](/en/learn/nlp/seq2seq-transformers/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/seq2seq-transformers/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Bahdanau attention — Jointly Learning to Align and Translate](/en/learn/nlp/seq2seq-transformers/papers/bahdanau-attention--jointly-learning-to-align-and-translate/) `papers/bahdanau-attention--jointly-learning-to-align-and-translate/`
+
 ## nlp-09-language-modeling-transformers
 
 **NLP 09 · Language Modeling with Transformers (Natural Language Generation)** · NLP 09・以 Transformer 做語言模型（自然語言生成）  
 Train a tiny decoder-only Transformer language model, decode it with greedy, beam, temperature, top-k and nucleus search, and evaluate summaries, data-to-text and grounded generation.
 
 - Files: `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-09-language-modeling-transformers.mdx`
-- Pages: `/en/learn/nlp/language-modeling-transformers/`
+- Pages: `/en/learn/nlp/language-modeling-transformers/`, `/en/learn/nlp/language-modeling-transformers/papers/`
 - Level advanced · depth 1 · needs: `nlp/nlp-08-seq2seq-transformers` · tags: nlp, language-models, transformers, gpt, decoding, generation, summarization, rag, evaluation
-- Figures: 6 (script `scripts/figures/nlp_09_language_modeling_transformers.py`) · references: 36 · experiments: decoding-controls, retrieval-ranking
+- Figures: 7 (script `scripts/figures/nlp_09_language_modeling_transformers.py`) · references: 36 · experiments: decoding-controls, retrieval-ranking
 
 - [What you'll learn](/en/learn/nlp/language-modeling-transformers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/language-modeling-transformers/#the-big-picture) `the-big-picture`
@@ -370,15 +403,19 @@ Train a tiny decoder-only Transformer language model, decode it with greedy, bea
 - [Key takeaways](/en/learn/nlp/language-modeling-transformers/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/language-modeling-transformers/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [InstructGPT — Training Language Models to Follow Instructions with Human Feedback](/en/learn/nlp/language-modeling-transformers/papers/instructgpt--training-language-models-to-follow-instructions-with-human-feedback/) `papers/instructgpt--training-language-models-to-follow-instructions-with-human-feedback/`
+
 ## nlp-10-pretrained-bert
 
 **NLP 10 · Pretrained Models: BERT** · NLP 10・預訓練模型：BERT  
 Understand BERT from WordPiece input to bidirectional encoder, pretrain a tiny BERT-style model with masked language modeling from scratch, and probe what its contextual representations contain.
 
 - Files: `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-10-pretrained-bert.mdx`
-- Pages: `/en/learn/nlp/pretrained-bert/`
+- Pages: `/en/learn/nlp/pretrained-bert/`, `/en/learn/nlp/pretrained-bert/papers/`
 - Level advanced · depth 1 · needs: `nlp/nlp-09-language-modeling-transformers` · tags: nlp, bert, pretraining, masked-language-modeling, transformers, contextual-embeddings, probing, multilingual
-- Figures: 3 (script `scripts/figures/nlp_10_pretrained_bert.py`) · references: 27 · experiments: masked-objectives, subword-merges
+- Figures: 4 (script `scripts/figures/nlp_10_pretrained_bert.py`) · references: 27 · experiments: masked-objectives, subword-merges
 
 - [What you'll learn](/en/learn/nlp/pretrained-bert/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/pretrained-bert/#the-big-picture) `the-big-picture`
@@ -401,15 +438,19 @@ Understand BERT from WordPiece input to bidirectional encoder, pretrain a tiny B
 - [Key takeaways](/en/learn/nlp/pretrained-bert/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/pretrained-bert/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [BERT — Pre-training of Deep Bidirectional Transformers for Language Understanding](/en/learn/nlp/pretrained-bert/papers/bert--pre-training-of-deep-bidirectional-transformers-for-language-understanding/) `papers/bert--pre-training-of-deep-bidirectional-transformers-for-language-understanding/`
+
 ## nlp-11-classification-bert
 
 **NLP 11 · Classification with BERT (Sentiment Analysis, Natural Language Inference)** · NLP 11・以 BERT 做分類（情感分析、自然語言推論）  
 Fine-tune a pretrained bidirectional encoder for single-text and text-pair decisions, read span answers from passage tokens, and evaluate labels, probabilities and shortcuts honestly.
 
 - Files: `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-11-classification-bert.mdx`
-- Pages: `/en/learn/nlp/classification-bert/`
+- Pages: `/en/learn/nlp/classification-bert/`, `/en/learn/nlp/classification-bert/papers/`
 - Level advanced · depth 1 · needs: `nlp/nlp-10-pretrained-bert` · tags: nlp, bert, fine-tuning, sentiment-analysis, natural-language-inference, question-answering, evaluation
-- Figures: 4 (script `scripts/figures/nlp_11_classification_bert.py`) · references: 26 · experiments: masked-objectives, temperature-calibration
+- Figures: 5 (script `scripts/figures/nlp_11_classification_bert.py`) · references: 26 · experiments: masked-objectives, temperature-calibration
 
 - [What you'll learn](/en/learn/nlp/classification-bert/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/classification-bert/#the-big-picture) `the-big-picture`
@@ -440,15 +481,19 @@ Fine-tune a pretrained bidirectional encoder for single-text and text-pair decis
 - [Key takeaways](/en/learn/nlp/classification-bert/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/classification-bert/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Sentence-BERT — Sentence Embeddings using Siamese BERT-Networks](/en/learn/nlp/classification-bert/papers/sentence-bert--sentence-embeddings-using-siamese-bert-networks/) `papers/sentence-bert--sentence-embeddings-using-siamese-bert-networks/`
+
 ## nlp-12-syntactic-semantic-tasks
 
 **NLP 12 · Syntactic and Semantic Tasks** · NLP 12・句法與語意任務  
 Parse constituents with CKY and dependencies with transitions or spanning trees, label semantic roles, resolve coreference, sketch AMR, and evaluate each structure with its own metric.
 
 - Files: `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-12-syntactic-semantic-tasks.mdx`
-- Pages: `/en/learn/nlp/syntactic-semantic-tasks/`
+- Pages: `/en/learn/nlp/syntactic-semantic-tasks/`, `/en/learn/nlp/syntactic-semantic-tasks/papers/`
 - Level advanced · depth 1 · needs: `nlp/nlp-11-classification-bert`, `nlp/nlp-06-sequence-labeling` · tags: nlp, parsing, dependency-parsing, semantic-role-labeling, coreference, amr, evaluation
-- Figures: 5 (script `scripts/figures/nlp_12_syntactic_semantic_tasks.py`) · references: 39 · experiments: quantifier-scope, sequence-decoding
+- Figures: 7 (script `scripts/figures/nlp_12_syntactic_semantic_tasks.py`) · references: 39 · experiments: quantifier-scope, sequence-decoding
 
 - [What you'll learn](/en/learn/nlp/syntactic-semantic-tasks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/syntactic-semantic-tasks/#the-big-picture) `the-big-picture`
@@ -481,4 +526,8 @@ Parse constituents with CKY and dependencies with transitions or spanning trees,
   - [Longer context changes the reference decision, not only memory size](/en/learn/nlp/syntactic-semantic-tasks/#longer-context-changes-the-reference-decision-not-only-memory-size) `longer-context-changes-the-reference-decision-not-only-memory-size`
 - [Key takeaways](/en/learn/nlp/syntactic-semantic-tasks/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/nlp/syntactic-semantic-tasks/#exercises) `exercises`
+
+*Paper guides (one page each, index `papers/`):*
+
+- [Coreference — End-to-end Neural Coreference Resolution](/en/learn/nlp/syntactic-semantic-tasks/papers/coreference--end-to-end-neural-coreference-resolution/) `papers/coreference--end-to-end-neural-coreference-resolution/`
 
