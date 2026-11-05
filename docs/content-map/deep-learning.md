@@ -105,7 +105,7 @@ A practical workflow for training vision networks: data pipelines and augmentati
 - Pages: `/en/learn/deep-learning/training-practice/`, `/en/learn/deep-learning/training-practice/notes/`, `/en/learn/deep-learning/training-practice/papers/`
 - Course tree: under `deep-learning/dl-01-deep-learning-for-image-processing`
 - Level advanced · depth 2 · needs: `deep-learning/dl-01-deep-learning-for-image-processing` · tags: training, learning-rate-schedules, data-augmentation, fine-tuning, debugging, reproducibility
-- Figures: 9 (script `scripts/figures/dl_01a_training_practice.py`) · references: 47
+- Figures: 9 (script `scripts/figures/dl_01a_training_practice.py`) · references: 48
 
 - [What you'll learn](/en/learn/deep-learning/training-practice/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/training-practice/#the-big-picture) `the-big-picture`
@@ -1683,7 +1683,7 @@ How video generators are built and judged: video autoencoders and tokenizers, fa
 - Pages: `/en/learn/deep-learning/video-generation/`, `/en/learn/deep-learning/video-generation/notes/`, `/en/learn/deep-learning/video-generation/papers/`
 - Course tree: under `deep-learning/dl-10-image-generation`
 - Level advanced · depth 2 · needs: `deep-learning/dl-10-image-generation` · tags: video-generation, text-to-video, image-to-video, diffusion-models, video-vae, spatiotemporal-attention, temporal-consistency, fvd, vbench, camera-control
-- Figures: 7 (script `scripts/figures/dl_10a_video_generation.py`) · references: 53
+- Figures: 7 (script `scripts/figures/dl_10a_video_generation.py`) · references: 54
 
 - [What you'll learn](/en/learn/deep-learning/video-generation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/deep-learning/video-generation/#the-big-picture) `the-big-picture`

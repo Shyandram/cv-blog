@@ -31,7 +31,7 @@ What it means for a computer to learn from data: the learning paradigms, linear 
 - Pages: `/en/learn/ml/introduction/`, `/en/learn/ml/introduction/papers/`
 - Course tree: main chapter · sub-chapters: `ml/ml-01a-linear-algebra`, `ml/ml-01b-probability-information`, `ml/ml-01c-numerical-computation`
 - Level beginner · depth 1 · needs: `foundations/images-as-arrays` · tags: machine-learning, linear-regression, logistic-regression, gradient-descent, regularization
-- Figures: 9 (script `scripts/figures/ml_01_introduction.py`) · references: 26
+- Figures: 9 (script `scripts/figures/ml_01_introduction.py`) · references: 27
 
 - [What you'll learn](/en/learn/ml/introduction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/introduction/#the-big-picture) `the-big-picture`
@@ -206,7 +206,7 @@ Floating point, overflow and underflow, stable softmax, conditioning, gradients,
 - Pages: `/en/learn/ml/numerical-computation/`, `/en/learn/ml/numerical-computation/papers/`
 - Course tree: under `ml/ml-01-introduction`
 - Level beginner · depth 2 · needs: `ml/ml-01b-probability-information` · tags: numerical-computation, floating-point, softmax, optimization, hessian, kkt
-- Figures: 6 · references: 22 · experiments: gradient-check
+- Figures: 6 · references: 24 · experiments: gradient-check
 
 - [What you'll learn](/en/learn/ml/numerical-computation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/numerical-computation/#the-big-picture) `the-big-picture`

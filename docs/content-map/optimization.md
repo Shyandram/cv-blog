@@ -175,9 +175,9 @@ Derive Lagrange lower bounds, distinguish weak and strong duality, verify optima
 Choose convex residual losses, regularizers and shape constraints, formulate likelihood and detector problems, and allocate measurements through optimal experiment design.
 
 - Files: `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx`, `src/content/tutorials/zh-tw/optimization/opt-05-fitting-estimation.mdx`
-- Pages: `/en/learn/optimization/fitting-estimation/`
+- Pages: `/en/learn/optimization/fitting-estimation/`, `/en/learn/optimization/fitting-estimation/notes/`
 - Level advanced · depth 1 · needs: `optimization/opt-04-duality-kkt`, `ml/ml-01b-probability-information` · tags: approximation, estimation, robust-fitting, regularization, experiment-design
-- Figures: 2 · references: 5 · experiments: robust-location
+- Figures: 2 · references: 6 · experiments: robust-location
 
 - [What you'll learn](/en/learn/optimization/fitting-estimation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/optimization/fitting-estimation/#the-big-picture) `the-big-picture`
@@ -205,6 +205,10 @@ Choose convex residual losses, regularizers and shape constraints, formulate lik
 - [Modern view](/en/learn/optimization/fitting-estimation/#modern-view) `modern-view`
 - [Key takeaways](/en/learn/optimization/fitting-estimation/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/optimization/fitting-estimation/#exercises) `exercises`
+
+*Supplementary notes (one page each, index `notes/`):*
+
+- [Logistic separation and finite estimates](/en/learn/optimization/fitting-estimation/notes/logistic-separation-and-finite-estimates/) `notes/logistic-separation-and-finite-estimates/`
 
 ## opt-06-gradient-newton
 
