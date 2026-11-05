@@ -86,6 +86,7 @@
 - 4. The encoder — NLP 10 · `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` · `/en/learn/nlp/pretrained-bert/#4-the-encoder`
 - 4. Training objective and scaling — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/#4-training-objective-and-scaling`
 - 4. What held-out perplexity measures — NLP 05 · `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` · `/en/learn/nlp/recurrent-neural-networks/#4-what-held-out-perplexity-measures`
+- 4A · Continue beyond Flow Matching — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#4a--continue-beyond-flow-matching`
 - 4KAgent: select restoration experts for a configured fidelity goal — DLCV 09 (papers) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/papers/4kagent-select-restoration-experts-for-a-configured-fidelity-goal/`
 
 ## 5
@@ -266,6 +267,7 @@
 - Adversarial restoration distillation — DLCV 09A.2 · `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx` · `/en/learn/deep-learning/one-step-diffusion-super-resolution/#adversarial-restoration-distillation`
 - Adversarial training — DLCV 14 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/robustness/#adversarial-training`
 - Affine and convex sets — OPT 01 · `src/content/tutorials/en/optimization/opt-01-modeling-convex-sets.mdx` · `/en/learn/optimization/modeling-convex-sets/#affine-and-convex-sets`
+- After flow matching: intervals, image outputs and one-step pixels — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#after-flow-matching-intervals-image-outputs-and-one-step-pixels`
 - After RAFT — DLCV 11A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/depth-optical-flow/#after-raft`
 - AgenticIR: plan, inspect and revise a sequence of restoration tools — DLCV 09 (papers) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/papers/agenticir-plan-inspect-and-revise-a-sequence-of-restoration-tools/`
 - Agglomerative algorithm and linkages — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/clustering-mixtures/#agglomerative-algorithm-and-linkages`
@@ -1154,6 +1156,7 @@
 - Fine-tuning practice — NLP 11 · `src/content/tutorials/en/nlp/nlp-11-classification-bert.mdx` · `/en/learn/nlp/classification-bert/#fine-tuning-practice`
 - Fine-tuning, LP-FT and robust fine-tuning — ML 10 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/#fine-tuning-lp-ft-and-robust-fine-tuning`
 - Finite-block concentration depends on the source — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/typicality-entropy-rates/#finite-block-concentration-depends-on-the-source`
+- First align the clocks — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#first-align-the-clocks`
 - First and second derivatives — IP 03 · `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` · `/en/learn/image-processing/intensity-spatial-filtering/#first-and-second-derivatives`
 - Fisher information is local divergence curvature — IT 07 · `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx` · `/en/learn/information-theory/statistics-decision-growth/#fisher-information-is-local-divergence-curvature`
 - Fisher information measures local parameter sensitivity — IT 07 · `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx` · `/en/learn/information-theory/statistics-decision-growth/#fisher-information-measures-local-parameter-sensitivity`
@@ -1405,6 +1408,8 @@
 - Implicit alignment: deformable convolution — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#implicit-alignment-deformable-convolution`
 - Implicit modelling by degradation synthesis — DLCV 09A.1 · `src/content/tutorials/en/deep-learning/dl-04d-blind-real-world-super-resolution.mdx` · `/en/learn/deep-learning/blind-real-world-super-resolution/#implicit-modelling-by-degradation-synthesis`
 - Importance sampling — PR 08 · `src/content/tutorials/en/pattern-recognition/pr-08-approximate-inference.mdx` · `/en/learn/pattern-recognition/approximate-inference/#importance-sampling`
+- Improved MeanFlow — prediction inputs and flexible guidance — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/improved-meanflow--prediction-inputs-and-flexible-guidance/`
+- Improved MeanFlow: make prediction inputs and guidance explicit — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#improved-meanflow-make-prediction-inputs-and-guidance-explicit`
 - Improving efficiency — IP 11 · `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` · `/en/learn/image-processing/active-contours/#improving-efficiency`
 - Impulses and the sifting property — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/frequency-domain/#impulses-and-the-sifting-property`
 - Impurity measures — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/kernels-nonlinear-classifiers/#impurity-measures`
@@ -1456,7 +1461,9 @@
 
 - Jacobian and Hessian matrices — ML 01C · `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx` · `/en/learn/ml/numerical-computation/#jacobian-and-hessian-matrices`
 - Jensen's inequality and expectations — OPT 02 · `src/content/tutorials/en/optimization/opt-02-convex-functions.mdx` · `/en/learn/optimization/convex-functions/#jensens-inequality-and-expectations`
+- JiT — clean-image prediction in pixel space — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/jit--clean-image-prediction-in-pixel-space/`
 - JiT: direct clean-image prediction on pixels — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#jit-direct-clean-image-prediction-on-pixels`
+- JiT: image output is a different design axis — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#jit-image-output-is-a-different-design-axis`
 - Joint and conditional typicality — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/typicality-entropy-rates/#joint-and-conditional-typicality`
 - Joint detection and embedding, and detector-based tracking — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/object-tracking/#joint-detection-and-embedding-and-detector-based-tracking`
 - Joint entropy and the chain rule — IT 01 · `src/content/tutorials/en/information-theory/it-01-entropy-mutual-information.mdx` · `/en/learn/information-theory/entropy-mutual-information/#joint-entropy-and-the-chain-rule`
@@ -1471,6 +1478,7 @@
 - K-means as the limit of EM — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/clustering-mixtures/#k-means-as-the-limit-of-em`
 - k-means clustering — IP 10 · `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` · `/en/learn/image-processing/segmentation/#k-means-clustering`
 - k-means++ seeding — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/clustering-mixtures/#k-means-seeding`
+- Keep neighboring approaches separate — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#keep-neighboring-approaches-separate`
 - Kernel PCA — PR 05 · `src/content/tutorials/en/pattern-recognition/pr-05-features-dimensionality.mdx` · `/en/learn/pattern-recognition/features-dimensionality/#kernel-pca`
 - Kernel ridge regression: the trick in one line — PR 04 · `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx` · `/en/learn/pattern-recognition/kernels-nonlinear-classifiers/#kernel-ridge-regression-the-trick-in-one-line`
 - KernelGAN: kernel estimation with an internal GAN (NeurIPS 2019) — DLCV 09A.1 (papers) · `src/content/tutorials/en/deep-learning/dl-04d-blind-real-world-super-resolution.mdx` · `/en/learn/deep-learning/blind-real-world-super-resolution/papers/kernelgan-kernel-estimation-with-an-internal-gan-neurips-2019/`
@@ -1652,6 +1660,8 @@
 - McNemar's test — ML 11 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/evaluation-deployment/#mcnemars-test`
 - Mean field and coordinate ascent (CAVI) — PR 08 · `src/content/tutorials/en/pattern-recognition/pr-08-approximate-inference.mdx` · `/en/learn/pattern-recognition/approximate-inference/#mean-field-and-coordinate-ascent-cavi`
 - Mean filters — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/#mean-filters`
+- MeanFlow — average velocity over an interval — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/meanflow--average-velocity-over-an-interval/`
+- MeanFlow: replace a tangent with an interval average — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#meanflow-replace-a-tangent-with-an-interval-average`
 - Measure decisions and probabilities — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/#measure-decisions-and-probabilities`
 - Measuring an AR model: bits per dimension — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#measuring-an-ar-model-bits-per-dimension`
 - Measuring consistency — DLCV 12A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/video-generation/#measuring-consistency`
@@ -1946,6 +1956,8 @@
 - PIQE and the Perceptual Index — DLCV 09 (notes) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/notes/piqe-and-the-perceptual-index/`
 - PiSA-SR: separate pixel and semantic adaptation (CVPR 2025) — DLCV 09A.2 (papers) · `src/content/tutorials/en/deep-learning/dl-04e-one-step-diffusion-super-resolution.mdx` · `/en/learn/deep-learning/one-step-diffusion-super-resolution/papers/pisa-sr-separate-pixel-and-semantic-adaptation-cvpr-2025/`
 - Pitfalls in OOD and anomaly evaluation — DLCV 14 · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/robustness/#pitfalls-in-ood-and-anomaly-evaluation`
+- Pixel MeanFlow — one-step pixels through a denoised field — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/pixel-meanflow--one-step-pixels-through-a-denoised-field/`
+- Pixel MeanFlow: connect image output to the interval field — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#pixel-meanflow-connect-image-output-to-the-interval-field`
 - Pixel models: PixelRNN and PixelCNN — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#pixel-models-pixelrnn-and-pixelcnn`
 - Pixel space, latent space and representation autoencoders — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#pixel-space-latent-space-and-representation-autoencoders`
 - Planning, uncertainty and model exploitation — DLCV 13 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/world-models/#planning-uncertainty-and-model-exploitation`

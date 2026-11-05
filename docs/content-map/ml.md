@@ -91,6 +91,7 @@ What it means for a computer to learn from data: the learning paradigms, linear 
   - [2 · Make training and architectures understandable](/en/learn/ml/introduction/#2--make-training-and-architectures-understandable) `2--make-training-and-architectures-understandable`
   - [3 · Ask what a representation preserves](/en/learn/ml/introduction/#3--ask-what-a-representation-preserves) `3--ask-what-a-representation-preserves`
   - [4 · Compare generative objectives and sampling](/en/learn/ml/introduction/#4--compare-generative-objectives-and-sampling) `4--compare-generative-objectives-and-sampling`
+  - [4A · Continue beyond Flow Matching](/en/learn/ml/introduction/#4a--continue-beyond-flow-matching) `4a--continue-beyond-flow-matching`
   - [5 · Close the loop with reliable evaluation](/en/learn/ml/introduction/#5--close-the-loop-with-reliable-evaluation) `5--close-the-loop-with-reliable-evaluation`
 
 *Paper guides (one page each, index `papers/`):*
@@ -579,7 +580,7 @@ Derive noise, clean-image and velocity prediction, compare pixel and latent gene
 - Files: `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx`, `src/content/tutorials/zh-tw/ml/ml-07-diffusion-flow-matching.mdx`
 - Pages: `/en/learn/ml/diffusion-flow-matching/`, `/en/learn/ml/diffusion-flow-matching/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-06-generative-models`, `ml/ml-04-vision-transformers` · tags: diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, jit, representation-autoencoders, pixel-space, latent-space, video-generation
-- Figures: 10 · references: 48 · experiments: diffusion-targets, transport-steps
+- Figures: 14 · references: 50 · experiments: diffusion-targets, transport-steps
 
 - [What you'll learn](/en/learn/ml/diffusion-flow-matching/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/diffusion-flow-matching/#the-big-picture) `the-big-picture`
@@ -616,6 +617,13 @@ Derive noise, clean-image and velocity prediction, compare pixel and latent gene
   - [How flow matching relates to diffusion](/en/learn/ml/diffusion-flow-matching/#how-flow-matching-relates-to-diffusion) `how-flow-matching-relates-to-diffusion`
   - [Code: flow matching on two clusters](/en/learn/ml/diffusion-flow-matching/#code-flow-matching-on-two-clusters) `code-flow-matching-on-two-clusters`
   - [Rectified flow and reflow](/en/learn/ml/diffusion-flow-matching/#rectified-flow-and-reflow) `rectified-flow-and-reflow`
+- [After flow matching: intervals, image outputs and one-step pixels](/en/learn/ml/diffusion-flow-matching/#after-flow-matching-intervals-image-outputs-and-one-step-pixels) `after-flow-matching-intervals-image-outputs-and-one-step-pixels`
+  - [First align the clocks](/en/learn/ml/diffusion-flow-matching/#first-align-the-clocks) `first-align-the-clocks`
+  - [MeanFlow: replace a tangent with an interval average](/en/learn/ml/diffusion-flow-matching/#meanflow-replace-a-tangent-with-an-interval-average) `meanflow-replace-a-tangent-with-an-interval-average`
+  - [Improved MeanFlow: make prediction inputs and guidance explicit](/en/learn/ml/diffusion-flow-matching/#improved-meanflow-make-prediction-inputs-and-guidance-explicit) `improved-meanflow-make-prediction-inputs-and-guidance-explicit`
+  - [JiT: image output is a different design axis](/en/learn/ml/diffusion-flow-matching/#jit-image-output-is-a-different-design-axis) `jit-image-output-is-a-different-design-axis`
+  - [Pixel MeanFlow: connect image output to the interval field](/en/learn/ml/diffusion-flow-matching/#pixel-meanflow-connect-image-output-to-the-interval-field) `pixel-meanflow-connect-image-output-to-the-interval-field`
+  - [Keep neighboring approaches separate](/en/learn/ml/diffusion-flow-matching/#keep-neighboring-approaches-separate) `keep-neighboring-approaches-separate`
 - [Pretrained image and video generators as complete pipelines](/en/learn/ml/diffusion-flow-matching/#pretrained-image-and-video-generators-as-complete-pipelines) `pretrained-image-and-video-generators-as-complete-pipelines`
   - [Read the components before running the checkpoint](/en/learn/ml/diffusion-flow-matching/#read-the-components-before-running-the-checkpoint) `read-the-components-before-running-the-checkpoint`
   - [Video adds temporal compression and a consistency problem](/en/learn/ml/diffusion-flow-matching/#video-adds-temporal-compression-and-a-consistency-problem) `video-adds-temporal-compression-and-a-consistency-problem`
@@ -632,6 +640,10 @@ Derive noise, clean-image and velocity prediction, compare pixel and latent gene
 
 - [DDPM — noise prediction and the quality–likelihood tradeoff](/en/learn/ml/diffusion-flow-matching/papers/ddpm--noise-prediction-and-the-qualitylikelihood-tradeoff/) `papers/ddpm--noise-prediction-and-the-qualitylikelihood-tradeoff/`
 - [Flow Matching — regress a velocity, then integrate it](/en/learn/ml/diffusion-flow-matching/papers/flow-matching--regress-a-velocity-then-integrate-it/) `papers/flow-matching--regress-a-velocity-then-integrate-it/`
+- [MeanFlow — average velocity over an interval](/en/learn/ml/diffusion-flow-matching/papers/meanflow--average-velocity-over-an-interval/) `papers/meanflow--average-velocity-over-an-interval/`
+- [Improved MeanFlow — prediction inputs and flexible guidance](/en/learn/ml/diffusion-flow-matching/papers/improved-meanflow--prediction-inputs-and-flexible-guidance/) `papers/improved-meanflow--prediction-inputs-and-flexible-guidance/`
+- [JiT — clean-image prediction in pixel space](/en/learn/ml/diffusion-flow-matching/papers/jit--clean-image-prediction-in-pixel-space/) `papers/jit--clean-image-prediction-in-pixel-space/`
+- [Pixel MeanFlow — one-step pixels through a denoised field](/en/learn/ml/diffusion-flow-matching/papers/pixel-meanflow--one-step-pixels-through-a-denoised-field/) `papers/pixel-meanflow--one-step-pixels-through-a-denoised-field/`
 
 ## ml-08-autoregressive-vision
 
