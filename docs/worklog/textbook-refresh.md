@@ -93,3 +93,26 @@ specific gap; later papers' comparison rows are not substituted for original
 results. See the DLCV audit. Existing future-calendar update labels in some
 chapters were preserved rather than backdated; the audit uses its explicit UTC
 check date.
+
+## Downloadable books
+
+All eight PDFs were exported from committed source `2b3c30d` (2026-11-05),
+including the agent and generation-tool essays previously merged in PR #6.
+Supplementary notes and paper guides remain online, with links from the books.
+The books total 4,461 pages and 12,938 PDF links. Chapter/code/equation/figure
+coverage, embedded fonts, missing glyphs, internal/named destinations and both
+horizontal and vertical page boundaries pass. All PDFs remain below 25 MiB
+(largest: 14.3 MiB). English/Chinese chapter, contents and blog previews were
+reviewed. Detailed counts, hashes and toolchain provenance are in
+[textbook-refresh-pdfs.json](textbook-refresh-pdfs.json).
+
+The Tectonic default package bundle returned HTTP 403. The compatible installed
+XeLaTeX compiler was used instead, with downloaded TeX Gyre fonts and pinned
+xeCJK source. Exported TeX received only font-path, PDF-creator metadata and
+standard figure-optimizer path adjustments; teaching content was unchanged.
+
+Final build after publishing the artifacts passes: 1,268 pages, 1,267 indexed
+pages. All eight PDFs served from the built site match their source hashes and
+recorded byte sizes. Both download languages at 375/1440 px show the correct
+source checkpoint, eight downloads and no viewport overflow or JavaScript
+errors. Final Astro check: zero errors, zero warnings, three existing hints.
