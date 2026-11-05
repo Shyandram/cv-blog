@@ -1,3 +1,4 @@
+import { chapterPath } from '../src/lib/chapter-paths.mjs';
 // Builds a repository-side map of the course for people and research agents who work on this repo: which tutorial covers
 // what, where its file, figures, script, notes, paper guides and references are, and the exact anchors the site generates.
 //
@@ -6,16 +7,20 @@
 //   node scripts/content-index.mjs --check   exit 1 if those files are out of date (used by CI)
 //
 // Anchors are computed with the same unified pipeline the site uses (remark-math → rehype-katex → Astro's rehypeHeadingIds),
-// so headings that contain math get the same slugs as on the built site. Sections after "## Supplementary notes" /
-// "## 補充資料" live on …/<slug>/notes/, sections after "## Paper guides" / "## 論文導讀" on …/<slug>/papers/.
+// so headings that contain math get the same slugs as on the built site. Each ### after "## Supplementary notes" / "## 補充資料"
+// is a page of its own at …/<slug>/notes/<h3-id>/ (index …/<slug>/notes/), each ### after "## Paper guides" / "## 論文導讀" at
+// …/<slug>/papers/<h3-id>/; an id inside such an item lives on that item's page (…/notes/<h3-id>/#<id>).
 import { compile } from '@mdx-js/mdx';
 import remarkMath from 'remark-math';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import { rehypeHeadingIds } from '@astrojs/markdown-remark';
+import rehypePaperHeadingIds from '../src/lib/rehypePaperHeadingIds.mjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { curriculum } from '../src/content/curriculum.ts';
+import { placesOf, displayTitle, validateCurriculum } from '../src/lib/curriculum.ts';
 
 const root = new URL('..', import.meta.url).pathname;
 const CHECK = process.argv.includes('--check');
@@ -45,17 +50,21 @@ function frontmatter(src) {
   return { fm, body: src.slice(m[0].length) };
 }
 
-// Headings with the ids the site generates, plus the zone each heading belongs to.
+// Headings with the ids the site generates, plus the zone each heading belongs to and, inside the notes and paper guides,
+// the item (### id) whose page holds it.
 async function headings(path, body) {
   const out = [];
   const collect = () => (tree) => {
     let zone = 'main';
+    let item = '';
     const walk = (n) => {
       if (n.type === 'element' && /^h[1-6]$/.test(n.tagName)) {
         const depth = Number(n.tagName[1]);
         const text = textOf(n).replace(/\s+/g, ' ').trim();
-        if (depth === 2) zone = ZONE[text.toLowerCase()] ?? (zone === 'refs' ? 'refs' : 'main');
-        out.push({ depth, text: plainHeading(n), id: n.properties?.id ?? '', zone });
+        const id = n.properties?.id ?? '';
+        if (depth === 2) { zone = ZONE[text.toLowerCase()] ?? (zone === 'refs' ? 'refs' : 'main'); item = ''; }
+        if (depth === 3 && (zone === 'notes' || zone === 'papers')) item = id;
+        out.push({ depth, text: plainHeading(n), id, zone, item: depth >= 3 ? item : '' });
       }
       for (const c of n.children ?? []) walk(c);
     };
@@ -64,7 +73,7 @@ async function headings(path, body) {
   await compile({ value: body, path }, {
     format: path.endsWith('.md') ? 'md' : 'mdx',
     remarkPlugins: [remarkGfm, remarkMath, remarkCjkFriendly],
-    rehypePlugins: [[rehypeKatex, { strict: false }], rehypeHeadingIds, collect],
+    rehypePlugins: [[rehypeKatex, { strict: false }], rehypePaperHeadingIds, rehypeHeadingIds, collect],
   });
   return out;
 }
@@ -103,6 +112,18 @@ function coverage() {
   return plan;
 }
 
+// The course tree (src/content/curriculum.ts) gives the order, the nesting and the displayed numbers.
+const places = placesOf(curriculum);
+{
+  const files = [];
+  for (const lang of ['en', 'zh-tw']) for (const track of TRACKS) {
+    const dir = join(root, 'src/content/tutorials', lang, track);
+    if (existsSync(dir)) for (const f of readdirSync(dir).filter((x) => /\.mdx?$/.test(x) && !x.startsWith('_'))) files.push({ lang, slug: `${track}/${f.replace(/\.mdx?$/, '')}`, track: frontmatter(readFileSync(join(dir, f), 'utf8')).fm.track ?? track });
+  }
+  const errors = validateCurriculum(curriculum, files);
+  if (errors.length) { console.error(`The course tree is not valid:\n- ${errors.join('\n- ')}`); process.exit(1); }
+}
+
 const plan = coverage();
 const tutorials = [];
 for (const track of TRACKS) {
@@ -115,30 +136,41 @@ for (const track of TRACKS) {
     const srcEn = readFileSync(en, 'utf8');
     const { fm, body } = frontmatter(srcEn);
     const hs = await headings(en, body);
+    const place = places.get(slug);
     let zhTitle = '';
     let hsZh = [];
     if (existsSync(zh)) {
       const z = frontmatter(readFileSync(zh, 'utf8'));
-      zhTitle = z.fm.title ?? '';
+      zhTitle = displayTitle(z.fm.title ?? '', place.number, 'zh-tw');
       hsZh = await headings(zh, z.body);
     }
     const figures = [...srcEn.matchAll(/^import\s+\w+\s+from\s+['"]([^'"]+\.(?:png|jpe?g|webp|svg))['"]/gm)].map((m) => m[1].replace(/^(\.\.\/)+/, 'src/'));
     const script = `scripts/figures/${name.replace(/\.mdx$/, '').replace(/-/g, '_')}.py`;
-    const url = (lang, h) => `/${lang}/learn/${slug}/${h.zone === 'notes' ? 'notes/' : h.zone === 'papers' ? 'papers/' : ''}#${h.id}`;
+    // Main text: …/<slug>/#id. Notes and paper guides: the section index …/notes/, an item's page …/notes/<item>/, or an id
+    // inside an item …/notes/<item>/#id.
+    const url = (lang, h) => {
+      const base = chapterPath(`/${lang}/learn/${slug}/`);
+      if (h.zone !== 'notes' && h.zone !== 'papers') return `${base}#${h.id}`;
+      if (!h.item) return `${base}${h.zone}/`;
+      return `${base}${h.zone}/${h.item}/${h.id === h.item ? '' : `#${h.id}`}`;
+    };
     tutorials.push({
-      slug, track, order: Number(fm.order ?? 0), level: fm.level ?? '', title: fm.title ?? '', titleZh: zhTitle,
+      slug, track, number: place.number, depth: place.depth, parent: place.parent, children: place.children, position: place.index,
+      level: fm.level ?? '', title: displayTitle(fm.title ?? '', place.number, 'en'), titleZh: zhTitle,
       description: fm.description ?? '', prereqs: fm.prereqs ?? [], tags: fm.tags ?? [], published: fm.published ?? '', updated: fm.updated ?? '',
       files: { en: rel(en), zh: existsSync(zh) ? rel(zh) : null, figureScript: existsSync(join(root, script)) ? script : null, figures },
-      pages: { main: `/en/learn/${slug}/`, notes: hs.some((h) => h.zone === 'notes') ? `/en/learn/${slug}/notes/` : null, papers: hs.some((h) => h.zone === 'papers') ? `/en/learn/${slug}/papers/` : null },
+      pages: { main: chapterPath(`/en/learn/${slug}/`), notes: hs.some((h) => h.zone === 'notes') ? chapterPath(`/en/learn/${slug}/notes/`) : null, papers: hs.some((h) => h.zone === 'papers') ? chapterPath(`/en/learn/${slug}/papers/`) : null },
       experiments: plan[slug] ?? [],
       sections: hs.filter((h) => h.depth >= 2 && h.depth <= 3 && h.zone !== 'refs').map((h, i) => ({ depth: h.depth, text: h.text, zone: h.zone, url: url('en', h), urlZh: hsZh[hs.indexOf(h)] ? url('zh-tw', hsZh[hs.indexOf(h)]) : null, textZh: hsZh[hs.indexOf(h)]?.text ?? null })),
       references: references(body),
     });
   }
 }
-tutorials.sort((a, b) => TRACKS.indexOf(a.track) - TRACKS.indexOf(b.track) || a.order - b.order);
+tutorials.sort((a, b) => a.position - b.position);
 const bySlug = Object.fromEntries(tutorials.map((t) => [t.slug, t]));
 const short = (t) => t.title.split(/ · |・/)[0];
+// What the map prints next to a section link: its anchor, or for a note or paper guide its page (notes/<item-id>/).
+const anchor = (s) => (s.url.includes('#') ? s.url.split('#')[1] : s.url.replace(/^.*\/((?:notes|papers)\/(?:[^/]+\/)?)$/, '$1'));
 
 const posts = [];
 for (const lang of ['en', 'zh-tw']) {
@@ -171,9 +203,17 @@ renaming a tutorial or heading (CI runs it with \`--check\`). Rules for editing 
   URL) — e.g. \`node -e "const d=require('./docs/content-index.json');console.log(d.tutorials.filter(t=>t.references.some(r=>/ArcFace/.test(r.text))).map(t=>t.slug))"\`.
 - **By question (RAG):** \`npm run rag -- "how is PQ computed"\` ranks section chunks (BM25, English and Chinese) and prints the
   file, line range and anchor of each; \`--json\` for tools. Format and options: [../rag.md](../rag.md).
-- **Anchors:** links between pages must use the anchors shown here. Items in a Supplementary-notes section are served on
-  \`…/<slug>/notes/#…\`, Paper guides on \`…/<slug>/papers/#…\`. Headings containing math have KaTeX-derived slugs (e.g. \`rank-kkk\`);
-  copy them from this map rather than guessing.
+- **Course tree:** [src/content/curriculum.ts](../../src/content/curriculum.ts) is the single source of truth for the order, the
+  nesting (main chapter → sub-chapter → …) and the numbers of the tutorials. Numbers come from the position in the tree
+  (\`DLCV 04\`, its children \`DLCV 04A\`, \`DLCV 04B\`, the next level \`DLCV 04A.1\`); the displayed title is that number plus the
+  frontmatter title without its old prefix. To add a chapter, add \`{ slug: '<track>/<file>' }\` where it belongs (or run
+  \`node scripts/curriculum.mjs\`, which adds new files by the letter rule); to move one, move its entry. The build and
+  \`node scripts/curriculum.mjs --check\` fail when a tutorial is missing from the tree. In this map, sub-chapters are nested under
+  their main chapter; \`content-index.json\` gives each tutorial's \`number\`, \`depth\`, \`parent\` and \`children\`.
+- **Anchors and pages:** links between pages must use the URLs shown here. Each item (\`###\`) of a Supplementary-notes section
+  is a page of its own at \`…/<slug>/notes/<item-id>/\` (the section's index is \`…/<slug>/notes/\`), each Paper guide at
+  \`…/<slug>/papers/<item-id>/\`; an id inside an item is \`…/notes/<item-id>/#<id>\`. Headings containing math have KaTeX-derived
+  slugs (e.g. \`rank-kkk\`); copy them from this map rather than guessing.
 
 ## Tracks
 
@@ -194,10 +234,11 @@ ${[
   ['scripts/figures/<slug_with_underscores>.py', 'figure generators'],
   ['src/lib/playground/coverage.ts', 'which interactive experiment belongs to which chapter (`chapterPlan`, `readingOnlyChapters`)'],
   ['src/lib/playground/labs/, catalog.ts, chapters-*.ts', 'interactive experiments (image labs and SVG demos)'],
-  ['src/lib/rehypeSupplementZones.mjs, src/components/zones/', 'splits each tutorial into main / notes / papers pages'],
+  ['src/content/curriculum.ts, src/lib/curriculum.ts, scripts/curriculum.mjs', 'the course tree (order, nesting, numbers), its logic, and the script that adds new files to it'],
+  ['src/lib/rehypeSupplementZones.mjs, src/components/zones/', 'splits each tutorial into its main page and one page per note and paper guide (plus an index page for each section)'],
   ['src/lib/rehypeCitations.mjs', 'turns [n] citations into links to the reference list'],
   ['src/components/', 'MDX components (Callout, Figure, ImageCompare, KernelPlayground, Lab, …) and page widgets'],
-  ['src/pages/[lang]/', 'routes: home, learn (+ [...slug] with notes/papers modes), blog, playground, search, download, about'],
+  ['src/pages/[lang]/', 'routes: home, learn (+ [...slug]: main page, notes/papers index pages and item pages), blog, playground, search, download, about'],
   ['src/i18n/ui.ts, src/lib/site.ts, src/lib/taxonomy.ts', 'UI strings, site helpers, track list'],
   ['scripts/check-mdx.mjs, check-playground.mjs, tests/', 'validators (see AGENTS.md section 6)'],
   ['scripts/book/', 'PDF book export (four volumes per language)'],
@@ -214,19 +255,22 @@ files['docs/content-map/README.md'] = readme;
 for (const tr of TRACKS) {
   const list = tutorials.filter((t) => t.track === tr);
   let md = HEADER + `# ${TRACK_NAME[tr]}\n\n[← Content map](README.md)\n\n`;
+  // Sub-chapters are nested under their main chapter (course tree).
+  const indent = (t) => (t.depth > 1 ? `${'&emsp;'.repeat(Math.min(t.depth - 1, 3))}↳ ` : '');
   md += `${row(['#', 'Tutorial', 'Level', 'Needs', 'File'])}\n${row(['---', '---', '---', '---', '---'])}\n`;
-  md += list.map((t) => row([t.order, `[${t.title}](#${t.slug.split('/')[1]})`, t.level, t.prereqs.map((p) => (bySlug[p] ? short(bySlug[p]) : p)).join(', ') || '—', `\`${t.files.en}\``])).join('\n') + '\n\n';
+  md += list.map((t) => row([t.number || '—', `${indent(t)}[${t.title}](#${t.slug.split('/')[1]})`, t.level, t.prereqs.map((p) => (bySlug[p] ? short(bySlug[p]) : p)).join(', ') || '—', `\`${t.files.en}\``])).join('\n') + '\n\n';
   for (const t of list) {
     md += `## ${t.slug.split('/')[1]}\n\n**${t.title}**${t.titleZh ? ` · ${t.titleZh}` : ''}  \n${t.description}\n\n`;
     md += `- Files: \`${t.files.en}\`${t.files.zh ? `, \`${t.files.zh}\`` : ' (no zh-tw twin)'}\n`;
     md += `- Pages: \`${t.pages.main}\`${t.pages.notes ? `, \`${t.pages.notes}\`` : ''}${t.pages.papers ? `, \`${t.pages.papers}\`` : ''}\n`;
-    md += `- Level ${t.level} · order ${t.order} · needs: ${t.prereqs.length ? t.prereqs.map((p) => `\`${p}\``).join(', ') : 'none'}${t.tags.length ? ` · tags: ${t.tags.join(', ')}` : ''}\n`;
+    if (t.parent || t.children.length) md += `- Course tree: ${t.parent ? `under \`${t.parent}\`` : 'main chapter'}${t.children.length ? ` · sub-chapters: ${t.children.map((c) => `\`${c}\``).join(', ')}` : ''}\n`;
+    md += `- Level ${t.level} · depth ${t.depth} · needs: ${t.prereqs.length ? t.prereqs.map((p) => `\`${p}\``).join(', ') : 'none'}${t.tags.length ? ` · tags: ${t.tags.join(', ')}` : ''}\n`;
     md += `- Figures: ${t.files.figures.length}${t.files.figureScript ? ` (script \`${t.files.figureScript}\`)` : ''} · references: ${t.references.length}${t.experiments.length ? ` · experiments: ${t.experiments.join(', ')}` : ''}\n\n`;
     for (const zone of ['main', 'notes', 'papers']) {
       const ss = t.sections.filter((s) => s.zone === zone && !(zone !== 'main' && s.depth === 2));
       if (!ss.length) continue;
-      if (zone !== 'main') md += `*${zone === 'notes' ? 'Supplementary notes' : 'Paper guides'} (\`${zone}/\` page):*\n\n`;
-      md += ss.map((s) => `${s.depth === 3 && zone === 'main' ? '  ' : ''}- [${s.text}](${s.url}) \`${s.url.split('#')[1]}\``).join('\n') + '\n\n';
+      if (zone !== 'main') md += `*${zone === 'notes' ? 'Supplementary notes' : 'Paper guides'} (one page each, index \`${zone}/\`):*\n\n`;
+      md += ss.map((s) => `${s.depth === 3 && zone === 'main' ? '  ' : ''}- [${s.text}](${s.url}) \`${anchor(s)}\``).join('\n') + '\n\n';
     }
   }
   files[`docs/content-map/${tr}.md`] = md;

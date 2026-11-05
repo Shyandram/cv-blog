@@ -8,7 +8,7 @@ import threading
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 
 from playwright.sync_api import sync_playwright, expect
 
@@ -78,7 +78,7 @@ try:
                 field.press('ArrowDown')
                 target = results.first.get_attribute('href')
                 page.keyboard.press('Enter')
-                page.wait_for_url(origin + target)
+                page.wait_for_url(lambda u: unquote(u) == unquote(origin + target))
                 expect(page.locator('pagefind-modal-trigger button')).to_be_visible()
                 page.keyboard.press('Control+k')
                 expect(dialog).to_be_visible()

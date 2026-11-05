@@ -1,5 +1,6 @@
 // Reading progress kept in this browser only (localStorage, every access in try/catch; pages work without it).
-//   pp:p:<path>  furthest scroll ratio reached on a page (a tutorial, or its …/notes/ and …/papers/ pages)
+//   pp:p:<path>  furthest scroll ratio reached on a page (a tutorial, or one of its note or paper-guide pages …/notes/<id>/);
+//                for …/notes/ and …/papers/ themselves: the share of that section's items read (ReaderTools keeps it up to date)
 //   pp:x:<path>  exercises of a tutorial: { n: count, s: { "<index>": { at: time solved, r: reviews done } } }
 //   pp:s:<path>  sections already read (ReaderTools)
 //   pp:last      the last place read: { path, title, ratio, id, heading }
@@ -19,8 +20,8 @@ export const exercisesOf = (path: string): Exercises => {
 export const saveExercises = (path: string, x: Exercises) => save(`pp:x:${path}`, JSON.stringify(x));
 export const ratioOf = (path: string): number => Math.min(1, Math.max(0, Number(load(`pp:p:${path}`)) || 0));
 
-/** A notes or paper-guides page belongs to the tutorial at the parent path. */
-export const tutorialPathOf = (path: string) => path.replace(/(?:notes|papers)\/$/, '');
+/** A notes or paper-guides page (index …/notes/ or item …/notes/<id>/) belongs to the tutorial above it. */
+export const tutorialPathOf = (path: string) => path.replace(/\/(?:notes|papers)\/(?:[^/]+\/)?$/, '/');
 
 export type Status = {
   ratio: number; notes: number; papers: number;

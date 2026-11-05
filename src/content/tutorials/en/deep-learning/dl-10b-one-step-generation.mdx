@@ -1,0 +1,824 @@
+---
+title: "One-Step Generation"
+description: "Learn what a one-step generator must predict, compare trajectory distillation, consistency, reflow and distribution matching, and measure the speed–quality trade with reproducible examples."
+track: deep-learning
+order: 107
+level: advanced
+prereqs: [ml/ml-07-diffusion-flow-matching, deep-learning/dl-10-image-generation]
+tags: [diffusion-distillation, consistency-models, rectified-flow, one-step-generation, distribution-matching]
+published: 2026-11-02
+updated: 2026-11-06
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import endpointsFig from '../../../../assets/deep-learning/dl-10b-one-step-generation/oracle-endpoints.png';
+import pathsFig from '../../../../assets/deep-learning/dl-10b-one-step-generation/oracle-paths-error.png';
+
+import paperProgressiveSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-progressive-source.png';
+
+import paperConsistencySource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-consistency-source.png';
+
+import paperInstaflowSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-instaflow-source.png';
+
+import paperLcmSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-lcm-source.png';
+
+import paperAddSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-add-source.png';
+
+import paperDmdSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-dmd-source.png';
+
+import paperDmd2Source from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-dmd2-source.png';
+
+## What you'll learn
+
+- Explain why one local denoising direction may not reach a distant endpoint.
+- Compare endpoint regression, consistency, reflow and distribution matching.
+- Distinguish matching teacher trajectories from matching output distributions.
+- Understand step-size-conditioned shortcuts and average-velocity targets.
+- Report network evaluations, complete latency, alignment and diversity.
+
+## The big picture
+
+<Callout type="tip" title="Explain like I'm five">
+A drawing teacher normally gives you many small instructions: move here, look again, correct the curve, add a detail. If you keep only the first instruction and make it much bigger, the drawing goes wrong. A fast student needs a different lesson: learn the whole move, learn where the teacher will finish, or learn how a finished drawing should look. Those lessons can all produce a picture quickly, but they are different kinds of learning.
+</Callout>
+
+A diffusion denoiser usually predicts a local correction at a particular noise level. A one-step generator must turn a random input into a complete sample. It therefore needs a **finite change**, not merely a more confident local correction. This chapter covers diffusion distillation, consistency models, rectified flows and shortcut/average-velocity models together. Some borrow a pretrained teacher; others train a generator directly. “One-step” describes inference, not a single common training algorithm.
+
+Read [ML 08: Diffusion Models and Flow Matching](/en/learn/ml/diffusion-flow-matching/) first for noising schedules, prediction targets and probability-flow equations. [DLCV 12: Image Generation](/en/learn/deep-learning/image-generation/) supplies the image-generation pipeline and its evaluation context. Here the main question is narrower: **what must change when the iterative part is compressed into one or a few calls?** Super-resolution applies these ideas to an observed image rather than unconditional noise; that application has a separate [one-step SR chapter](/en/learn/deep-learning/one-step-diffusion-super-resolution/).
+
+For a first pass, read the numerical example, the family table and the evaluation checklist. Then choose a detailed paper introduction. The equations distinguish training objectives; understanding every derivation is not required to understand the differences between the families.
+
+## Why taking one large step is different
+
+**Plain version.** A local tangent gives the current direction, not the displacement to a distant endpoint. Accurate local predictions can still yield a poor one-step jump.
+
+Write a probability-flow or flow-matching ordinary differential equation as
+
+$$
+\frac{dx_t}{dt}=v(x_t,t),\qquad x_{t+h}\approx x_t+h\,v(x_t,t).
+$$
+
+Here $x_t\in\mathbb R^d$ is the current image or latent vector, $t$ is continuous time, $v$ the instantaneous velocity, and $h$ a signed time increment. The approximation on the right is an Euler step. For a smooth field, its local error depends on how $v$ changes with time and position along the path. Making $h$ large discards those changes. A more accurate neural estimate of the same instantaneous field does not automatically repair this integration error.
+
+There are three separate error sources: **model error**, because a learned field differs from its target; **numerical error**, because a finite-step solver approximates the learned continuous dynamics; and **distribution mismatch**, because the terminal noise, conditioning or resolution at inference differs from training. Improving one does not eliminate the others. Probability-flow theory [1] describes an ideal connection between marginal distributions; it is not a certificate that any finite neural sampler exactly follows it.
+
+The same caution applies to flow matching [2]. Even when training pairs are interpolated along straight lines, the marginal velocity at a location averages directions from several possible pairs. Its resulting trajectories can bend. The straightness of the sampled training interpolation is therefore not the same as straightness of the learned marginal flow.
+
+### A toy where the score is known exactly
+
+The following experiment removes neural-network error. Its target is an equally weighted mixture of four 2-D Gaussians. After adding Gaussian noise of standard deviation $\sigma$, each component variance is $a^2+\sigma^2$, where $a=0.12$ is the component standard deviation. The exact score is
+
+$$
+s(x,\sigma)=-\frac{1}{a^2+\sigma^2}\sum_{j=1}^{4}w_j(x,\sigma)(x-\mu_j).
+$$
+
+Here $\mu_j$ is component $j$’s center and $w_j$ is its normalized posterior mixture weight at $x$. For this additive-noise family, the probability-flow equation parameterized by noise scale is $dx/d\sigma=-\sigma s(x,\sigma)$ [3]. We integrate from large to small $\sigma$.
+
+The initial samples are drawn from the **exact noisy mixture**, not assumed to be standard Gaussian. This makes the numerical comparison controlled. A real generator must also handle how well its chosen starting distribution matches the training boundary. We compare coarse Euler endpoints with an accurate adaptive ODE solution from the same initial points; the error is not an image-quality metric or a trained-model benchmark.
+
+```python
+import numpy as np
+from scipy.integrate import solve_ivp
+
+centers = np.array([[-1.7, 0.], [1.7, 0.], [0., -1.7], [0., 1.7]])
+base_var = 0.12**2
+sigma_start, sigma_end = 3.0, 0.04
+
+def score(x, sigma):
+    """Exact score of the equally weighted Gaussian mixture after Gaussian noising."""
+    var = base_var + sigma**2
+    delta = x[:, None, :] - centers[None, :, :]
+    logits = -(delta**2).sum(-1) / (2 * var)
+    weights = np.exp(logits - logits.max(1, keepdims=True))
+    weights /= weights.sum(1, keepdims=True)
+    return -(weights[:, :, None] * delta).sum(1) / var
+
+def euler(initial, steps):
+    x = initial.copy()
+    grid = np.linspace(sigma_start, sigma_end, steps + 1)
+    for s0, s1 in zip(grid[:-1], grid[1:]):
+        x += (s1 - s0) * (-s0 * score(x, s0))
+    return x
+
+rng = np.random.default_rng(7)
+initial = centers[rng.integers(4, size=512)] + np.sqrt(base_var + sigma_start**2) * rng.normal(size=(512, 2))
+shape = initial.shape
+solution = solve_ivp(lambda sigma, flat: (-sigma * score(flat.reshape(shape), sigma)).ravel(),
+                     (sigma_start, sigma_end), initial.ravel(), rtol=1e-9, atol=1e-10, dense_output=True)
+reference = solution.y[:, -1].reshape(shape)
+for steps in [1, 2, 4, 8, 16, 32, 64]:
+    estimate = euler(initial, steps)
+    rmse = np.sqrt(np.mean((estimate - reference)**2))
+    print(f'{steps:2d} evaluations: endpoint RMSE {rmse:.4f}')
+```
+
+```text
+ 1 evaluations: endpoint RMSE 0.8098
+ 2 evaluations: endpoint RMSE 0.5686
+ 4 evaluations: endpoint RMSE 0.3011
+ 8 evaluations: endpoint RMSE 0.1224
+16 evaluations: endpoint RMSE 0.0316
+32 evaluations: endpoint RMSE 0.0164
+64 evaluations: endpoint RMSE 0.0085
+```
+
+These are our seeded numerical results. One Euler evaluation has a large endpoint error despite using the exact score. More evaluations follow the curved flow more accurately. The adaptive reference is itself a numerical solution, with tight tolerances; it is not an analytic closed-form transport map.
+
+<Figure src={endpointsFig} alt="Four scatter plots show the same noisy-mixture starts transported with one, four or sixteen Euler evaluations and an accurate reference ODE. One evaluation leaves samples between the four component centers; more evaluations concentrate them around the modes." caption="Figure 1 — Reducing evaluations without changing the prediction target introduces integration error, even with an exact score. These synthetic samples are our experiment, not outputs from an image model." />
+
+<Figure src={pathsFig} alt="Left: several curved oracle trajectories approach four Gaussian component centers. Right: endpoint root mean squared error decreases as Euler score evaluations rise from one to sixty-four." caption="Figure 2 — A tangent and a finite displacement are different. Distillation and large-jump objectives try to learn information that the one-step Euler baseline does not have." />
+
+## A map of acceleration methods
+
+**Plain version.** Separate faster integration of an existing model from training a new endpoint, jump or distribution predictor.
+
+| Family | What is learned or changed | Needs a separate teacher? | Main constraint |
+| --- | --- | --- | --- |
+| Faster solver | A better numerical update for an existing field | Uses the existing field | Few-step accuracy still depends on the field and schedule |
+| Progressive/trajectory distillation | Several teacher moves compressed into one student move | Yes | Student follows the selected teacher mapping |
+| Consistency models | The same clean endpoint from different locations on one path | Distillation: yes; direct training: no | Accurate endpoint agreement across noise levels |
+| Reflow and endpoint distillation | A more regular noise–image coupling, then a direct map | Usually a pretrained model for large image applications | Straightening and map approximation are separate stages |
+| Adversarial distillation | Realistic outputs plus teacher-derived guidance | Yes in ADD/LADD | Discriminator stability and diversity |
+| Distribution matching | Student output distribution agrees with a teacher-defined target | Yes | An auxiliary student score must track a changing distribution |
+| Shortcut / average-velocity learning | Finite-interval moves conditioned on their interval | Can train from scratch | Self-target accuracy, time conditioning and boundary behavior |
+
+The table follows the methodological separation in diffusion-distillation surveys [4], with direct-training families added because this chapter’s scope is one-step generation rather than distillation alone. Categories overlap. DMD2 combines distribution matching and an adversarial objective; InstaFlow combines reflow and endpoint distillation. A model’s training losses are more informative than assigning it one permanent label.
+
+DDIM [5] and DPM-Solver [6] are useful baselines before training a student. They reduce discretization error per evaluation but do not, by themselves, learn a complete endpoint map. A comparison with an inefficient sampler can exaggerate a distilled model’s speed advantage. Conversely, a solver that works well at moderate step counts may still fail when forced into one evaluation.
+
+## Compressing teacher trajectories
+
+**Plain version.** A teacher assigns a destination to each noisy input. Endpoint regression trains the student to reproduce that chosen mapping directly.
+
+### Progressive distillation
+
+Progressive Distillation [7] repeatedly trains one student step to match two deterministic teacher steps. After training, the student becomes the teacher and the sampling budget is halved again. This gives a curriculum of larger jumps instead of asking a fresh network to approximate the whole map immediately.
+
+Let a deterministic teacher take $z_t$ through an intermediate time to $z_s$. A DDIM-style single update based on clean prediction $\widehat x$ is
+
+$$
+z_s=\frac{\sigma_s}{\sigma_t}z_t+\left(\alpha_s-\frac{\sigma_s}{\sigma_t}\alpha_t\right)\widehat x.
+$$
+
+Here $z_t,z_s$ are noisy states, and $\alpha_t,\sigma_t$ are the signal and noise schedule coefficients. Solving this affine equation for $\widehat x$ gives the student target that reproduces the teacher’s two-step endpoint. The target depends on the selected teacher mapping and starting state. It differs from ordinary clean-image denoising, whose squared-error optimum can average several compatible clean images.
+
+This approach transfers work to training: many teacher evaluations produce targets while inference becomes cheaper. It can accumulate approximation error across stages. A student may need a particular schedule and output parameterization, so loading it into an arbitrary sampler is not equivalent to the trained procedure.
+
+*Optional: [Progressive Distillation](#progressive-distillation-two-teacher-moves-in-one-student-move-iclr-2022) (in the Paper guides). The exact target, stable parameterizations, reported scores and stage-by-stage limitations.*
+
+### Coupling is part of the target
+
+There are many valid maps from a noise distribution to an image distribution. A trajectory teacher chooses one **coupling**: which output belongs to which random input. Matching that pair is stronger than matching only the output distribution.
+
+A small example makes the distinction concrete. Consider a random input $z$ whose sign can select one of two target modes. The maps $G_1(z)=\operatorname{sign}(z)$ and $G_2(z)=-\operatorname{sign}(z)$ have the same balanced output distribution when $z$ is symmetric. They have opposite samplewise correspondence. A pairwise regression loss strongly penalizes replacing one with the other even though neither changes the marginal distribution.
+
+This is why one-step generation is not intrinsically “too deterministic.” A deterministic map of a **random latent input** can generate diverse outputs. Collapse occurs when the map ignores parts of that input or covers too few target modes. Averaging endpoints from unrelated random seeds during regression creates a different problem: the average can lie between modes and be an implausible sample.
+
+## Endpoint agreement with consistency models
+
+**Plain version.** Instead of learning the next small correction, learn where a path ends. Two states on the same path should give the same answer.
+
+A consistency function satisfies
+
+$$
+f(x_t,t)=f(x_s,s)=x_{\varepsilon}
+$$
+
+for states $x_t,x_s$ on a shared probability-flow trajectory, with $x_{\varepsilon}$ its near-clean endpoint at a small positive boundary time $\varepsilon$. A neural parameterization enforces the boundary condition through
+
+$$
+f_\theta(x,t)=c_{\mathrm{skip}}(t)x+c_{\mathrm{out}}(t)F_\theta(x,t),
+$$
+
+where $F_\theta$ is a learned network, $c_{\mathrm{skip}}(\varepsilon)=1$, and $c_{\mathrm{out}}(\varepsilon)=0$. Thus the boundary returns its input instead of allowing the same constant output everywhere. Boundary anchoring and proper training pairs matter: “make two predictions agree” alone has trivial solutions.
+
+**Consistency distillation** uses a pretrained score model and a numerical solver to construct neighboring path states. The student output at the noisier state matches a stopped-gradient target-model output at the cleaner state. **Consistency training** learns from data without a separately pretrained diffusion teacher, using nearby noise levels and a shared-noise construction. They share the endpoint interpretation but differ in their supervision [8]. Later improvements change weighting, noise-level sampling and target-model updates [9]; the original configuration should not be treated as the final form of every consistency model.
+
+One-step sampling evaluates $f_\theta$ at a noisy start. Few-step sampling alternates endpoint prediction with adding controlled noise at a lower level and predicting again. This can improve quality, but it is not simply repeating an identical deterministic map on its own output. A checkpoint trained for particular noise levels needs the corresponding sampling schedule.
+
+*Optional: [Consistency Models](#consistency-models-the-same-endpoint-along-a-path-icml-2023) (in the Paper guides). Boundary conditions, distillation versus direct training, and what the reported one- and two-step comparisons show.*
+
+### Latent consistency and guidance
+
+Latent Consistency Models (LCM) apply consistency distillation in a pretrained image autoencoder’s latent space [10], [11]. This reduces spatial computation but retains the cost and reconstruction limits of encoding/decoding. The denoiser becomes an endpoint predictor for the guided latent probability flow.
+
+Classifier-free guidance normally combines conditional and unconditional network predictions. LCM conditions its student on guidance strength and distills the guided flow, so the chosen behavior can be produced without two separate denoiser predictions at each student step. The guidance range seen during training is part of the model’s usable interface. A guidance number in a distilled pipeline is not automatically interchangeable with the same number in the original pipeline: conventions and parameterizations differ.
+
+LCM’s skipping-step construction pairs states farther apart during training than an immediately adjacent grid interval. This improves the usefulness of the consistency target for finite jumps. It still relies on the teacher and training schedule, and one-step outputs can be worse than two- or four-step outputs. “Supports one-step inference” is not a promise that one step is always the best operating point.
+
+*Optional: [Latent Consistency Models](#latent-consistency-models-endpoints-in-a-guided-latent-flow-2023) (in the Paper guides). Guided endpoint parameterization, skipping intervals and the paper’s resolution-specific experiments.*
+
+## Straightening before distilling
+
+**Plain version.** A student learns a long move more easily if the teacher’s route is less tangled. Reflow changes the route before endpoint regression compresses it.
+
+Rectified Flow [12] trains an instantaneous velocity using interpolated endpoint pairs. A reflow round samples a noise point $z$, follows the current flow to $x=\Phi(z)$, and trains another flow on the **coupled** pairs $(z,x)$ instead of independently pairing arbitrary noise and data. The resulting interpolation target is
+
+$$
+x_t=(1-t)z+tx,\qquad
+\mathcal L_{\mathrm{reflow}}=\mathbb E\|v_\theta(x_t,t)-(x-z)\|_2^2.
+$$
+
+Here time increases from noise at 0 to data at 1; $v_\theta$ is instantaneous velocity, and $\Phi$ is the earlier model’s sampled endpoint map. This time direction differs from the noise-scale variable in the earlier toy. Writing the convention explicitly prevents a silent sign reversal.
+
+Ideal reflow has useful distribution-preservation and transport-cost properties under its assumptions. A finite neural fit and approximate endpoint sampler introduce error. One reflow round does not guarantee globally straight learned trajectories. A network can still need several Euler evaluations after reflow; InstaFlow’s experiments distinguish this from subsequent one-step endpoint distillation [13].
+
+The endpoint student can minimize $d(G_\theta(z,c),\Phi_{\mathrm{reflow}}(z,c))$, where $c$ is a text condition and $d$ a selected reconstruction/perceptual distance. This objective preserves the reflow teacher’s pairing. Reflow can change that pairing while preserving the ideal output marginal; endpoint regression then approximates the changed map. They solve related but different problems.
+
+*Optional: [InstaFlow](#instaflow-reflow-then-endpoint-distillation-iclr-2024) (in the Paper guides). Why direct distillation, one-step reflow and reflow followed by distillation have different results.*
+
+## Adding a realism signal
+
+**Plain version.** Matching a teacher endpoint can reproduce its errors. A discriminator supplies a second signal: does the student output look like the target data? This signal helps appearance but needs careful stabilization and evaluation of diversity.
+
+Adversarial Diffusion Distillation (ADD) combines a pretrained student, a frozen diffusion teacher and a discriminator [14]. The student generates from selected noisy inputs. A diffusion-derived distillation term pulls its output toward a teacher denoising target, while an adversarial term rewards realistic appearance in pretrained feature space. The teacher and discriminator are training-time tools; neither must execute as an iterative teacher sampler during deployment.
+
+For a generic adversarial formulation, a generator loss contains $-\mathbb E[D_\phi(G_\theta(z,c),c)]$, where $D_\phi$ gives a realness score and $G_\theta$ the student output. The discriminator is trained to distinguish real and generated samples under its own loss and regularization. This scalar is a learned training signal, not a calibrated probability that an image is truthful or prompt-correct.
+
+ADD supports refinement across a small set of trained noise levels. LADD moves adversarial distillation into latent diffusion feature representations, reducing the need to decode pixels and run a separate large image feature encoder during training [15]. The complete computational trade includes the teacher, discriminator and feature extraction during training, as well as the final decoder during inference.
+
+Adversarial and diffusion losses do not guarantee diversity automatically. Inspect whether different random seeds yield different plausible compositions, whether uncommon prompt concepts survive, and whether apparent sharpness comes from repeated texture. A low FID can coexist with poor conditional coverage. Training stability, real-data access and how prompts condition the discriminator belong in any comparison.
+
+*Optional: [ADD](#adversarial-diffusion-distillation-a-teacher-and-a-discriminator-eccv-2024) (in the Paper guides). The two training signals, initialization study and the difference between one-step and four-step preference results.*
+
+## Matching distributions rather than individual endpoints
+
+**Plain version.** A student can be rewarded for producing the right collection of images without being forced to copy the teacher’s exact image for every noise seed. That freedom can help, but the distribution of the student must be estimated while it keeps changing.
+
+DMD learns a one-step generator and uses two diffusion score estimates [16]. One fixed model describes the teacher-defined target distribution. A second model learns the distribution of the student’s current outputs. At a common noise level, their score difference supplies a direction for moving generated samples toward the target.
+
+Let $x=G_\theta(z,c)$ and $x_t=\alpha_t x+\sigma_t\epsilon$. A representative update has the form
+
+$$
+\nabla_\theta\mathcal L\approx
+\mathbb E\!\left[w(t)\alpha_t
+\left(s_{\mathrm{student}}(x_t,t,c)-s_{\mathrm{target}}(x_t,t,c)\right)
+\frac{\partial G_\theta(z,c)}{\partial\theta}\right].
+$$
+
+Here $z$ is a random generator input, $c$ the condition, $\epsilon$ fresh Gaussian noise, $\alpha_t,\sigma_t$ the noising coefficients, $s=\nabla_x\log p_t(x\mid c)$ a score, and $w(t)$ a training weight. The equation is shorthand for the vector–Jacobian product back to generator parameters. Score estimates and time weighting make this a practical approximation; it is not an exact, directly evaluated image-density KL divergence.
+
+Why include the student score? Following only a target score can push every sample toward already attractive modes, reducing diversity. The difference accounts for where the student already has probability mass. Why add noise? Clean generated and target distributions may have little overlapping support, while noising supplies a smoother comparison space. Why maintain a second diffusion network? The student output distribution changes after each generator update, so its score is not supplied by the fixed teacher.
+
+Original DMD also uses a regression loss on teacher-generated noise–image pairs to stabilize learning and preserve coverage. This means the original method is not completely free of trajectory targets. SwiftBrush uses variational score-distillation ideas for text-to-image generation, while SiD derives score-identity-based objectives [17], [18]. These related methods should be compared through their actual objectives, weighting and data requirements rather than treated as identical implementations of one equation.
+
+### What DMD2 changes
+
+DMD2 removes the offline endpoint-regression dataset and stabilizes the changing student-score estimate by updating it more often than the generator [19]. It also adds adversarial learning from real images to address errors in a teacher-defined target. The word “real” in a teacher-score diagram should therefore be read carefully: the fixed teacher’s score is an approximation, not direct access to the true data density.
+
+For multi-step students, DMD2 trains on intermediate inputs produced by the student’s own sampling procedure. This reduces mismatch between teacher-noised training inputs and states the student actually visits. The method’s four-step large-model experiments are not evidence that an identically configured one-step large model has the same score. Steps, backbone, guidance and benchmark protocol must stay attached to every table row.
+
+*Optional: [DMD](#dmd-matching-a-teacher-defined-distribution-cvpr-2024) and [DMD2](#dmd2-tracking-the-student-and-using-real-data-neurips-2024) (in the Paper guides). The score networks, regression trade-off, update-frequency ablation and multi-step input simulation.*
+
+## Learning finite jumps directly
+
+**Plain version.** A network can learn “move this far in time” rather than only “move in this direction now.” This changes its input and its target, so direct training can support large jumps without a separate teacher checkpoint.
+
+### Shortcut models
+
+A shortcut model predicts a normalized displacement $s_\theta(x,t,d)$ for a requested interval $d$ [20]. Its update is $x'=x+d\,s_\theta(x,t,d)$. At $d=0$, training is grounded in a flow-matching velocity target. For longer intervals, one jump should agree with two consecutive shorter jumps:
+
+$$
+s(x,t,2d)=\tfrac12\left[s(x,t,d)+s(x+d\,s(x,t,d),t+d,d)\right].
+$$
+
+Here $t$ is the current time, $d$ the shorter interval, and both terms use the same conditional generation task. The second term is evaluated at the **updated position and time**. A stopped-gradient target built from the shorter jumps trains the longer jump. Replacing the updated time by the original time would be a different objective.
+
+Flow supervision prevents arbitrary self-consistency from being the only signal. The combined method can train in one phase, mixing local supervised targets with bootstrapped finite jumps. “No separate teacher” does not mean no self-targets, no training compute or no approximation error. Large jumps remain limited by network capacity and the accuracy of their bootstrapped targets.
+
+### Average velocity with MeanFlow
+
+MeanFlow distinguishes an interval’s average velocity from its endpoint’s instantaneous velocity [21]. In a data-to-noise time convention, define
+
+$$
+u(z_t,r,t)=\frac{1}{t-r}\int_r^t v(z_\tau,\tau)\,d\tau,\qquad
+z_r=z_t-(t-r)u(z_t,r,t).
+$$
+
+Here $r<t$, $z_t$ is a point on the flow, $v$ instantaneous velocity and $u$ average velocity along the same trajectory. The integral is not approximated by calling $v$ once. A learned $u$ aims to represent its effect directly.
+
+Differentiating the defining relation along the path gives
+
+$$
+u=v-(t-r)\left(\partial_tu+(\nabla_zu)v\right).
+$$
+
+The derivative is total along the changing state, with $r$ held fixed. The training construction uses a Jacobian–vector product and a stopped-gradient target, so automatic differentiation can form the derivative without materializing a full image-sized Jacobian. The direct-training formulation replaces unavailable marginal velocity targets through its flow-matching construction. This identity is more informative than calling the method “Euler with bigger steps”: the learned quantity is different.
+
+Both source time and destination time must be represented. At $r=t$ the average velocity approaches the instantaneous velocity. At the full noise-to-data interval, a single average-velocity evaluation supplies the intended whole displacement. Exact identities motivate the objective, while a finite trained network only approximates them. The paper’s JVP ablation demonstrates how sensitive this construction is to differentiating with respect to the correct variables.
+
+## Evaluating the complete trade-off
+
+**Plain version.** A fast result is useful only if it still does the intended task. Evaluate the generated distribution, the conditioning, diversity and total cost together.
+
+### Steps, evaluations and time
+
+A sampling step is a state update. A network function evaluation (NFE) is a network call. A solver can use multiple calls per update, and ordinary classifier-free guidance can require conditional and unconditional predictions. Batching those predictions may produce one API call but still process twice the examples. Report the convention explicitly; “one call” and “one example’s worth of denoiser compute” are not always the same.
+
+Complete latency includes text encoding, condition extraction, denoising/generation, decoding and any postprocessing. Separate initialization and model loading from steady-state inference. Fix hardware, precision, resolution, batch size and synchronization; otherwise a claimed speedup can mix method improvements with system changes. Memory use also matters: a single large generator may exceed the deployment budget even though it runs only once.
+
+If guidance has been baked into the student, count its absence as part of the trained system’s speed advantage, but also report the usable guidance range. If a prompt embedding is cached, say so. Comparing cached student text processing with uncached teacher processing does not measure only distillation.
+
+### Quality, alignment and diversity
+
+FID compares means and covariances of image-feature distributions [22]. It does not compare corresponding image pairs and does not directly assess whether a requested relation is satisfied. The feature extractor, reference split, sample count and resizing affect the score. Small prompt subsets are not interchangeable with larger evaluation sets; FID-5k and FID-30k are different protocols.
+
+CLIP-based similarity scores compare image and text embeddings [23]. Implementations differ in normalization, scaling and backbone. A score reported as 0.3 in one table and 30 in another may reflect scaling rather than a hundredfold quality difference. GenEval tests object, count, color and relational requirements using a structured evaluation protocol [24]. Such tests complement, rather than replace, human judgments and distribution metrics.
+
+Diversity should be tested across prompts and across seeds for one prompt. A generator can cover many broad classes but repeatedly draw one composition for each condition. Conversely, a model can have high visual variation because it ignores the prompt. Evaluate the two together. Retaining a random input does not prove that the learned map uses it effectively.
+
+### Reading benchmark tables safely
+
+A method may be tested on CIFAR-10, class-conditional ImageNet or text-conditioned COCO prompts [25], [26], [27]. Their scores answer different questions. A smaller-resolution unconditional result does not establish high-resolution prompt-following quality. Nor does a four-step result establish a one-step operating point.
+
+For a useful comparison, record: the target task; backbone and initialization; training data and teacher; resolution; guidance convention; NFE; full latency and memory; distribution quality; conditional alignment; diversity; and uncertainty from finite samples. Use each paper’s own controlled ablations for claims about individual components. Cross-paper tables can show reported operating points, but cannot isolate causality when data, architecture and training budgets differ.
+
+## Failure modes and choosing a family
+
+**Plain version.** Acceleration moves work and assumptions; it does not remove them. Choose the objective according to what must be preserved.
+
+- **Need the same endpoint for a given seed?** Trajectory or endpoint regression is a natural starting point. It imposes a specific coupling and can copy teacher artifacts.
+- **Need a flexible step budget?** Consistency, shortcut and interval-conditioned models explicitly support more than one budget, but require the trained sampling procedure.
+- **Need a new output distribution rather than exact teacher pairing?** Distribution matching provides that freedom. Watch auxiliary-score lag, mode dropping and training stability.
+- **Need strong perceptual appearance?** Adversarial terms can help, but evaluate diversity and conditioning rather than judging sharpness alone.
+- **Need no pretrained teacher?** Direct consistency, shortcut or average-velocity training can fit that constraint. Compare complete training cost; removing a teacher checkpoint is not the same as making training inexpensive.
+
+A one-step checkpoint can inherit the teacher’s biases, lose rare concepts, overfit an evaluation prompt set, or fail when controls are changed after distillation. Distribution objectives and self-targets have their own failure modes: inaccurate student scores, collapsed targets, poor boundary conditioning and train–test input mismatch. A model trained on a narrow time or guidance range should not be treated as a universal replacement for its teacher.
+
+## Modern view
+
+**Plain version.** The field increasingly asks which object should be learned for a small inference budget, rather than assuming every improvement is a better approximation of the same denoising step.
+
+Fan et al.’s distillation survey [4] organizes methods into fidelity/output objectives, trajectory methods and adversarial methods. Its taxonomy is useful for identifying what supervises a student and which parts of a teacher are retained. It does not imply that the categories are disjoint: DMD2 uses both distribution and adversarial signals. The broader diffusion survey by Yang et al. [28] places efficient sampling alongside model formulation and applications. Lipman et al.’s flow-matching guide [2] supplies a complementary transport view: local velocity, endpoint coupling and numerical integration are separate design choices.
+
+From 2023 through 2025, consistency distillation, reflow, adversarial distillation and distribution matching produced different routes to few-step image generation. Shortcut models and MeanFlow show a separate direct-training route to finite jumps [20], [21]. Their class-conditional benchmark results should not be silently generalized to large text-to-image systems. The 2026 DMAD preprint explores adversarial distribution matching as an alternative to maintaining a separately updated student-score model [29]; its broader visual-generation setting and preprint status matter when comparing it with established image benchmarks.
+
+Open problems include preserving rare modes and compositional control, maintaining editable conditioning after distillation, measuring quality beyond feature-distribution summaries, reducing training memory and compute, and transferring a one-step design across resolutions or domains. Speed alone is not a complete objective. For restoration, a further requirement appears: generated details should remain consistent with a particular observation. The [one-step SR chapter](/en/learn/deep-learning/one-step-diffusion-super-resolution/) applies this chapter’s ideas under that additional constraint.
+
+## Key takeaways
+
+- A finite jump requires an endpoint or displacement target, not just a local direction used once.
+- Separate solver error, learned-model error and train–test mismatch.
+- Trajectory regression preserves a chosen coupling; distribution matching can learn a different one.
+- Consistency needs boundary anchors; reflow changes coupling before compression into fewer steps.
+- Distribution, adversarial and average-velocity objectives provide different supervision and estimation challenges.
+- Compare full pipeline latency and network evaluations alongside quality, prompt adherence and diversity.
+
+## Exercises
+
+1. **Oracle versus solver error.** In the mixture example, compare a nonuniform noise-scale grid with the uniform grid at the same number of score evaluations. Where should more points be placed, and does that choice depend on the starting scale?
+
+<details>
+<summary>
+Hint
+</summary>
+
+Inspect where the trajectories bend and where component assignments become sharp. Compare endpoint RMSE from the same initial samples. A better grid can improve a finite-step solver without changing its score. Avoid selecting the grid using a separate set of initial points and then calling its improvement universal.
+
+</details>
+
+2. **Endpoint or distribution?** For symmetric Gaussian $z$, compare $G_1(z)=\operatorname{sign}(z)$ and $G_2(z)=-\operatorname{sign}(z)$. Compute their expected squared pairwise difference and their output probabilities. Which objective can distinguish them?
+
+<details>
+<summary>
+Hint
+</summary>
+
+Except on a probability-zero boundary, their values differ by 2, so the squared pairwise difference is 4. Both assign probability one half to each output. An ideal marginal-distribution comparison cannot distinguish them; a paired regression target can.
+
+</details>
+
+3. **A broken shortcut.** In the two-short-jump equation, replace the second time $t+d$ by $t$. Explain why this is not the same consistency relation, even if the network receives the updated state.
+
+<details>
+<summary>
+Hint
+</summary>
+
+The vector field depends on time as well as position. For the scalar field $v(x,t)=t$, the two smaller Euler directions differ solely because time advances. A network asked for the original time on the second jump is answering the wrong interval query.
+
+</details>
+
+4. **Count the whole pipeline.** A teacher uses 20 updates with two denoiser predictions per update. A student uses four updates with baked-in guidance. Both decode once, and each extracts a text embedding once. State the denoiser-evaluation ratio and explain why the wall-clock speedup need not equal it.
+
+<details>
+<summary>
+Hint
+</summary>
+
+The denoiser evaluation counts are 40 and 4, a ratio of 10. Shared text encoding and decoding, batch efficiency, precision and memory behavior change the measured runtime ratio. Include those fixed costs in a simple timing model before predicting a deployment speedup.
+
+</details>
+
+5. **Diagnose a suspicious improvement.** A student has lower FID but worse prompt-relation accuracy and nearly identical outputs across seeds. Propose three checks before accepting that it preserves its teacher’s generation quality.
+
+<details>
+<summary>
+Hint
+</summary>
+
+Inspect per-prompt seed diversity, evaluate object and relation constraints on a held-out prompt set, and repeat distribution evaluation with a matched sample count and reference split. A favorable aggregate feature statistic does not settle conditional coverage.
+
+</details>
+
+## Supplementary notes
+
+These optional notes explain a few distinctions that otherwise interrupt the main learning path.
+
+### Instantaneous velocity versus interval velocity
+
+This note derives the finite-interval quantity behind a large flow step.
+
+For a differentiable path satisfying $dx_t/dt=v(x_t,t)$, integration gives $x_b-x_a=\int_a^b v(x_\tau,\tau)d\tau$. Dividing by $b-a$ defines an average velocity. This average depends on the starting state and both endpoints of the time interval. It is generally different from $v(x_a,a)$, even if that instantaneous velocity is known exactly.
+
+A Taylor expansion gives an interval displacement of $h v+\tfrac12h^2(\partial_tv+(\nabla_xv)v)+O(h^3)$ around the start, for sufficiently smooth $v$. Here $h=b-a$, $\partial_tv$ is explicit time change, and $(\nabla_xv)v$ is the change caused by moving through the field. Euler discards the second and higher terms. A learned interval model aims to represent their combined effect instead of estimating each term separately during inference. The expansion explains the local error mechanism; it does not guarantee that fitting an interval network is easy.
+
+### Three meanings of teacher-free
+
+This note separates claims that can otherwise sound identical.
+
+A method can avoid a **pretrained diffusion checkpoint**, avoid **precomputed teacher endpoint pairs**, or avoid **all target networks**. These are different properties. Direct consistency or shortcut training may use self-targets or moving-average parameters while avoiding a separately pretrained teacher. DMD2 avoids an offline paired endpoint dataset but still uses a pretrained target score. Removing a precomputed dataset changes storage and target-generation cost, not necessarily the total compute needed to train a useful model.
+
+Read a training diagram by marking which weights are frozen, which track a moving average, which are optimized, where gradients stop, and whether any path runs a multi-step sampler. That audit often resolves ambiguous marketing descriptions without introducing a new method category.
+
+## Paper guides
+
+These optional introductions explain the design, evidence and limitations of the key papers. Their benchmark values are quoted from the papers, not reproduced by the small experiments in this chapter.
+
+### Progressive Distillation: two teacher moves in one student move (ICLR 2022)
+
+#### Challenge
+
+An accurate diffusion sampler can require many network evaluations. Taking fewer updates with unchanged predictions introduces discretization error. Salimans and Ho instead ask a student to learn the effect of two deterministic teacher updates in one update [7]. The method amortizes integration into training: it does not claim that an ordinary denoising prediction is already a good full-sample endpoint.
+
+A useful distinction motivates the target. Given a noisy observation, several clean training images can be plausible, so ordinary squared-error denoising predicts an average. Given the noisy state and a deterministic teacher sampler, the teacher’s endpoint is fixed. Regressing that endpoint avoids averaging unrelated clean candidates, although it inherits the teacher’s particular sampling map.
+
+#### Method
+
+<Figure src={paperProgressiveSource} alt="A student learns the endpoint of two teacher steps, then becomes the next teacher; repeated halving reduces inference steps while requiring successive training stages." caption="Original paper figure 1 — A student learns the endpoint of two teacher steps, then becomes the next teacher; repeated halving reduces inference steps while requiring successive training stages." />
+
+*Figure source: [7], arXiv:2202.00512v2, PDF page 2. [Original PDF](https://arxiv.org/pdf/2202.00512).*
+
+**Teacher and schedule.** Start with a pretrained diffusion model and a deterministic DDIM sampler [5]. The state is $z_t=\alpha_t x+\sigma_t\epsilon$, where $x$ is data, $\epsilon$ standard Gaussian noise, and $\alpha_t,\sigma_t$ a signal/noise schedule. The student is initialized from the teacher with the same architecture. Times are sampled on the student’s discrete grid; the terminal state uses zero signal-to-noise ratio, matching pure-noise generation.
+
+**Two teacher steps.** For an interval from $t$ to $s$, first run the teacher to the midpoint and then to $s$, producing $z_s^{(2)}$. These operations are training-target construction. At deployment the student is not required to run them. The state and target retain the image or latent tensor shape; no extra sequence of intermediate states is supplied as a student input.
+
+**Invert the student update.** A single DDIM step is affine in its clean-image prediction. The required target is
+
+$$
+\widetilde x=\frac{z_s^{(2)}-(\sigma_s/\sigma_t)z_t}{\alpha_s-(\sigma_s/\sigma_t)\alpha_t}.
+$$
+
+Here $z_t$ is the shared starting state, $z_s^{(2)}$ the teacher endpoint, and $s<t$ a cleaner time. Predicting $\widetilde x$ reproduces those two teacher moves through the one-step DDIM formula. The student minimizes a schedule-weighted squared prediction error. This is not simply training against the original clean sample or the teacher’s first prediction.
+
+**Prediction parameterization.** Direct noise prediction becomes awkward at zero signal because conversion to a clean image divides by $\alpha_t$. The paper studies clean-image prediction, combined clean/noise prediction and velocity prediction, together with loss weights based on signal-to-noise ratio. For a variance-preserving schedule, a velocity target can be written $v=\alpha_t\epsilon-\sigma_t x$. This is a rotation of the clean/noise coordinates; its conversion properties help avoid a singular clean reconstruction at a noise-only boundary. Parameterization and loss weighting jointly determine which noise levels dominate training.
+
+**Progression.** After fitting an $N$-step student, use it as the next teacher and train an $N/2$-step student. Repeat until the desired budget is reached. Each stage only has to learn a factor-of-two compression, but every stage costs training and can transfer approximation errors to the next one. This is a curriculum over discretizations rather than a new forward corruption process.
+
+#### Results
+
+Table 2 reports unconditional CIFAR-10 FID [25], [22]: 9.12 at one model evaluation, 4.51 at two, 3.00 at four and 2.57 at eight. The inference computation falls, while the training stages supply the information that a coarse solver would otherwise miss. These are operating points of the progressively distilled family, not one model evaluated with an arbitrary external schedule. The four-step result preserves much more of the original model’s sample quality than an unmodified sampler at a similarly small budget.
+
+The paper also studies larger-resolution generation, but its CIFAR result should not be read as proof that one-step text-to-image generation has the same trade-off. The task, architecture, conditioning and evaluation distribution differ. Later papers may report different progressive-distillation baselines because they reimplement or retune the method; attach a baseline to the paper that measured it.
+
+#### Ablations
+
+Table 1 compares parameterizations **before distillation** on unconditional CIFAR-10. With clean-image prediction and truncated-SNR weighting, its deterministic sampler gives FID 2.51; noise prediction with the ordinary SNR weighting gives 2.91. The noise-prediction/truncated-SNR combination diverges. These results support stable output/weighting choices, not a claim that 2.51 is the one-step distilled score.
+
+The evaluation-count sweep above is a second important study: fewer stages of inference progressively worsen sample quality, so compression has a measurable limit. The paper also compares numerical integrators and studies prediction behavior across noise levels. It does not establish that repeatedly halving indefinitely can preserve an exact teacher distribution with a fixed finite network.
+
+#### Conclusion
+
+Learning a finite teacher transition is more effective than asking an unchanged denoiser to take a very large step. The target is analytically constructed by inverting the student’s deterministic update, and progressive halving provides a practical training curriculum.
+
+#### Problems
+
+The procedure requires a teacher, several training stages and compatible schedules. It preserves a selected deterministic coupling, including that coupling’s defects. Very small budgets still lose quality, and changes to guidance or conditioning after training need care. Consistency models supply a different endpoint-learning objective; distribution matching later relaxes the demand to reproduce each teacher trajectory [8], [16].
+
+### Consistency Models: the same endpoint along a path (ICML 2023)
+
+#### Challenge
+
+A diffusion sampler walks along a probability-flow trajectory to a near-clean endpoint. Consistency Models ask whether one network can predict that endpoint from any point on the path [8]. This makes one-step generation a direct prediction task while allowing multiple predictions when a larger budget is available.
+
+The challenge is not only speed. Two outputs can agree because they are both meaningless constants. A useful consistency model must be anchored at a clean boundary and trained on states that correspond to the same underlying trajectory. The paper presents both distillation from a pretrained score model and direct training from data, which should be distinguished when discussing teacher requirements.
+
+#### Method
+
+<Figure src={paperConsistencySource} alt="Points on the same probability-flow trajectory map toward a common endpoint; that consistency is distinct from forcing endpoints of unrelated trajectories to agree." caption="Original paper figure 2 — Points on the same probability-flow trajectory map toward a common endpoint; that consistency is distinct from forcing endpoints of unrelated trajectories to agree." />
+
+*Figure source: [8], arXiv:2303.01469v2, PDF page 3. [Original PDF](https://arxiv.org/pdf/2303.01469).*
+
+**Consistency function.** For a probability-flow path $\{x_t\}$, define $f(x_t,t)=x_\varepsilon$, where $\varepsilon>0$ is a small near-data boundary. The network output has the same shape as the image. A skip-connected parameterization
+
+$$
+f_\theta(x,t)=c_{\mathrm{skip}}(t)x+c_{\mathrm{out}}(t)F_\theta(x,t)
+$$
+
+uses scalar coefficients satisfying $c_{\mathrm{skip}}(\varepsilon)=1$ and $c_{\mathrm{out}}(\varepsilon)=0$. Here $F_\theta$ is the trainable network. It therefore returns the input exactly at the boundary. This boundary identity constrains the endpoint interpretation instead of leaving agreement unconstrained.
+
+**Consistency distillation.** Sample a real image, a noise level and Gaussian noise to obtain a noisy state. A pretrained score model and a numerical ODE step produce an estimate of the adjacent, cleaner state on the same path. The online model predicts an endpoint from the noisy state; a target model predicts an endpoint from the cleaner state. Minimize their distance, stopping gradients through the target. Target weights track an exponential moving average of online weights in the original distillation algorithm.
+
+With $x_{t_{n+1}}$ the noisier state and $\widehat x_{t_n}$ its teacher-produced neighbor, a discrete objective is $\mathbb E[\lambda(t_n)d(f_\theta(x_{t_{n+1}},t_{n+1}),\operatorname{sg}f_{\theta^-}(\widehat x_{t_n},t_n))]$. Here $d$ is a distance, $\lambda$ a weight, $\theta^-$ target parameters, and $\operatorname{sg}$ stops gradients. The solver, grid and metric affect the quality of the supervision even though they are not used by a one-step deployment.
+
+**Direct consistency training.** Replace the pretrained-score step with data-derived adjacent noise-level pairs constructed using a shared Gaussian noise realization. The theoretical connection is an asymptotic training argument; a finite pair is not literally a perfect ODE integration. The number of noise intervals and target updates are scheduled during training. This removes a separately pretrained teacher but does not remove self-targets or the need for a carefully designed loss.
+
+**Sampling.** Start from the high-noise distribution and evaluate the endpoint function once. For additional steps, add noise to the current prediction at a lower noise level and evaluate again. Intermediate re-noising lets the model refine a candidate at a different uncertainty level. Repeating the same input at the same time without the sampling construction is not equivalent.
+
+**Metric.** The original work compares pixel distances with LPIPS [30], a learned perceptual distance. LPIPS changes what errors are emphasized; it is not a likelihood. A perceptual consistency objective can improve appearance while leaving distribution or conditional errors that another metric detects.
+
+#### Results
+
+Table 1 reports CIFAR-10 FID 3.55 for one-step consistency distillation and 2.93 for two-step distillation. Its progressive-distillation comparison is 8.34 and 5.58 in that paper’s setup. Table 2 reports ImageNet 64 × 64 FID 6.20 for one step and 4.70 for two. Direct consistency training has different results: on that ImageNet task, 13.0 for one step and 11.1 for two. Distillation and direct training are therefore separate measured operating points, not interchangeable descriptions of one checkpoint.
+
+These results support the endpoint formulation and a useful inference-budget trade-off. The distinction between direct training and distillation is therefore essential to interpreting the tables. They do not imply that a one-step endpoint predictor reproduces every statistic of its teacher, nor that a small-image benchmark establishes high-resolution text-conditioning performance.
+
+#### Ablations
+
+The metric and solver study finds LPIPS more effective than the compared pixel losses for consistency distillation. At a fixed grid size, the second-order Heun construction outperforms Euler in its distillation targets; the selected configuration uses 18 grid points. These choices concern training-target construction, not an 18-step deployment. The direct-training studies show benefits from increasing the interval count during training and adjusting the moving-average schedule. The paper primarily plots these sweeps; assigning one universal numerical gain to “use Heun” across tasks would exceed the evidence.
+
+#### Conclusion
+
+Learning an endpoint function with a clean-boundary identity provides a principled route to one- and few-step generation. Distillation supplies teacher trajectories; direct training constructs its supervision from data and nearby noise levels.
+
+#### Problems
+
+Consistency errors can accumulate across time levels, self-targets can be inaccurate, and a finite discretization can differ from the ideal continuous relation. Original direct training trails distillation on several benchmarks. Later improved consistency training revises weighting and target choices [9]. A model’s useful sampler and noise schedule remain part of its definition; endpoint agreement alone is insufficient evidence of quality or diversity.
+
+### InstaFlow: reflow, then endpoint distillation (ICLR 2024)
+
+#### Challenge
+
+Directly regressing a one-step student onto a text-to-image diffusion sampler can be difficult. The teacher’s noise–image map can be highly curved and irregular even when its outputs are good. InstaFlow asks whether the map should be made easier **before** it is compressed [13]. Its answer combines text-conditioned reflow with endpoint distillation rather than treating one-step generation as a solver setting.
+
+The distinction matters experimentally: a reflow model sampled with one Euler step is not the same as a one-step model distilled from the reflow map. The former still predicts local velocity. The latter explicitly predicts the finite endpoint change.
+
+#### Method
+
+<Figure src={paperInstaflowSource} alt="Reflow changes the coupling toward straighter trajectories before endpoint distillation; one-step inference does not remove the preparation and teacher-generation work." caption="Original paper figure 3 — Reflow changes the coupling toward straighter trajectories before endpoint distillation; one-step inference does not remove the preparation and teacher-generation work." />
+
+*Figure source: [13], arXiv:2309.06380v2, PDF page 4. [Original PDF](https://arxiv.org/pdf/2309.06380).*
+
+**Initial transport.** A pretrained text-conditioned diffusion probability flow maps random noise $z$ to an image latent $x=\Phi(z,c)$ under prompt $c$. The frozen autoencoder defines how latents become images [11]. Sampling this map creates paired noise–image targets. This data generation consumes a multi-step teacher during training, even though inference can eventually use one student call.
+
+**Text-conditioned rectified flow.** Train a velocity field on linear interpolations $x_t=(1-t)z+tx$ with target $x-z$. The network also receives time and prompt embeddings. The endpoints are paired by the previous sampler rather than sampled independently. The regression objective is an expectation over pairs, prompts and times. This is a learned marginal velocity field; different training lines can still cross in intermediate regions.
+
+**Reflow.** Sample endpoints from the newly learned flow and repeat the coupling construction. In ideal conditions, reflow retains the endpoint marginal while reducing certain transport costs and tending toward straighter trajectories [12]. Finite data, approximate ODE solutions and imperfect neural fitting weaken the exact ideal statement. The paper uses a small number of reflow rounds because repeated rounds cost compute and can accumulate error.
+
+**One-step distillation.** Given the selected reflow teacher endpoint $\Phi_{\mathrm{RF}}(z,c)$, train a student displacement $g_\theta(z,c)$ so that
+
+$$
+\mathcal L=\mathbb E\,d\!\left(z+g_\theta(z,c),\Phi_{\mathrm{RF}}(z,c)\right).
+$$
+
+Here $d$ measures endpoint discrepancy in the chosen representation. The output $z+g_\theta$ is a full generated latent, not an instantaneous Euler prediction at an arbitrary intermediate time. The student remains stochastic through its random input, even though the conditional map is deterministic.
+
+**Architecture and conditioning.** The experiments compare a standard U-Net and a larger stacked-U-Net construction. Changing capacity affects quality and runtime, so the stacked result must not be presented as an objective-only ablation. Text-conditioned guidance is used when creating or sampling the learned flow; the selected prompt/guidance behavior is part of the target map. Distilling that behavior does not establish that all later text controls remain interchangeable.
+
+**Deployment.** One student inference followed by the autoencoder decoder produces an image. Teacher endpoint generation, reflow fitting and endpoint distillation are training costs. The original image autoencoder is still required. A reported one-step latency should state whether text encoding and decoding are included and should retain the paper’s hardware and resolution.
+
+#### Results
+
+The preliminary comparison on 5,000 COCO 2017 samples reports FID 40.9 for direct one-step distillation from Stable Diffusion 1.4, 68.3 for taking one Euler step of the preliminary two-rectified-flow model, and 31.0 after distilling that reflow model. These three rows isolate the central conceptual difference more clearly than one headline speed number.
+
+In the paper’s later trained system, the 0.9-billion-parameter one-step result gives COCO-2014 FID-30k 13.10 at a reported 0.09-second operating point. This is a different training setting from the preliminary rows above. The headline is an operating point under that system configuration, not a bound on what every prompt requires. The timing uses an A100 at batch size one. It should not be combined with another paper’s CPU, larger-image or cached-embedding latency to produce a method-only speedup.
+
+#### Ablations
+
+The preliminary reflow-plus-distillation comparison improves FID-5k from 40.9 to 31.0 over direct distillation with the U-Net. The stacked-U-Net direct-distillation baseline gives 52.0, whereas distilling the reflow mapping with the stacked network gives 24.6. More capacity alone therefore does not explain the benefit in that setup. Additional reflow is not uniformly better: the preliminary third-reflow stacked result is 26.3, worse than 24.6 for the second-reflow stacked result. A larger number of reflow rounds is not an automatic quality guarantee.
+
+The paper also studies guidance and training choices. Its evidence supports the combination under its measured conditions, not a theorem that every text-to-image model becomes easy to distill after exactly one reflow round.
+
+#### Conclusion
+
+Coupling design and endpoint approximation are distinct levers. Reflow can make the teacher map more suitable for a low-budget student, and endpoint distillation can then learn the complete displacement rather than relying on a single tangent prediction.
+
+#### Problems
+
+Endpoint data generation is expensive. Each reflow and distillation stage can introduce error, and the student remains bound to its selected teacher coupling. Quality still differs across budgets and capacities. Rare prompts, guidance extrapolation and high-resolution detail require separate evaluation. Distribution-matching methods later relax samplewise teacher correspondence, but add the problem of estimating the student distribution [16].
+
+### Latent Consistency Models: endpoints in a guided latent flow (2023)
+
+#### Challenge
+
+Pixel-space consistency models demonstrate fast generation, but high-resolution text-to-image synthesis commonly uses a pretrained latent diffusion model. LCM adapts consistency distillation to that setting and incorporates classifier-free guidance into the student [10]. The objective is not simply to run an unchanged latent denoiser fewer times; it is to predict the endpoint of its guided probability flow.
+
+Guidance is a central difficulty because conventional inference evaluates conditional and unconditional predictions separately. Compressing only unguided dynamics while retaining those extra calls would leave part of the inference cost untouched. The student therefore learns guidance-dependent behavior directly.
+
+#### Method
+
+<Figure src={paperLcmSource} alt="Compare solver and skipping-step choices at matched displayed sampling steps; faster convergence in these plots is evidence under the selected guidance/training setting." caption="Original paper figure 3 — Compare solver and skipping-step choices at matched displayed sampling steps; faster convergence in these plots is evidence under the selected guidance/training setting." />
+
+*Figure source: [10], arXiv:2310.04378v1, PDF page 8. [Original PDF](https://arxiv.org/pdf/2310.04378).*
+
+**Latent representation.** A pretrained encoder–decoder pair maps images into latents and back [11]. The consistency model acts on noisy image latents $z_t$, not RGB pixels. The output is a predicted clean latent of the same shape, decoded once for one-step generation. The representation reduces spatial computation but retains the autoencoder’s reconstruction limitations.
+
+**Endpoint parameterization.** For an epsilon-prediction teacher, the consistency function takes the form
+
+$$
+f_\theta(z,c,t)=c_{\mathrm{skip}}(t)z+c_{\mathrm{out}}(t)\frac{z-\sigma_t\widehat\epsilon_\theta(z,c,t)}{\alpha_t}.
+$$
+
+Here $z$ is the noisy latent, $c$ the prompt condition, $t$ time, and $\alpha_t,\sigma_t$ the forward-process coefficients. The skip/output functions enforce the clean boundary. The paper also discusses adapting the parameterization to other prediction targets. Conversion conventions must match the checkpoint; replacing an epsilon predictor with a velocity predictor without conversion changes the meaning of the endpoint estimate.
+
+**Guidance-conditioned flow.** The teacher combines conditional and unconditional noise predictions as $(1+\omega)\epsilon(z,c,t)-\omega\epsilon(z,\varnothing,t)$ in the paper’s convention. The student receives $\omega$ through an additional guidance embedding and learns the guided endpoint. Its distillation target is therefore a family of maps indexed by prompt and guidance strength, not one unguided endpoint reused at all strengths.
+
+**Consistency pairs.** A teacher solver advances the noisy latent to a cleaner time. The online student’s endpoint prediction is compared with a stopped-gradient moving-average target at that cleaner time. The paper uses a latent distance rather than requiring repeated pixel decoding through an image perceptual network for each target comparison. Teacher solvers are used to make training targets; the one-step student does not execute that solver at deployment.
+
+**Skipping intervals.** Ordinary neighboring times can be too close to provide a useful large-jump learning signal. LCM pairs states separated by a configurable number of grid indices. With an efficient solver, these skipped targets improve convergence. A skip interval describes training-pair separation, not the number of student inference calls.
+
+**One- and few-step inference.** A noise latent and prompt/guidance embeddings enter the endpoint model. One call gives a clean-latent estimate; more calls can use lower-noise re-noising and repeated prediction. The schedule and boundary coefficients belong to the trained pipeline. A standard diffusion scheduler is not automatically the right LCM scheduler.
+
+#### Results
+
+Table 1 evaluates the 512 × 512 setting on the paper’s LAION-Aesthetic-6+ protocol [31]. At guidance value 8, LCM gives FID 35.36, 13.31, 11.10 and 11.84 at one, two, four and eight steps. The corresponding CLIP scores, in the paper’s scaling, are 24.14, 27.83, 28.69 and 28.84. Four steps therefore improve FID substantially over one, and eight do not improve it further in that table.
+
+At 768 × 768 on its other evaluation subset, Table 2 reports FID 34.22, 16.32, 13.53 and 14.97. These are not directly comparable to the 512-resolution rows because the model, evaluation subset and resolution differ. They also should not be placed beside a COCO FID without identifying the changed reference distribution.
+
+#### Ablations
+
+The solver/skip study compares DDIM, DPM-Solver and DPM-Solver++ constructions with different skipped intervals [5], [6]. The plotted experiments show that choosing a useful skipped interval improves convergence and final quality at the same training budget. The selected DDIM configuration uses a skip of 20 grid indices. This is not a twenty-step inference requirement.
+
+The guidance sweep shows changing alignment and sample quality as guidance changes. No single value is universally best across metrics or resolutions. The one/two/four/eight-step tables themselves reveal a nonmonotonic budget effect: a consistency model is flexible, but additional calls do not guarantee improvement for every scheduler and metric. The paper reports plots for some training sweeps rather than exact tabulated component gains; those gains should not be invented.
+
+#### Conclusion
+
+Consistency distillation can operate in a pretrained guided latent flow. Guidance conditioning and skipped teacher intervals make the learning target fit the intended few-step use, while retaining a single decoder at output.
+
+#### Problems
+
+The student inherits latent compression, teacher quality and the guidance range used for training. One step remains a weaker operating point than several steps in these experiments. The method still needs teacher-based target construction and a compatible sampler. Its original experiments concern stated checkpoints and evaluation subsets; later adapters and deployment pipelines need their own evaluation. Later adversarial or distribution-matching methods change the objective and may use different data, so cross-paper score differences are not an isolated test of consistency.
+
+### Adversarial Diffusion Distillation: a teacher and a discriminator (ECCV 2024)
+
+#### Challenge
+
+A student trained only to imitate diffusion predictions may fail to generate sharp, realistic images at very small step counts. An adversarial generator can provide strong appearance supervision, but training a large image generator from scratch is difficult. ADD combines pretrained diffusion initialization, a frozen teacher and adversarial training [14].
+
+The design separates two signals: a discriminator evaluates realistic appearance, while a teacher-derived denoising target supplies diffusion-prior guidance. Their interaction is empirical. Neither component alone certifies prompt accuracy, and a visually sharp output is not evidence that all modes of the teacher’s distribution remain covered.
+
+#### Method
+
+<Figure src={paperAddSource} alt="The student receives both an adversarial signal and a diffusion-teacher distillation signal; training branches should not be counted as extra inference sampling steps." caption="Original paper figure 2 — The student receives both an adversarial signal and a diffusion-teacher distillation signal; training branches should not be counted as extra inference sampling steps." />
+
+*Figure source: [14], arXiv:2311.17042v1, PDF page 2. [Original PDF](https://arxiv.org/pdf/2311.17042).*
+
+**Student inputs.** Real images are noised using the student’s schedule, and a timestep is drawn from a small selected set. The largest timestep has zero terminal signal so that training includes the pure-noise boundary used at generation. Intermediate timesteps retain some source-image information, enabling few-step refinement rather than limiting the model to one unconditional noise input.
+
+**Pretrained initialization.** The student starts from pretrained denoiser weights. This provides a learned image prior and avoids asking the adversarial objective to discover the whole generation task from random parameters. The architecture remains a denoiser-style network with time and text conditioning. A one-step call is one trained operating point in that parameterization.
+
+**Adversarial path.** Generated and real images pass through a pretrained feature network. Lightweight trainable discriminator heads operate at multiple feature levels. The heads can be conditioned on text embeddings and, when input noise retains image information, on an embedding of the corresponding source image. A hinge objective trains the discriminator; the generator is rewarded for increasing its realness scores. Regularization stabilizes the discriminator, but its score is not an independently validated image-quality probability.
+
+**Distillation path.** The student’s clean prediction is noised again at a teacher noise level and passed through the frozen teacher. A stopped-gradient teacher denoising prediction becomes a reconstruction target. Noising is essential because the teacher expects a noisy input, not an arbitrary clean student output. A weighted discrepancy between the student prediction and this target supplies the distillation term. In the latent-diffusion setting, the paper finds a pixel-space distillation comparison useful for stable gradients; this involves the decoder during training.
+
+**Combined objective.** The generator minimizes $\mathcal L_G=\mathcal L_{\mathrm{adv}}+\lambda\mathcal L_{\mathrm{distill}}$. Here $\lambda$ balances two distinct supervision sources. The teacher is fixed, the discriminator heads are trained, and the student receives gradients from both paths. Stop-gradient handling prevents treating the teacher target as a trainable collaborator. Exponential and score-distillation-inspired time weights emphasize different teacher noise levels, changing the balance between diversity and alignment.
+
+**Inference.** The deployed student does not run the teacher or discriminator. It predicts from noise, with optional refinement at the trained noise levels, and the latent decoder produces pixels when applicable. The training feature network therefore affects learning cost but is not automatically part of deployment latency.
+
+#### Results
+
+The paper’s ablation configuration uses a smaller pretrained teacher/student and evaluates one student step on 5,000 COCO 2017 samples. Its default gives FID 20.6 and CLIP score 0.319. This is an ablation setting, not a universally applicable headline result for every SDXL-Turbo checkpoint.
+
+For the larger ADD-XL model, the one-step user preference study does not beat its SDXL teacher in both categories. The four-step study reports preference over the compared teacher configuration. Those are separate budgets and experimental conditions. Replacing “four steps” with “one step” in the conclusion would overstate the paper’s result. User preference concerns the sampled images and prompts in the study; it does not directly measure rare-mode coverage.
+
+#### Ablations
+
+Table 1 makes initialization’s role clear: random initialization gives FID 293.6 and CLIP score 0.065, compared with 20.6 and 0.319 for pretrained initialization. Distillation alone gives 315.6 and 0.076; adversarial loss alone gives 20.8 and 0.315; their exponentially weighted combination gives 20.6 and 0.319. The teacher contribution therefore needs to be interpreted in interaction with the other training choices, rather than assumed to dominate the score.
+
+Using neither image nor text discriminator conditioning gives 21.2/0.302; using both gives 20.6/0.319. The feature-network study also shows that a larger feature encoder does not necessarily improve the metric. Teacher-step counts of one, two and four give FIDs 20.6, 20.8 and 20.3 in that setup, supporting a cheap teacher target for the selected training configuration without proving that all longer teacher trajectories are unnecessary.
+
+#### Conclusion
+
+A large pretrained diffusion student can learn a very short generation procedure using both adversarial appearance supervision and a teacher-derived denoising signal. Pretraining and conditioning are important parts of the system.
+
+#### Problems
+
+Adversarial optimization can favor attractive but repetitive detail. The method needs careful loss weighting, data and discriminator design, and quality depends on the inference budget. Later LADD changes training representations to reduce image-feature and decoding overhead [15]. Speed comparisons must retain that distinction: cheaper training representations do not eliminate the final image decoder or guarantee the same objective at every scale.
+
+### DMD: matching a teacher-defined distribution (CVPR 2024)
+
+#### Challenge
+
+Endpoint distillation ties a student to the teacher’s image for each random seed. DMD instead seeks agreement between the **distributions** of their outputs [16]. This allows a student to use a different noise–image map while still generating the desired collection of images.
+
+A distribution objective is harder to implement than a paired image loss. The generator has no tractable image density, and its distribution changes every time its parameters are updated. A fixed teacher score alone does not describe that changing density and can encourage movement toward a limited set of target modes.
+
+#### Method
+
+<Figure src={paperDmdSource} alt="Compare the teacher-defined real score with the score fitted to generated samples; their discrepancy supplies distribution-matching gradients alongside the regression term." caption="Original paper figure 2 — Compare the teacher-defined real score with the score fitted to generated samples; their discrepancy supplies distribution-matching gradients alongside the regression term." />
+
+*Figure source: [16], arXiv:2311.18828v4, PDF page 3. [Original PDF](https://arxiv.org/pdf/2311.18828).*
+
+**Generator.** Initialize a one-step generator from a pretrained denoiser. Given random input $z$ and optional text/class condition $c$, it produces $x=G_\theta(z,c)$. The output has the teacher’s image or latent representation. Randomness is supplied by $z$; deterministic evaluation of $G_\theta$ does not imply deterministic outputs across random seeds.
+
+**Noised comparison space.** Add noise $x_t=\alpha_tx+\sigma_t\epsilon$. Comparing noised distributions avoids clean-support singularities and lets diffusion denoisers supply scores. The selected time distribution and weighting control which scales of discrepancy receive emphasis. Near-clean and high-noise comparisons contain different information.
+
+**Target score.** A fixed pretrained diffusion model estimates the teacher-defined target score $s_{\mathrm{target}}(x_t,t,c)$. Calling this the “real score” in a diagram does not make it exact access to the true image distribution. It reflects the quality, conditioning and calibration of the pretrained teacher.
+
+**Student score.** A second diffusion denoiser is trained on the current generator’s samples, using known added noise or clean-sample targets. It estimates $s_{\mathrm{student}}$. Its parameters change as the generator distribution changes. The generator update uses a stopped-gradient difference of the two scores as a direction back through $G_\theta$; it need not backpropagate a full Jacobian through the teacher denoiser.
+
+**Distribution gradient.** Under the noised-distribution construction, the practical update is proportional to $\mathbb E[w(t)\alpha_t(s_{\mathrm{student}}-s_{\mathrm{target}})\partial_\theta G_\theta]$. Here $w(t)$ normalizes or weights noise-level contributions. The difference includes a correction for probability mass already supplied by the student. It is not equivalent to simply maximizing teacher likelihood for every generated image.
+
+**Regression regularizer.** Original DMD also prepares noise–image pairs using a deterministic teacher sampler. A regression/perceptual loss pulls selected generator outputs toward those endpoints. This preserves coverage and stabilizes training while the learned student-score estimate is imperfect. The original objective therefore combines distribution freedom with some paired-map regularization; describing it as entirely free of trajectory supervision would omit a major component.
+
+**Alternating optimization.** Update the student-score network on generated samples and update the generator with the distribution gradient plus endpoint regularizer. These are different optimizers and targets. The teacher remains fixed. At inference only the generator and any representation decoder are needed; the auxiliary score network is a training expense.
+
+#### Results
+
+The ImageNet-64 comparison reports one-step FID 2.62. The zero-shot COCO-30k text-to-image table reports 512-resolution FID 11.49 for a 0.09-second operating point, while the measured teacher row is 8.78 at 2.59 seconds. These are the paper’s conditions and guidance choices, not a hardware-independent latency ratio. The student does not match every teacher score merely because it is much faster.
+
+The paper separately studies a higher-guidance training setting. Those rows should retain their guidance scale and initialization; a score from one setting cannot be attached to a latency or prompt score from another. Conditional quality and distribution quality can move differently when guidance changes.
+
+#### Ablations
+
+Table 2 isolates the losses. On CIFAR-10, removing distribution matching gives FID 3.82, removing regression gives 5.58, and the complete method gives 2.66. On ImageNet the corresponding values are 9.21, 5.61 and 2.62. Thus both signals contribute under that training recipe.
+
+Alternative timestep weights give CIFAR FIDs 3.60 and 3.71, compared with 2.66 for the selected weighting. This is evidence that gradient scale across noise levels matters. Visual comparisons also show reduced diversity without regression. They do not prove that the true ideal distribution objective requires regression; the practical score approximation and update dynamics are part of the observed failure. DMD2 investigates that distinction [19].
+
+#### Conclusion
+
+A teacher score and a learned student score provide a useful distribution-matching direction for a one-step generator. Endpoint regression stabilizes the original implementation, but also constrains some of the freedom the distribution objective was intended to provide.
+
+#### Problems
+
+A small generator loss does not independently verify that its auxiliary score is accurate. Monitor the changing generated distribution and the auxiliary denoising fit separately. The auxiliary score can lag behind the moving generator and bias its gradient. Teacher-score errors propagate to the target, and finite-noise comparisons do not fully certify clean-distribution coverage. Offline endpoint pairs cost storage and teacher sampling. Prompt conditioning and guidance must be matched in both score networks. DMD2 removes the endpoint dataset while explicitly addressing score-tracking stability and adding real-image supervision.
+
+### DMD2: tracking the student and using real data (NeurIPS 2024)
+
+#### Challenge
+
+DMD’s endpoint regularizer stabilizes training but requires expensive teacher-generated pairs and partly binds the student to a selected teacher map. DMD2 asks whether distribution matching can work without that dataset, and why simply deleting the regularizer fails [19]. It identifies inaccurate tracking of the changing student distribution as a central problem.
+
+A second issue is teacher quality. A frozen “real” score is a pretrained model’s estimate, not the true data density. If it contains systematic errors, matching it alone cannot supply corrective evidence from actual images. A third issue appears for multi-step students: their intermediate inference states can differ from noisy training states constructed by a teacher-style forward process.
+
+#### Method
+
+<Figure src={paperDmd2Source} alt="The generated-sample score model tracks the student, while real data also supplies adversarial training; the diagram separates those learning signals from generation." caption="Original paper figure 3 — The generated-sample score model tracks the student, while real data also supplies adversarial training; the diagram separates those learning signals from generation." />
+
+*Figure source: [19], arXiv:2405.14867v2, PDF page 6. [Original PDF](https://arxiv.org/pdf/2405.14867).*
+
+**Remove paired endpoint regression.** The generator is no longer trained against a precomputed image for each input noise seed. The fixed target score and trainable student score remain. This removes offline multi-step target construction and permits a different coupling, but it makes the quality of the score difference more important.
+
+**Two time scales.** Train the auxiliary student-score estimator more often than the generator, using five score updates per generator update in the reported configuration. The goal is to let it track the current output distribution before that distribution moves again. This costs training compute and does not make the auxiliary score exact. It addresses an optimization imbalance rather than adding an inference step.
+
+**Real-image discriminator.** Add a classification head to the auxiliary denoiser’s bottleneck features and train an adversarial objective using real and generated images at sampled noise levels. The shared representation supplies a compact discriminator rather than a completely separate large image network. Real images provide a supervision source that is not restricted to the teacher’s estimated density. The generator receives both distribution-matching and adversarial gradients.
+
+**Multi-step student.** For a student queried at several noise levels, initialize it from a pretrained denoiser and let its time-conditioned predictions generate a sequence. During training, simulate the student’s own preceding steps to construct the next input. This “backward simulation” reduces mismatch between states made by a forward corruption process and states visited by the deployed student. It is a training-data construction for the student’s trajectory; it does not restore the removed teacher-pair regression dataset.
+
+**Guidance and representation.** Target-score conditioning and generation prompts must agree. Distilling a guided teacher can bake guidance behavior into the short sampler. The latent decoder remains when the generator operates in image latents. Teacher, auxiliary denoiser and discriminator heads are required for training; inference can discard those auxiliary paths.
+
+**Why the parts differ.** More auxiliary updates improve tracking; real-data adversarial training supplies a different target signal; student-state simulation changes the input distribution for a multi-step generator. None is redundant with the others. In particular, the tracking change alone cannot remove a systematic error in the teacher’s target score, and adversarial training alone does not enforce the diffusion-derived distribution objective.
+
+#### Results
+
+On ImageNet-64, the paper reports one-step FID 1.51, and 1.28 with longer training. The teacher’s reported ODE-sampling FID is 2.32, while its SDE result is 1.36. “Surpasses the teacher” therefore needs the sampling comparator attached: beating one teacher sampler’s FID is not beating every teacher operating point or every quality measure.
+
+With the SDXL backbone on 10,000 COCO-2014 prompts, Table 2 reports one-step FID 19.01 and CLIP score 0.336, and four-step FID 19.32 and CLIP score 0.332. Patch FID improves from 26.98 to 20.86 at four steps. Different metrics therefore favor different budgets. The four-step teacher-comparison claims must not be silently reassigned to a one-step row, and the 10k protocol is distinct from a 30k evaluation.
+
+#### Ablations
+
+On ImageNet, original DMD gives FID 2.62. Deleting regression worsens it to 3.48. Adding the different update frequencies gives 2.61; adding the real-data GAN objective gives 1.51. GAN-only training gives 2.56, and the GAN variant with the update-frequency change gives 2.52. The complete combination improves over those individual components under the tested setting.
+
+For the four-step SDXL student, removing GAN training gives FID 26.90 and patch FID 27.66; the complete model gives 19.32 and 20.86. Removing distribution matching gives a superficially better full-image FID 13.77 but worse patch FID 27.96 and CLIP score 0.307 rather than 0.332. This is a particularly useful warning against one-number ranking. Removing student-state simulation gives FID 20.66 and patch FID 24.21, showing its role in this multi-step setting.
+
+#### Conclusion
+
+Distribution-matching distillation needs the student’s moving distribution to be tracked accurately. More balanced optimization removes the original endpoint regularizer, while real images and student-generated training states address different sources of error.
+
+#### Problems
+
+Training still involves large pretrained models, auxiliary updates and real-image data. Better benchmark scores do not certify rare-mode coverage or compositional correctness. Student-state simulation increases training work, and the best budget depends on the metric. The method reduces deployment sampling cost, but it does not make training cheap or eliminate all teacher biases. Later adversarial distribution approaches explore different ways to avoid auxiliary-score tracking [29].
+
+## References
+
+1. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, B. Poole, "Score-Based Generative Modeling through Stochastic Differential Equations," *ICLR*, 2021. [paper](https://arxiv.org/abs/2011.13456)
+2. Y. Lipman, M. Havasi, P. Holderrieth, et al., "Flow Matching Guide and Code," *arXiv tutorial*, 2024. [paper](https://arxiv.org/abs/2412.06264)
+3. T. Karras, M. Aittala, T. Aila, S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [source](https://arxiv.org/abs/2206.00364)
+4. X. Fan, Z. Wu, H. Wu, L. Cao, "A Survey on Pre-Trained Diffusion Model Distillations," *arXiv preprint, version 2*, 2025. [paper](https://arxiv.org/abs/2502.08364)
+5. J. Song, C. Meng, S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [paper](https://arxiv.org/abs/2010.02502)
+6. C. Lu, Y. Zhou, F. Bao, J. Chen, C. Li, J. Zhu, "DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps," *NeurIPS*, 2022. [paper](https://arxiv.org/abs/2206.00927)
+7. T. Salimans, J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [paper](https://arxiv.org/abs/2202.00512)
+8. Y. Song, P. Dhariwal, M. Chen, I. Sutskever, "Consistency Models," *ICML*, 2023. [paper](https://arxiv.org/abs/2303.01469)
+9. Y. Song, P. Dhariwal, "Improved Techniques for Training Consistency Models," *ICLR*, 2024. [paper](https://arxiv.org/abs/2310.14189)
+10. S. Luo, Y. Tan, L. Huang, J. Li, H. Zhao, "Latent Consistency Models: Synthesizing High-Resolution Images with Few-Step Inference," *arXiv preprint*, 2023. [paper](https://arxiv.org/abs/2310.04378)
+11. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+12. X. Liu, C. Gong, Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [paper](https://arxiv.org/abs/2209.03003)
+13. X. Liu, X. Zhang, J. Ma, J. Peng, Q. Liu, "InstaFlow: One Step is Enough for High-Quality Diffusion-Based Text-to-Image Generation," *ICLR*, 2024. [paper](https://arxiv.org/abs/2309.06380)
+14. A. Sauer, D. Lorenz, A. Blattmann, R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [paper](https://arxiv.org/abs/2311.17042)
+15. A. Sauer, F. Boesel, T. Dockhorn, A. Blattmann, P. Esser, R. Rombach, "Fast High-Resolution Image Synthesis with Latent Adversarial Diffusion Distillation," *SIGGRAPH Asia Conference Papers*, 2024. [paper](https://arxiv.org/abs/2403.12015) · [published version](https://doi.org/10.1145/3680528.3687625)
+16. T. Yin, M. Gharbi, R. Zhang, E. Shechtman, F. Durand, W. T. Freeman, T. Park, "One-step Diffusion with Distribution Matching Distillation," *CVPR*, 2024. [paper](https://arxiv.org/abs/2311.18828)
+17. T. H. Nguyen, A. Tran, "SwiftBrush: One-Step Text-to-Image Diffusion Model with Variational Score Distillation," *CVPR*, 2024. [paper](https://arxiv.org/abs/2312.05239)
+18. M. Zhou, H. Zheng, Z. Wang, M. Yin, H. Huang, "Score identity Distillation: Exponentially Fast Distillation of Pretrained Diffusion Models for One-Step Generation," *ICML*, 2024. [paper](https://arxiv.org/abs/2404.04057)
+19. T. Yin, M. Gharbi, T. Park, R. Zhang, E. Shechtman, F. Durand, W. T. Freeman, "Improved Distribution Matching Distillation for Fast Image Synthesis," *NeurIPS*, 2024. [paper](https://arxiv.org/abs/2405.14867)
+20. K. Frans, D. Hafner, S. Levine, P. Abbeel, "One Step Diffusion via Shortcut Models," *ICLR*, 2025. [paper](https://arxiv.org/abs/2410.12557)
+21. Z. Geng, M. Deng, X. Bai, J. Z. Kolter, K. He, "Mean Flows for One-step Generative Modeling," *NeurIPS*, 2025. [paper](https://arxiv.org/abs/2505.13447)
+22. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [source](https://arxiv.org/abs/1706.08500)
+23. A. Radford, J. W. Kim, C. Hallacy, et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, 2021. [paper](https://arxiv.org/abs/2103.00020)
+24. D. Ghosh, H. Hajishirzi, L. Schmidt, "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment," *NeurIPS Datasets and Benchmarks*, 2023. [paper](https://arxiv.org/abs/2310.11513)
+25. A. Krizhevsky, V. Nair and G. Hinton, “CIFAR-10 and CIFAR-100 datasets,” official dataset page; companion technical report: A. Krizhevsky, “Learning Multiple Layers of Features from Tiny Images,” 2009. [dataset and report](https://cave.cs.toronto.edu/kriz/cifar.html)
+26. J. Deng, W. Dong, R. Socher, L. Li,  Kai Li,  Li Fei-Fei, "ImageNet: A large-scale hierarchical image database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+27. T. Lin, M. Maire, S. Belongie, et al., "Microsoft COCO: Common Objects in Context," *ECCV*, 2014. [paper](https://arxiv.org/abs/1405.0312)
+28. L. Yang, Z. Zhang, Y. Song, et al., "Diffusion Models: A Comprehensive Survey of Methods and Applications," *ACM Computing Surveys*, 2023. [paper](https://arxiv.org/abs/2209.00796)
+29. Z. Yu, J. Yuan, H. Yang, et al., "DMAD: Distribution Matching as Adversarial Distillation for Fast Visual Generation," *arXiv preprint*, 2026. [paper](https://arxiv.org/abs/2610.02188)
+30. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+31. C. Schuhmann, R. Beaumont, R. Vencu, et al., "LAION-5B: An open large-scale dataset for training next generation image-text models," *NeurIPS Datasets and Benchmarks*, 2022. [paper](https://arxiv.org/abs/2210.08402)

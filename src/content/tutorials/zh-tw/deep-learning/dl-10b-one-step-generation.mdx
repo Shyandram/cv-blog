@@ -1,0 +1,824 @@
+---
+title: "單步生成"
+description: "從可重現的數值實驗理解單步預測，分辨軌跡蒸餾、一致性、reflow 與分布匹配，並完整衡量速度、品質及多樣性。"
+track: deep-learning
+order: 107
+level: advanced
+prereqs: [ml/ml-07-diffusion-flow-matching, deep-learning/dl-10-image-generation]
+tags: [diffusion-distillation, consistency-models, rectified-flow, one-step-generation, distribution-matching]
+published: 2026-11-02
+updated: 2026-11-06
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import endpointsFig from '../../../../assets/deep-learning/dl-10b-one-step-generation/oracle-endpoints.png';
+import pathsFig from '../../../../assets/deep-learning/dl-10b-one-step-generation/oracle-paths-error.png';
+
+import paperProgressiveSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-progressive-source.png';
+
+import paperConsistencySource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-consistency-source.png';
+
+import paperInstaflowSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-instaflow-source.png';
+
+import paperLcmSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-lcm-source.png';
+
+import paperAddSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-add-source.png';
+
+import paperDmdSource from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-dmd-source.png';
+
+import paperDmd2Source from '../../../../assets/deep-learning/dl-10b-one-step-generation/paper-dmd2-source.png';
+
+## 你將學到
+
+- 解釋為何一次局部去雜訊方向不一定能到達遠方端點。
+- 比較端點迴歸、一致性、重流與分布匹配。
+- 區分匹配教師軌跡與匹配輸出分布。
+- 理解以步長為條件的捷徑與平均速度目標。
+- 報告網路評估次數、完整延遲、對齊與多樣性。
+
+## 先看全貌
+
+<Callout type="tip" title="用最簡單的話說">
+畫畫老師通常會給你許多小指令：往這邊移動、再看一下、修正曲線、補上細節。如果只保留第一個指令，再把動作放大，圖就容易畫錯。想畫得快，需要換一種學法：學會完整動作、預測老師最後畫到哪裡，或學會成品應該長什麼樣子。這些方法都能加快作畫，但學習的東西不同。
+</Callout>
+
+擴散去雜訊器通常預測某個雜訊程度下的局部修正；單步生成器則必須把隨機輸入變成完整樣本。它需要學會**有限位移**，不能只把局部修正做得更有信心。本章整合擴散蒸餾、一致性模型、rectified flow，以及 shortcut／平均速度模型。有些借助預訓練教師，有些直接訓練生成器。「單步」描述推論方式，並不代表大家使用同一種訓練演算法。
+
+先讀 [ML 08：擴散模型與流匹配](/zh-tw/learn/ml/diffusion-flow-matching/)，理解加雜訊排程、預測目標與機率流方程式；[DLCV 12：影像生成](/zh-tw/learn/deep-learning/image-generation/) 則介紹整體管線與評估。本章聚焦：**把反覆迭代壓縮成一次或少數幾次呼叫時，究竟要改變什麼？** 超解析度以觀測影像為條件，另見[單步擴散超解析度](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/)。
+
+第一次先看數值實驗、方法家族表與評估原則，再挑一篇論文導讀。公式用來分辨訓練目標；不必先讀懂所有推導，才能掌握家族之間的差異。
+
+## 為什麼放大一步會不同
+
+**白話說。** 局部切線提供目前方向，不是到遠方端點的位移；局部預測準確，單步跳躍仍可能很差。
+
+將機率流或流匹配的常微分方程式寫成：
+
+$$
+\frac{dx_t}{dt}=v(x_t,t),\qquad x_{t+h}\approx x_t+h\,v(x_t,t).
+$$
+
+$x_t\in\mathbb R^d$ 是目前的影像或潛在向量，$t$ 是連續時間，$v$ 是瞬時速度，$h$ 是帶正負號的時間增量。右式是 Euler 更新。局部誤差取決於路徑上速度如何隨時間與位置改變；放大 $h$ 就忽略更多變化。即使神經網路更準確地預測同一個瞬時速度，也不會自動修好積分誤差。
+
+必須區分三種誤差：學到的向量場偏離目標，形成**模型誤差**；有限步求解器近似連續動態，形成**數值誤差**；推論的起始雜訊、條件或解析度與訓練不同，形成**分布不匹配**。改善其中一項不會消除另外兩項。機率流理論 [1] 說明理想邊際分布的連結，並不保證有限的神經取樣器精確遵循它。
+
+流匹配 [2] 也一樣。即使訓練配對沿直線內插，同一位置的邊際速度仍可能平均多組配對的方向，使實際軌跡彎曲。訓練內插線是直的，不等於學到的邊際流也筆直。
+
+### 已知精確分數函數的小實驗
+
+以下排除神經網路近似誤差，以等權重的四個二維高斯分布為目標。加入標準差 $\sigma$ 的高斯雜訊後，各成分變異數為 $a^2+\sigma^2$，其中原始標準差 $a=0.12$。精確分數函數為：
+
+$$
+s(x,\sigma)=-\frac{1}{a^2+\sigma^2}\sum_{j=1}^{4}w_j(x,\sigma)(x-\mu_j).
+$$
+
+$\mu_j$ 是第 $j$ 個成分的中心，$w_j$ 是在位置 $x$ 的正規化後驗權重。這種加性雜訊族以雜訊尺度參數化時，機率流方程式為 $dx/d\sigma=-\sigma s(x,\sigma)$ [3]。積分方向從大 $\sigma$ 到小 $\sigma$。
+
+起點取自**精確的加雜訊混合分布**，並非直接假設為標準高斯，因此能控制數值比較的條件。實際生成器還要處理起始分布與訓練邊界是否吻合。我們從同一批起點比較粗略 Euler 終點與高精度自適應 ODE 解；此誤差不是影像品質指標，也不是訓練模型的基準成績。
+
+```python
+import numpy as np
+from scipy.integrate import solve_ivp
+
+centers = np.array([[-1.7, 0.], [1.7, 0.], [0., -1.7], [0., 1.7]])
+base_var = 0.12**2
+sigma_start, sigma_end = 3.0, 0.04
+
+def score(x, sigma):
+    """Exact score of the equally weighted Gaussian mixture after Gaussian noising."""
+    var = base_var + sigma**2
+    delta = x[:, None, :] - centers[None, :, :]
+    logits = -(delta**2).sum(-1) / (2 * var)
+    weights = np.exp(logits - logits.max(1, keepdims=True))
+    weights /= weights.sum(1, keepdims=True)
+    return -(weights[:, :, None] * delta).sum(1) / var
+
+def euler(initial, steps):
+    x = initial.copy()
+    grid = np.linspace(sigma_start, sigma_end, steps + 1)
+    for s0, s1 in zip(grid[:-1], grid[1:]):
+        x += (s1 - s0) * (-s0 * score(x, s0))
+    return x
+
+rng = np.random.default_rng(7)
+initial = centers[rng.integers(4, size=512)] + np.sqrt(base_var + sigma_start**2) * rng.normal(size=(512, 2))
+shape = initial.shape
+solution = solve_ivp(lambda sigma, flat: (-sigma * score(flat.reshape(shape), sigma)).ravel(),
+                     (sigma_start, sigma_end), initial.ravel(), rtol=1e-9, atol=1e-10, dense_output=True)
+reference = solution.y[:, -1].reshape(shape)
+for steps in [1, 2, 4, 8, 16, 32, 64]:
+    estimate = euler(initial, steps)
+    rmse = np.sqrt(np.mean((estimate - reference)**2))
+    print(f'{steps:2d} evaluations: endpoint RMSE {rmse:.4f}')
+```
+
+```text
+ 1 evaluations: endpoint RMSE 0.8098
+ 2 evaluations: endpoint RMSE 0.5686
+ 4 evaluations: endpoint RMSE 0.3011
+ 8 evaluations: endpoint RMSE 0.1224
+16 evaluations: endpoint RMSE 0.0316
+32 evaluations: endpoint RMSE 0.0164
+64 evaluations: endpoint RMSE 0.0085
+```
+
+這些數字來自固定種子的實際執行。即使用精確分數函數，一次 Euler 評估仍有很大的終點誤差；增加評估次數才能更準確地跟隨彎曲路徑。參考解也是容許誤差很小的數值解，並非解析的封閉形式傳輸映射。
+
+<Figure src={endpointsFig} alt="四組散點圖比較相同的含雜訊起點：一次、四次、十六次 Euler 評估，以及高精度 ODE 參考解。一次評估留下許多位於模態之間的樣本。" caption="圖 1 — 即使分數函數精確，只減少評估次數、沒有改變預測目標，仍會產生積分誤差。這是合成數值實驗，不是影像模型的輸出。" />
+
+<Figure src={pathsFig} alt="左圖顯示朝四個高斯中心靠近的彎曲軌跡；右圖顯示 Euler 評估從一次增加至六十四次時，終點均方根誤差逐漸下降。" caption="圖 2 — 切線與有限位移不同。蒸餾與大步長目標要學的資訊，並不存在於單步 Euler 基準的局部預測裡。" />
+
+## 加速方法的地圖
+
+**白話說。** 分開看待更快積分既有模型，以及重新訓練端點、跳躍或分布預測器。
+
+| 家族 | 學習或改變什麼 | 需要獨立教師嗎？ | 主要限制 |
+| --- | --- | --- | --- |
+| 快速求解器 | 改善既有向量場的數值更新 | 使用原模型 | 少步準確度仍取決於向量場與排程 |
+| 漸進／軌跡蒸餾 | 把教師多步壓成學生一步 | 需要 | 遵循選定的教師映射 |
+| 一致性模型 | 同一路徑不同位置預測相同乾淨端點 | 蒸餾需要；直接訓練不需要 | 不同雜訊程度的端點預測須一致 |
+| Reflow 與端點蒸餾 | 先改善雜訊—影像耦合，再學直接映射 | 大型影像應用通常需要 | 拉直路徑與近似映射是兩個階段 |
+| 對抗蒸餾 | 寫實輸出與教師指引 | ADD／LADD 需要 | 判別器穩定性與多樣性 |
+| 分布匹配 | 學生輸出分布符合教師定義的目標 | 需要 | 學生分數模型必須追蹤持續變動的分布 |
+| Shortcut／平均速度 | 以時間區間為條件的有限位移 | 可從頭訓練 | 自我目標準確度、時間條件與邊界行為 |
+
+此表依擴散蒸餾綜述 [4] 區分目標，另加入直接訓練家族，因為本章談的是單步生成，不限於蒸餾。分類會重疊：DMD2 結合分布匹配與對抗目標；InstaFlow 結合 reflow 與端點蒸餾。檢查實際損失，比替模型貼上唯一標籤更有用。
+
+訓練學生前，先以 DDIM [5]、DPM-Solver [6] 作為基準。它們改善每次評估的離散化誤差，卻不會自行學出完整端點映射。拿沒有效率的教師取樣器比較，可能誇大蒸餾加速；中等步數表現良好的求解器，也未必能縮到一次評估。
+
+## 壓縮教師軌跡
+
+**白話說。** 教師為各含雜訊輸入指定目的地，端點迴歸讓學生直接重現選定的映射。
+
+### 漸進蒸餾
+
+Progressive Distillation [7] 反覆讓學生一步符合教師確定性的兩步。訓練後學生接任教師，再把步數減半，形成逐步放大跳躍的學習課程，避免新網路立刻近似完整映射。
+
+設確定性教師從 $z_t$ 經過中間時間到達 $z_s$。以乾淨預測 $\widehat x$ 表示的 DDIM 式單步更新為：
+
+$$
+z_s=\frac{\sigma_s}{\sigma_t}z_t+\left(\alpha_s-\frac{\sigma_s}{\sigma_t}\alpha_t\right)\widehat x.
+$$
+
+$z_t,z_s$ 是含雜訊狀態，$\alpha_t,\sigma_t$ 是訊號與雜訊排程係數。反解這個仿射方程式，就得到能重現教師兩步終點的學生目標。目標取決於教師映射與起點；它不同於一般乾淨影像去雜訊，後者的平方誤差最優解可能平均多個相容樣本。
+
+推論節省的計算轉移到訓練：教師要做多次評估來產生目標，且階段之間可能累積誤差。學生也依賴特定排程與輸出參數化；任意更換取樣器，不等於使用訓練好的程序。
+
+*選讀：[Progressive Distillation](#progressive-distillation教師兩步壓成學生一步iclr-2022)（見「論文導讀」）。完整目標、穩定參數化、原文成績與逐階段限制。*
+
+### 耦合也是目標的一部分
+
+從雜訊分布到影像分布可以有許多合法映射。教師軌跡選定一種**耦合**（coupling），指定哪個隨機輸入對應哪個輸出。匹配這組配對，比只匹配輸出分布更嚴格。
+
+例如對稱隨機輸入 $z$，$G_1(z)=\operatorname{sign}(z)$ 與 $G_2(z)=-\operatorname{sign}(z)$ 都有平衡的兩模態輸出分布，但逐樣本對應完全相反。配對迴歸會強烈懲罰交換兩者，即使邊際分布沒有改變。
+
+因此，單步生成不必然「太確定」。**隨機潛在輸入**經確定性映射仍能產生多樣輸出；模式崩潰發生在模型忽略隨機輸入，或只涵蓋少數目標模態時。把不同種子的無關終點拿來平均又是另一個問題：平均值可能落在模態之間，成為不合理樣本。
+
+## 一致性模型的端點一致性
+
+**白話說。** 不學下一個小修正，改學路徑最後到哪裡。同一路徑上的兩個狀態，應該給出同一個答案。
+
+一致性函數滿足：
+
+$$
+f(x_t,t)=f(x_s,s)=x_{\varepsilon}
+$$
+
+$x_t,x_s$ 位於同一條機率流軌跡，$x_{\varepsilon}$ 是小正邊界時間 $\varepsilon$ 的近乾淨端點。神經網路以以下參數化強制邊界條件：
+
+$$
+f_\theta(x,t)=c_{\mathrm{skip}}(t)x+c_{\mathrm{out}}(t)F_\theta(x,t),
+$$
+
+$F_\theta$ 是可學網路，$c_{\mathrm{skip}}(\varepsilon)=1$、$c_{\mathrm{out}}(\varepsilon)=0$。邊界因此回傳輸入，而非允許所有位置都輸出同一常數。邊界錨定與正確配對很重要；只要求兩個預測相等，仍有無用的平凡解。
+
+**一致性蒸餾**使用預訓練分數模型與求解器產生相鄰路徑狀態，讓較吵狀態的學生輸出，符合較乾淨狀態上停止梯度的目標網路輸出。**一致性訓練**則從資料、鄰近雜訊程度與共用雜訊建構配對，不需要獨立預訓練擴散教師 [8]。後續研究 [9] 修改權重、雜訊抽樣及目標更新；不能把最初設定當成所有一致性模型的最終形式。
+
+單步取樣在起始雜訊上評估 $f_\theta$；少步取樣則在端點預測之間，於較低雜訊程度重新加雜訊再預測。它不是反覆把同一確定性映射套用到自己的輸出。模型訓練的雜訊範圍與取樣排程必須相符。
+
+*選讀：[Consistency Models](#consistency-models沿同一路徑預測相同端點icml-2023)（見「論文導讀」）。邊界條件、蒸餾與直接訓練，以及一步和兩步結果的差異。*
+
+### 潛在一致性與引導
+
+Latent Consistency Models（LCM）在預訓練自動編碼器的潛在空間進行一致性蒸餾 [10]、[11]。空間計算減少，但仍有編解碼成本與重建限制。去雜訊器轉為受引導潛在機率流的端點預測器。
+
+一般無分類器引導結合有條件與無條件預測。LCM 將引導強度作為學生條件，蒸餾已引導的流，使每一步不必另做兩次去雜訊預測。可用引導範圍取決於訓練；蒸餾與原管線的相同引導數字，也可能因慣例和參數化而代表不同效果。
+
+LCM 的 skipping-step 配對跨越較遠的時間間隔，強化有限跳躍的端點目標，但仍依賴教師與訓練排程。一步可能比兩步或四步差；支援單步推論，不代表一步永遠是最佳設定。
+
+*選讀：[Latent Consistency Models](#latent-consistency-models受引導潛在流的端點2023)（見「論文導讀」）。引導端點參數化、跨步配對與原文的解析度別實驗。*
+
+## 先拉直路徑再蒸餾
+
+**白話說。** 教師的路線比較不繞，學生就較容易學完整動作。Reflow 先改變路徑，再以端點迴歸壓縮它。
+
+Rectified Flow [12] 以端點配對的內插訓練瞬時速度。每輪 reflow 先抽取雜訊 $z$，沿目前的流到達 $x=\Phi(z)$，再以這些**有耦合關係**的 $(z,x)$ 訓練下一個流，而非任意獨立配對雜訊和資料。目標為：
+
+$$
+x_t=(1-t)z+tx,\qquad
+\mathcal L_{\mathrm{reflow}}=\mathbb E\|v_\theta(x_t,t)-(x-z)\|_2^2.
+$$
+
+此處時間從雜訊端的 0 增加到資料端的 1；$v_\theta$ 是瞬時速度，$\Phi$ 是前一模型的端點映射。它與前面實驗的雜訊尺度方向不同，必須明示慣例，避免正負號反轉。
+
+理想 reflow 在假設成立時具分布保留與傳輸成本性質；有限網路和近似取樣仍會引入誤差。一輪 reflow 不保證所有軌跡都筆直，也可能仍需多次 Euler 評估。InstaFlow [13] 特別區分此階段與後續的單步端點蒸餾。
+
+端點學生可最小化 $d(G_\theta(z,c),\Phi_{\mathrm{reflow}}(z,c))$；$c$ 是文字條件，$d$ 是重建或感知距離。Reflow 改變配對並在理想情況保留邊際分布，端點迴歸再近似改變後的映射，兩者並非同一目標。
+
+*選讀：[InstaFlow](#instaflow先-reflow再蒸餾端點iclr-2024)（見「論文導讀」）。直接蒸餾、單步 reflow，以及先 reflow 再蒸餾，為什麼結果不同。*
+
+## 加入寫實度訊號
+
+**白話說。** 模仿教師終點也可能複製教師錯誤。判別器補上另一種訊號：輸出是否像目標資料？它能改善外觀，但仍須穩定訓練並檢查多樣性。
+
+Adversarial Diffusion Distillation（ADD）結合預訓練學生、凍結擴散教師與判別器 [14]。擴散蒸餾項把學生輸出拉向教師去雜訊目標；對抗項則在預訓練特徵空間獎勵寫實外觀。教師與判別器用於訓練，部署時不必再執行迭代教師取樣。
+
+一般生成器的對抗項可含 $-\mathbb E[D_\phi(G_\theta(z,c),c)]$，其中 $D_\phi$ 提供真實感分數，$G_\theta$ 是學生。判別器以自己的損失與正規化分辨真實、生成樣本；此分數不是影像真實或符合提示詞的校準機率。
+
+ADD 可在訓練過的少數雜訊程度間細化。LADD [15] 把對抗蒸餾移到潛在擴散特徵，減少訓練時反覆解碼像素及執行大型影像特徵編碼器的需求。比較成本時，要分別計入訓練的教師、判別器與特徵抽取，以及推論的最終解碼器。
+
+對抗與擴散損失都不自動保證多樣性。檢查不同種子的構圖、罕見概念與重複紋理；低 FID 仍可能伴隨條件覆蓋不足。實際資料、提示詞如何進入判別器與訓練穩定性，也都是比較條件。
+
+*選讀：[ADD](#adversarial-diffusion-distillation教師與判別器eccv-2024)（見「論文導讀」）。兩種訊號、初始化消融，以及一步和四步偏好結果的區別。*
+
+## 匹配分布，而非每個指定終點
+
+**白話說。** 學生可以學著產生正確的一整群影像，不必每個雜訊種子都複製教師的同一張圖。但學生一直變動，訓練也必須持續估計它目前的輸出分布。
+
+DMD [16] 訓練單步生成器，使用兩個擴散分數估計：凍結模型描述教師定義的目標分布；另一模型追蹤學生目前的輸出分布。在相同雜訊程度下，兩者的分數差提供把生成樣本移向目標的方向。
+
+令 $x=G_\theta(z,c)$、$x_t=\alpha_t x+\sigma_t\epsilon$，代表性的更新形式為：
+
+$$
+\nabla_\theta\mathcal L\approx
+\mathbb E\!\left[w(t)\alpha_t
+\left(s_{\mathrm{student}}(x_t,t,c)-s_{\mathrm{target}}(x_t,t,c)\right)
+\frac{\partial G_\theta(z,c)}{\partial\theta}\right].
+$$
+
+$z$ 是生成器的隨機輸入，$c$ 是條件，$\epsilon$ 是新抽取的高斯雜訊，$\alpha_t,\sigma_t$ 是加雜訊係數；$s=\nabla_x\log p_t(x\mid c)$ 是分數函數，$w(t)$ 是訓練權重。此式簡寫回傳生成器參數的向量—Jacobian 乘積。它使用近似分數與時間權重，並非直接、精確計算影像密度的 KL 散度。
+
+為什麼需要學生分數？只追隨目標分數可能把樣本推往少數吸引模態；分數差也考量學生已經放了多少機率質量。為什麼加雜訊？乾淨分布可能幾乎不重疊，加雜訊提供較平滑的比較空間。為什麼另訓練分數網路？學生更新後，其分布也變了，凍結教師無法描述它。
+
+原始 DMD 另以教師產生的雜訊—影像配對做迴歸，維持穩定與覆蓋，因此並非完全沒有軌跡目標。SwiftBrush 的變分分數蒸餾與 SiD 的分數恆等式目標 [17]、[18] 相關，但目標、權重與資料需求不同，不能視為同一公式的相同實作。
+
+### DMD2 改變了什麼
+
+DMD2 [19] 移除離線端點迴歸資料集，增加學生分數網路相對於生成器的更新頻率，並加入真實影像的對抗學習，以修正教師目標的偏差。圖中標為「real」的教師分數仍是近似，並非直接取得真實資料密度。
+
+多步學生訓練也模擬自己的中間取樣狀態，減少教師加雜訊輸入與實際學生路徑不符的問題。大型模型的四步成績不能當成相同模型的一步成績；表格每列都要連同骨幹、引導、步數與評估規則一起讀。
+
+*選讀：[DMD](#dmd匹配教師定義的分布cvpr-2024)、[DMD2](#dmd2追蹤學生加入真實資料neurips-2024)（見「論文導讀」）。分數網路、迴歸取捨、更新頻率消融與多步輸入模擬。*
+
+## 直接學習有限跳躍
+
+**白話說。** 網路可以學「這段時間要移動多遠」，不只學「現在往哪裡走」。輸入與目標改變後，就能不靠獨立教師，直接訓練大步長模型。
+
+### Shortcut 模型
+
+Shortcut 模型 [20] 以指定區間 $d$ 為條件，預測正規化位移 $s_\theta(x,t,d)$，更新為 $x'=x+d\,s_\theta(x,t,d)$。$d=0$ 時用流匹配速度目標提供基礎；較長區間則要求一次長跳符合兩次連續短跳：
+
+$$
+s(x,t,2d)=\tfrac12\left[s(x,t,d)+s(x+d\,s(x,t,d),t+d,d)\right].
+$$
+
+$t$ 是目前時間，$d$ 是短區間長度。第二項必須在**更新後的位置與時間**評估；以停止梯度的短跳目標訓練長跳。如果仍使用原時間，就改變了目標。
+
+流監督避免只靠任意自我一致性。模型可在同一訓練階段混合局部目標與自舉長跳。「無獨立教師」仍有自我目標、訓練成本與近似誤差；大步品質受容量與短跳目標準確度限制。
+
+### MeanFlow 的平均速度
+
+MeanFlow [21] 區分區間平均速度與端點的瞬時速度。以資料到雜訊的時間慣例定義：
+
+$$
+u(z_t,r,t)=\frac{1}{t-r}\int_r^t v(z_\tau,\tau)\,d\tau,\qquad
+z_r=z_t-(t-r)u(z_t,r,t).
+$$
+
+$r<t$，$z_t$ 是流上的狀態，$v$ 是瞬時速度，$u$ 是同一軌跡的區間平均速度。積分效果不能用一次 $v$ 評估取代；模型要直接學會這個平均效果。
+
+固定 $r$，沿路徑微分該定義，可得：
+
+$$
+u=v-(t-r)\left(\partial_tu+(\nabla_zu)v\right).
+$$
+
+這裡是沿狀態變動的全微分。訓練透過 Jacobian—向量乘積（JVP）及停止梯度目標計算，不必實體化整張影像的 Jacobian。流匹配建構用來替代未知邊際速度目標；它學的量與「放大 Euler 步長」不同。
+
+模型必須表示起始與終止時間。當 $r=t$，平均速度趨近瞬時速度；完整區間則由一次平均速度預測給出整段位移。理想恆等式只啟發目標，有限網路仍是近似。原文 JVP 消融也顯示，對哪些變數微分會實質影響結果。
+
+## 完整評估速度與品質的取捨
+
+**白話說。** 快速輸出仍必須完成原本任務。生成分布、條件、多樣性與總成本要一起評估。
+
+### 步數、評估次數與時間
+
+取樣一步是一次狀態更新；網路函數評估次數（NFE）計算網路執行。求解器每步可能多次評估，無分類器引導也可能各做有條件與無條件預測。把兩者合批雖只呼叫一次 API，仍處理雙倍樣本。應清楚說明計數慣例。
+
+完整延遲包含文字編碼、條件抽取、生成／去雜訊、解碼及後處理。分開模型載入與穩態推論，固定硬體、精度、解析度、批次大小與同步方式。單次執行的大模型也可能超過記憶體預算。
+
+已蒸餾進學生的引導是系統加速的一部分，但要報告可用範圍。若快取提示詞嵌入，也須明示；拿有快取的學生與沒有快取的教師比較，並非只測蒸餾效果。
+
+### 品質、符合度與多樣性
+
+FID [22] 比較影像特徵分布的平均與共變異數，不比較成對影像，也不直接檢查提示的關係是否成立。特徵模型、參考切分、樣本數與縮放都影響分數；FID-5k 與 FID-30k 是不同規則。
+
+CLIP 類分數 [23] 比較影像與文字嵌入，實作的正規化、尺度及骨幹可能不同。0.3 與 30 可能只是縮放慣例。GenEval [24] 以結構化規則檢查物件、數量、顏色與關係，補足分布指標和人類評估，而非取代它們。
+
+多樣性要跨提示詞檢查，也要固定提示詞、改變種子。模型可能涵蓋許多類別，卻每個提示都只畫一種構圖；反過來，變化很多也可能是忽略提示。保留隨機輸入不保證模型有善用它。
+
+### 正確閱讀基準表格
+
+CIFAR-10、類別條件 ImageNet、文字條件 COCO [25]、[26]、[27] 回答不同問題。低解析度無條件成績，不代表高解析度提示遵循能力；四步成績也不是一步的操作點。
+
+比較時記錄任務、骨幹與初始化、資料與教師、解析度、引導、NFE、總延遲與記憶體、分布品質、條件符合度、多樣性及有限樣本不確定性。個別元件的因果主張，優先看同篇論文的控制消融；跨論文數字無法排除資料、架構與訓練預算的差異。
+
+## 失敗模式與方法選擇
+
+**白話說。** 加速會轉移工作與假設，不會讓它們消失。先決定哪些行為必須保留，再挑目標。
+
+- **固定種子要有相同終點：** 可先考慮軌跡或端點迴歸；它保留特定耦合，也可能複製教師缺陷。
+- **需要彈性步數：** 一致性、shortcut 與區間條件模型支援多種預算，但須遵循訓練好的取樣程序。
+- **要改變分布，不要求逐樣本配對：** 分布匹配提供自由度；注意輔助分數落後、模態遺漏與穩定性。
+- **重視感知外觀：** 對抗項可能有幫助，仍須評估多樣性與條件符合度。
+- **不能使用預訓練教師：** 直接一致性、shortcut 或平均速度訓練可符合條件；仍要比較總訓練成本。
+
+單步模型可能繼承偏差、遺失罕見概念、過度擬合評估提示詞，或在蒸餾後改動控制時失敗。分布目標與自我目標也可能遇到分數不準、目標崩潰、邊界條件不良及訓練／測試輸入不匹配。窄範圍時間或引導訓練的模型，並非教師的通用替代品。
+
+## 現代觀點
+
+**白話說。** 研究逐漸轉向：有限推論預算下，應該學哪一種量？不同改進並不一定都在近似同一個去雜訊步驟。
+
+Fan 等人的蒸餾綜述 [4] 區分保真／輸出目標、軌跡方法及對抗方法，幫助辨識學生的監督與教師保留部分；類別並不互斥，例如 DMD2 同時使用分布和對抗訊號。Yang 等人的擴散綜述 [28] 將高效率取樣放在整體模型與應用中；流匹配指南 [2] 則從傳輸角度區分局部速度、端點耦合及數值積分。
+
+2023–2025 年的一致性、reflow、對抗與分布匹配，形成不同的少步影像生成路徑。Shortcut 與 MeanFlow [20]、[21] 另展示直接學有限跳躍的路線；類別條件基準不能直接外推為大型文字生成系統的能力。2026 年 DMAD 預印本 [29] 探討對抗分布匹配，避免另維護持續更新的學生分數網路；比較時要保留其預印本身分及較廣的視覺生成設定。
+
+開放問題包括罕見模態、組合控制、蒸餾後的編輯能力、超越特徵分布摘要的評估、訓練成本，以及跨解析度／領域轉移。復原任務還要求輸出符合特定觀測；[單步超解析度](/zh-tw/learn/deep-learning/one-step-diffusion-super-resolution/) 將加入這個限制。
+
+## 重點整理
+
+- 有限跳躍需要端點或位移目標，不只是把局部方向使用一次。
+- 區分求解器誤差、學得模型誤差與訓練／測試不匹配。
+- 軌跡迴歸保留選定的耦合，分布匹配則可學到不同耦合。
+- 一致性需要邊界錨定，重流則在壓縮步數前改變耦合。
+- 分布、對抗與平均速度目標提供不同監督，也有不同估計難題。
+- 比較品質、提示遵循與多樣性時，同時比較完整流程延遲及網路評估次數。
+
+## 練習
+
+1. **精確場與求解器誤差。** 固定分數評估次數，比較非均勻與均勻雜訊尺度網格。哪些位置應放較多點？答案是否取決於起始尺度？
+
+<details>
+<summary>
+提示
+</summary>
+
+觀察軌跡彎曲及成分歸屬急遽變化之處，從相同起點比較終點 RMSE。調整網格可以改善求解器，沒有改變分數函數；不能用特定起點調好網格後，就宣稱普遍最優。
+
+</details>
+
+2. **端點還是分布？** 對稱高斯 $z$ 下，比較 $G_1(z)=\operatorname{sign}(z)$ 與 $G_2(z)=-\operatorname{sign}(z)$ 的期望成對平方差與輸出機率。哪一種目標分得出兩者？
+
+<details>
+<summary>
+提示
+</summary>
+
+除零機率邊界外，兩輸出相差 2，平方差為 4；兩者都各以二分之一機率輸出兩個模態。理想邊際分布比較無法分辨，配對迴歸可以。
+
+</details>
+
+3. **錯誤的 shortcut。** 在兩次短跳公式中，把第二個時間 $t+d$ 改為 $t$。即使更新了位置，為什麼也不再是相同一致性關係？
+
+<details>
+<summary>
+提示
+</summary>
+
+向量場也隨時間變化。例如純量場 $v(x,t)=t$，兩次方向的差異完全來自時間推進。第二跳仍問原時間，就問錯了區間。
+
+</details>
+
+4. **計算整條管線。** 教師每次更新做兩次去雜訊預測，共 20 次更新；學生已蒸餾引導，共四次更新。兩者都各做一次文字編碼與解碼。求去雜訊評估比，說明實際時間比為何不同。
+
+<details>
+<summary>
+提示
+</summary>
+
+教師與學生分別為 40 與 4 次，比值 10。共同編解碼成本、批次效率、精度與記憶體行為都會改變時間比，應先建立含固定成本的模型。
+
+</details>
+
+5. **可疑的進步。** 學生 FID 較低，但提示關係正確率下降、不同種子輸出幾乎相同。在接受其保留教師品質前，提出三項檢查。
+
+<details>
+<summary>
+提示
+</summary>
+
+檢查固定提示的種子多樣性、保留提示集的物件及關係條件，並以相同樣本數與參考切分重做分布評估。單一彙總統計無法確定條件覆蓋。
+
+</details>
+
+## 補充資料
+
+以下選讀說明容易打斷主線的幾個概念差異。
+
+### 瞬時速度與區間速度
+
+本節推導大步長流更新背後的有限區間量。
+
+若可微路徑滿足 $dx_t/dt=v(x_t,t)$，積分給出 $x_b-x_a=\int_a^b v(x_\tau,\tau)d\tau$；除以 $b-a$ 定義平均速度。它取決於起始狀態與區間兩端，即使 $v(x_a,a)$ 已知精確，通常也不等於該瞬時速度。
+
+足夠平滑時，位移在起點附近展開為 $h v+\tfrac12h^2(\partial_tv+(\nabla_xv)v)+O(h^3)$。$h=b-a$，$\partial_tv$ 是顯式時間變化，$(\nabla_xv)v$ 是沿場移動造成的變化。Euler 捨棄二階以上項；區間模型想直接學合併效果。此展開解釋誤差來源，不保證網路容易擬合。
+
+### 無教師的三種意思
+
+本節區分聽起來相似、實際不同的三種主張。
+
+不使用**預訓練擴散模型**、不使用**預先計算的教師端點配對**、不使用**任何目標網路**，是不同性質。直接一致性或 shortcut 仍可能有自我目標、移動平均參數；DMD2 沒有離線端點資料，但仍用預訓練目標分數。移除資料集會改變儲存與目標生成成本，不等於降低所有訓練計算。
+
+讀訓練圖時標出凍結權重、移動平均權重、最佳化權重、停止梯度位置及多步取樣路徑，就能釐清許多含糊描述。
+
+## 論文導讀
+
+以下選讀說明重要論文的設計、證據與限制。基準數字來自原文，不是本章小實驗重現的成績。
+
+### Progressive Distillation：教師兩步壓成學生一步（ICLR 2022）
+
+#### 挑戰
+
+準確的擴散取樣器常需多次網路評估。Salimans 與 Ho [7] 不只減少原求解器步數，而讓學生學會教師確定性兩步的效果，把積分工作攤到訓練。
+
+含雜訊觀測可能對應多張乾淨圖，因此一般平方誤差去雜訊會學平均；固定起點與確定性教師後，教師終點則唯一。迴歸該終點可避免平均無關候選，但會繼承教師選定的映射。
+
+#### 方法
+
+<Figure src={paperProgressiveSource} alt="學生學習兩個教師步驟的終點，再成為下一個教師；重複減半降低推論步數，但需要逐階段訓練。" caption="原論文圖 1 — 學生學習兩個教師步驟的終點，再成為下一個教師；重複減半降低推論步數，但需要逐階段訓練。" />
+
+*圖片來源: [7], arXiv:2202.00512v2, PDF 第 2 頁. [原始 PDF](https://arxiv.org/pdf/2202.00512).*
+
+**教師與排程。** 使用預訓練擴散模型及確定性 DDIM [5]。$z_t=\alpha_t x+\sigma_t\epsilon$，其中 $x$ 為資料，$\epsilon$ 為標準高斯，$\alpha_t,\sigma_t$ 為排程。學生沿用架構及教師初始化，時間從學生網格抽樣；終端訊雜比為零，符合純雜訊生成。
+
+**教師兩步。** 從 $t$ 先走到中點，再到 $s$，產生 $z_s^{(2)}$。這只用來建構訓練目標；部署不執行教師。狀態與目標維持原影像／潛在張量形狀，不必把整串中間狀態輸入學生。
+
+**反解學生更新。** DDIM 單步對乾淨預測為仿射，所需目標為：
+
+$$
+\widetilde x=\frac{z_s^{(2)}-(\sigma_s/\sigma_t)z_t}{\alpha_s-(\sigma_s/\sigma_t)\alpha_t}.
+$$
+
+$z_t$ 是共同起點，$z_s^{(2)}$ 是教師終點，$s<t$ 是較乾淨時間。預測 $\widetilde x$ 即可透過單步 DDIM 重現教師兩步。學生最小化排程加權平方誤差，不是直接模仿原乾淨樣本或教師的第一次預測。
+
+**輸出參數化。** 純雜訊邊界下，從雜訊預測換算乾淨圖需除以 $\alpha_t$，容易奇異。原文比較乾淨、乾淨／雜訊組合及速度預測，搭配訊雜比權重。變異數保留排程的 $v=\alpha_t\epsilon-\sigma_t x$ 是乾淨／雜訊座標旋轉；參數化與權重共同決定不同雜訊程度的影響。
+
+**逐步壓縮。** 訓練 $N$ 步學生後讓它當教師，再訓練 $N/2$ 步模型。每階段只壓縮兩倍，但都要付出訓練成本並可能傳遞誤差。這是離散化的學習課程，沒有改變前向加雜訊程序。
+
+#### 結果
+
+表 2 的無條件 CIFAR-10 FID [25]、[22]：一次評估 **9.12**，兩次 **4.51**，四次 **3.00**，八次 **2.57**。這是逐階段蒸餾家族的操作點，不能解讀成任意替單一模型換排程。少步需要的資訊來自訓練，仍有品質代價。
+
+原文也研究較大解析度，但小影像結果不能直接證明單步文字生成的取捨。任務、條件與架構皆不同；後續論文重新實作的基準，也應歸於實際測量它的設定。
+
+#### 消融實驗
+
+表 1 比較的是**蒸餾前**參數化：乾淨預測加 truncated-SNR 的 FID 為 **2.51**，雜訊預測搭配一般 SNR 為 **2.91**；雜訊預測加 truncated-SNR 發散。2.51 並非單步蒸餾成績。
+
+評估次數掃描也顯示壓縮極限：減少推論會逐漸犧牲品質。求解器及雜訊程度分析不代表固定容量網路可無限減半仍精確保留教師分布。
+
+#### 結論
+
+學習有限教師轉移，比要求原去雜訊器直接跨大步更有效。解析反解更新式提供目標，逐次減半提供可行的訓練課程。
+
+#### 限制與問題
+
+方法仍需要教師、多階段訓練與相容排程，也保留特定確定性耦合的缺陷。極少步會降質，改動引導須謹慎。一致性 [8] 改學端點關係，分布匹配 [16] 則放寬逐軌跡對應。
+
+### Consistency Models：沿同一路徑預測相同端點（ICML 2023）
+
+#### 挑戰
+
+Consistency Models [8] 讓網路從機率流路徑任意位置預測近乾淨端點，將單步生成改為直接預測；預算較多時也能多次細化。
+
+只要求相等仍可能輸出無用常數，因此須乾淨邊界錨定與同一路徑配對。教師蒸餾與直接資料訓練，是不同的監督設定。
+
+#### 方法
+
+<Figure src={paperConsistencySource} alt="同一機率流軌跡的不同位置映向共同終點；不代表讓不同軌跡的終點全部相同。" caption="原論文圖 2 — 同一機率流軌跡的不同位置映向共同終點；不代表讓不同軌跡的終點全部相同。" />
+
+*圖片來源: [8], arXiv:2303.01469v2, PDF 第 3 頁. [原始 PDF](https://arxiv.org/pdf/2303.01469).*
+
+**一致性函數。** 路徑 $\{x_t\}$ 上定義 $f(x_t,t)=x_\varepsilon$，$\varepsilon>0$ 是近資料邊界，輸出與影像同形狀。使用跳接參數化：
+
+$$
+f_\theta(x,t)=c_{\mathrm{skip}}(t)x+c_{\mathrm{out}}(t)F_\theta(x,t)
+$$
+
+純量係數滿足 $c_{\mathrm{skip}}(\varepsilon)=1$、$c_{\mathrm{out}}(\varepsilon)=0$，$F_\theta$ 為訓練網路。因此邊界精確回傳輸入，賦予一致性明確的端點意義。
+
+**一致性蒸餾。** 從資料加雜訊取樣狀態，預訓練分數模型與 ODE 更新估計相鄰較乾淨狀態。線上模型的吵端預測符合目標網路的乾淨端預測，目標停止梯度，原演算法的目標權重追蹤線上權重的指數移動平均。
+
+離散目標為 $\mathbb E[\lambda(t_n)d(f_\theta(x_{t_{n+1}},t_{n+1}),\operatorname{sg}f_{\theta^-}(\widehat x_{t_n},t_n))]$。$x_{t_{n+1}}$ 較吵，$\widehat x_{t_n}$ 為教師鄰點，$d$ 是距離，$\lambda$ 是權重，$\theta^-$ 為目標參數，$\operatorname{sg}$ 停止梯度。求解器、網格及距離影響訓練品質，但單步部署不執行求解器。
+
+**直接訓練。** 用資料和共用高斯雜訊建構鄰近雜訊程度配對，取代教師更新。理論關係屬漸近論證，有限配對並非精確 ODE 步。時間區間數及目標更新隨訓練排程改變；沒有獨立教師仍有自我目標與損失設計。
+
+**取樣。** 從高雜訊評估一次端點函數；增加步數時，在較低程度重新加雜訊再預測。固定同一時間重複相同輸入，並不等價。
+
+**距離。** LPIPS [30] 是學得的感知距離，與像素損失強調不同誤差，但不是似然。外觀改善也可能伴隨其他分布或條件誤差。
+
+#### 結果
+
+表 1：CIFAR-10 一步蒸餾 FID **3.55**、兩步 **2.93**；同篇設定下漸進蒸餾為 **8.34／5.58**。表 2：ImageNet 64 × 64 一步／兩步蒸餾為 **6.20／4.70**，直接訓練則 **13.0／11.1**。直接訓練與蒸餾不能當成同一模型的同義描述。
+
+結果支持端點學習及預算取捨，但不保證完全重現教師統計，也不能從小影像直接外推高解析度文字條件能力。
+
+#### 消融實驗
+
+原文的距離／求解器研究顯示 LPIPS 優於比較的像素損失；固定網格下 Heun 目標優於 Euler，選用 **18** 個網格點。這是訓練建構，不是部署 18 步。直接訓練也受區間數和移動平均排程影響；曲線未列精確數值時，不捏造通用增益。
+
+#### 結論
+
+乾淨邊界恆等式搭配端點函數，提供單步與少步路徑。蒸餾由教師供給軌跡，直接訓練由資料及近鄰雜訊程度建構監督。
+
+#### 限制與問題
+
+自我目標誤差、跨時間一致性及有限離散化仍有限制。原始直接訓練在若干基準落後蒸餾，後續方法 [9] 改良權重與目標更新。模型定義也包含適用取樣器與排程。
+
+### InstaFlow：先 reflow，再蒸餾端點（ICLR 2024）
+
+#### 挑戰
+
+文字生成教師的雜訊—影像映射可能高度彎曲、難以直接迴歸。InstaFlow [13] 先用文字條件 reflow 改善映射，再做端點蒸餾。
+
+一步 Euler 的 reflow 模型仍預測局部速度；從 reflow 教師蒸餾的一步學生，則明確學有限終點位移。兩者須分開比較。
+
+#### 方法
+
+<Figure src={paperInstaflowSource} alt="Reflow 先調整耦合，使軌跡較直，再蒸餾終點；單步推論不會消除準備與教師產生資料的工作。" caption="原論文圖 3 — Reflow 先調整耦合，使軌跡較直，再蒸餾終點；單步推論不會消除準備與教師產生資料的工作。" />
+
+*圖片來源: [13], arXiv:2309.06380v2, PDF 第 4 頁. [原始 PDF](https://arxiv.org/pdf/2309.06380).*
+
+**初始傳輸。** 預訓練文字條件機率流將隨機 $z$ 映射至潛在影像 $x=\Phi(z,c)$，$c$ 是提示詞。固定自動編碼器 [11] 負責解碼。產生配對資料時仍要執行多步教師。
+
+**文字條件流。** 在 $x_t=(1-t)z+tx$ 上，以 $x-z$ 訓練速度，並輸入時間、提示詞嵌入。配對來自前一取樣器，不是獨立雜訊與資料；邊際速度的訓練線仍可能相交。
+
+**Reflow。** 從新流抽取終點，再建構耦合。理想條件下可保留邊際分布、改善傳輸成本並促進拉直 [12]；有限資料、ODE 與擬合誤差削弱精確性，因此輪數不宜無限制增加。
+
+**單步蒸餾。** 對教師端點 $\Phi_{\mathrm{RF}}(z,c)$，訓練學生位移 $g_\theta(z,c)$，使：
+
+$$
+\mathcal L=\mathbb E\,d\!\left(z+g_\theta(z,c),\Phi_{\mathrm{RF}}(z,c)\right).
+$$
+
+$d$ 衡量所選表示的端點差異。$z+g_\theta$ 是完整潛在樣本，不是任意時間的局部 Euler 預測。映射雖確定，隨機輸入仍提供生成隨機性。
+
+**架構與條件。** 原文比較一般 U-Net 與較大的堆疊 U-Net；容量同時影響品質與速度，不能當成純目標消融。提示與引導行為屬教師映射的一部分，蒸餾後不保證所有控制仍可互換。
+
+**部署。** 學生一次推論後解碼；教師資料生成、reflow 及端點訓練是訓練成本。仍需自動編碼器，計時須說明是否含文字編碼與解碼。
+
+#### 結果
+
+初步 COCO 2017 的 **5,000** 樣本比較：直接從 Stable Diffusion 1.4 蒸餾一步為 FID **40.9**，初步二輪 rectified-flow 模型直接走一步 Euler 為 **68.3**，再蒸餾其端點為 **31.0**。三者清楚顯示路徑與端點目標不同。
+
+後續完整系統的 **9 億**參數一步模型，在 COCO-2014 FID-30k 為 **13.10**、報告時間 **0.09 秒**，使用 A100、批次一。這與初步實驗是不同訓練設定；不能和其他 CPU、解析度或快取條件拼出純方法加速比。
+
+#### 消融實驗
+
+初步 U-Net 的 reflow 再蒸餾使 FID-5k 從 **40.9** 到 **31.0**；堆疊網路直接蒸餾為 **52.0**，reflow 再蒸餾為 **24.6**，顯示容量本身無法解釋改善。第三輪堆疊 reflow 為 **26.3**，反比第二輪 **24.6** 差；輪數更多不保證更好。
+
+引導與訓練研究支持特定實驗下的組合，不代表任意模型恰好一輪 reflow 就容易蒸餾。
+
+#### 結論
+
+耦合設計與端點近似是兩個工具。Reflow 可讓映射適合低預算學生，再由端點蒸餾學完整位移。
+
+#### 限制與問題
+
+產生教師端點昂貴，各階段都可能引入誤差，學生仍受選定耦合限制。罕見提示、引導外推與高解析細節需另測；分布匹配 [16] 放寬逐樣本對應，卻新增估計學生分布的問題。
+
+### Latent Consistency Models：受引導潛在流的端點（2023）
+
+#### 挑戰
+
+LCM [10] 將一致性蒸餾移到預訓練潛在擴散系統，並把無分類器引導納入學生。它改學已引導流的端點，不只是減少原去雜訊器的步數。
+
+一般引導分別評估有條件與無條件分支；若只壓縮未引導動態，仍留有額外成本，因此學生直接以引導強度為條件。
+
+#### 方法
+
+<Figure src={paperLcmSource} alt="在圖示相同取樣步數下，比較求解器與跳步選擇；較快收斂的證據限於選定引導、訓練設定。" caption="原論文圖 3 — 在圖示相同取樣步數下，比較求解器與跳步選擇；較快收斂的證據限於選定引導、訓練設定。" />
+
+*圖片來源: [10], arXiv:2310.04378v1, PDF 第 8 頁. [原始 PDF](https://arxiv.org/pdf/2310.04378).*
+
+**潛在表示。** 固定編解碼器 [11] 將影像映射至潛在空間。模型輸入 $z_t$、預測同形狀的乾淨潛在向量，再解碼一次。它減少空間計算，卻繼承壓縮限制。
+
+**端點參數化。** 對預測 epsilon 的教師，一致性函數形式為：
+
+$$
+f_\theta(z,c,t)=c_{\mathrm{skip}}(t)z+c_{\mathrm{out}}(t)\frac{z-\sigma_t\widehat\epsilon_\theta(z,c,t)}{\alpha_t}.
+$$
+
+$z$ 是吵的潛在向量，$c$ 是提示，$t$ 是時間，$\alpha_t,\sigma_t$ 是前向係數；跳接／輸出係數滿足乾淨邊界。換成速度教師須正確轉換，不能直接替換預測意義。
+
+**引導條件。** 原文教師組合為 $(1+\omega)\epsilon(z,c,t)-\omega\epsilon(z,\varnothing,t)$。學生新增 $\omega$ 嵌入，學習依提示與強度索引的一族端點映射，不是同一個未引導目標。
+
+**一致性配對。** 教師求解器走向較乾淨時間；線上端點預測符合停止梯度、移動平均目標的預測。潛在距離避免每組配對都解碼並跑大型感知網路；部署不執行教師求解器。
+
+**跨步區間。** 配對時間相隔可調網格索引數，避免太近的點無法提供大步學習訊號。此 skip 數字是訓練配對間隔，不是學生推論次數。
+
+**取樣。** 一次端點預測可直接解碼；少步則在較低雜訊重新加雜訊並預測。排程與邊界係數屬訓練好的管線，一般擴散 scheduler 不必然適用。
+
+#### 結果
+
+表 1 的 **512 × 512**、LAION-Aesthetic-6+ 規則 [31]、引導 **8**：一步／兩步／四步／八步 FID 為 **35.36／13.31／11.10／11.84**，CLIP 分數依原尺度為 **24.14／27.83／28.69／28.84**。四步 FID 明顯優於一步，八步沒有繼續改善。
+
+表 2 的 **768 × 768** FID 為 **34.22／16.32／13.53／14.97**。模型、解析度與子集不同，不能與 512 列或 COCO FID 直接比較。
+
+#### 消融實驗
+
+求解器／skip 研究比較 DDIM、DPM-Solver、DPM-Solver++ [5]、[6] 及不同間隔；適當跨步改善收斂。選定 DDIM 設定相隔 **20** 個網格索引，不代表推論 20 步。
+
+引導掃描呈現符合度與品質的取捨，沒有普遍最佳值。不同步數結果也非單調改善；只有曲線而無精確表列增益時，不補造數值。
+
+#### 結論
+
+一致性蒸餾可運作於受引導潛在流，藉引導條件與跨步教師配對，讓學習目標符合少步用途。
+
+#### 限制與問題
+
+學生繼承潛在壓縮、教師品質及訓練引導範圍；一步在原實驗仍弱於多步。教師目標與相容取樣器依然必要。後續轉接器和部署系統須各自驗證，跨論文分數差不是一致性目標的獨立測試。
+
+### Adversarial Diffusion Distillation：教師與判別器（ECCV 2024）
+
+#### 挑戰
+
+少步時只模仿擴散預測，可能產生不夠清晰的影像；大型對抗生成器從頭訓練也困難。ADD [14] 結合預訓練初始化、凍結教師與對抗學習。
+
+判別器提供外觀訊號，教師提供去雜訊先驗。兩者的互動須實驗驗證；清晰外觀不保證提示正確或完整保留模態。
+
+#### 方法
+
+<Figure src={paperAddSource} alt="學生同時接受對抗訊號與擴散教師蒸餾訊號；訓練支路不能算成額外推論取樣步驟。" caption="原論文圖 2 — 學生同時接受對抗訊號與擴散教師蒸餾訊號；訓練支路不能算成額外推論取樣步驟。" />
+
+*圖片來源: [14], arXiv:2311.17042v1, PDF 第 2 頁. [原始 PDF](https://arxiv.org/pdf/2311.17042).*
+
+**學生輸入。** 依學生排程對真實圖加雜訊，從少量時間點抽樣。最大時間的訊號為零，涵蓋生成用的純雜訊邊界；中間時間保留來源資訊，支援少步細化。
+
+**初始化。** 沿用預訓練去雜訊權重、時間與文字條件，使對抗目標不必從隨機參數發現整個生成任務。單步是此參數化的一個訓練操作點。
+
+**對抗路徑。** 真實與生成圖經預訓練特徵網路，由多層輕量判別頭評分。可輸入文字條件，保留來源資訊的時間點也可輸入來源影像嵌入。判別器用 hinge 目標與正規化，學生提高真實感評分；評分不是獨立驗證的品質機率。
+
+**蒸餾路徑。** 對學生乾淨預測重新加教師程度的雜訊，再交給凍結教師去雜訊；停止梯度的教師預測作為重建目標。教師期待吵的輸入，不能任意餵乾淨生成圖。原文在潛在系統採像素蒸餾比較取得穩定梯度，因此訓練包含解碼。
+
+**合併目標。** $\mathcal L_G=\mathcal L_{\mathrm{adv}}+\lambda\mathcal L_{\mathrm{distill}}$，$\lambda$ 平衡兩種監督。教師凍結、判別頭更新、學生接收兩路梯度。停止梯度及不同時間權重會影響符合度與多樣性。
+
+**推論。** 不執行教師或判別器；學生由雜訊預測，可在訓練時間點細化，再依需要解碼。訓練特徵網路不必包含在部署成本。
+
+#### 結果
+
+消融採較小的預訓練教師／學生、COCO 2017 的 **5,000** 樣本、一步學生；預設 FID **20.6**、CLIP **0.319**。這不是每個 SDXL-Turbo 模型都適用的頭條成績。
+
+ADD-XL 的一步人類偏好研究，並非兩個面向都優於 SDXL 教師；四步研究才報告優於比較教師設定。不能把四步結論改寫為一步，也不能由偏好直接推論罕見模態覆蓋。
+
+#### 消融實驗
+
+表 1：隨機初始化為 FID／CLIP **293.6／0.065**，預訓練為 **20.6／0.319**；只有蒸餾 **315.6／0.076**，只有對抗 **20.8／0.315**，指數加權合併 **20.6／0.319**。教師作用須連同其他設計解讀，不能假設它主導所有增益。
+
+判別器沒有影像／文字條件時為 **21.2／0.302**，兩者都有為 **20.6／0.319**；更大特徵編碼器不必然更好。教師一步／兩步／四步目標的 FID 為 **20.6／20.8／20.3**，支持該設定的廉價目標，不代表所有長教師軌跡都無用。
+
+#### 結論
+
+預訓練擴散學生可結合對抗外觀與教師去雜訊訊號學短程序；預訓練和條件設計都是系統的一部分。
+
+#### 限制與問題
+
+對抗最佳化可能偏好漂亮卻重複的細節，仍須調整權重、資料與判別器。LADD [15] 改變訓練表示以降低特徵／解碼成本，但最終解碼器並未消失，也不保證不同規模的目標完全等價。
+
+### DMD：匹配教師定義的分布（CVPR 2024）
+
+#### 挑戰
+
+DMD [16] 不要求每個隨機種子都對應教師同一張圖，而匹配**輸出分布**，允許學生使用不同的雜訊—影像映射。
+
+生成器密度難以計算，參數更新又持續改變分布。只用固定教師分數，無法描述學生密度，還可能把樣本集中到少數模態。
+
+#### 方法
+
+<Figure src={paperDmdSource} alt="比較教師定義的真實分數與擬合生成樣本的分數；兩者差異提供分布匹配梯度，另有回歸項。" caption="原論文圖 2 — 比較教師定義的真實分數與擬合生成樣本的分數；兩者差異提供分布匹配梯度，另有回歸項。" />
+
+*圖片來源: [16], arXiv:2311.18828v4, PDF 第 3 頁. [原始 PDF](https://arxiv.org/pdf/2311.18828).*
+
+**生成器。** 由預訓練去雜訊器初始化，輸入隨機 $z$ 及文字／類別條件 $c$，輸出 $x=G_\theta(z,c)$，形狀沿用影像或潛在表示。確定性網路仍可因不同 $z$ 產生多樣輸出。
+
+**加雜訊比較。** $x_t=\alpha_tx+\sigma_t\epsilon$ 提供較平滑、重疊的分布空間，也讓擴散模型可估計分數。時間抽樣與權重控制不同尺度差異的影響。
+
+**目標分數。** 凍結教師估計 $s_{\mathrm{target}}(x_t,t,c)$；圖中「real score」仍是預訓練模型估計，並非精確真實資料密度。
+
+**學生分數。** 另一去雜訊器以目前生成樣本及已知新增雜訊訓練，估計 $s_{\mathrm{student}}$。學生變動時也要更新它；生成器用停止梯度的兩分數差取得方向，不必反傳教師的完整 Jacobian。
+
+**分布梯度。** 實際更新正比於 $\mathbb E[w(t)\alpha_t(s_{\mathrm{student}}-s_{\mathrm{target}})\partial_\theta G_\theta]$。$w(t)$ 調整雜訊程度貢獻。學生分數修正其已有機率質量，因此不同於只最大化每張圖的教師似然。
+
+**迴歸正規化。** 原始 DMD 另用確定性教師產生雜訊—端點配對，以重建／感知損失穩定訓練、維持覆蓋。因此原方法同時有分布自由度與配對限制，不能稱為完全沒有軌跡監督。
+
+**交替更新。** 分數網路學目前樣本密度；生成器以分布梯度及端點項更新；教師不動。部署只保留生成器及必要解碼器，輔助分數網路是訓練成本。
+
+#### 結果
+
+ImageNet-64 的一步 FID 為 **2.62**。零樣本 COCO-30k、512 解析度的學生 FID **11.49**、時間 **0.09 秒**；原文教師列為 **8.78**、**2.59 秒**。此時間依硬體與引導設定而定，快速學生仍未匹配每個教師品質分數。
+
+原文另研究較高引導訓練，須保留各列的引導與初始化。不能把一列品質配上另一列延遲；條件與分布品質也可能隨引導往不同方向變動。
+
+#### 消融實驗
+
+表 2：CIFAR-10 移除分布匹配為 FID **3.82**、移除迴歸 **5.58**、完整 **2.66**；ImageNet 對應為 **9.21／5.61／2.62**。此配方下兩項皆有貢獻。
+
+其他時間權重的 CIFAR FID 為 **3.60、3.71**，預設 **2.66**，顯示雜訊程度的梯度尺度重要。移除迴歸也出現多樣性下降，但不代表理想分布目標必然需要迴歸；近似分數與更新動態也是因素，DMD2 [19] 進一步檢驗。
+
+#### 結論
+
+教師分數與學得的學生分數提供分布方向；原始端點迴歸能穩定訓練，同時限制分布目標原本允許的部分自由度。
+
+#### 限制與問題
+
+小生成器損失不代表輔助分數準確。應分別監測樣本分布及去雜訊擬合，注意追蹤落後、教師偏差、有限雜訊與乾淨覆蓋的差異。離線端點要付出儲存與教師取樣成本，兩個分數網路的條件／引導也必須相符。DMD2 針對穩定性移除端點資料，並加入真實影像訊號。
+
+### DMD2：追蹤學生，加入真實資料（NeurIPS 2024）
+
+#### 挑戰
+
+DMD2 [19] 問：移除昂貴的教師端點資料後，為什麼分布匹配會不穩？關鍵之一是輔助分數未能準確追蹤變動學生分布。
+
+另一問題是固定教師的系統偏差；只匹配它無法取得真實影像的修正證據。多步學生還有訓練的前向加雜訊狀態與實際推論中間狀態不匹配。
+
+#### 方法
+
+<Figure src={paperDmd2Source} alt="生成樣本分數模型追蹤學生，真實資料另提供對抗訓練；圖中區分這些學習訊號與生成路徑。" caption="原論文圖 3 — 生成樣本分數模型追蹤學生，真實資料另提供對抗訓練；圖中區分這些學習訊號與生成路徑。" />
+
+*圖片來源: [19], arXiv:2405.14867v2, PDF 第 6 頁. [原始 PDF](https://arxiv.org/pdf/2405.14867).*
+
+**移除端點迴歸。** 保留固定目標分數及可訓練學生分數，不再以種子配對預計算影像。節省離線多步目標，但更依賴分數差準確度。
+
+**雙時間尺度。** 原設定每次生成器更新前，輔助分數更新 **5** 次，讓密度估計先跟上目前分布。這增加訓練成本，不增加推論步，也不讓分數自動精確。
+
+**真實影像判別器。** 在輔助去雜訊器瓶頸特徵加分類頭，以不同雜訊程度的真實／生成圖做對抗學習。共用表示避免獨立大型判別網路，提供超出教師密度的監督。生成器接收分布及對抗梯度。
+
+**多步學生。** 訓練以學生自己的先前取樣步產生下一個輸入，稱為 backward simulation，減少前向加雜訊與部署狀態的不匹配。它模擬學生軌跡，不是恢復已移除的教師端點迴歸資料。
+
+**引導與表示。** 目標分數條件須符合生成提示，可把教師引導蒸餾進學生。潛在模型仍要解碼；教師、輔助去雜訊器與判別頭皆可在推論移除。
+
+三項設計分工不同：額外分數更新改善追蹤；真實對抗資料修正教師目標偏差；狀態模擬改變多步訓練輸入。單靠追蹤不會消除教師偏差，單靠對抗也不等於擴散分布目標。
+
+#### 結果
+
+ImageNet-64 一步 FID **1.51**，延長訓練為 **1.28**。教師 ODE 取樣 **2.32**，SDE **1.36**；「超越教師」必須說明比較哪個取樣器，而非宣稱所有操作點及指標皆更好。
+
+表 2 的 SDXL、COCO-2014 **10,000** 提示：一步 FID **19.01**、CLIP **0.336**；四步 **19.32／0.332**。四步 patch FID 則從 **26.98** 改善為 **20.86**，顯示指標偏好的步數不同。10k 與 30k 規則也不同，不能互換。
+
+#### 消融實驗
+
+ImageNet 消融：原 DMD **2.62**，刪迴歸 **3.48**，加入不同更新頻率 **2.61**，再加入真實 GAN **1.51**。GAN-only 為 **2.56**，加更新頻率為 **2.52**；完整組合優於這些單獨設計。
+
+四步 SDXL 移除 GAN 為 FID／patch FID **26.90／27.66**，完整 **19.32／20.86**。移除分布匹配的整圖 FID 反而 **13.77**，但 patch FID **27.96**、CLIP **0.307**，差於完整 **0.332**。移除狀態模擬為 **20.66／24.21**。只看一個指標會得出錯誤排序。
+
+#### 結論
+
+分布蒸餾需要準確追蹤學生。平衡更新可取代原始端點正規化，真實資料與學生狀態則分別處理目標和輸入誤差。
+
+#### 限制與問題
+
+訓練仍需大型預訓練模型、輔助更新與真實資料。基準改善不保證罕見模態或組合正確性；狀態模擬也增加訓練工作。部署變快不代表訓練廉價或完全沒有教師偏差；後續對抗分布方法 [29] 探討其他免追蹤途徑。
+
+## 參考文獻
+
+1. Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, B. Poole, "Score-Based Generative Modeling through Stochastic Differential Equations," *ICLR*, 2021. [paper](https://arxiv.org/abs/2011.13456)
+2. Y. Lipman, M. Havasi, P. Holderrieth, et al., "Flow Matching Guide and Code," *arXiv tutorial*, 2024. [paper](https://arxiv.org/abs/2412.06264)
+3. T. Karras, M. Aittala, T. Aila, S. Laine, "Elucidating the Design Space of Diffusion-Based Generative Models," *NeurIPS*, 2022. [source](https://arxiv.org/abs/2206.00364)
+4. X. Fan, Z. Wu, H. Wu, L. Cao, "A Survey on Pre-Trained Diffusion Model Distillations," *arXiv preprint, version 2*, 2025. [paper](https://arxiv.org/abs/2502.08364)
+5. J. Song, C. Meng, S. Ermon, "Denoising Diffusion Implicit Models," *ICLR*, 2021. [paper](https://arxiv.org/abs/2010.02502)
+6. C. Lu, Y. Zhou, F. Bao, J. Chen, C. Li, J. Zhu, "DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps," *NeurIPS*, 2022. [paper](https://arxiv.org/abs/2206.00927)
+7. T. Salimans, J. Ho, "Progressive Distillation for Fast Sampling of Diffusion Models," *ICLR*, 2022. [paper](https://arxiv.org/abs/2202.00512)
+8. Y. Song, P. Dhariwal, M. Chen, I. Sutskever, "Consistency Models," *ICML*, 2023. [paper](https://arxiv.org/abs/2303.01469)
+9. Y. Song, P. Dhariwal, "Improved Techniques for Training Consistency Models," *ICLR*, 2024. [paper](https://arxiv.org/abs/2310.14189)
+10. S. Luo, Y. Tan, L. Huang, J. Li, H. Zhao, "Latent Consistency Models: Synthesizing High-Resolution Images with Few-Step Inference," *arXiv preprint*, 2023. [paper](https://arxiv.org/abs/2310.04378)
+11. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+12. X. Liu, C. Gong, Q. Liu, "Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow," *ICLR*, 2023. [paper](https://arxiv.org/abs/2209.03003)
+13. X. Liu, X. Zhang, J. Ma, J. Peng, Q. Liu, "InstaFlow: One Step is Enough for High-Quality Diffusion-Based Text-to-Image Generation," *ICLR*, 2024. [paper](https://arxiv.org/abs/2309.06380)
+14. A. Sauer, D. Lorenz, A. Blattmann, R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [paper](https://arxiv.org/abs/2311.17042)
+15. A. Sauer, F. Boesel, T. Dockhorn, A. Blattmann, P. Esser, R. Rombach, "Fast High-Resolution Image Synthesis with Latent Adversarial Diffusion Distillation," *SIGGRAPH Asia Conference Papers*, 2024. [paper](https://arxiv.org/abs/2403.12015) · [published version](https://doi.org/10.1145/3680528.3687625)
+16. T. Yin, M. Gharbi, R. Zhang, E. Shechtman, F. Durand, W. T. Freeman, T. Park, "One-step Diffusion with Distribution Matching Distillation," *CVPR*, 2024. [paper](https://arxiv.org/abs/2311.18828)
+17. T. H. Nguyen, A. Tran, "SwiftBrush: One-Step Text-to-Image Diffusion Model with Variational Score Distillation," *CVPR*, 2024. [paper](https://arxiv.org/abs/2312.05239)
+18. M. Zhou, H. Zheng, Z. Wang, M. Yin, H. Huang, "Score identity Distillation: Exponentially Fast Distillation of Pretrained Diffusion Models for One-Step Generation," *ICML*, 2024. [paper](https://arxiv.org/abs/2404.04057)
+19. T. Yin, M. Gharbi, T. Park, R. Zhang, E. Shechtman, F. Durand, W. T. Freeman, "Improved Distribution Matching Distillation for Fast Image Synthesis," *NeurIPS*, 2024. [paper](https://arxiv.org/abs/2405.14867)
+20. K. Frans, D. Hafner, S. Levine, P. Abbeel, "One Step Diffusion via Shortcut Models," *ICLR*, 2025. [paper](https://arxiv.org/abs/2410.12557)
+21. Z. Geng, M. Deng, X. Bai, J. Z. Kolter, K. He, "Mean Flows for One-step Generative Modeling," *NeurIPS*, 2025. [paper](https://arxiv.org/abs/2505.13447)
+22. M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, S. Hochreiter, "GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium," *NeurIPS*, 2017. [source](https://arxiv.org/abs/1706.08500)
+23. A. Radford, J. W. Kim, C. Hallacy, et al., "Learning Transferable Visual Models From Natural Language Supervision," *ICML*, 2021. [paper](https://arxiv.org/abs/2103.00020)
+24. D. Ghosh, H. Hajishirzi, L. Schmidt, "GenEval: An Object-Focused Framework for Evaluating Text-to-Image Alignment," *NeurIPS Datasets and Benchmarks*, 2023. [paper](https://arxiv.org/abs/2310.11513)
+25. A. Krizhevsky, V. Nair and G. Hinton, “CIFAR-10 and CIFAR-100 datasets,” official dataset page; companion technical report: A. Krizhevsky, “Learning Multiple Layers of Features from Tiny Images,” 2009. [dataset and report](https://cave.cs.toronto.edu/kriz/cifar.html)
+26. J. Deng, W. Dong, R. Socher, L. Li,  Kai Li,  Li Fei-Fei, "ImageNet: A large-scale hierarchical image database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+27. T. Lin, M. Maire, S. Belongie, et al., "Microsoft COCO: Common Objects in Context," *ECCV*, 2014. [paper](https://arxiv.org/abs/1405.0312)
+28. L. Yang, Z. Zhang, Y. Song, et al., "Diffusion Models: A Comprehensive Survey of Methods and Applications," *ACM Computing Surveys*, 2023. [paper](https://arxiv.org/abs/2209.00796)
+29. Z. Yu, J. Yuan, H. Yang, et al., "DMAD: Distribution Matching as Adversarial Distillation for Fast Visual Generation," *arXiv preprint*, 2026. [paper](https://arxiv.org/abs/2610.02188)
+30. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+31. C. Schuhmann, R. Beaumont, R. Vencu, et al., "LAION-5B: An open large-scale dataset for training next generation image-text models," *NeurIPS Datasets and Benchmarks*, 2022. [paper](https://arxiv.org/abs/2210.08402)

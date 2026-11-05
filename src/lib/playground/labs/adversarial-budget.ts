@@ -1,4 +1,4 @@
-// Facts for the `adversarial-budget` lab (DLCV 11): a logistic-regression classifier trained here, in TypeScript, on synthetic noisy
+// Facts for the `adversarial-budget` lab (DLCV 14): a logistic-regression classifier trained here, in TypeScript, on synthetic noisy
 // stripe images of 8 x 8, 16 x 16 and 32 x 32 pixels, attacked with FGSM (sign of the input gradient of the loss) and with random signs
 // of the same size. Pure computation is exported so that scripts/tests/lab-adversarial.test.ts can check it.
 import type { LabDef } from './types.ts';
@@ -250,7 +250,7 @@ export function describe(lang: Lang, b: Bundle, levels: number, fg: Attacked, rd
 // ---------------------------------------------------------------------------------------------- the lab
 export const lab: LabDef = {
   kind: 'image', id: 'adversarial-budget', track: 'deep-learning',
-  title: L('DLCV 11 · Why can an invisible change flip a prediction?', 'DLCV 11・為什麼看不出來的改變就能翻轉預測？'),
+  title: L('DLCV 14 · Why can an invisible change flip a prediction?', 'DLCV 14・為什麼看不出來的改變就能翻轉預測？'),
   description: L('Train a linear classifier on noisy stripe images of 64, 256 or 1,024 pixels, then change every pixel by the same few levels, once along the loss gradient (FGSM) and once with random signs.', '在 64、256 或 1,024 個像素的雜訊條紋影像上訓練線性分類器，再把每個像素都改變相同的幾階：一次沿著損失梯度（FGSM），一次用隨機正負號。'),
   challenge: L(
     'At the default setting (32 × 32 pixels, ε = 8, FGSM) accuracy falls from 99.3% to 2.7%, while random signs of the same size leave it at 99.3%. The mean logit shift is +5.8, against a median clean margin of 3.5. Now switch the size to 16 × 16 and then to 8 × 8 at the same ε: FGSM leaves 76.3% and 94.7%. Next find the ε at which FGSM first brings accuracy below 50%: ε = 5 for 32 × 32, ε = 11 for 16 × 16, and none up to ε = 16 for 8 × 8 (70.7% at ε = 16). The classes differ by the same total amount at every size, so why does the same ε matter more when the image has more pixels?',

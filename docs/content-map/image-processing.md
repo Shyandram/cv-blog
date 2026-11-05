@@ -6,19 +6,19 @@
 
 | # | Tutorial | Level | Needs | File |
 | --- | --- | --- | --- | --- |
-| 10 | [IP 01 · Introduction](#dip-01-introduction) | beginner | Images as Arrays | `src/content/tutorials/en/image-processing/dip-01-introduction.mdx` |
-| 20 | [IP 02 · Digital Image Fundamentals](#dip-02-fundamentals) | beginner | IP 01 | `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` |
-| 30 | [IP 03 · Intensity Transformations and Spatial Filtering](#dip-03-intensity-spatial-filtering) | beginner | IP 02 | `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` |
-| 40 | [IP 04 · Filtering in the Frequency Domain](#dip-04-frequency-domain) | intermediate | IP 03 | `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` |
-| 50 | [IP 05 · Image Restoration and Reconstruction](#dip-05-restoration-reconstruction) | intermediate | IP 04 | `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` |
-| 60 | [IP 06 · Color Image Processing](#dip-06-color) | intermediate | IP 05 | `src/content/tutorials/en/image-processing/dip-06-color.mdx` |
-| 70 | [IP 07 · Wavelet and Other Image Transforms](#dip-07-wavelets-transforms) | intermediate | IP 06 | `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` |
-| 80 | [IP 08 · Image Compression and Watermarking](#dip-08-compression-watermarking) | intermediate | IP 07 | `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` |
-| 90 | [IP 09 · Morphological Image Processing](#dip-09-morphology) | intermediate | IP 08 | `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` |
-| 100 | [IP 10 · Image Segmentation I: Edge Detection, Thresholding, and Region Detection](#dip-10-segmentation) | advanced | IP 09 | `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` |
-| 110 | [IP 11 · Image Segmentation II: Active Contours — Snakes and Level Sets](#dip-11-active-contours) | advanced | IP 10 | `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` |
-| 120 | [IP 12 · Feature Extraction](#dip-12-feature-extraction) | advanced | IP 11 | `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` |
-| 130 | [IP 13 · Image Pattern Classification](#dip-13-pattern-classification) | advanced | IP 12 | `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` |
+| IP 01 | [IP 01 · Introduction](#dip-01-introduction) | beginner | Images as Arrays | `src/content/tutorials/en/image-processing/dip-01-introduction.mdx` |
+| IP 02 | [IP 02 · Digital Image Fundamentals](#dip-02-fundamentals) | beginner | IP 01 | `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx` |
+| IP 03 | [IP 03 · Intensity Transformations and Spatial Filtering](#dip-03-intensity-spatial-filtering) | beginner | IP 02 | `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx` |
+| IP 04 | [IP 04 · Filtering in the Frequency Domain](#dip-04-frequency-domain) | intermediate | IP 03 | `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` |
+| IP 05 | [IP 05 · Image Restoration and Reconstruction](#dip-05-restoration-reconstruction) | intermediate | IP 04 | `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` |
+| IP 06 | [IP 06 · Color Image Processing](#dip-06-color) | intermediate | IP 05 | `src/content/tutorials/en/image-processing/dip-06-color.mdx` |
+| IP 07 | [IP 07 · Wavelet and Other Image Transforms](#dip-07-wavelets-transforms) | intermediate | IP 06 | `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx` |
+| IP 08 | [IP 08 · Image Compression and Watermarking](#dip-08-compression-watermarking) | intermediate | IP 07 | `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` |
+| IP 09 | [IP 09 · Morphological Image Processing](#dip-09-morphology) | intermediate | IP 08 | `src/content/tutorials/en/image-processing/dip-09-morphology.mdx` |
+| IP 10 | [IP 10 · Image Segmentation I: Edge Detection, Thresholding, and Region Detection](#dip-10-segmentation) | advanced | IP 09 | `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx` |
+| IP 11 | [IP 11 · Image Segmentation II: Active Contours — Snakes and Level Sets](#dip-11-active-contours) | advanced | IP 10 | `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx` |
+| IP 12 | [IP 12 · Feature Extraction](#dip-12-feature-extraction) | advanced | IP 11 | `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` |
+| IP 13 | [IP 13 · Image Pattern Classification](#dip-13-pattern-classification) | advanced | IP 12 | `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` |
 
 ## dip-01-introduction
 
@@ -26,34 +26,34 @@
 What digital image processing is, where it came from, which parts of the electromagnetic spectrum it works with, and the roadmap of fundamental steps this series follows.
 
 - Files: `src/content/tutorials/en/image-processing/dip-01-introduction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-01-introduction.mdx`
-- Pages: `/en/learn/image-processing/dip-01-introduction/`, `/en/learn/image-processing/dip-01-introduction/notes/`
-- Level beginner · order 10 · needs: `foundations/images-as-arrays` · tags: dip, history, electromagnetic-spectrum, imaging-systems, computational-imaging
+- Pages: `/en/learn/image-processing/introduction/`, `/en/learn/image-processing/introduction/notes/`
+- Level beginner · depth 1 · needs: `foundations/images-as-arrays` · tags: dip, history, electromagnetic-spectrum, imaging-systems, computational-imaging
 - Figures: 8 · references: 18
 
-- [What you'll learn](/en/learn/image-processing/dip-01-introduction/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-01-introduction/#the-big-picture) `the-big-picture`
-- [What is digital image processing?](/en/learn/image-processing/dip-01-introduction/#what-is-digital-image-processing) `what-is-digital-image-processing`
-  - [Images as functions](/en/learn/image-processing/dip-01-introduction/#images-as-functions) `images-as-functions`
-  - [Where processing ends and vision begins](/en/learn/image-processing/dip-01-introduction/#where-processing-ends-and-vision-begins) `where-processing-ends-and-vision-begins`
-- [The origins of digital image processing](/en/learn/image-processing/dip-01-introduction/#the-origins-of-digital-image-processing) `the-origins-of-digital-image-processing`
-  - [Pictures over a telegraph cable](/en/learn/image-processing/dip-01-introduction/#pictures-over-a-telegraph-cable) `pictures-over-a-telegraph-cable`
-  - [Images computed from measurements: CT](/en/learn/image-processing/dip-01-introduction/#images-computed-from-measurements-ct) `images-computed-from-measurements-ct`
-- [Examples of fields that use digital image processing](/en/learn/image-processing/dip-01-introduction/#examples-of-fields-that-use-digital-image-processing) `examples-of-fields-that-use-digital-image-processing`
-  - [The electromagnetic spectrum](/en/learn/image-processing/dip-01-introduction/#the-electromagnetic-spectrum) `the-electromagnetic-spectrum`
-  - [From gamma rays to radio waves](/en/learn/image-processing/dip-01-introduction/#from-gamma-rays-to-radio-waves) `from-gamma-rays-to-radio-waves`
-  - [Other imaging modalities](/en/learn/image-processing/dip-01-introduction/#other-imaging-modalities) `other-imaging-modalities`
-- [Fundamental steps in digital image processing](/en/learn/image-processing/dip-01-introduction/#fundamental-steps-in-digital-image-processing) `fundamental-steps-in-digital-image-processing`
-- [Components of an image processing system](/en/learn/image-processing/dip-01-introduction/#components-of-an-image-processing-system) `components-of-an-image-processing-system`
-- [Modern view](/en/learn/image-processing/dip-01-introduction/#modern-view) `modern-view`
-  - [Surveys on computational imaging and imaging beyond the visible](/en/learn/image-processing/dip-01-introduction/#surveys-on-computational-imaging-and-imaging-beyond-the-visible) `surveys-on-computational-imaging-and-imaging-beyond-the-visible`
-  - [How deep learning reshaped the processing pipeline](/en/learn/image-processing/dip-01-introduction/#how-deep-learning-reshaped-the-processing-pipeline) `how-deep-learning-reshaped-the-processing-pipeline`
-- [Key takeaways](/en/learn/image-processing/dip-01-introduction/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-01-introduction/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/introduction/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/introduction/#the-big-picture) `the-big-picture`
+- [What is digital image processing?](/en/learn/image-processing/introduction/#what-is-digital-image-processing) `what-is-digital-image-processing`
+  - [Images as functions](/en/learn/image-processing/introduction/#images-as-functions) `images-as-functions`
+  - [Where processing ends and vision begins](/en/learn/image-processing/introduction/#where-processing-ends-and-vision-begins) `where-processing-ends-and-vision-begins`
+- [The origins of digital image processing](/en/learn/image-processing/introduction/#the-origins-of-digital-image-processing) `the-origins-of-digital-image-processing`
+  - [Pictures over a telegraph cable](/en/learn/image-processing/introduction/#pictures-over-a-telegraph-cable) `pictures-over-a-telegraph-cable`
+  - [Images computed from measurements: CT](/en/learn/image-processing/introduction/#images-computed-from-measurements-ct) `images-computed-from-measurements-ct`
+- [Examples of fields that use digital image processing](/en/learn/image-processing/introduction/#examples-of-fields-that-use-digital-image-processing) `examples-of-fields-that-use-digital-image-processing`
+  - [The electromagnetic spectrum](/en/learn/image-processing/introduction/#the-electromagnetic-spectrum) `the-electromagnetic-spectrum`
+  - [From gamma rays to radio waves](/en/learn/image-processing/introduction/#from-gamma-rays-to-radio-waves) `from-gamma-rays-to-radio-waves`
+  - [Other imaging modalities](/en/learn/image-processing/introduction/#other-imaging-modalities) `other-imaging-modalities`
+- [Fundamental steps in digital image processing](/en/learn/image-processing/introduction/#fundamental-steps-in-digital-image-processing) `fundamental-steps-in-digital-image-processing`
+- [Components of an image processing system](/en/learn/image-processing/introduction/#components-of-an-image-processing-system) `components-of-an-image-processing-system`
+- [Modern view](/en/learn/image-processing/introduction/#modern-view) `modern-view`
+  - [Surveys on computational imaging and imaging beyond the visible](/en/learn/image-processing/introduction/#surveys-on-computational-imaging-and-imaging-beyond-the-visible) `surveys-on-computational-imaging-and-imaging-beyond-the-visible`
+  - [How deep learning reshaped the processing pipeline](/en/learn/image-processing/introduction/#how-deep-learning-reshaped-the-processing-pipeline) `how-deep-learning-reshaped-the-processing-pipeline`
+- [Key takeaways](/en/learn/image-processing/introduction/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/introduction/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Computers meet images: the space program](/en/learn/image-processing/dip-01-introduction/notes/#computers-meet-images-the-space-program) `computers-meet-images-the-space-program`
-- [A band-by-band tour of the spectrum](/en/learn/image-processing/dip-01-introduction/notes/#a-band-by-band-tour-of-the-spectrum) `a-band-by-band-tour-of-the-spectrum`
+- [Computers meet images: the space program](/en/learn/image-processing/introduction/notes/computers-meet-images-the-space-program/) `notes/computers-meet-images-the-space-program/`
+- [A band-by-band tour of the spectrum](/en/learn/image-processing/introduction/notes/a-band-by-band-tour-of-the-spectrum/) `notes/a-band-by-band-tour-of-the-spectrum/`
 
 ## dip-02-fundamentals
 
@@ -61,55 +61,55 @@ What digital image processing is, where it came from, which parts of the electro
 How eyes and cameras turn light into numbers, how sampling and quantization shape a digital image, and the basic math every later chapter builds on.
 
 - Files: `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-02-fundamentals.mdx`
-- Pages: `/en/learn/image-processing/dip-02-fundamentals/`, `/en/learn/image-processing/dip-02-fundamentals/notes/`, `/en/learn/image-processing/dip-02-fundamentals/papers/`
-- Level beginner · order 20 · needs: `image-processing/dip-01-introduction` · tags: dip, sampling, quantization, interpolation, visual-perception
-- Figures: 10 · references: 20 · experiments: pixel-sampling
+- Pages: `/en/learn/image-processing/fundamentals/`, `/en/learn/image-processing/fundamentals/notes/`, `/en/learn/image-processing/fundamentals/papers/`
+- Level beginner · depth 1 · needs: `image-processing/dip-01-introduction` · tags: dip, sampling, quantization, interpolation, visual-perception
+- Figures: 11 · references: 20 · experiments: pixel-sampling
 
-- [What you'll learn](/en/learn/image-processing/dip-02-fundamentals/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-02-fundamentals/#the-big-picture) `the-big-picture`
-- [Elements of visual perception](/en/learn/image-processing/dip-02-fundamentals/#elements-of-visual-perception) `elements-of-visual-perception`
-  - [Structure of the eye and image formation](/en/learn/image-processing/dip-02-fundamentals/#structure-of-the-eye-and-image-formation) `structure-of-the-eye-and-image-formation`
-  - [Brightness adaptation and discrimination](/en/learn/image-processing/dip-02-fundamentals/#brightness-adaptation-and-discrimination) `brightness-adaptation-and-discrimination`
-  - [Mach bands, simultaneous contrast and illusions](/en/learn/image-processing/dip-02-fundamentals/#mach-bands-simultaneous-contrast-and-illusions) `mach-bands-simultaneous-contrast-and-illusions`
-- [Light and the electromagnetic spectrum](/en/learn/image-processing/dip-02-fundamentals/#light-and-the-electromagnetic-spectrum) `light-and-the-electromagnetic-spectrum`
-  - [Wavelength, frequency and energy](/en/learn/image-processing/dip-02-fundamentals/#wavelength-frequency-and-energy) `wavelength-frequency-and-energy`
-  - [Measuring light: three terms](/en/learn/image-processing/dip-02-fundamentals/#measuring-light-three-terms) `measuring-light-three-terms`
-- [Image sensing and acquisition](/en/learn/image-processing/dip-02-fundamentals/#image-sensing-and-acquisition) `image-sensing-and-acquisition`
-  - [Single, line and array sensors](/en/learn/image-processing/dip-02-fundamentals/#single-line-and-array-sensors) `single-line-and-array-sensors`
-  - [A simple image formation model](/en/learn/image-processing/dip-02-fundamentals/#a-simple-image-formation-model) `a-simple-image-formation-model`
-- [Image sampling and quantization](/en/learn/image-processing/dip-02-fundamentals/#image-sampling-and-quantization) `image-sampling-and-quantization`
-  - [Basic concepts](/en/learn/image-processing/dip-02-fundamentals/#basic-concepts) `basic-concepts`
-  - [Representing digital images](/en/learn/image-processing/dip-02-fundamentals/#representing-digital-images) `representing-digital-images`
-  - [Spatial and intensity resolution](/en/learn/image-processing/dip-02-fundamentals/#spatial-and-intensity-resolution) `spatial-and-intensity-resolution`
-  - [Image interpolation](/en/learn/image-processing/dip-02-fundamentals/#image-interpolation) `image-interpolation`
-- [Basic relationships between pixels](/en/learn/image-processing/dip-02-fundamentals/#basic-relationships-between-pixels) `basic-relationships-between-pixels`
-  - [Neighbors of a pixel](/en/learn/image-processing/dip-02-fundamentals/#neighbors-of-a-pixel) `neighbors-of-a-pixel`
-  - [Adjacency, connectivity, regions and boundaries](/en/learn/image-processing/dip-02-fundamentals/#adjacency-connectivity-regions-and-boundaries) `adjacency-connectivity-regions-and-boundaries`
-  - [Distance measures](/en/learn/image-processing/dip-02-fundamentals/#distance-measures) `distance-measures`
-- [Introduction to the mathematical tools used in DIP](/en/learn/image-processing/dip-02-fundamentals/#introduction-to-the-mathematical-tools-used-in-dip) `introduction-to-the-mathematical-tools-used-in-dip`
-  - [Elementwise versus matrix operations](/en/learn/image-processing/dip-02-fundamentals/#elementwise-versus-matrix-operations) `elementwise-versus-matrix-operations`
-  - [Linear versus nonlinear operations](/en/learn/image-processing/dip-02-fundamentals/#linear-versus-nonlinear-operations) `linear-versus-nonlinear-operations`
-  - [Arithmetic operations](/en/learn/image-processing/dip-02-fundamentals/#arithmetic-operations) `arithmetic-operations`
-  - [Set and logical operations](/en/learn/image-processing/dip-02-fundamentals/#set-and-logical-operations) `set-and-logical-operations`
-  - [Spatial operations](/en/learn/image-processing/dip-02-fundamentals/#spatial-operations) `spatial-operations`
-  - [Vector and matrix operations](/en/learn/image-processing/dip-02-fundamentals/#vector-and-matrix-operations) `vector-and-matrix-operations`
-  - [Image transforms](/en/learn/image-processing/dip-02-fundamentals/#image-transforms) `image-transforms`
-  - [Probability methods](/en/learn/image-processing/dip-02-fundamentals/#probability-methods) `probability-methods`
-- [Modern view](/en/learn/image-processing/dip-02-fundamentals/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-02-fundamentals/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-02-fundamentals/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/fundamentals/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/fundamentals/#the-big-picture) `the-big-picture`
+- [Elements of visual perception](/en/learn/image-processing/fundamentals/#elements-of-visual-perception) `elements-of-visual-perception`
+  - [Structure of the eye and image formation](/en/learn/image-processing/fundamentals/#structure-of-the-eye-and-image-formation) `structure-of-the-eye-and-image-formation`
+  - [Brightness adaptation and discrimination](/en/learn/image-processing/fundamentals/#brightness-adaptation-and-discrimination) `brightness-adaptation-and-discrimination`
+  - [Mach bands, simultaneous contrast and illusions](/en/learn/image-processing/fundamentals/#mach-bands-simultaneous-contrast-and-illusions) `mach-bands-simultaneous-contrast-and-illusions`
+- [Light and the electromagnetic spectrum](/en/learn/image-processing/fundamentals/#light-and-the-electromagnetic-spectrum) `light-and-the-electromagnetic-spectrum`
+  - [Wavelength, frequency and energy](/en/learn/image-processing/fundamentals/#wavelength-frequency-and-energy) `wavelength-frequency-and-energy`
+  - [Measuring light: three terms](/en/learn/image-processing/fundamentals/#measuring-light-three-terms) `measuring-light-three-terms`
+- [Image sensing and acquisition](/en/learn/image-processing/fundamentals/#image-sensing-and-acquisition) `image-sensing-and-acquisition`
+  - [Single, line and array sensors](/en/learn/image-processing/fundamentals/#single-line-and-array-sensors) `single-line-and-array-sensors`
+  - [A simple image formation model](/en/learn/image-processing/fundamentals/#a-simple-image-formation-model) `a-simple-image-formation-model`
+- [Image sampling and quantization](/en/learn/image-processing/fundamentals/#image-sampling-and-quantization) `image-sampling-and-quantization`
+  - [Basic concepts](/en/learn/image-processing/fundamentals/#basic-concepts) `basic-concepts`
+  - [Representing digital images](/en/learn/image-processing/fundamentals/#representing-digital-images) `representing-digital-images`
+  - [Spatial and intensity resolution](/en/learn/image-processing/fundamentals/#spatial-and-intensity-resolution) `spatial-and-intensity-resolution`
+  - [Image interpolation](/en/learn/image-processing/fundamentals/#image-interpolation) `image-interpolation`
+- [Basic relationships between pixels](/en/learn/image-processing/fundamentals/#basic-relationships-between-pixels) `basic-relationships-between-pixels`
+  - [Neighbors of a pixel](/en/learn/image-processing/fundamentals/#neighbors-of-a-pixel) `neighbors-of-a-pixel`
+  - [Adjacency, connectivity, regions and boundaries](/en/learn/image-processing/fundamentals/#adjacency-connectivity-regions-and-boundaries) `adjacency-connectivity-regions-and-boundaries`
+  - [Distance measures](/en/learn/image-processing/fundamentals/#distance-measures) `distance-measures`
+- [Introduction to the mathematical tools used in DIP](/en/learn/image-processing/fundamentals/#introduction-to-the-mathematical-tools-used-in-dip) `introduction-to-the-mathematical-tools-used-in-dip`
+  - [Elementwise versus matrix operations](/en/learn/image-processing/fundamentals/#elementwise-versus-matrix-operations) `elementwise-versus-matrix-operations`
+  - [Linear versus nonlinear operations](/en/learn/image-processing/fundamentals/#linear-versus-nonlinear-operations) `linear-versus-nonlinear-operations`
+  - [Arithmetic operations](/en/learn/image-processing/fundamentals/#arithmetic-operations) `arithmetic-operations`
+  - [Set and logical operations](/en/learn/image-processing/fundamentals/#set-and-logical-operations) `set-and-logical-operations`
+  - [Spatial operations](/en/learn/image-processing/fundamentals/#spatial-operations) `spatial-operations`
+  - [Vector and matrix operations](/en/learn/image-processing/fundamentals/#vector-and-matrix-operations) `vector-and-matrix-operations`
+  - [Image transforms](/en/learn/image-processing/fundamentals/#image-transforms) `image-transforms`
+  - [Probability methods](/en/learn/image-processing/fundamentals/#probability-methods) `probability-methods`
+- [Modern view](/en/learn/image-processing/fundamentals/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/fundamentals/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/fundamentals/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Radiance, luminance and brightness](/en/learn/image-processing/dip-02-fundamentals/notes/#radiance-luminance-and-brightness) `radiance-luminance-and-brightness`
-- [The cubic convolution kernel](/en/learn/image-processing/dip-02-fundamentals/notes/#the-cubic-convolution-kernel) `the-cubic-convolution-kernel`
-- [Image registration](/en/learn/image-processing/dip-02-fundamentals/notes/#image-registration) `image-registration`
-- [Homography: the projective transform](/en/learn/image-processing/dip-02-fundamentals/notes/#homography-the-projective-transform) `homography-the-projective-transform`
-- [MSE, PSNR and the data range](/en/learn/image-processing/dip-02-fundamentals/notes/#mse-psnr-and-the-data-range) `mse-psnr-and-the-data-range`
+- [Radiance, luminance and brightness](/en/learn/image-processing/fundamentals/notes/radiance-luminance-and-brightness/) `notes/radiance-luminance-and-brightness/`
+- [The cubic convolution kernel](/en/learn/image-processing/fundamentals/notes/the-cubic-convolution-kernel/) `notes/the-cubic-convolution-kernel/`
+- [Image registration](/en/learn/image-processing/fundamentals/notes/image-registration/) `notes/image-registration/`
+- [Homography: the projective transform](/en/learn/image-processing/fundamentals/notes/homography-the-projective-transform/) `notes/homography-the-projective-transform/`
+- [MSE, PSNR and the data range](/en/learn/image-processing/fundamentals/notes/mse-psnr-and-the-data-range/) `notes/mse-psnr-and-the-data-range/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The reviews in more detail](/en/learn/image-processing/dip-02-fundamentals/papers/#the-reviews-in-more-detail) `the-reviews-in-more-detail`
+- [The reviews in more detail](/en/learn/image-processing/fundamentals/papers/the-reviews-in-more-detail/) `papers/the-reviews-in-more-detail/`
 
 ## dip-03-intensity-spatial-filtering
 
@@ -117,55 +117,57 @@ How eyes and cameras turn light into numbers, how sampling and quantization shap
 Remap pixel values with curves and histograms, then smooth and sharpen images with small kernels: the everyday toolbox of spatial-domain enhancement.
 
 - Files: `src/content/tutorials/en/image-processing/dip-03-intensity-spatial-filtering.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-03-intensity-spatial-filtering.mdx`
-- Pages: `/en/learn/image-processing/dip-03-intensity-spatial-filtering/`, `/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/`, `/en/learn/image-processing/dip-03-intensity-spatial-filtering/papers/`
-- Level beginner · order 30 · needs: `image-processing/dip-02-fundamentals` · tags: dip, histogram-equalization, gamma-correction, spatial-filtering, sharpening
-- Figures: 10 · references: 18 · experiments: kernel-filter
+- Pages: `/en/learn/image-processing/intensity-spatial-filtering/`, `/en/learn/image-processing/intensity-spatial-filtering/notes/`, `/en/learn/image-processing/intensity-spatial-filtering/papers/`
+- Level beginner · depth 1 · needs: `image-processing/dip-02-fundamentals` · tags: dip, histogram-equalization, gamma-correction, spatial-filtering, sharpening
+- Figures: 13 · references: 18 · experiments: kernel-filter
 
-- [What you'll learn](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#the-big-picture) `the-big-picture`
-- [Background](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#background) `background`
-- [Basic intensity transformation functions](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#basic-intensity-transformation-functions) `basic-intensity-transformation-functions`
-  - [Image negatives](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#image-negatives) `image-negatives`
-  - [Log transformations](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#log-transformations) `log-transformations`
-  - [Power-law (gamma) transformations](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#power-law-gamma-transformations) `power-law-gamma-transformations`
-  - [Piecewise-linear transformations](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#piecewise-linear-transformations) `piecewise-linear-transformations`
-- [Histogram processing](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#histogram-processing) `histogram-processing`
-  - [Histogram equalization](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#histogram-equalization) `histogram-equalization`
-  - [Histogram matching (specification)](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#histogram-matching-specification) `histogram-matching-specification`
-  - [Local histogram processing](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#local-histogram-processing) `local-histogram-processing`
-  - [Using histogram statistics for image enhancement](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#using-histogram-statistics-for-image-enhancement) `using-histogram-statistics-for-image-enhancement`
-- [Fundamentals of spatial filtering](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#fundamentals-of-spatial-filtering) `fundamentals-of-spatial-filtering`
-  - [Linear spatial filtering and correlation](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#linear-spatial-filtering-and-correlation) `linear-spatial-filtering-and-correlation`
-  - [Correlation versus convolution](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#correlation-versus-convolution) `correlation-versus-convolution`
-  - [Separable kernels](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#separable-kernels) `separable-kernels`
-  - [Spatial and frequency domains](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#spatial-and-frequency-domains) `spatial-and-frequency-domains`
-  - [Constructing spatial filter kernels](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#constructing-spatial-filter-kernels) `constructing-spatial-filter-kernels`
-- [Smoothing (lowpass) spatial filters](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#smoothing-lowpass-spatial-filters) `smoothing-lowpass-spatial-filters`
-  - [Box filter](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#box-filter) `box-filter`
-  - [Gaussian filter](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#gaussian-filter) `gaussian-filter`
-  - [Order-statistic (nonlinear) filters](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#order-statistic-nonlinear-filters) `order-statistic-nonlinear-filters`
-- [Sharpening (highpass) spatial filters](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#sharpening-highpass-spatial-filters) `sharpening-highpass-spatial-filters`
-  - [First and second derivatives](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#first-and-second-derivatives) `first-and-second-derivatives`
-  - [The Laplacian](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#the-laplacian) `the-laplacian`
-  - [Unsharp masking and highboost filtering](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#unsharp-masking-and-highboost-filtering) `unsharp-masking-and-highboost-filtering`
-  - [The gradient and Sobel operators](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#the-gradient-and-sobel-operators) `the-gradient-and-sobel-operators`
-- [Highpass, bandreject and bandpass filters from lowpass filters](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#highpass-bandreject-and-bandpass-filters-from-lowpass-filters) `highpass-bandreject-and-bandpass-filters-from-lowpass-filters`
-- [Combining spatial enhancement methods](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#combining-spatial-enhancement-methods) `combining-spatial-enhancement-methods`
-- [Modern view](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-03-intensity-spatial-filtering/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/intensity-spatial-filtering/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/intensity-spatial-filtering/#the-big-picture) `the-big-picture`
+- [Background](/en/learn/image-processing/intensity-spatial-filtering/#background) `background`
+- [Basic intensity transformation functions](/en/learn/image-processing/intensity-spatial-filtering/#basic-intensity-transformation-functions) `basic-intensity-transformation-functions`
+  - [Image negatives](/en/learn/image-processing/intensity-spatial-filtering/#image-negatives) `image-negatives`
+  - [Log transformations](/en/learn/image-processing/intensity-spatial-filtering/#log-transformations) `log-transformations`
+  - [Power-law (gamma) transformations](/en/learn/image-processing/intensity-spatial-filtering/#power-law-gamma-transformations) `power-law-gamma-transformations`
+  - [Piecewise-linear transformations](/en/learn/image-processing/intensity-spatial-filtering/#piecewise-linear-transformations) `piecewise-linear-transformations`
+- [Histogram processing](/en/learn/image-processing/intensity-spatial-filtering/#histogram-processing) `histogram-processing`
+  - [Histogram equalization](/en/learn/image-processing/intensity-spatial-filtering/#histogram-equalization) `histogram-equalization`
+  - [Histogram matching (specification)](/en/learn/image-processing/intensity-spatial-filtering/#histogram-matching-specification) `histogram-matching-specification`
+  - [Local histogram processing](/en/learn/image-processing/intensity-spatial-filtering/#local-histogram-processing) `local-histogram-processing`
+  - [Using histogram statistics for image enhancement](/en/learn/image-processing/intensity-spatial-filtering/#using-histogram-statistics-for-image-enhancement) `using-histogram-statistics-for-image-enhancement`
+- [Fundamentals of spatial filtering](/en/learn/image-processing/intensity-spatial-filtering/#fundamentals-of-spatial-filtering) `fundamentals-of-spatial-filtering`
+  - [Linear spatial filtering and correlation](/en/learn/image-processing/intensity-spatial-filtering/#linear-spatial-filtering-and-correlation) `linear-spatial-filtering-and-correlation`
+  - [Correlation versus convolution](/en/learn/image-processing/intensity-spatial-filtering/#correlation-versus-convolution) `correlation-versus-convolution`
+  - [Separable kernels](/en/learn/image-processing/intensity-spatial-filtering/#separable-kernels) `separable-kernels`
+  - [Spatial and frequency domains](/en/learn/image-processing/intensity-spatial-filtering/#spatial-and-frequency-domains) `spatial-and-frequency-domains`
+  - [Constructing spatial filter kernels](/en/learn/image-processing/intensity-spatial-filtering/#constructing-spatial-filter-kernels) `constructing-spatial-filter-kernels`
+- [Smoothing (lowpass) spatial filters](/en/learn/image-processing/intensity-spatial-filtering/#smoothing-lowpass-spatial-filters) `smoothing-lowpass-spatial-filters`
+  - [Box filter](/en/learn/image-processing/intensity-spatial-filtering/#box-filter) `box-filter`
+  - [Gaussian filter](/en/learn/image-processing/intensity-spatial-filtering/#gaussian-filter) `gaussian-filter`
+  - [Order-statistic (nonlinear) filters](/en/learn/image-processing/intensity-spatial-filtering/#order-statistic-nonlinear-filters) `order-statistic-nonlinear-filters`
+- [Sharpening (highpass) spatial filters](/en/learn/image-processing/intensity-spatial-filtering/#sharpening-highpass-spatial-filters) `sharpening-highpass-spatial-filters`
+  - [First and second derivatives](/en/learn/image-processing/intensity-spatial-filtering/#first-and-second-derivatives) `first-and-second-derivatives`
+  - [The Laplacian](/en/learn/image-processing/intensity-spatial-filtering/#the-laplacian) `the-laplacian`
+  - [Unsharp masking and highboost filtering](/en/learn/image-processing/intensity-spatial-filtering/#unsharp-masking-and-highboost-filtering) `unsharp-masking-and-highboost-filtering`
+  - [The gradient and Sobel operators](/en/learn/image-processing/intensity-spatial-filtering/#the-gradient-and-sobel-operators) `the-gradient-and-sobel-operators`
+- [Highpass, bandreject and bandpass filters from lowpass filters](/en/learn/image-processing/intensity-spatial-filtering/#highpass-bandreject-and-bandpass-filters-from-lowpass-filters) `highpass-bandreject-and-bandpass-filters-from-lowpass-filters`
+- [Combining spatial enhancement methods](/en/learn/image-processing/intensity-spatial-filtering/#combining-spatial-enhancement-methods) `combining-spatial-enhancement-methods`
+- [Modern view](/en/learn/image-processing/intensity-spatial-filtering/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/intensity-spatial-filtering/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/intensity-spatial-filtering/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Bit planes in detail](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#bit-planes-in-detail) `bit-planes-in-detail`
-- [Exact histogram matching](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#exact-histogram-matching) `exact-histogram-matching`
-- [Enhancement with local histogram statistics](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#enhancement-with-local-histogram-statistics) `enhancement-with-local-histogram-statistics`
-- [The guided filter: smoothing that follows a guide image](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-guided-filter-smoothing-that-follows-a-guide-image) `the-guided-filter-smoothing-that-follows-a-guide-image`
-- [The bilateral filter: averaging only with pixels that look alike](/en/learn/image-processing/dip-03-intensity-spatial-filtering/notes/#the-bilateral-filter-averaging-only-with-pixels-that-look-alike) `the-bilateral-filter-averaging-only-with-pixels-that-look-alike`
+- [Bit planes in detail](/en/learn/image-processing/intensity-spatial-filtering/notes/bit-planes-in-detail/) `notes/bit-planes-in-detail/`
+- [Exact histogram matching](/en/learn/image-processing/intensity-spatial-filtering/notes/exact-histogram-matching/) `notes/exact-histogram-matching/`
+- [Enhancement with local histogram statistics](/en/learn/image-processing/intensity-spatial-filtering/notes/enhancement-with-local-histogram-statistics/) `notes/enhancement-with-local-histogram-statistics/`
+- [The guided filter: smoothing that follows a guide image](/en/learn/image-processing/intensity-spatial-filtering/notes/the-guided-filter-smoothing-that-follows-a-guide-image/) `notes/the-guided-filter-smoothing-that-follows-a-guide-image/`
+- [The bilateral filter: averaging only with pixels that look alike](/en/learn/image-processing/intensity-spatial-filtering/notes/the-bilateral-filter-averaging-only-with-pixels-that-look-alike/) `notes/the-bilateral-filter-averaging-only-with-pixels-that-look-alike/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The Modern view in more detail](/en/learn/image-processing/dip-03-intensity-spatial-filtering/papers/#the-modern-view-in-more-detail) `the-modern-view-in-more-detail`
+- [The Modern view in more detail](/en/learn/image-processing/intensity-spatial-filtering/papers/the-modern-view-in-more-detail/) `papers/the-modern-view-in-more-detail/`
+- [Bilateral filtering: average nearby pixels without crossing a strong edge](/en/learn/image-processing/intensity-spatial-filtering/papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/) `papers/bilateral-filtering-average-nearby-pixels-without-crossing-a-strong-edge/`
+- [Guided Filter: fit local linear models instead of comparing every pair](/en/learn/image-processing/intensity-spatial-filtering/papers/guided-filter-fit-local-linear-models-instead-of-comparing-every-pair/) `papers/guided-filter-fit-local-linear-models-instead-of-comparing-every-pair/`
 
 ## dip-04-frequency-domain
 
@@ -173,76 +175,76 @@ Remap pixel values with curves and histograms, then smooth and sharpen images wi
 How the Fourier transform turns an image into a recipe of waves, and how editing that recipe smooths, sharpens and removes periodic noise.
 
 - Files: `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-04-frequency-domain.mdx`
-- Pages: `/en/learn/image-processing/dip-04-frequency-domain/`, `/en/learn/image-processing/dip-04-frequency-domain/notes/`, `/en/learn/image-processing/dip-04-frequency-domain/papers/`
-- Level intermediate · order 40 · needs: `image-processing/dip-03-intensity-spatial-filtering` · tags: dip, fourier-transform, dft, sampling, frequency-filtering
-- Figures: 10 · references: 20 · experiments: frequency-filter
+- Pages: `/en/learn/image-processing/frequency-domain/`, `/en/learn/image-processing/frequency-domain/notes/`, `/en/learn/image-processing/frequency-domain/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-03-intensity-spatial-filtering` · tags: dip, fourier-transform, dft, sampling, frequency-filtering
+- Figures: 11 · references: 20 · experiments: frequency-filter
 
-- [What you'll learn](/en/learn/image-processing/dip-04-frequency-domain/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-04-frequency-domain/#the-big-picture) `the-big-picture`
-- [Background](/en/learn/image-processing/dip-04-frequency-domain/#background) `background`
-- [Preliminary concepts](/en/learn/image-processing/dip-04-frequency-domain/#preliminary-concepts) `preliminary-concepts`
-  - [Complex numbers](/en/learn/image-processing/dip-04-frequency-domain/#complex-numbers) `complex-numbers`
-  - [Fourier series](/en/learn/image-processing/dip-04-frequency-domain/#fourier-series) `fourier-series`
-  - [Impulses and the sifting property](/en/learn/image-processing/dip-04-frequency-domain/#impulses-and-the-sifting-property) `impulses-and-the-sifting-property`
-  - [The Fourier transform of a continuous function](/en/learn/image-processing/dip-04-frequency-domain/#the-fourier-transform-of-a-continuous-function) `the-fourier-transform-of-a-continuous-function`
-  - [Convolution](/en/learn/image-processing/dip-04-frequency-domain/#convolution) `convolution`
-- [Sampling and the Fourier transform of sampled functions](/en/learn/image-processing/dip-04-frequency-domain/#sampling-and-the-fourier-transform-of-sampled-functions) `sampling-and-the-fourier-transform-of-sampled-functions`
-  - [Sampling as multiplication](/en/learn/image-processing/dip-04-frequency-domain/#sampling-as-multiplication) `sampling-as-multiplication`
-  - [The sampling theorem and the Nyquist rate](/en/learn/image-processing/dip-04-frequency-domain/#the-sampling-theorem-and-the-nyquist-rate) `the-sampling-theorem-and-the-nyquist-rate`
-  - [Reconstruction](/en/learn/image-processing/dip-04-frequency-domain/#reconstruction) `reconstruction`
-  - [Aliasing](/en/learn/image-processing/dip-04-frequency-domain/#aliasing) `aliasing`
-- [The discrete Fourier transform of one variable](/en/learn/image-processing/dip-04-frequency-domain/#the-discrete-fourier-transform-of-one-variable) `the-discrete-fourier-transform-of-one-variable`
-  - [Definition](/en/learn/image-processing/dip-04-frequency-domain/#definition) `definition`
-  - [Relation to sampling](/en/learn/image-processing/dip-04-frequency-domain/#relation-to-sampling) `relation-to-sampling`
-- [Extension to functions of two variables](/en/learn/image-processing/dip-04-frequency-domain/#extension-to-functions-of-two-variables) `extension-to-functions-of-two-variables`
-  - [The 2-D impulse and continuous transform](/en/learn/image-processing/dip-04-frequency-domain/#the-2-d-impulse-and-continuous-transform) `the-2-d-impulse-and-continuous-transform`
-  - [2-D sampling and aliasing](/en/learn/image-processing/dip-04-frequency-domain/#2-d-sampling-and-aliasing) `2-d-sampling-and-aliasing`
-  - [Moiré patterns](/en/learn/image-processing/dip-04-frequency-domain/#moiré-patterns) `moiré-patterns`
-  - [The 2-D DFT](/en/learn/image-processing/dip-04-frequency-domain/#the-2-d-dft) `the-2-d-dft`
-- [Properties of the 2-D DFT](/en/learn/image-processing/dip-04-frequency-domain/#properties-of-the-2-d-dft) `properties-of-the-2-d-dft`
-  - [Spatial and frequency intervals](/en/learn/image-processing/dip-04-frequency-domain/#spatial-and-frequency-intervals) `spatial-and-frequency-intervals`
-  - [Translation and rotation](/en/learn/image-processing/dip-04-frequency-domain/#translation-and-rotation) `translation-and-rotation`
-  - [Periodicity and centering](/en/learn/image-processing/dip-04-frequency-domain/#periodicity-and-centering) `periodicity-and-centering`
-  - [Symmetry](/en/learn/image-processing/dip-04-frequency-domain/#symmetry) `symmetry`
-  - [Fourier spectrum and phase angle](/en/learn/image-processing/dip-04-frequency-domain/#fourier-spectrum-and-phase-angle) `fourier-spectrum-and-phase-angle`
-  - [The phase-versus-magnitude experiment](/en/learn/image-processing/dip-04-frequency-domain/#the-phase-versus-magnitude-experiment) `the-phase-versus-magnitude-experiment`
-  - [The 2-D convolution theorem](/en/learn/image-processing/dip-04-frequency-domain/#the-2-d-convolution-theorem) `the-2-d-convolution-theorem`
-  - [Wraparound error and padding](/en/learn/image-processing/dip-04-frequency-domain/#wraparound-error-and-padding) `wraparound-error-and-padding`
-- [Basics of filtering in the frequency domain](/en/learn/image-processing/dip-04-frequency-domain/#basics-of-filtering-in-the-frequency-domain) `basics-of-filtering-in-the-frequency-domain`
-  - [The filtering procedure](/en/learn/image-processing/dip-04-frequency-domain/#the-filtering-procedure) `the-filtering-procedure`
-  - [Zero-phase filters](/en/learn/image-processing/dip-04-frequency-domain/#zero-phase-filters) `zero-phase-filters`
-  - [Correspondence between spatial and frequency filters](/en/learn/image-processing/dip-04-frequency-domain/#correspondence-between-spatial-and-frequency-filters) `correspondence-between-spatial-and-frequency-filters`
-- [Image smoothing using lowpass frequency-domain filters](/en/learn/image-processing/dip-04-frequency-domain/#image-smoothing-using-lowpass-frequency-domain-filters) `image-smoothing-using-lowpass-frequency-domain-filters`
-  - [Ideal lowpass filter (ILPF)](/en/learn/image-processing/dip-04-frequency-domain/#ideal-lowpass-filter-ilpf) `ideal-lowpass-filter-ilpf`
-  - [Butterworth lowpass filter (BLPF)](/en/learn/image-processing/dip-04-frequency-domain/#butterworth-lowpass-filter-blpf) `butterworth-lowpass-filter-blpf`
-  - [Gaussian lowpass filter (GLPF)](/en/learn/image-processing/dip-04-frequency-domain/#gaussian-lowpass-filter-glpf) `gaussian-lowpass-filter-glpf`
-  - [Ringing](/en/learn/image-processing/dip-04-frequency-domain/#ringing) `ringing`
-- [Image sharpening using highpass filters](/en/learn/image-processing/dip-04-frequency-domain/#image-sharpening-using-highpass-filters) `image-sharpening-using-highpass-filters`
-  - [Ideal, Butterworth and Gaussian highpass filters](/en/learn/image-processing/dip-04-frequency-domain/#ideal-butterworth-and-gaussian-highpass-filters) `ideal-butterworth-and-gaussian-highpass-filters`
-  - [The Laplacian in the frequency domain](/en/learn/image-processing/dip-04-frequency-domain/#the-laplacian-in-the-frequency-domain) `the-laplacian-in-the-frequency-domain`
-  - [Unsharp masking, high-boost and high-frequency emphasis](/en/learn/image-processing/dip-04-frequency-domain/#unsharp-masking-high-boost-and-high-frequency-emphasis) `unsharp-masking-high-boost-and-high-frequency-emphasis`
-  - [Homomorphic filtering](/en/learn/image-processing/dip-04-frequency-domain/#homomorphic-filtering) `homomorphic-filtering`
-- [Selective filtering](/en/learn/image-processing/dip-04-frequency-domain/#selective-filtering) `selective-filtering`
-  - [Bandreject and bandpass filters](/en/learn/image-processing/dip-04-frequency-domain/#bandreject-and-bandpass-filters) `bandreject-and-bandpass-filters`
-  - [Notch filters](/en/learn/image-processing/dip-04-frequency-domain/#notch-filters) `notch-filters`
-- [Implementation](/en/learn/image-processing/dip-04-frequency-domain/#implementation) `implementation`
-  - [Separability](/en/learn/image-processing/dip-04-frequency-domain/#separability) `separability`
-  - [The fast Fourier transform](/en/learn/image-processing/dip-04-frequency-domain/#the-fast-fourier-transform) `the-fast-fourier-transform`
-- [Modern view](/en/learn/image-processing/dip-04-frequency-domain/#modern-view) `modern-view`
-  - [Surveys and reviews worth reading](/en/learn/image-processing/dip-04-frequency-domain/#surveys-and-reviews-worth-reading) `surveys-and-reviews-worth-reading`
-  - [Fourier ideas inside networks](/en/learn/image-processing/dip-04-frequency-domain/#fourier-ideas-inside-networks) `fourier-ideas-inside-networks`
-  - [What did not change](/en/learn/image-processing/dip-04-frequency-domain/#what-did-not-change) `what-did-not-change`
-- [Key takeaways](/en/learn/image-processing/dip-04-frequency-domain/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-04-frequency-domain/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/frequency-domain/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/frequency-domain/#the-big-picture) `the-big-picture`
+- [Background](/en/learn/image-processing/frequency-domain/#background) `background`
+- [Preliminary concepts](/en/learn/image-processing/frequency-domain/#preliminary-concepts) `preliminary-concepts`
+  - [Complex numbers](/en/learn/image-processing/frequency-domain/#complex-numbers) `complex-numbers`
+  - [Fourier series](/en/learn/image-processing/frequency-domain/#fourier-series) `fourier-series`
+  - [Impulses and the sifting property](/en/learn/image-processing/frequency-domain/#impulses-and-the-sifting-property) `impulses-and-the-sifting-property`
+  - [The Fourier transform of a continuous function](/en/learn/image-processing/frequency-domain/#the-fourier-transform-of-a-continuous-function) `the-fourier-transform-of-a-continuous-function`
+  - [Convolution](/en/learn/image-processing/frequency-domain/#convolution) `convolution`
+- [Sampling and the Fourier transform of sampled functions](/en/learn/image-processing/frequency-domain/#sampling-and-the-fourier-transform-of-sampled-functions) `sampling-and-the-fourier-transform-of-sampled-functions`
+  - [Sampling as multiplication](/en/learn/image-processing/frequency-domain/#sampling-as-multiplication) `sampling-as-multiplication`
+  - [The sampling theorem and the Nyquist rate](/en/learn/image-processing/frequency-domain/#the-sampling-theorem-and-the-nyquist-rate) `the-sampling-theorem-and-the-nyquist-rate`
+  - [Reconstruction](/en/learn/image-processing/frequency-domain/#reconstruction) `reconstruction`
+  - [Aliasing](/en/learn/image-processing/frequency-domain/#aliasing) `aliasing`
+- [The discrete Fourier transform of one variable](/en/learn/image-processing/frequency-domain/#the-discrete-fourier-transform-of-one-variable) `the-discrete-fourier-transform-of-one-variable`
+  - [Definition](/en/learn/image-processing/frequency-domain/#definition) `definition`
+  - [Relation to sampling](/en/learn/image-processing/frequency-domain/#relation-to-sampling) `relation-to-sampling`
+- [Extension to functions of two variables](/en/learn/image-processing/frequency-domain/#extension-to-functions-of-two-variables) `extension-to-functions-of-two-variables`
+  - [The 2-D impulse and continuous transform](/en/learn/image-processing/frequency-domain/#the-2-d-impulse-and-continuous-transform) `the-2-d-impulse-and-continuous-transform`
+  - [2-D sampling and aliasing](/en/learn/image-processing/frequency-domain/#2-d-sampling-and-aliasing) `2-d-sampling-and-aliasing`
+  - [Moiré patterns](/en/learn/image-processing/frequency-domain/#moiré-patterns) `moiré-patterns`
+  - [The 2-D DFT](/en/learn/image-processing/frequency-domain/#the-2-d-dft) `the-2-d-dft`
+- [Properties of the 2-D DFT](/en/learn/image-processing/frequency-domain/#properties-of-the-2-d-dft) `properties-of-the-2-d-dft`
+  - [Spatial and frequency intervals](/en/learn/image-processing/frequency-domain/#spatial-and-frequency-intervals) `spatial-and-frequency-intervals`
+  - [Translation and rotation](/en/learn/image-processing/frequency-domain/#translation-and-rotation) `translation-and-rotation`
+  - [Periodicity and centering](/en/learn/image-processing/frequency-domain/#periodicity-and-centering) `periodicity-and-centering`
+  - [Symmetry](/en/learn/image-processing/frequency-domain/#symmetry) `symmetry`
+  - [Fourier spectrum and phase angle](/en/learn/image-processing/frequency-domain/#fourier-spectrum-and-phase-angle) `fourier-spectrum-and-phase-angle`
+  - [The phase-versus-magnitude experiment](/en/learn/image-processing/frequency-domain/#the-phase-versus-magnitude-experiment) `the-phase-versus-magnitude-experiment`
+  - [The 2-D convolution theorem](/en/learn/image-processing/frequency-domain/#the-2-d-convolution-theorem) `the-2-d-convolution-theorem`
+  - [Wraparound error and padding](/en/learn/image-processing/frequency-domain/#wraparound-error-and-padding) `wraparound-error-and-padding`
+- [Basics of filtering in the frequency domain](/en/learn/image-processing/frequency-domain/#basics-of-filtering-in-the-frequency-domain) `basics-of-filtering-in-the-frequency-domain`
+  - [The filtering procedure](/en/learn/image-processing/frequency-domain/#the-filtering-procedure) `the-filtering-procedure`
+  - [Zero-phase filters](/en/learn/image-processing/frequency-domain/#zero-phase-filters) `zero-phase-filters`
+  - [Correspondence between spatial and frequency filters](/en/learn/image-processing/frequency-domain/#correspondence-between-spatial-and-frequency-filters) `correspondence-between-spatial-and-frequency-filters`
+- [Image smoothing using lowpass frequency-domain filters](/en/learn/image-processing/frequency-domain/#image-smoothing-using-lowpass-frequency-domain-filters) `image-smoothing-using-lowpass-frequency-domain-filters`
+  - [Ideal lowpass filter (ILPF)](/en/learn/image-processing/frequency-domain/#ideal-lowpass-filter-ilpf) `ideal-lowpass-filter-ilpf`
+  - [Butterworth lowpass filter (BLPF)](/en/learn/image-processing/frequency-domain/#butterworth-lowpass-filter-blpf) `butterworth-lowpass-filter-blpf`
+  - [Gaussian lowpass filter (GLPF)](/en/learn/image-processing/frequency-domain/#gaussian-lowpass-filter-glpf) `gaussian-lowpass-filter-glpf`
+  - [Ringing](/en/learn/image-processing/frequency-domain/#ringing) `ringing`
+- [Image sharpening using highpass filters](/en/learn/image-processing/frequency-domain/#image-sharpening-using-highpass-filters) `image-sharpening-using-highpass-filters`
+  - [Ideal, Butterworth and Gaussian highpass filters](/en/learn/image-processing/frequency-domain/#ideal-butterworth-and-gaussian-highpass-filters) `ideal-butterworth-and-gaussian-highpass-filters`
+  - [The Laplacian in the frequency domain](/en/learn/image-processing/frequency-domain/#the-laplacian-in-the-frequency-domain) `the-laplacian-in-the-frequency-domain`
+  - [Unsharp masking, high-boost and high-frequency emphasis](/en/learn/image-processing/frequency-domain/#unsharp-masking-high-boost-and-high-frequency-emphasis) `unsharp-masking-high-boost-and-high-frequency-emphasis`
+  - [Homomorphic filtering](/en/learn/image-processing/frequency-domain/#homomorphic-filtering) `homomorphic-filtering`
+- [Selective filtering](/en/learn/image-processing/frequency-domain/#selective-filtering) `selective-filtering`
+  - [Bandreject and bandpass filters](/en/learn/image-processing/frequency-domain/#bandreject-and-bandpass-filters) `bandreject-and-bandpass-filters`
+  - [Notch filters](/en/learn/image-processing/frequency-domain/#notch-filters) `notch-filters`
+- [Implementation](/en/learn/image-processing/frequency-domain/#implementation) `implementation`
+  - [Separability](/en/learn/image-processing/frequency-domain/#separability) `separability`
+  - [The fast Fourier transform](/en/learn/image-processing/frequency-domain/#the-fast-fourier-transform) `the-fast-fourier-transform`
+- [Modern view](/en/learn/image-processing/frequency-domain/#modern-view) `modern-view`
+  - [Surveys and reviews worth reading](/en/learn/image-processing/frequency-domain/#surveys-and-reviews-worth-reading) `surveys-and-reviews-worth-reading`
+  - [Fourier ideas inside networks](/en/learn/image-processing/frequency-domain/#fourier-ideas-inside-networks) `fourier-ideas-inside-networks`
+  - [What did not change](/en/learn/image-processing/frequency-domain/#what-did-not-change) `what-did-not-change`
+- [Key takeaways](/en/learn/image-processing/frequency-domain/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/frequency-domain/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Computing the inverse DFT with a forward transform](/en/learn/image-processing/dip-04-frequency-domain/notes/#computing-the-inverse-dft-with-a-forward-transform) `computing-the-inverse-dft-with-a-forward-transform`
-- [The FFT: history and libraries](/en/learn/image-processing/dip-04-frequency-domain/notes/#the-fft-history-and-libraries) `the-fft-history-and-libraries`
+- [Computing the inverse DFT with a forward transform](/en/learn/image-processing/frequency-domain/notes/computing-the-inverse-dft-with-a-forward-transform/) `notes/computing-the-inverse-dft-with-a-forward-transform/`
+- [The FFT: history and libraries](/en/learn/image-processing/frequency-domain/notes/the-fft-history-and-libraries/) `notes/the-fft-history-and-libraries/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [Fourier ideas in deep learning in more detail](/en/learn/image-processing/dip-04-frequency-domain/papers/#fourier-ideas-in-deep-learning-in-more-detail) `fourier-ideas-in-deep-learning-in-more-detail`
+- [Fourier ideas in deep learning in more detail](/en/learn/image-processing/frequency-domain/papers/fourier-ideas-in-deep-learning-in-more-detail/) `papers/fourier-ideas-in-deep-learning-in-more-detail/`
 
 ## dip-05-restoration-reconstruction
 
@@ -250,60 +252,62 @@ How the Fourier transform turns an image into a recipe of waves, and how editing
 Model how an image was damaged by blur and noise, then undo it with order-statistic, notch, inverse, Wiener and constrained least squares filters, and rebuild CT slices from projections.
 
 - Files: `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-05-restoration-reconstruction.mdx`
-- Pages: `/en/learn/image-processing/dip-05-restoration-reconstruction/`, `/en/learn/image-processing/dip-05-restoration-reconstruction/notes/`, `/en/learn/image-processing/dip-05-restoration-reconstruction/papers/`
-- Level intermediate · order 50 · needs: `image-processing/dip-04-frequency-domain` · tags: dip, restoration, denoising, deconvolution, wiener-filter, computed-tomography
-- Figures: 8 · references: 22 · experiments: inverse-regularization
+- Pages: `/en/learn/image-processing/restoration-reconstruction/`, `/en/learn/image-processing/restoration-reconstruction/notes/`, `/en/learn/image-processing/restoration-reconstruction/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-04-frequency-domain` · tags: dip, restoration, denoising, deconvolution, wiener-filter, computed-tomography
+- Figures: 11 · references: 23 · experiments: inverse-regularization
 
-- [What you'll learn](/en/learn/image-processing/dip-05-restoration-reconstruction/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-05-restoration-reconstruction/#the-big-picture) `the-big-picture`
-- [A model of the image degradation/restoration process](/en/learn/image-processing/dip-05-restoration-reconstruction/#a-model-of-the-image-degradationrestoration-process) `a-model-of-the-image-degradationrestoration-process`
-  - [Restoration versus enhancement](/en/learn/image-processing/dip-05-restoration-reconstruction/#restoration-versus-enhancement) `restoration-versus-enhancement`
-- [Noise models](/en/learn/image-processing/dip-05-restoration-reconstruction/#noise-models) `noise-models`
-  - [Spatial and frequency properties of noise](/en/learn/image-processing/dip-05-restoration-reconstruction/#spatial-and-frequency-properties-of-noise) `spatial-and-frequency-properties-of-noise`
-  - [The common PDFs](/en/learn/image-processing/dip-05-restoration-reconstruction/#the-common-pdfs) `the-common-pdfs`
-  - [Periodic noise](/en/learn/image-processing/dip-05-restoration-reconstruction/#periodic-noise) `periodic-noise`
-  - [Estimating noise parameters](/en/learn/image-processing/dip-05-restoration-reconstruction/#estimating-noise-parameters) `estimating-noise-parameters`
-- [Restoration in the presence of noise only — spatial filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/#restoration-in-the-presence-of-noise-only--spatial-filtering) `restoration-in-the-presence-of-noise-only--spatial-filtering`
-  - [Mean filters](/en/learn/image-processing/dip-05-restoration-reconstruction/#mean-filters) `mean-filters`
-  - [Order-statistic filters](/en/learn/image-processing/dip-05-restoration-reconstruction/#order-statistic-filters) `order-statistic-filters`
-  - [Adaptive filters](/en/learn/image-processing/dip-05-restoration-reconstruction/#adaptive-filters) `adaptive-filters`
-- [Periodic noise reduction using frequency-domain filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/#periodic-noise-reduction-using-frequency-domain-filtering) `periodic-noise-reduction-using-frequency-domain-filtering`
-  - [Notch reject and notch pass filters](/en/learn/image-processing/dip-05-restoration-reconstruction/#notch-reject-and-notch-pass-filters) `notch-reject-and-notch-pass-filters`
-- [Linear, position-invariant degradations](/en/learn/image-processing/dip-05-restoration-reconstruction/#linear-position-invariant-degradations) `linear-position-invariant-degradations`
-- [Estimating the degradation function](/en/learn/image-processing/dip-05-restoration-reconstruction/#estimating-the-degradation-function) `estimating-the-degradation-function`
-  - [By observation](/en/learn/image-processing/dip-05-restoration-reconstruction/#by-observation) `by-observation`
-  - [By experimentation](/en/learn/image-processing/dip-05-restoration-reconstruction/#by-experimentation) `by-experimentation`
-  - [By mathematical modeling](/en/learn/image-processing/dip-05-restoration-reconstruction/#by-mathematical-modeling) `by-mathematical-modeling`
-- [Inverse filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/#inverse-filtering) `inverse-filtering`
-- [Minimum mean square error (Wiener) filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/#minimum-mean-square-error-wiener-filtering) `minimum-mean-square-error-wiener-filtering`
-  - [The constant-$K$ approximation](/en/learn/image-processing/dip-05-restoration-reconstruction/#the-constant-kkk-approximation) `the-constant-kkk-approximation`
-- [Constrained least squares filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/#constrained-least-squares-filtering) `constrained-least-squares-filtering`
-- [Geometric mean filter](/en/learn/image-processing/dip-05-restoration-reconstruction/#geometric-mean-filter) `geometric-mean-filter`
-- [Image reconstruction from projections](/en/learn/image-processing/dip-05-restoration-reconstruction/#image-reconstruction-from-projections) `image-reconstruction-from-projections`
-  - [Principles of computed tomography (CT)](/en/learn/image-processing/dip-05-restoration-reconstruction/#principles-of-computed-tomography-ct) `principles-of-computed-tomography-ct`
-  - [Projections and the Radon transform](/en/learn/image-processing/dip-05-restoration-reconstruction/#projections-and-the-radon-transform) `projections-and-the-radon-transform`
-  - [The Fourier-slice theorem](/en/learn/image-processing/dip-05-restoration-reconstruction/#the-fourier-slice-theorem) `the-fourier-slice-theorem`
-  - [Filtered backprojection with parallel beams](/en/learn/image-processing/dip-05-restoration-reconstruction/#filtered-backprojection-with-parallel-beams) `filtered-backprojection-with-parallel-beams`
-- [Modern view](/en/learn/image-processing/dip-05-restoration-reconstruction/#modern-view) `modern-view`
-  - [Denoising: from patches to networks](/en/learn/image-processing/dip-05-restoration-reconstruction/#denoising-from-patches-to-networks) `denoising-from-patches-to-networks`
-  - [Deblurring and general inverse problems](/en/learn/image-processing/dip-05-restoration-reconstruction/#deblurring-and-general-inverse-problems) `deblurring-and-general-inverse-problems`
-  - [CT reconstruction: learned and unrolled](/en/learn/image-processing/dip-05-restoration-reconstruction/#ct-reconstruction-learned-and-unrolled) `ct-reconstruction-learned-and-unrolled`
-- [Key takeaways](/en/learn/image-processing/dip-05-restoration-reconstruction/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-05-restoration-reconstruction/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/restoration-reconstruction/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/restoration-reconstruction/#the-big-picture) `the-big-picture`
+- [A model of the image degradation/restoration process](/en/learn/image-processing/restoration-reconstruction/#a-model-of-the-image-degradationrestoration-process) `a-model-of-the-image-degradationrestoration-process`
+  - [Restoration versus enhancement](/en/learn/image-processing/restoration-reconstruction/#restoration-versus-enhancement) `restoration-versus-enhancement`
+- [Noise models](/en/learn/image-processing/restoration-reconstruction/#noise-models) `noise-models`
+  - [Spatial and frequency properties of noise](/en/learn/image-processing/restoration-reconstruction/#spatial-and-frequency-properties-of-noise) `spatial-and-frequency-properties-of-noise`
+  - [The common PDFs](/en/learn/image-processing/restoration-reconstruction/#the-common-pdfs) `the-common-pdfs`
+  - [Periodic noise](/en/learn/image-processing/restoration-reconstruction/#periodic-noise) `periodic-noise`
+  - [Estimating noise parameters](/en/learn/image-processing/restoration-reconstruction/#estimating-noise-parameters) `estimating-noise-parameters`
+- [Restoration in the presence of noise only — spatial filtering](/en/learn/image-processing/restoration-reconstruction/#restoration-in-the-presence-of-noise-only--spatial-filtering) `restoration-in-the-presence-of-noise-only--spatial-filtering`
+  - [Mean filters](/en/learn/image-processing/restoration-reconstruction/#mean-filters) `mean-filters`
+  - [Order-statistic filters](/en/learn/image-processing/restoration-reconstruction/#order-statistic-filters) `order-statistic-filters`
+  - [Adaptive filters](/en/learn/image-processing/restoration-reconstruction/#adaptive-filters) `adaptive-filters`
+- [Periodic noise reduction using frequency-domain filtering](/en/learn/image-processing/restoration-reconstruction/#periodic-noise-reduction-using-frequency-domain-filtering) `periodic-noise-reduction-using-frequency-domain-filtering`
+  - [Notch reject and notch pass filters](/en/learn/image-processing/restoration-reconstruction/#notch-reject-and-notch-pass-filters) `notch-reject-and-notch-pass-filters`
+- [Linear, position-invariant degradations](/en/learn/image-processing/restoration-reconstruction/#linear-position-invariant-degradations) `linear-position-invariant-degradations`
+- [Estimating the degradation function](/en/learn/image-processing/restoration-reconstruction/#estimating-the-degradation-function) `estimating-the-degradation-function`
+  - [By observation](/en/learn/image-processing/restoration-reconstruction/#by-observation) `by-observation`
+  - [By experimentation](/en/learn/image-processing/restoration-reconstruction/#by-experimentation) `by-experimentation`
+  - [By mathematical modeling](/en/learn/image-processing/restoration-reconstruction/#by-mathematical-modeling) `by-mathematical-modeling`
+- [Inverse filtering](/en/learn/image-processing/restoration-reconstruction/#inverse-filtering) `inverse-filtering`
+- [Minimum mean square error (Wiener) filtering](/en/learn/image-processing/restoration-reconstruction/#minimum-mean-square-error-wiener-filtering) `minimum-mean-square-error-wiener-filtering`
+  - [The constant-$K$ approximation](/en/learn/image-processing/restoration-reconstruction/#the-constant-kkk-approximation) `the-constant-kkk-approximation`
+- [Constrained least squares filtering](/en/learn/image-processing/restoration-reconstruction/#constrained-least-squares-filtering) `constrained-least-squares-filtering`
+- [Geometric mean filter](/en/learn/image-processing/restoration-reconstruction/#geometric-mean-filter) `geometric-mean-filter`
+- [Image reconstruction from projections](/en/learn/image-processing/restoration-reconstruction/#image-reconstruction-from-projections) `image-reconstruction-from-projections`
+  - [Principles of computed tomography (CT)](/en/learn/image-processing/restoration-reconstruction/#principles-of-computed-tomography-ct) `principles-of-computed-tomography-ct`
+  - [Projections and the Radon transform](/en/learn/image-processing/restoration-reconstruction/#projections-and-the-radon-transform) `projections-and-the-radon-transform`
+  - [The Fourier-slice theorem](/en/learn/image-processing/restoration-reconstruction/#the-fourier-slice-theorem) `the-fourier-slice-theorem`
+  - [Filtered backprojection with parallel beams](/en/learn/image-processing/restoration-reconstruction/#filtered-backprojection-with-parallel-beams) `filtered-backprojection-with-parallel-beams`
+- [Modern view](/en/learn/image-processing/restoration-reconstruction/#modern-view) `modern-view`
+  - [Denoising: from patches to networks](/en/learn/image-processing/restoration-reconstruction/#denoising-from-patches-to-networks) `denoising-from-patches-to-networks`
+  - [Deblurring and general inverse problems](/en/learn/image-processing/restoration-reconstruction/#deblurring-and-general-inverse-problems) `deblurring-and-general-inverse-problems`
+  - [CT reconstruction: learned and unrolled](/en/learn/image-processing/restoration-reconstruction/#ct-reconstruction-learned-and-unrolled) `ct-reconstruction-learned-and-unrolled`
+- [Key takeaways](/en/learn/image-processing/restoration-reconstruction/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/restoration-reconstruction/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Optimum notch filtering](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#optimum-notch-filtering) `optimum-notch-filtering`
-- [Deriving the motion-blur transfer function](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#deriving-the-motion-blur-transfer-function) `deriving-the-motion-blur-transfer-function`
-- [Deriving the Wiener filter](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#deriving-the-wiener-filter) `deriving-the-wiener-filter`
-- [Choosing the CLS multiplier](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#choosing-the-cls-multiplier) `choosing-the-cls-multiplier`
-- [Fan-beam filtered backprojection](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#fan-beam-filtered-backprojection) `fan-beam-filtered-backprojection`
-- [Non-local means denoising](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#non-local-means-denoising) `non-local-means-denoising`
-- [Total variation as a regularizer](/en/learn/image-processing/dip-05-restoration-reconstruction/notes/#total-variation-as-a-regularizer) `total-variation-as-a-regularizer`
+- [Optimum notch filtering](/en/learn/image-processing/restoration-reconstruction/notes/optimum-notch-filtering/) `notes/optimum-notch-filtering/`
+- [Deriving the motion-blur transfer function](/en/learn/image-processing/restoration-reconstruction/notes/deriving-the-motion-blur-transfer-function/) `notes/deriving-the-motion-blur-transfer-function/`
+- [Deriving the Wiener filter](/en/learn/image-processing/restoration-reconstruction/notes/deriving-the-wiener-filter/) `notes/deriving-the-wiener-filter/`
+- [Choosing the CLS multiplier](/en/learn/image-processing/restoration-reconstruction/notes/choosing-the-cls-multiplier/) `notes/choosing-the-cls-multiplier/`
+- [Fan-beam filtered backprojection](/en/learn/image-processing/restoration-reconstruction/notes/fan-beam-filtered-backprojection/) `notes/fan-beam-filtered-backprojection/`
+- [Non-local means denoising](/en/learn/image-processing/restoration-reconstruction/notes/non-local-means-denoising/) `notes/non-local-means-denoising/`
+- [Total variation as a regularizer](/en/learn/image-processing/restoration-reconstruction/notes/total-variation-as-a-regularizer/) `notes/total-variation-as-a-regularizer/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The Modern view surveys in more detail](/en/learn/image-processing/dip-05-restoration-reconstruction/papers/#the-modern-view-surveys-in-more-detail) `the-modern-view-surveys-in-more-detail`
+- [The Modern view surveys in more detail](/en/learn/image-processing/restoration-reconstruction/papers/the-modern-view-surveys-in-more-detail/) `papers/the-modern-view-surveys-in-more-detail/`
+- [Non-Local Means: use similar patches to decide which pixels to average](/en/learn/image-processing/restoration-reconstruction/papers/non-local-means-use-similar-patches-to-decide-which-pixels-to-average/) `papers/non-local-means-use-similar-patches-to-decide-which-pixels-to-average/`
+- [BM3D: denoise groups of similar patches collaboratively](/en/learn/image-processing/restoration-reconstruction/papers/bm3d-denoise-groups-of-similar-patches-collaboratively/) `papers/bm3d-denoise-groups-of-similar-patches-collaboratively/`
 
 ## dip-06-color
 
@@ -311,58 +315,58 @@ Model how an image was damaged by blur and noise, then undo it with order-statis
 How color is measured and encoded, how to convert between RGB, HSI and L*a*b*, and how to transform, filter and segment color images.
 
 - Files: `src/content/tutorials/en/image-processing/dip-06-color.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-06-color.mdx`
-- Pages: `/en/learn/image-processing/dip-06-color/`, `/en/learn/image-processing/dip-06-color/notes/`, `/en/learn/image-processing/dip-06-color/papers/`
-- Level intermediate · order 60 · needs: `image-processing/dip-05-restoration-reconstruction` · tags: dip, color, color-models, white-balance, pseudocolor, segmentation
-- Figures: 10 · references: 20 · experiments: color-clipping
+- Pages: `/en/learn/image-processing/color/`, `/en/learn/image-processing/color/notes/`, `/en/learn/image-processing/color/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-05-restoration-reconstruction` · tags: dip, color, color-models, white-balance, pseudocolor, segmentation
+- Figures: 11 · references: 20 · experiments: color-clipping
 
-- [What you'll learn](/en/learn/image-processing/dip-06-color/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-06-color/#the-big-picture) `the-big-picture`
-- [Color fundamentals](/en/learn/image-processing/dip-06-color/#color-fundamentals) `color-fundamentals`
-  - [Light, cones and trichromacy](/en/learn/image-processing/dip-06-color/#light-cones-and-trichromacy) `light-cones-and-trichromacy`
-  - [Brightness, hue and saturation](/en/learn/image-processing/dip-06-color/#brightness-hue-and-saturation) `brightness-hue-and-saturation`
-  - [CIE tristimulus values and the chromaticity diagram](/en/learn/image-processing/dip-06-color/#cie-tristimulus-values-and-the-chromaticity-diagram) `cie-tristimulus-values-and-the-chromaticity-diagram`
-  - [Gamut](/en/learn/image-processing/dip-06-color/#gamut) `gamut`
-- [Color models](/en/learn/image-processing/dip-06-color/#color-models) `color-models`
-  - [RGB](/en/learn/image-processing/dip-06-color/#rgb) `rgb`
-  - [CMY and CMYK](/en/learn/image-processing/dip-06-color/#cmy-and-cmyk) `cmy-and-cmyk`
-  - [HSI](/en/learn/image-processing/dip-06-color/#hsi) `hsi`
-  - [CIE L*a*b*](/en/learn/image-processing/dip-06-color/#cie-lab) `cie-lab`
-  - [YCbCr in one paragraph](/en/learn/image-processing/dip-06-color/#ycbcr-in-one-paragraph) `ycbcr-in-one-paragraph`
-- [Pseudocolor image processing](/en/learn/image-processing/dip-06-color/#pseudocolor-image-processing) `pseudocolor-image-processing`
-  - [Intensity slicing](/en/learn/image-processing/dip-06-color/#intensity-slicing) `intensity-slicing`
-  - [Intensity-to-color transformations](/en/learn/image-processing/dip-06-color/#intensity-to-color-transformations) `intensity-to-color-transformations`
-  - [Perceptually uniform colormaps](/en/learn/image-processing/dip-06-color/#perceptually-uniform-colormaps) `perceptually-uniform-colormaps`
-- [Basics of full-color image processing](/en/learn/image-processing/dip-06-color/#basics-of-full-color-image-processing) `basics-of-full-color-image-processing`
-- [Color transformations](/en/learn/image-processing/dip-06-color/#color-transformations) `color-transformations`
-  - [Formulation](/en/learn/image-processing/dip-06-color/#formulation) `formulation`
-  - [Color complements](/en/learn/image-processing/dip-06-color/#color-complements) `color-complements`
-  - [Color slicing](/en/learn/image-processing/dip-06-color/#color-slicing) `color-slicing`
-  - [Tone and color corrections](/en/learn/image-processing/dip-06-color/#tone-and-color-corrections) `tone-and-color-corrections`
-  - [White balance](/en/learn/image-processing/dip-06-color/#white-balance) `white-balance`
-  - [Histogram processing of color images](/en/learn/image-processing/dip-06-color/#histogram-processing-of-color-images) `histogram-processing-of-color-images`
-- [Color image smoothing and sharpening](/en/learn/image-processing/dip-06-color/#color-image-smoothing-and-sharpening) `color-image-smoothing-and-sharpening`
-  - [Smoothing](/en/learn/image-processing/dip-06-color/#smoothing) `smoothing`
-  - [Sharpening](/en/learn/image-processing/dip-06-color/#sharpening) `sharpening`
-- [Using color in image segmentation](/en/learn/image-processing/dip-06-color/#using-color-in-image-segmentation) `using-color-in-image-segmentation`
-  - [Segmentation in HSI space](/en/learn/image-processing/dip-06-color/#segmentation-in-hsi-space) `segmentation-in-hsi-space`
-  - [Segmentation in RGB vector space](/en/learn/image-processing/dip-06-color/#segmentation-in-rgb-vector-space) `segmentation-in-rgb-vector-space`
-  - [Color edge detection](/en/learn/image-processing/dip-06-color/#color-edge-detection) `color-edge-detection`
-- [Noise in color images](/en/learn/image-processing/dip-06-color/#noise-in-color-images) `noise-in-color-images`
-- [Color image compression](/en/learn/image-processing/dip-06-color/#color-image-compression) `color-image-compression`
-- [Modern view](/en/learn/image-processing/dip-06-color/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-06-color/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-06-color/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/color/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/color/#the-big-picture) `the-big-picture`
+- [Color fundamentals](/en/learn/image-processing/color/#color-fundamentals) `color-fundamentals`
+  - [Light, cones and trichromacy](/en/learn/image-processing/color/#light-cones-and-trichromacy) `light-cones-and-trichromacy`
+  - [Brightness, hue and saturation](/en/learn/image-processing/color/#brightness-hue-and-saturation) `brightness-hue-and-saturation`
+  - [CIE tristimulus values and the chromaticity diagram](/en/learn/image-processing/color/#cie-tristimulus-values-and-the-chromaticity-diagram) `cie-tristimulus-values-and-the-chromaticity-diagram`
+  - [Gamut](/en/learn/image-processing/color/#gamut) `gamut`
+- [Color models](/en/learn/image-processing/color/#color-models) `color-models`
+  - [RGB](/en/learn/image-processing/color/#rgb) `rgb`
+  - [CMY and CMYK](/en/learn/image-processing/color/#cmy-and-cmyk) `cmy-and-cmyk`
+  - [HSI](/en/learn/image-processing/color/#hsi) `hsi`
+  - [CIE L*a*b*](/en/learn/image-processing/color/#cie-lab) `cie-lab`
+  - [YCbCr in one paragraph](/en/learn/image-processing/color/#ycbcr-in-one-paragraph) `ycbcr-in-one-paragraph`
+- [Pseudocolor image processing](/en/learn/image-processing/color/#pseudocolor-image-processing) `pseudocolor-image-processing`
+  - [Intensity slicing](/en/learn/image-processing/color/#intensity-slicing) `intensity-slicing`
+  - [Intensity-to-color transformations](/en/learn/image-processing/color/#intensity-to-color-transformations) `intensity-to-color-transformations`
+  - [Perceptually uniform colormaps](/en/learn/image-processing/color/#perceptually-uniform-colormaps) `perceptually-uniform-colormaps`
+- [Basics of full-color image processing](/en/learn/image-processing/color/#basics-of-full-color-image-processing) `basics-of-full-color-image-processing`
+- [Color transformations](/en/learn/image-processing/color/#color-transformations) `color-transformations`
+  - [Formulation](/en/learn/image-processing/color/#formulation) `formulation`
+  - [Color complements](/en/learn/image-processing/color/#color-complements) `color-complements`
+  - [Color slicing](/en/learn/image-processing/color/#color-slicing) `color-slicing`
+  - [Tone and color corrections](/en/learn/image-processing/color/#tone-and-color-corrections) `tone-and-color-corrections`
+  - [White balance](/en/learn/image-processing/color/#white-balance) `white-balance`
+  - [Histogram processing of color images](/en/learn/image-processing/color/#histogram-processing-of-color-images) `histogram-processing-of-color-images`
+- [Color image smoothing and sharpening](/en/learn/image-processing/color/#color-image-smoothing-and-sharpening) `color-image-smoothing-and-sharpening`
+  - [Smoothing](/en/learn/image-processing/color/#smoothing) `smoothing`
+  - [Sharpening](/en/learn/image-processing/color/#sharpening) `sharpening`
+- [Using color in image segmentation](/en/learn/image-processing/color/#using-color-in-image-segmentation) `using-color-in-image-segmentation`
+  - [Segmentation in HSI space](/en/learn/image-processing/color/#segmentation-in-hsi-space) `segmentation-in-hsi-space`
+  - [Segmentation in RGB vector space](/en/learn/image-processing/color/#segmentation-in-rgb-vector-space) `segmentation-in-rgb-vector-space`
+  - [Color edge detection](/en/learn/image-processing/color/#color-edge-detection) `color-edge-detection`
+- [Noise in color images](/en/learn/image-processing/color/#noise-in-color-images) `noise-in-color-images`
+- [Color image compression](/en/learn/image-processing/color/#color-image-compression) `color-image-compression`
+- [Modern view](/en/learn/image-processing/color/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/color/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/color/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [The analytic color-matching fit behind Figure 6.1](/en/learn/image-processing/dip-06-color/notes/#the-analytic-color-matching-fit-behind-figure-61) `the-analytic-color-matching-fit-behind-figure-61`
-- [Converting HSI back to RGB](/en/learn/image-processing/dip-06-color/notes/#converting-hsi-back-to-rgb) `converting-hsi-back-to-rgb`
-- [CIELAB formulas and a from-scratch conversion](/en/learn/image-processing/dip-06-color/notes/#cielab-formulas-and-a-from-scratch-conversion) `cielab-formulas-and-a-from-scratch-conversion`
-- [Di Zenzo's gradient direction](/en/learn/image-processing/dip-06-color/notes/#di-zenzos-gradient-direction) `di-zenzos-gradient-direction`
+- [The analytic color-matching fit behind Figure 6.1](/en/learn/image-processing/color/notes/the-analytic-color-matching-fit-behind-figure-61/) `notes/the-analytic-color-matching-fit-behind-figure-61/`
+- [Converting HSI back to RGB](/en/learn/image-processing/color/notes/converting-hsi-back-to-rgb/) `notes/converting-hsi-back-to-rgb/`
+- [CIELAB formulas and a from-scratch conversion](/en/learn/image-processing/color/notes/cielab-formulas-and-a-from-scratch-conversion/) `notes/cielab-formulas-and-a-from-scratch-conversion/`
+- [Di Zenzo's gradient direction](/en/learn/image-processing/color/notes/di-zenzos-gradient-direction/) `notes/di-zenzos-gradient-direction/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The Modern view in more detail](/en/learn/image-processing/dip-06-color/papers/#the-modern-view-in-more-detail) `the-modern-view-in-more-detail`
+- [The Modern view in more detail](/en/learn/image-processing/color/papers/the-modern-view-in-more-detail/) `papers/the-modern-view-in-more-detail/`
 
 ## dip-07-wavelets-transforms
 
@@ -370,49 +374,49 @@ How color is measured and encoded, how to convert between RGB, HSI and L*a*b*, a
 Treat every image transform as a change of basis, then build up from the DCT and Walsh–Hadamard transforms to Haar, multiresolution analysis and the fast wavelet transform.
 
 - Files: `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-07-wavelets-transforms.mdx`
-- Pages: `/en/learn/image-processing/dip-07-wavelets-transforms/`, `/en/learn/image-processing/dip-07-wavelets-transforms/notes/`, `/en/learn/image-processing/dip-07-wavelets-transforms/papers/`
-- Level intermediate · order 70 · needs: `image-processing/dip-06-color` · tags: dip, wavelets, dct, transforms, multiresolution, denoising
-- Figures: 9 · references: 20
+- Pages: `/en/learn/image-processing/wavelets-transforms/`, `/en/learn/image-processing/wavelets-transforms/notes/`, `/en/learn/image-processing/wavelets-transforms/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-06-color` · tags: dip, wavelets, dct, transforms, multiresolution, denoising
+- Figures: 10 · references: 20
 
-- [What you'll learn](/en/learn/image-processing/dip-07-wavelets-transforms/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-07-wavelets-transforms/#the-big-picture) `the-big-picture`
-- [Preliminaries](/en/learn/image-processing/dip-07-wavelets-transforms/#preliminaries) `preliminaries`
-  - [Inner product spaces](/en/learn/image-processing/dip-07-wavelets-transforms/#inner-product-spaces) `inner-product-spaces`
-  - [Orthonormal bases](/en/learn/image-processing/dip-07-wavelets-transforms/#orthonormal-bases) `orthonormal-bases`
-  - [Biorthogonal bases](/en/learn/image-processing/dip-07-wavelets-transforms/#biorthogonal-bases) `biorthogonal-bases`
-  - [Frames](/en/learn/image-processing/dip-07-wavelets-transforms/#frames) `frames`
-- [Matrix-based transforms](/en/learn/image-processing/dip-07-wavelets-transforms/#matrix-based-transforms) `matrix-based-transforms`
-- [Correlation](/en/learn/image-processing/dip-07-wavelets-transforms/#correlation) `correlation`
-- [Basis functions in the time-frequency plane](/en/learn/image-processing/dip-07-wavelets-transforms/#basis-functions-in-the-time-frequency-plane) `basis-functions-in-the-time-frequency-plane`
-- [Basis images](/en/learn/image-processing/dip-07-wavelets-transforms/#basis-images) `basis-images`
-- [Fourier-related transforms](/en/learn/image-processing/dip-07-wavelets-transforms/#fourier-related-transforms) `fourier-related-transforms`
-  - [The discrete Fourier transform, as a matrix](/en/learn/image-processing/dip-07-wavelets-transforms/#the-discrete-fourier-transform-as-a-matrix) `the-discrete-fourier-transform-as-a-matrix`
-  - [The discrete cosine transform](/en/learn/image-processing/dip-07-wavelets-transforms/#the-discrete-cosine-transform) `the-discrete-cosine-transform`
-- [Walsh–Hadamard transform](/en/learn/image-processing/dip-07-wavelets-transforms/#walshhadamard-transform) `walshhadamard-transform`
-- [Slant transform](/en/learn/image-processing/dip-07-wavelets-transforms/#slant-transform) `slant-transform`
-- [Haar transform](/en/learn/image-processing/dip-07-wavelets-transforms/#haar-transform) `haar-transform`
-- [Wavelet transforms](/en/learn/image-processing/dip-07-wavelets-transforms/#wavelet-transforms) `wavelet-transforms`
-  - [Multiresolution analysis](/en/learn/image-processing/dip-07-wavelets-transforms/#multiresolution-analysis) `multiresolution-analysis`
-  - [Wavelet functions](/en/learn/image-processing/dip-07-wavelets-transforms/#wavelet-functions) `wavelet-functions`
-  - [The discrete wavelet transform in one dimension](/en/learn/image-processing/dip-07-wavelets-transforms/#the-discrete-wavelet-transform-in-one-dimension) `the-discrete-wavelet-transform-in-one-dimension`
-  - [The fast wavelet transform](/en/learn/image-processing/dip-07-wavelets-transforms/#the-fast-wavelet-transform) `the-fast-wavelet-transform`
-  - [Wavelet transforms in two dimensions](/en/learn/image-processing/dip-07-wavelets-transforms/#wavelet-transforms-in-two-dimensions) `wavelet-transforms-in-two-dimensions`
-  - [Applications](/en/learn/image-processing/dip-07-wavelets-transforms/#applications) `applications`
-- [Modern view](/en/learn/image-processing/dip-07-wavelets-transforms/#modern-view) `modern-view`
-  - [What deep learning changed, and what it did not](/en/learn/image-processing/dip-07-wavelets-transforms/#what-deep-learning-changed-and-what-it-did-not) `what-deep-learning-changed-and-what-it-did-not`
-- [Key takeaways](/en/learn/image-processing/dip-07-wavelets-transforms/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-07-wavelets-transforms/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/wavelets-transforms/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/wavelets-transforms/#the-big-picture) `the-big-picture`
+- [Preliminaries](/en/learn/image-processing/wavelets-transforms/#preliminaries) `preliminaries`
+  - [Inner product spaces](/en/learn/image-processing/wavelets-transforms/#inner-product-spaces) `inner-product-spaces`
+  - [Orthonormal bases](/en/learn/image-processing/wavelets-transforms/#orthonormal-bases) `orthonormal-bases`
+  - [Biorthogonal bases](/en/learn/image-processing/wavelets-transforms/#biorthogonal-bases) `biorthogonal-bases`
+  - [Frames](/en/learn/image-processing/wavelets-transforms/#frames) `frames`
+- [Matrix-based transforms](/en/learn/image-processing/wavelets-transforms/#matrix-based-transforms) `matrix-based-transforms`
+- [Correlation](/en/learn/image-processing/wavelets-transforms/#correlation) `correlation`
+- [Basis functions in the time-frequency plane](/en/learn/image-processing/wavelets-transforms/#basis-functions-in-the-time-frequency-plane) `basis-functions-in-the-time-frequency-plane`
+- [Basis images](/en/learn/image-processing/wavelets-transforms/#basis-images) `basis-images`
+- [Fourier-related transforms](/en/learn/image-processing/wavelets-transforms/#fourier-related-transforms) `fourier-related-transforms`
+  - [The discrete Fourier transform, as a matrix](/en/learn/image-processing/wavelets-transforms/#the-discrete-fourier-transform-as-a-matrix) `the-discrete-fourier-transform-as-a-matrix`
+  - [The discrete cosine transform](/en/learn/image-processing/wavelets-transforms/#the-discrete-cosine-transform) `the-discrete-cosine-transform`
+- [Walsh–Hadamard transform](/en/learn/image-processing/wavelets-transforms/#walshhadamard-transform) `walshhadamard-transform`
+- [Slant transform](/en/learn/image-processing/wavelets-transforms/#slant-transform) `slant-transform`
+- [Haar transform](/en/learn/image-processing/wavelets-transforms/#haar-transform) `haar-transform`
+- [Wavelet transforms](/en/learn/image-processing/wavelets-transforms/#wavelet-transforms) `wavelet-transforms`
+  - [Multiresolution analysis](/en/learn/image-processing/wavelets-transforms/#multiresolution-analysis) `multiresolution-analysis`
+  - [Wavelet functions](/en/learn/image-processing/wavelets-transforms/#wavelet-functions) `wavelet-functions`
+  - [The discrete wavelet transform in one dimension](/en/learn/image-processing/wavelets-transforms/#the-discrete-wavelet-transform-in-one-dimension) `the-discrete-wavelet-transform-in-one-dimension`
+  - [The fast wavelet transform](/en/learn/image-processing/wavelets-transforms/#the-fast-wavelet-transform) `the-fast-wavelet-transform`
+  - [Wavelet transforms in two dimensions](/en/learn/image-processing/wavelets-transforms/#wavelet-transforms-in-two-dimensions) `wavelet-transforms-in-two-dimensions`
+  - [Applications](/en/learn/image-processing/wavelets-transforms/#applications) `applications`
+- [Modern view](/en/learn/image-processing/wavelets-transforms/#modern-view) `modern-view`
+  - [What deep learning changed, and what it did not](/en/learn/image-processing/wavelets-transforms/#what-deep-learning-changed-and-what-it-did-not) `what-deep-learning-changed-and-what-it-did-not`
+- [Key takeaways](/en/learn/image-processing/wavelets-transforms/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/wavelets-transforms/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [The discrete sine transform](/en/learn/image-processing/dip-07-wavelets-transforms/notes/#the-discrete-sine-transform) `the-discrete-sine-transform`
-- [Building the slant matrix](/en/learn/image-processing/dip-07-wavelets-transforms/notes/#building-the-slant-matrix) `building-the-slant-matrix`
-- [The wavelet series and DWT formulas](/en/learn/image-processing/dip-07-wavelets-transforms/notes/#the-wavelet-series-and-dwt-formulas) `the-wavelet-series-and-dwt-formulas`
-- [Wavelet packets](/en/learn/image-processing/dip-07-wavelets-transforms/notes/#wavelet-packets) `wavelet-packets`
+- [The discrete sine transform](/en/learn/image-processing/wavelets-transforms/notes/the-discrete-sine-transform/) `notes/the-discrete-sine-transform/`
+- [Building the slant matrix](/en/learn/image-processing/wavelets-transforms/notes/building-the-slant-matrix/) `notes/building-the-slant-matrix/`
+- [The wavelet series and DWT formulas](/en/learn/image-processing/wavelets-transforms/notes/the-wavelet-series-and-dwt-formulas/) `notes/the-wavelet-series-and-dwt-formulas/`
+- [Wavelet packets](/en/learn/image-processing/wavelets-transforms/notes/wavelet-packets/) `notes/wavelet-packets/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The Modern view in more detail](/en/learn/image-processing/dip-07-wavelets-transforms/papers/#the-modern-view-in-more-detail) `the-modern-view-in-more-detail`
+- [The Modern view in more detail](/en/learn/image-processing/wavelets-transforms/papers/the-modern-view-in-more-detail/) `papers/the-modern-view-in-more-detail/`
 
 ## dip-08-compression-watermarking
 
@@ -420,61 +424,61 @@ Treat every image transform as a change of basis, then build up from the DCT and
 How images are squeezed into fewer bits, from entropy and Huffman codes to JPEG, JPEG 2000 and learned codecs, and how hidden marks are written into them.
 
 - Files: `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-08-compression-watermarking.mdx`
-- Pages: `/en/learn/image-processing/dip-08-compression-watermarking/`, `/en/learn/image-processing/dip-08-compression-watermarking/notes/`, `/en/learn/image-processing/dip-08-compression-watermarking/papers/`
-- Level intermediate · order 80 · needs: `image-processing/dip-07-wavelets-transforms` · tags: dip, compression, huffman, jpeg, wavelets, watermarking
-- Figures: 9 · references: 20 · experiments: transform-coding
+- Pages: `/en/learn/image-processing/compression-watermarking/`, `/en/learn/image-processing/compression-watermarking/notes/`, `/en/learn/image-processing/compression-watermarking/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-07-wavelets-transforms` · tags: dip, compression, huffman, jpeg, wavelets, watermarking
+- Figures: 10 · references: 20 · experiments: transform-coding
 
-- [What you'll learn](/en/learn/image-processing/dip-08-compression-watermarking/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-08-compression-watermarking/#the-big-picture) `the-big-picture`
-- [Fundamentals](/en/learn/image-processing/dip-08-compression-watermarking/#fundamentals) `fundamentals`
-  - [Compression ratio and redundancy](/en/learn/image-processing/dip-08-compression-watermarking/#compression-ratio-and-redundancy) `compression-ratio-and-redundancy`
-  - [Measuring information: entropy](/en/learn/image-processing/dip-08-compression-watermarking/#measuring-information-entropy) `measuring-information-entropy`
-  - [Fidelity criteria](/en/learn/image-processing/dip-08-compression-watermarking/#fidelity-criteria) `fidelity-criteria`
-  - [Image compression models](/en/learn/image-processing/dip-08-compression-watermarking/#image-compression-models) `image-compression-models`
-- [Huffman coding](/en/learn/image-processing/dip-08-compression-watermarking/#huffman-coding) `huffman-coding`
-  - [A worked example](/en/learn/image-processing/dip-08-compression-watermarking/#a-worked-example) `a-worked-example`
-- [Golomb coding](/en/learn/image-processing/dip-08-compression-watermarking/#golomb-coding) `golomb-coding`
-- [Arithmetic coding](/en/learn/image-processing/dip-08-compression-watermarking/#arithmetic-coding) `arithmetic-coding`
-  - [Worked example](/en/learn/image-processing/dip-08-compression-watermarking/#worked-example) `worked-example`
-- [LZW coding](/en/learn/image-processing/dip-08-compression-watermarking/#lzw-coding) `lzw-coding`
-- [Run-length coding](/en/learn/image-processing/dip-08-compression-watermarking/#run-length-coding) `run-length-coding`
-- [Symbol-based coding](/en/learn/image-processing/dip-08-compression-watermarking/#symbol-based-coding) `symbol-based-coding`
-- [Bit-plane coding](/en/learn/image-processing/dip-08-compression-watermarking/#bit-plane-coding) `bit-plane-coding`
-- [Block transform coding](/en/learn/image-processing/dip-08-compression-watermarking/#block-transform-coding) `block-transform-coding`
-  - [Transform selection](/en/learn/image-processing/dip-08-compression-watermarking/#transform-selection) `transform-selection`
-  - [Subimage size](/en/learn/image-processing/dip-08-compression-watermarking/#subimage-size) `subimage-size`
-  - [Bit allocation](/en/learn/image-processing/dip-08-compression-watermarking/#bit-allocation) `bit-allocation`
-  - [JPEG baseline](/en/learn/image-processing/dip-08-compression-watermarking/#jpeg-baseline) `jpeg-baseline`
-- [Predictive coding](/en/learn/image-processing/dip-08-compression-watermarking/#predictive-coding) `predictive-coding`
-  - [Lossless predictive coding](/en/learn/image-processing/dip-08-compression-watermarking/#lossless-predictive-coding) `lossless-predictive-coding`
-  - [Motion compensation](/en/learn/image-processing/dip-08-compression-watermarking/#motion-compensation) `motion-compensation`
-  - [Lossy predictive coding (DPCM)](/en/learn/image-processing/dip-08-compression-watermarking/#lossy-predictive-coding-dpcm) `lossy-predictive-coding-dpcm`
-- [Wavelet coding](/en/learn/image-processing/dip-08-compression-watermarking/#wavelet-coding) `wavelet-coding`
-  - [Wavelet selection](/en/learn/image-processing/dip-08-compression-watermarking/#wavelet-selection) `wavelet-selection`
-  - [Decomposition level](/en/learn/image-processing/dip-08-compression-watermarking/#decomposition-level) `decomposition-level`
-  - [Quantizer design](/en/learn/image-processing/dip-08-compression-watermarking/#quantizer-design) `quantizer-design`
-  - [JPEG 2000](/en/learn/image-processing/dip-08-compression-watermarking/#jpeg-2000) `jpeg-2000`
-- [Digital image watermarking](/en/learn/image-processing/dip-08-compression-watermarking/#digital-image-watermarking) `digital-image-watermarking`
-  - [Kinds of watermarks](/en/learn/image-processing/dip-08-compression-watermarking/#kinds-of-watermarks) `kinds-of-watermarks`
-  - [A fragile example: least significant bits](/en/learn/image-processing/dip-08-compression-watermarking/#a-fragile-example-least-significant-bits) `a-fragile-example-least-significant-bits`
-  - [A robust example: DCT-domain watermark](/en/learn/image-processing/dip-08-compression-watermarking/#a-robust-example-dct-domain-watermark) `a-robust-example-dct-domain-watermark`
-- [Modern view](/en/learn/image-processing/dip-08-compression-watermarking/#modern-view) `modern-view`
-  - [Surveys worth reading](/en/learn/image-processing/dip-08-compression-watermarking/#surveys-worth-reading) `surveys-worth-reading`
-  - [Learned image compression](/en/learn/image-processing/dip-08-compression-watermarking/#learned-image-compression) `learned-image-compression`
-  - [Modern standard codecs](/en/learn/image-processing/dip-08-compression-watermarking/#modern-standard-codecs) `modern-standard-codecs`
-  - [Deep-learning watermarking](/en/learn/image-processing/dip-08-compression-watermarking/#deep-learning-watermarking) `deep-learning-watermarking`
-- [Key takeaways](/en/learn/image-processing/dip-08-compression-watermarking/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-08-compression-watermarking/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/compression-watermarking/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/compression-watermarking/#the-big-picture) `the-big-picture`
+- [Fundamentals](/en/learn/image-processing/compression-watermarking/#fundamentals) `fundamentals`
+  - [Compression ratio and redundancy](/en/learn/image-processing/compression-watermarking/#compression-ratio-and-redundancy) `compression-ratio-and-redundancy`
+  - [Measuring information: entropy](/en/learn/image-processing/compression-watermarking/#measuring-information-entropy) `measuring-information-entropy`
+  - [Fidelity criteria](/en/learn/image-processing/compression-watermarking/#fidelity-criteria) `fidelity-criteria`
+  - [Image compression models](/en/learn/image-processing/compression-watermarking/#image-compression-models) `image-compression-models`
+- [Huffman coding](/en/learn/image-processing/compression-watermarking/#huffman-coding) `huffman-coding`
+  - [A worked example](/en/learn/image-processing/compression-watermarking/#a-worked-example) `a-worked-example`
+- [Golomb coding](/en/learn/image-processing/compression-watermarking/#golomb-coding) `golomb-coding`
+- [Arithmetic coding](/en/learn/image-processing/compression-watermarking/#arithmetic-coding) `arithmetic-coding`
+  - [Worked example](/en/learn/image-processing/compression-watermarking/#worked-example) `worked-example`
+- [LZW coding](/en/learn/image-processing/compression-watermarking/#lzw-coding) `lzw-coding`
+- [Run-length coding](/en/learn/image-processing/compression-watermarking/#run-length-coding) `run-length-coding`
+- [Symbol-based coding](/en/learn/image-processing/compression-watermarking/#symbol-based-coding) `symbol-based-coding`
+- [Bit-plane coding](/en/learn/image-processing/compression-watermarking/#bit-plane-coding) `bit-plane-coding`
+- [Block transform coding](/en/learn/image-processing/compression-watermarking/#block-transform-coding) `block-transform-coding`
+  - [Transform selection](/en/learn/image-processing/compression-watermarking/#transform-selection) `transform-selection`
+  - [Subimage size](/en/learn/image-processing/compression-watermarking/#subimage-size) `subimage-size`
+  - [Bit allocation](/en/learn/image-processing/compression-watermarking/#bit-allocation) `bit-allocation`
+  - [JPEG baseline](/en/learn/image-processing/compression-watermarking/#jpeg-baseline) `jpeg-baseline`
+- [Predictive coding](/en/learn/image-processing/compression-watermarking/#predictive-coding) `predictive-coding`
+  - [Lossless predictive coding](/en/learn/image-processing/compression-watermarking/#lossless-predictive-coding) `lossless-predictive-coding`
+  - [Motion compensation](/en/learn/image-processing/compression-watermarking/#motion-compensation) `motion-compensation`
+  - [Lossy predictive coding (DPCM)](/en/learn/image-processing/compression-watermarking/#lossy-predictive-coding-dpcm) `lossy-predictive-coding-dpcm`
+- [Wavelet coding](/en/learn/image-processing/compression-watermarking/#wavelet-coding) `wavelet-coding`
+  - [Wavelet selection](/en/learn/image-processing/compression-watermarking/#wavelet-selection) `wavelet-selection`
+  - [Decomposition level](/en/learn/image-processing/compression-watermarking/#decomposition-level) `decomposition-level`
+  - [Quantizer design](/en/learn/image-processing/compression-watermarking/#quantizer-design) `quantizer-design`
+  - [JPEG 2000](/en/learn/image-processing/compression-watermarking/#jpeg-2000) `jpeg-2000`
+- [Digital image watermarking](/en/learn/image-processing/compression-watermarking/#digital-image-watermarking) `digital-image-watermarking`
+  - [Kinds of watermarks](/en/learn/image-processing/compression-watermarking/#kinds-of-watermarks) `kinds-of-watermarks`
+  - [A fragile example: least significant bits](/en/learn/image-processing/compression-watermarking/#a-fragile-example-least-significant-bits) `a-fragile-example-least-significant-bits`
+  - [A robust example: DCT-domain watermark](/en/learn/image-processing/compression-watermarking/#a-robust-example-dct-domain-watermark) `a-robust-example-dct-domain-watermark`
+- [Modern view](/en/learn/image-processing/compression-watermarking/#modern-view) `modern-view`
+  - [Surveys worth reading](/en/learn/image-processing/compression-watermarking/#surveys-worth-reading) `surveys-worth-reading`
+  - [Learned image compression](/en/learn/image-processing/compression-watermarking/#learned-image-compression) `learned-image-compression`
+  - [Modern standard codecs](/en/learn/image-processing/compression-watermarking/#modern-standard-codecs) `modern-standard-codecs`
+  - [Deep-learning watermarking](/en/learn/image-processing/compression-watermarking/#deep-learning-watermarking) `deep-learning-watermarking`
+- [Key takeaways](/en/learn/image-processing/compression-watermarking/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/compression-watermarking/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Formats, containers and standards](/en/learn/image-processing/dip-08-compression-watermarking/notes/#formats-containers-and-standards) `formats-containers-and-standards`
-- [Optimal predictors and quantizers](/en/learn/image-processing/dip-08-compression-watermarking/notes/#optimal-predictors-and-quantizers) `optimal-predictors-and-quantizers`
-- [Modern standard codecs in more detail](/en/learn/image-processing/dip-08-compression-watermarking/notes/#modern-standard-codecs-in-more-detail) `modern-standard-codecs-in-more-detail`
+- [Formats, containers and standards](/en/learn/image-processing/compression-watermarking/notes/formats-containers-and-standards/) `notes/formats-containers-and-standards/`
+- [Optimal predictors and quantizers](/en/learn/image-processing/compression-watermarking/notes/optimal-predictors-and-quantizers/) `notes/optimal-predictors-and-quantizers/`
+- [Modern standard codecs in more detail](/en/learn/image-processing/compression-watermarking/notes/modern-standard-codecs-in-more-detail/) `notes/modern-standard-codecs-in-more-detail/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The Modern view surveys in more detail](/en/learn/image-processing/dip-08-compression-watermarking/papers/#the-modern-view-surveys-in-more-detail) `the-modern-view-surveys-in-more-detail`
+- [The Modern view surveys in more detail](/en/learn/image-processing/compression-watermarking/papers/the-modern-view-surveys-in-more-detail/) `papers/the-modern-view-surveys-in-more-detail/`
 
 ## dip-09-morphology
 
@@ -482,66 +486,66 @@ How images are squeezed into fewer bits, from entropy and Huffman codes to JPEG,
 Probe shapes with small structuring elements: erosion, dilation, opening, closing, hit-or-miss, skeletons, reconstruction and grayscale morphology, with scikit-image code.
 
 - Files: `src/content/tutorials/en/image-processing/dip-09-morphology.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-09-morphology.mdx`
-- Pages: `/en/learn/image-processing/dip-09-morphology/`, `/en/learn/image-processing/dip-09-morphology/notes/`, `/en/learn/image-processing/dip-09-morphology/papers/`
-- Level intermediate · order 90 · needs: `image-processing/dip-08-compression-watermarking` · tags: dip, morphology, erosion-dilation, skeleton, top-hat, reconstruction
-- Figures: 9 · references: 17 · experiments: morphology-shapes
+- Pages: `/en/learn/image-processing/morphology/`, `/en/learn/image-processing/morphology/notes/`, `/en/learn/image-processing/morphology/papers/`
+- Level intermediate · depth 1 · needs: `image-processing/dip-08-compression-watermarking` · tags: dip, morphology, erosion-dilation, skeleton, top-hat, reconstruction
+- Figures: 10 · references: 17 · experiments: morphology-shapes
 
-- [What you'll learn](/en/learn/image-processing/dip-09-morphology/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-09-morphology/#the-big-picture) `the-big-picture`
-- [Preliminaries](/en/learn/image-processing/dip-09-morphology/#preliminaries) `preliminaries`
-  - [Images as sets](/en/learn/image-processing/dip-09-morphology/#images-as-sets) `images-as-sets`
-  - [Structuring elements](/en/learn/image-processing/dip-09-morphology/#structuring-elements) `structuring-elements`
-  - [Reflection and translation](/en/learn/image-processing/dip-09-morphology/#reflection-and-translation) `reflection-and-translation`
-- [Erosion and dilation](/en/learn/image-processing/dip-09-morphology/#erosion-and-dilation) `erosion-and-dilation`
-  - [Erosion](/en/learn/image-processing/dip-09-morphology/#erosion) `erosion`
-  - [Dilation](/en/learn/image-processing/dip-09-morphology/#dilation) `dilation`
-  - [Duality](/en/learn/image-processing/dip-09-morphology/#duality) `duality`
-- [Opening and closing](/en/learn/image-processing/dip-09-morphology/#opening-and-closing) `opening-and-closing`
-  - [Definitions](/en/learn/image-processing/dip-09-morphology/#definitions) `definitions`
-  - [Geometric interpretation: the rolling ball](/en/learn/image-processing/dip-09-morphology/#geometric-interpretation-the-rolling-ball) `geometric-interpretation-the-rolling-ball`
-  - [Properties](/en/learn/image-processing/dip-09-morphology/#properties) `properties`
-- [The hit-or-miss transform](/en/learn/image-processing/dip-09-morphology/#the-hit-or-miss-transform) `the-hit-or-miss-transform`
-- [Some basic morphological algorithms](/en/learn/image-processing/dip-09-morphology/#some-basic-morphological-algorithms) `some-basic-morphological-algorithms`
-  - [Boundary extraction](/en/learn/image-processing/dip-09-morphology/#boundary-extraction) `boundary-extraction`
-  - [Hole filling](/en/learn/image-processing/dip-09-morphology/#hole-filling) `hole-filling`
-  - [Extraction of connected components](/en/learn/image-processing/dip-09-morphology/#extraction-of-connected-components) `extraction-of-connected-components`
-  - [Convex hull](/en/learn/image-processing/dip-09-morphology/#convex-hull) `convex-hull`
-  - [Thinning](/en/learn/image-processing/dip-09-morphology/#thinning) `thinning`
-  - [Skeletons](/en/learn/image-processing/dip-09-morphology/#skeletons) `skeletons`
-  - [Pruning](/en/learn/image-processing/dip-09-morphology/#pruning) `pruning`
-- [Morphological reconstruction](/en/learn/image-processing/dip-09-morphology/#morphological-reconstruction) `morphological-reconstruction`
-  - [Geodesic dilation and erosion](/en/learn/image-processing/dip-09-morphology/#geodesic-dilation-and-erosion) `geodesic-dilation-and-erosion`
-  - [Reconstruction by dilation and by erosion](/en/learn/image-processing/dip-09-morphology/#reconstruction-by-dilation-and-by-erosion) `reconstruction-by-dilation-and-by-erosion`
-  - [Opening by reconstruction](/en/learn/image-processing/dip-09-morphology/#opening-by-reconstruction) `opening-by-reconstruction`
-  - [Automatic hole filling](/en/learn/image-processing/dip-09-morphology/#automatic-hole-filling) `automatic-hole-filling`
-  - [Border clearing](/en/learn/image-processing/dip-09-morphology/#border-clearing) `border-clearing`
-- [Summary of binary operations](/en/learn/image-processing/dip-09-morphology/#summary-of-binary-operations) `summary-of-binary-operations`
-- [Grayscale morphology](/en/learn/image-processing/dip-09-morphology/#grayscale-morphology) `grayscale-morphology`
-  - [Grayscale erosion and dilation](/en/learn/image-processing/dip-09-morphology/#grayscale-erosion-and-dilation) `grayscale-erosion-and-dilation`
-  - [Opening and closing](/en/learn/image-processing/dip-09-morphology/#opening-and-closing-1) `opening-and-closing-1`
-  - [Morphological smoothing](/en/learn/image-processing/dip-09-morphology/#morphological-smoothing) `morphological-smoothing`
-  - [Morphological gradient](/en/learn/image-processing/dip-09-morphology/#morphological-gradient) `morphological-gradient`
-  - [Top-hat and bottom-hat transforms](/en/learn/image-processing/dip-09-morphology/#top-hat-and-bottom-hat-transforms) `top-hat-and-bottom-hat-transforms`
-  - [Granulometry](/en/learn/image-processing/dip-09-morphology/#granulometry) `granulometry`
-- [Modern view](/en/learn/image-processing/dip-09-morphology/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-09-morphology/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-09-morphology/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/morphology/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/morphology/#the-big-picture) `the-big-picture`
+- [Preliminaries](/en/learn/image-processing/morphology/#preliminaries) `preliminaries`
+  - [Images as sets](/en/learn/image-processing/morphology/#images-as-sets) `images-as-sets`
+  - [Structuring elements](/en/learn/image-processing/morphology/#structuring-elements) `structuring-elements`
+  - [Reflection and translation](/en/learn/image-processing/morphology/#reflection-and-translation) `reflection-and-translation`
+- [Erosion and dilation](/en/learn/image-processing/morphology/#erosion-and-dilation) `erosion-and-dilation`
+  - [Erosion](/en/learn/image-processing/morphology/#erosion) `erosion`
+  - [Dilation](/en/learn/image-processing/morphology/#dilation) `dilation`
+  - [Duality](/en/learn/image-processing/morphology/#duality) `duality`
+- [Opening and closing](/en/learn/image-processing/morphology/#opening-and-closing) `opening-and-closing`
+  - [Definitions](/en/learn/image-processing/morphology/#definitions) `definitions`
+  - [Geometric interpretation: the rolling ball](/en/learn/image-processing/morphology/#geometric-interpretation-the-rolling-ball) `geometric-interpretation-the-rolling-ball`
+  - [Properties](/en/learn/image-processing/morphology/#properties) `properties`
+- [The hit-or-miss transform](/en/learn/image-processing/morphology/#the-hit-or-miss-transform) `the-hit-or-miss-transform`
+- [Some basic morphological algorithms](/en/learn/image-processing/morphology/#some-basic-morphological-algorithms) `some-basic-morphological-algorithms`
+  - [Boundary extraction](/en/learn/image-processing/morphology/#boundary-extraction) `boundary-extraction`
+  - [Hole filling](/en/learn/image-processing/morphology/#hole-filling) `hole-filling`
+  - [Extraction of connected components](/en/learn/image-processing/morphology/#extraction-of-connected-components) `extraction-of-connected-components`
+  - [Convex hull](/en/learn/image-processing/morphology/#convex-hull) `convex-hull`
+  - [Thinning](/en/learn/image-processing/morphology/#thinning) `thinning`
+  - [Skeletons](/en/learn/image-processing/morphology/#skeletons) `skeletons`
+  - [Pruning](/en/learn/image-processing/morphology/#pruning) `pruning`
+- [Morphological reconstruction](/en/learn/image-processing/morphology/#morphological-reconstruction) `morphological-reconstruction`
+  - [Geodesic dilation and erosion](/en/learn/image-processing/morphology/#geodesic-dilation-and-erosion) `geodesic-dilation-and-erosion`
+  - [Reconstruction by dilation and by erosion](/en/learn/image-processing/morphology/#reconstruction-by-dilation-and-by-erosion) `reconstruction-by-dilation-and-by-erosion`
+  - [Opening by reconstruction](/en/learn/image-processing/morphology/#opening-by-reconstruction) `opening-by-reconstruction`
+  - [Automatic hole filling](/en/learn/image-processing/morphology/#automatic-hole-filling) `automatic-hole-filling`
+  - [Border clearing](/en/learn/image-processing/morphology/#border-clearing) `border-clearing`
+- [Summary of binary operations](/en/learn/image-processing/morphology/#summary-of-binary-operations) `summary-of-binary-operations`
+- [Grayscale morphology](/en/learn/image-processing/morphology/#grayscale-morphology) `grayscale-morphology`
+  - [Grayscale erosion and dilation](/en/learn/image-processing/morphology/#grayscale-erosion-and-dilation) `grayscale-erosion-and-dilation`
+  - [Opening and closing](/en/learn/image-processing/morphology/#opening-and-closing-1) `opening-and-closing-1`
+  - [Morphological smoothing](/en/learn/image-processing/morphology/#morphological-smoothing) `morphological-smoothing`
+  - [Morphological gradient](/en/learn/image-processing/morphology/#morphological-gradient) `morphological-gradient`
+  - [Top-hat and bottom-hat transforms](/en/learn/image-processing/morphology/#top-hat-and-bottom-hat-transforms) `top-hat-and-bottom-hat-transforms`
+  - [Granulometry](/en/learn/image-processing/morphology/#granulometry) `granulometry`
+- [Modern view](/en/learn/image-processing/morphology/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/morphology/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/morphology/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Convex hull by hit-or-miss iteration](/en/learn/image-processing/dip-09-morphology/notes/#convex-hull-by-hit-or-miss-iteration) `convex-hull-by-hit-or-miss-iteration`
-- [Thickening](/en/learn/image-processing/dip-09-morphology/notes/#thickening) `thickening`
-- [The morphological skeleton formula](/en/learn/image-processing/dip-09-morphology/notes/#the-morphological-skeleton-formula) `the-morphological-skeleton-formula`
-- [Table of binary operations](/en/learn/image-processing/dip-09-morphology/notes/#table-of-binary-operations) `table-of-binary-operations`
-- [Nonflat structuring elements](/en/learn/image-processing/dip-09-morphology/notes/#nonflat-structuring-elements) `nonflat-structuring-elements`
-- [Textural segmentation](/en/learn/image-processing/dip-09-morphology/notes/#textural-segmentation) `textural-segmentation`
-- [Grayscale reconstruction](/en/learn/image-processing/dip-09-morphology/notes/#grayscale-reconstruction) `grayscale-reconstruction`
-- [Connected operators and component trees](/en/learn/image-processing/dip-09-morphology/notes/#connected-operators-and-component-trees) `connected-operators-and-component-trees`
-- [Learnable morphological layers](/en/learn/image-processing/dip-09-morphology/notes/#learnable-morphological-layers) `learnable-morphological-layers`
+- [Convex hull by hit-or-miss iteration](/en/learn/image-processing/morphology/notes/convex-hull-by-hit-or-miss-iteration/) `notes/convex-hull-by-hit-or-miss-iteration/`
+- [Thickening](/en/learn/image-processing/morphology/notes/thickening/) `notes/thickening/`
+- [The morphological skeleton formula](/en/learn/image-processing/morphology/notes/the-morphological-skeleton-formula/) `notes/the-morphological-skeleton-formula/`
+- [Table of binary operations](/en/learn/image-processing/morphology/notes/table-of-binary-operations/) `notes/table-of-binary-operations/`
+- [Nonflat structuring elements](/en/learn/image-processing/morphology/notes/nonflat-structuring-elements/) `notes/nonflat-structuring-elements/`
+- [Textural segmentation](/en/learn/image-processing/morphology/notes/textural-segmentation/) `notes/textural-segmentation/`
+- [Grayscale reconstruction](/en/learn/image-processing/morphology/notes/grayscale-reconstruction/) `notes/grayscale-reconstruction/`
+- [Connected operators and component trees](/en/learn/image-processing/morphology/notes/connected-operators-and-component-trees/) `notes/connected-operators-and-component-trees/`
+- [Learnable morphological layers](/en/learn/image-processing/morphology/notes/learnable-morphological-layers/) `notes/learnable-morphological-layers/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [Foundations of mathematical morphology](/en/learn/image-processing/dip-09-morphology/papers/#foundations-of-mathematical-morphology) `foundations-of-mathematical-morphology`
+- [Foundations of mathematical morphology](/en/learn/image-processing/morphology/papers/foundations-of-mathematical-morphology/) `papers/foundations-of-mathematical-morphology/`
 
 ## dip-10-segmentation
 
@@ -549,60 +553,60 @@ Probe shapes with small structuring elements: erosion, dilation, opening, closin
 Split an image into meaningful parts: find edges with gradients, LoG and Canny, link them with the Hough transform, pick thresholds with Otsu, and grow, cluster, cut and flood regions.
 
 - Files: `src/content/tutorials/en/image-processing/dip-10-segmentation.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-10-segmentation.mdx`
-- Pages: `/en/learn/image-processing/dip-10-segmentation/`, `/en/learn/image-processing/dip-10-segmentation/notes/`, `/en/learn/image-processing/dip-10-segmentation/papers/`
-- Level advanced · order 100 · needs: `image-processing/dip-09-morphology` · tags: dip, segmentation, edge-detection, thresholding, watershed, superpixels
-- Figures: 10 · references: 22 · experiments: segmentation-threshold
+- Pages: `/en/learn/image-processing/segmentation/`, `/en/learn/image-processing/segmentation/notes/`, `/en/learn/image-processing/segmentation/papers/`
+- Level advanced · depth 1 · needs: `image-processing/dip-09-morphology` · tags: dip, segmentation, edge-detection, thresholding, watershed, superpixels
+- Figures: 11 · references: 22 · experiments: segmentation-threshold
 
-- [What you'll learn](/en/learn/image-processing/dip-10-segmentation/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-10-segmentation/#the-big-picture) `the-big-picture`
-- [Fundamentals](/en/learn/image-processing/dip-10-segmentation/#fundamentals) `fundamentals`
-- [Point, line, and edge detection](/en/learn/image-processing/dip-10-segmentation/#point-line-and-edge-detection) `point-line-and-edge-detection`
-  - [Background: derivatives on a pixel grid](/en/learn/image-processing/dip-10-segmentation/#background-derivatives-on-a-pixel-grid) `background-derivatives-on-a-pixel-grid`
-  - [Detecting isolated points](/en/learn/image-processing/dip-10-segmentation/#detecting-isolated-points) `detecting-isolated-points`
-  - [Detecting lines](/en/learn/image-processing/dip-10-segmentation/#detecting-lines) `detecting-lines`
-  - [Edge models](/en/learn/image-processing/dip-10-segmentation/#edge-models) `edge-models`
-  - [Basic edge detection with the gradient](/en/learn/image-processing/dip-10-segmentation/#basic-edge-detection-with-the-gradient) `basic-edge-detection-with-the-gradient`
-  - [The Marr–Hildreth edge detector](/en/learn/image-processing/dip-10-segmentation/#the-marrhildreth-edge-detector) `the-marrhildreth-edge-detector`
-  - [The Canny edge detector](/en/learn/image-processing/dip-10-segmentation/#the-canny-edge-detector) `the-canny-edge-detector`
-  - [Linking edge points](/en/learn/image-processing/dip-10-segmentation/#linking-edge-points) `linking-edge-points`
-- [Thresholding](/en/learn/image-processing/dip-10-segmentation/#thresholding) `thresholding`
-  - [Foundation](/en/learn/image-processing/dip-10-segmentation/#foundation) `foundation`
-  - [Basic global thresholding](/en/learn/image-processing/dip-10-segmentation/#basic-global-thresholding) `basic-global-thresholding`
-  - [Otsu's optimum global thresholding](/en/learn/image-processing/dip-10-segmentation/#otsus-optimum-global-thresholding) `otsus-optimum-global-thresholding`
-  - [Using smoothing and edges to improve thresholding](/en/learn/image-processing/dip-10-segmentation/#using-smoothing-and-edges-to-improve-thresholding) `using-smoothing-and-edges-to-improve-thresholding`
-  - [Variable thresholding](/en/learn/image-processing/dip-10-segmentation/#variable-thresholding) `variable-thresholding`
-- [Region growing, splitting, and merging](/en/learn/image-processing/dip-10-segmentation/#region-growing-splitting-and-merging) `region-growing-splitting-and-merging`
-  - [Region growing](/en/learn/image-processing/dip-10-segmentation/#region-growing) `region-growing`
-- [Region segmentation using clustering and superpixels](/en/learn/image-processing/dip-10-segmentation/#region-segmentation-using-clustering-and-superpixels) `region-segmentation-using-clustering-and-superpixels`
-  - [k-means clustering](/en/learn/image-processing/dip-10-segmentation/#k-means-clustering) `k-means-clustering`
-  - [Superpixels and SLIC](/en/learn/image-processing/dip-10-segmentation/#superpixels-and-slic) `superpixels-and-slic`
-- [Region segmentation using graph cuts](/en/learn/image-processing/dip-10-segmentation/#region-segmentation-using-graph-cuts) `region-segmentation-using-graph-cuts`
-  - [Images as graphs](/en/learn/image-processing/dip-10-segmentation/#images-as-graphs) `images-as-graphs`
-  - [Minimum graph cuts](/en/learn/image-processing/dip-10-segmentation/#minimum-graph-cuts) `minimum-graph-cuts`
-  - [Normalized cuts](/en/learn/image-processing/dip-10-segmentation/#normalized-cuts) `normalized-cuts`
-- [Segmentation using morphological watersheds](/en/learn/image-processing/dip-10-segmentation/#segmentation-using-morphological-watersheds) `segmentation-using-morphological-watersheds`
-  - [Background: basins and dams](/en/learn/image-processing/dip-10-segmentation/#background-basins-and-dams) `background-basins-and-dams`
-  - [The watershed algorithm](/en/learn/image-processing/dip-10-segmentation/#the-watershed-algorithm) `the-watershed-algorithm`
-  - [The use of markers](/en/learn/image-processing/dip-10-segmentation/#the-use-of-markers) `the-use-of-markers`
-- [The use of motion in segmentation](/en/learn/image-processing/dip-10-segmentation/#the-use-of-motion-in-segmentation) `the-use-of-motion-in-segmentation`
-  - [Spatial techniques: difference images](/en/learn/image-processing/dip-10-segmentation/#spatial-techniques-difference-images) `spatial-techniques-difference-images`
-  - [Accumulative differences](/en/learn/image-processing/dip-10-segmentation/#accumulative-differences) `accumulative-differences`
-- [Modern view](/en/learn/image-processing/dip-10-segmentation/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-10-segmentation/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-10-segmentation/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/segmentation/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/segmentation/#the-big-picture) `the-big-picture`
+- [Fundamentals](/en/learn/image-processing/segmentation/#fundamentals) `fundamentals`
+- [Point, line, and edge detection](/en/learn/image-processing/segmentation/#point-line-and-edge-detection) `point-line-and-edge-detection`
+  - [Background: derivatives on a pixel grid](/en/learn/image-processing/segmentation/#background-derivatives-on-a-pixel-grid) `background-derivatives-on-a-pixel-grid`
+  - [Detecting isolated points](/en/learn/image-processing/segmentation/#detecting-isolated-points) `detecting-isolated-points`
+  - [Detecting lines](/en/learn/image-processing/segmentation/#detecting-lines) `detecting-lines`
+  - [Edge models](/en/learn/image-processing/segmentation/#edge-models) `edge-models`
+  - [Basic edge detection with the gradient](/en/learn/image-processing/segmentation/#basic-edge-detection-with-the-gradient) `basic-edge-detection-with-the-gradient`
+  - [The Marr–Hildreth edge detector](/en/learn/image-processing/segmentation/#the-marrhildreth-edge-detector) `the-marrhildreth-edge-detector`
+  - [The Canny edge detector](/en/learn/image-processing/segmentation/#the-canny-edge-detector) `the-canny-edge-detector`
+  - [Linking edge points](/en/learn/image-processing/segmentation/#linking-edge-points) `linking-edge-points`
+- [Thresholding](/en/learn/image-processing/segmentation/#thresholding) `thresholding`
+  - [Foundation](/en/learn/image-processing/segmentation/#foundation) `foundation`
+  - [Basic global thresholding](/en/learn/image-processing/segmentation/#basic-global-thresholding) `basic-global-thresholding`
+  - [Otsu's optimum global thresholding](/en/learn/image-processing/segmentation/#otsus-optimum-global-thresholding) `otsus-optimum-global-thresholding`
+  - [Using smoothing and edges to improve thresholding](/en/learn/image-processing/segmentation/#using-smoothing-and-edges-to-improve-thresholding) `using-smoothing-and-edges-to-improve-thresholding`
+  - [Variable thresholding](/en/learn/image-processing/segmentation/#variable-thresholding) `variable-thresholding`
+- [Region growing, splitting, and merging](/en/learn/image-processing/segmentation/#region-growing-splitting-and-merging) `region-growing-splitting-and-merging`
+  - [Region growing](/en/learn/image-processing/segmentation/#region-growing) `region-growing`
+- [Region segmentation using clustering and superpixels](/en/learn/image-processing/segmentation/#region-segmentation-using-clustering-and-superpixels) `region-segmentation-using-clustering-and-superpixels`
+  - [k-means clustering](/en/learn/image-processing/segmentation/#k-means-clustering) `k-means-clustering`
+  - [Superpixels and SLIC](/en/learn/image-processing/segmentation/#superpixels-and-slic) `superpixels-and-slic`
+- [Region segmentation using graph cuts](/en/learn/image-processing/segmentation/#region-segmentation-using-graph-cuts) `region-segmentation-using-graph-cuts`
+  - [Images as graphs](/en/learn/image-processing/segmentation/#images-as-graphs) `images-as-graphs`
+  - [Minimum graph cuts](/en/learn/image-processing/segmentation/#minimum-graph-cuts) `minimum-graph-cuts`
+  - [Normalized cuts](/en/learn/image-processing/segmentation/#normalized-cuts) `normalized-cuts`
+- [Segmentation using morphological watersheds](/en/learn/image-processing/segmentation/#segmentation-using-morphological-watersheds) `segmentation-using-morphological-watersheds`
+  - [Background: basins and dams](/en/learn/image-processing/segmentation/#background-basins-and-dams) `background-basins-and-dams`
+  - [The watershed algorithm](/en/learn/image-processing/segmentation/#the-watershed-algorithm) `the-watershed-algorithm`
+  - [The use of markers](/en/learn/image-processing/segmentation/#the-use-of-markers) `the-use-of-markers`
+- [The use of motion in segmentation](/en/learn/image-processing/segmentation/#the-use-of-motion-in-segmentation) `the-use-of-motion-in-segmentation`
+  - [Spatial techniques: difference images](/en/learn/image-processing/segmentation/#spatial-techniques-difference-images) `spatial-techniques-difference-images`
+  - [Accumulative differences](/en/learn/image-processing/segmentation/#accumulative-differences) `accumulative-differences`
+- [Modern view](/en/learn/image-processing/segmentation/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/segmentation/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/segmentation/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Local edge linking](/en/learn/image-processing/dip-10-segmentation/notes/#local-edge-linking) `local-edge-linking`
-- [Deriving the between-class variance](/en/learn/image-processing/dip-10-segmentation/notes/#deriving-the-between-class-variance) `deriving-the-between-class-variance`
-- [Multiple thresholds](/en/learn/image-processing/dip-10-segmentation/notes/#multiple-thresholds) `multiple-thresholds`
-- [Region splitting and merging with quadtrees](/en/learn/image-processing/dip-10-segmentation/notes/#region-splitting-and-merging-with-quadtrees) `region-splitting-and-merging-with-quadtrees`
-- [The flooding algorithm step by step](/en/learn/image-processing/dip-10-segmentation/notes/#the-flooding-algorithm-step-by-step) `the-flooding-algorithm-step-by-step`
-- [Building a reference image](/en/learn/image-processing/dip-10-segmentation/notes/#building-a-reference-image) `building-a-reference-image`
+- [Local edge linking](/en/learn/image-processing/segmentation/notes/local-edge-linking/) `notes/local-edge-linking/`
+- [Deriving the between-class variance](/en/learn/image-processing/segmentation/notes/deriving-the-between-class-variance/) `notes/deriving-the-between-class-variance/`
+- [Multiple thresholds](/en/learn/image-processing/segmentation/notes/multiple-thresholds/) `notes/multiple-thresholds/`
+- [Region splitting and merging with quadtrees](/en/learn/image-processing/segmentation/notes/region-splitting-and-merging-with-quadtrees/) `notes/region-splitting-and-merging-with-quadtrees/`
+- [The flooding algorithm step by step](/en/learn/image-processing/segmentation/notes/the-flooding-algorithm-step-by-step/) `notes/the-flooding-algorithm-step-by-step/`
+- [Building a reference image](/en/learn/image-processing/segmentation/notes/building-a-reference-image/) `notes/building-a-reference-image/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [U-Net: a reading guide to the paper](/en/learn/image-processing/dip-10-segmentation/papers/#u-net-a-reading-guide-to-the-paper) `u-net-a-reading-guide-to-the-paper`
+- [U-Net: a reading guide to the paper](/en/learn/image-processing/segmentation/papers/u-net-a-reading-guide-to-the-paper/) `papers/u-net-a-reading-guide-to-the-paper/`
 
 ## dip-11-active-contours
 
@@ -610,49 +614,50 @@ Split an image into meaningful parts: find edges with gradients, LoG and Canny, 
 Segment objects with curves that move: parametric snakes, gradient vector flow, balloon forces, and level-set methods such as geodesic active contours and Chan–Vese.
 
 - Files: `src/content/tutorials/en/image-processing/dip-11-active-contours.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-11-active-contours.mdx`
-- Pages: `/en/learn/image-processing/dip-11-active-contours/`, `/en/learn/image-processing/dip-11-active-contours/notes/`, `/en/learn/image-processing/dip-11-active-contours/papers/`
-- Level advanced · order 110 · needs: `image-processing/dip-10-segmentation` · tags: dip, segmentation, active-contours, level-sets, variational-methods
-- Figures: 6 · references: 20 · experiments: contour-energy
+- Pages: `/en/learn/image-processing/active-contours/`, `/en/learn/image-processing/active-contours/notes/`, `/en/learn/image-processing/active-contours/papers/`
+- Level advanced · depth 1 · needs: `image-processing/dip-10-segmentation` · tags: dip, segmentation, active-contours, level-sets, variational-methods
+- Figures: 8 · references: 20 · experiments: contour-energy
 
-- [What you'll learn](/en/learn/image-processing/dip-11-active-contours/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-11-active-contours/#the-big-picture) `the-big-picture`
-- [Background: why curves that move](/en/learn/image-processing/dip-11-active-contours/#background-why-curves-that-move) `background-why-curves-that-move`
-- [Image segmentation using snakes](/en/learn/image-processing/dip-11-active-contours/#image-segmentation-using-snakes) `image-segmentation-using-snakes`
-  - [The snake as a parametric curve](/en/learn/image-processing/dip-11-active-contours/#the-snake-as-a-parametric-curve) `the-snake-as-a-parametric-curve`
-  - [The energy functional](/en/learn/image-processing/dip-11-active-contours/#the-energy-functional) `the-energy-functional`
-  - [From energy to motion: the Euler–Lagrange equation](/en/learn/image-processing/dip-11-active-contours/#from-energy-to-motion-the-eulerlagrange-equation) `from-energy-to-motion-the-eulerlagrange-equation`
-  - [Discretization and the iterative solution](/en/learn/image-processing/dip-11-active-contours/#discretization-and-the-iterative-solution) `discretization-and-the-iterative-solution`
-  - [Choosing the external force](/en/learn/image-processing/dip-11-active-contours/#choosing-the-external-force) `choosing-the-external-force`
-  - [Gradient vector flow (GVF)](/en/learn/image-processing/dip-11-active-contours/#gradient-vector-flow-gvf) `gradient-vector-flow-gvf`
-  - [The balloon force](/en/learn/image-processing/dip-11-active-contours/#the-balloon-force) `the-balloon-force`
-  - [Limitations of snakes](/en/learn/image-processing/dip-11-active-contours/#limitations-of-snakes) `limitations-of-snakes`
-- [Segmentation using level sets](/en/learn/image-processing/dip-11-active-contours/#segmentation-using-level-sets) `segmentation-using-level-sets`
-  - [The implicit representation](/en/learn/image-processing/dip-11-active-contours/#the-implicit-representation) `the-implicit-representation`
-  - [The level-set equation](/en/learn/image-processing/dip-11-active-contours/#the-level-set-equation) `the-level-set-equation`
-  - [Discrete computation: upwind differences and the CFL condition](/en/learn/image-processing/dip-11-active-contours/#discrete-computation-upwind-differences-and-the-cfl-condition) `discrete-computation-upwind-differences-and-the-cfl-condition`
-  - [Specifying the speed function](/en/learn/image-processing/dip-11-active-contours/#specifying-the-speed-function) `specifying-the-speed-function`
-  - [Initializing and reinitializing as a signed distance function](/en/learn/image-processing/dip-11-active-contours/#initializing-and-reinitializing-as-a-signed-distance-function) `initializing-and-reinitializing-as-a-signed-distance-function`
-  - [Improving efficiency](/en/learn/image-processing/dip-11-active-contours/#improving-efficiency) `improving-efficiency`
-- [Snakes vs level sets in practice](/en/learn/image-processing/dip-11-active-contours/#snakes-vs-level-sets-in-practice) `snakes-vs-level-sets-in-practice`
-- [Modern view](/en/learn/image-processing/dip-11-active-contours/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-11-active-contours/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-11-active-contours/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/active-contours/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/active-contours/#the-big-picture) `the-big-picture`
+- [Background: why curves that move](/en/learn/image-processing/active-contours/#background-why-curves-that-move) `background-why-curves-that-move`
+- [Image segmentation using snakes](/en/learn/image-processing/active-contours/#image-segmentation-using-snakes) `image-segmentation-using-snakes`
+  - [The snake as a parametric curve](/en/learn/image-processing/active-contours/#the-snake-as-a-parametric-curve) `the-snake-as-a-parametric-curve`
+  - [The energy functional](/en/learn/image-processing/active-contours/#the-energy-functional) `the-energy-functional`
+  - [From energy to motion: the Euler–Lagrange equation](/en/learn/image-processing/active-contours/#from-energy-to-motion-the-eulerlagrange-equation) `from-energy-to-motion-the-eulerlagrange-equation`
+  - [Discretization and the iterative solution](/en/learn/image-processing/active-contours/#discretization-and-the-iterative-solution) `discretization-and-the-iterative-solution`
+  - [Choosing the external force](/en/learn/image-processing/active-contours/#choosing-the-external-force) `choosing-the-external-force`
+  - [Gradient vector flow (GVF)](/en/learn/image-processing/active-contours/#gradient-vector-flow-gvf) `gradient-vector-flow-gvf`
+  - [The balloon force](/en/learn/image-processing/active-contours/#the-balloon-force) `the-balloon-force`
+  - [Limitations of snakes](/en/learn/image-processing/active-contours/#limitations-of-snakes) `limitations-of-snakes`
+- [Segmentation using level sets](/en/learn/image-processing/active-contours/#segmentation-using-level-sets) `segmentation-using-level-sets`
+  - [The implicit representation](/en/learn/image-processing/active-contours/#the-implicit-representation) `the-implicit-representation`
+  - [The level-set equation](/en/learn/image-processing/active-contours/#the-level-set-equation) `the-level-set-equation`
+  - [Discrete computation: upwind differences and the CFL condition](/en/learn/image-processing/active-contours/#discrete-computation-upwind-differences-and-the-cfl-condition) `discrete-computation-upwind-differences-and-the-cfl-condition`
+  - [Specifying the speed function](/en/learn/image-processing/active-contours/#specifying-the-speed-function) `specifying-the-speed-function`
+  - [Initializing and reinitializing as a signed distance function](/en/learn/image-processing/active-contours/#initializing-and-reinitializing-as-a-signed-distance-function) `initializing-and-reinitializing-as-a-signed-distance-function`
+  - [Improving efficiency](/en/learn/image-processing/active-contours/#improving-efficiency) `improving-efficiency`
+- [Snakes vs level sets in practice](/en/learn/image-processing/active-contours/#snakes-vs-level-sets-in-practice) `snakes-vs-level-sets-in-practice`
+- [Modern view](/en/learn/image-processing/active-contours/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/active-contours/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/active-contours/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Deriving the snake equation](/en/learn/image-processing/dip-11-active-contours/notes/#deriving-the-snake-equation) `deriving-the-snake-equation`
-- [The GVF energy and its diffusion equations](/en/learn/image-processing/dip-11-active-contours/notes/#the-gvf-energy-and-its-diffusion-equations) `the-gvf-energy-and-its-diffusion-equations`
-- [The upwind scheme in formulas](/en/learn/image-processing/dip-11-active-contours/notes/#the-upwind-scheme-in-formulas) `the-upwind-scheme-in-formulas`
-- [The Mumford–Shah energy](/en/learn/image-processing/dip-11-active-contours/notes/#the-mumfordshah-energy) `the-mumfordshah-energy`
-- [Other region models](/en/learn/image-processing/dip-11-active-contours/notes/#other-region-models) `other-region-models`
-- [Reinitialization and DRLSE in detail](/en/learn/image-processing/dip-11-active-contours/notes/#reinitialization-and-drlse-in-detail) `reinitialization-and-drlse-in-detail`
-- [How the morphological approximation works](/en/learn/image-processing/dip-11-active-contours/notes/#how-the-morphological-approximation-works) `how-the-morphological-approximation-works`
-- [Snakes vs level sets, point by point](/en/learn/image-processing/dip-11-active-contours/notes/#snakes-vs-level-sets-point-by-point) `snakes-vs-level-sets-point-by-point`
-- [Three active-contour losses in detail](/en/learn/image-processing/dip-11-active-contours/notes/#three-active-contour-losses-in-detail) `three-active-contour-losses-in-detail`
+- [Deriving the snake equation](/en/learn/image-processing/active-contours/notes/deriving-the-snake-equation/) `notes/deriving-the-snake-equation/`
+- [The GVF energy and its diffusion equations](/en/learn/image-processing/active-contours/notes/the-gvf-energy-and-its-diffusion-equations/) `notes/the-gvf-energy-and-its-diffusion-equations/`
+- [The upwind scheme in formulas](/en/learn/image-processing/active-contours/notes/the-upwind-scheme-in-formulas/) `notes/the-upwind-scheme-in-formulas/`
+- [The Mumford–Shah energy](/en/learn/image-processing/active-contours/notes/the-mumfordshah-energy/) `notes/the-mumfordshah-energy/`
+- [Other region models](/en/learn/image-processing/active-contours/notes/other-region-models/) `notes/other-region-models/`
+- [Reinitialization and DRLSE in detail](/en/learn/image-processing/active-contours/notes/reinitialization-and-drlse-in-detail/) `notes/reinitialization-and-drlse-in-detail/`
+- [How the morphological approximation works](/en/learn/image-processing/active-contours/notes/how-the-morphological-approximation-works/) `notes/how-the-morphological-approximation-works/`
+- [Snakes vs level sets, point by point](/en/learn/image-processing/active-contours/notes/snakes-vs-level-sets-point-by-point/) `notes/snakes-vs-level-sets-point-by-point/`
+- [Three active-contour losses in detail](/en/learn/image-processing/active-contours/notes/three-active-contour-losses-in-detail/) `notes/three-active-contour-losses-in-detail/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [The four surveys in more detail](/en/learn/image-processing/dip-11-active-contours/papers/#the-four-surveys-in-more-detail) `the-four-surveys-in-more-detail`
+- [The four surveys in more detail](/en/learn/image-processing/active-contours/papers/the-four-surveys-in-more-detail/) `papers/the-four-surveys-in-more-detail/`
+- [Chan–Vese: locate a boundary by fitting the regions on both sides](/en/learn/image-processing/active-contours/papers/chanvese-locate-a-boundary-by-fitting-the-regions-on-both-sides/) `papers/chanvese-locate-a-boundary-by-fitting-the-regions-on-both-sides/`
 
 ## dip-12-feature-extraction
 
@@ -660,61 +665,62 @@ Segment objects with curves that move: parametric snakes, gradient vector flow, 
 Turn regions, boundaries and whole images into compact numbers that stay the same when the object moves, turns, grows or changes brightness, from chain codes and GLCM texture to Harris, MSER and SIFT.
 
 - Files: `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-12-feature-extraction.mdx`
-- Pages: `/en/learn/image-processing/dip-12-feature-extraction/`, `/en/learn/image-processing/dip-12-feature-extraction/notes/`, `/en/learn/image-processing/dip-12-feature-extraction/papers/`
-- Level advanced · order 120 · needs: `image-processing/dip-11-active-contours` · tags: dip, feature-extraction, shape-descriptors, texture, sift
-- Figures: 8 · references: 22 · experiments: corner-tensor
+- Pages: `/en/learn/image-processing/feature-extraction/`, `/en/learn/image-processing/feature-extraction/notes/`, `/en/learn/image-processing/feature-extraction/papers/`
+- Level advanced · depth 1 · needs: `image-processing/dip-11-active-contours` · tags: dip, feature-extraction, shape-descriptors, texture, sift
+- Figures: 10 · references: 22 · experiments: corner-tensor
 
-- [What you'll learn](/en/learn/image-processing/dip-12-feature-extraction/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-12-feature-extraction/#the-big-picture) `the-big-picture`
-- [Background: features, descriptors and invariance](/en/learn/image-processing/dip-12-feature-extraction/#background-features-descriptors-and-invariance) `background-features-descriptors-and-invariance`
-- [Boundary preprocessing](/en/learn/image-processing/dip-12-feature-extraction/#boundary-preprocessing) `boundary-preprocessing`
-  - [Boundary following](/en/learn/image-processing/dip-12-feature-extraction/#boundary-following) `boundary-following`
-  - [Chain codes](/en/learn/image-processing/dip-12-feature-extraction/#chain-codes) `chain-codes`
-  - [Polygonal approximation](/en/learn/image-processing/dip-12-feature-extraction/#polygonal-approximation) `polygonal-approximation`
-  - [Signatures](/en/learn/image-processing/dip-12-feature-extraction/#signatures) `signatures`
-  - [Skeletons and the medial axis](/en/learn/image-processing/dip-12-feature-extraction/#skeletons-and-the-medial-axis) `skeletons-and-the-medial-axis`
-- [Boundary feature descriptors](/en/learn/image-processing/dip-12-feature-extraction/#boundary-feature-descriptors) `boundary-feature-descriptors`
-  - [Basic descriptors](/en/learn/image-processing/dip-12-feature-extraction/#basic-descriptors) `basic-descriptors`
-  - [Shape numbers](/en/learn/image-processing/dip-12-feature-extraction/#shape-numbers) `shape-numbers`
-  - [Fourier descriptors](/en/learn/image-processing/dip-12-feature-extraction/#fourier-descriptors) `fourier-descriptors`
-  - [Statistical moments of a boundary](/en/learn/image-processing/dip-12-feature-extraction/#statistical-moments-of-a-boundary) `statistical-moments-of-a-boundary`
-- [Region feature descriptors](/en/learn/image-processing/dip-12-feature-extraction/#region-feature-descriptors) `region-feature-descriptors`
-  - [Basic descriptors](/en/learn/image-processing/dip-12-feature-extraction/#basic-descriptors-1) `basic-descriptors-1`
-  - [Topological descriptors](/en/learn/image-processing/dip-12-feature-extraction/#topological-descriptors) `topological-descriptors`
-  - [Texture](/en/learn/image-processing/dip-12-feature-extraction/#texture) `texture`
-  - [Moment invariants](/en/learn/image-processing/dip-12-feature-extraction/#moment-invariants) `moment-invariants`
-- [Principal components as feature descriptors](/en/learn/image-processing/dip-12-feature-extraction/#principal-components-as-feature-descriptors) `principal-components-as-feature-descriptors`
-- [Whole-image features](/en/learn/image-processing/dip-12-feature-extraction/#whole-image-features) `whole-image-features`
-  - [The Harris–Stephens corner detector](/en/learn/image-processing/dip-12-feature-extraction/#the-harrisstephens-corner-detector) `the-harrisstephens-corner-detector`
-  - [Maximally stable extremal regions (MSER)](/en/learn/image-processing/dip-12-feature-extraction/#maximally-stable-extremal-regions-mser) `maximally-stable-extremal-regions-mser`
-- [Scale-invariant feature transform (SIFT)](/en/learn/image-processing/dip-12-feature-extraction/#scale-invariant-feature-transform-sift) `scale-invariant-feature-transform-sift`
-  - [Scale space](/en/learn/image-processing/dip-12-feature-extraction/#scale-space) `scale-space`
-  - [Keypoint detection with difference of Gaussians](/en/learn/image-processing/dip-12-feature-extraction/#keypoint-detection-with-difference-of-gaussians) `keypoint-detection-with-difference-of-gaussians`
-  - [Orientation assignment](/en/learn/image-processing/dip-12-feature-extraction/#orientation-assignment) `orientation-assignment`
-  - [The keypoint descriptor](/en/learn/image-processing/dip-12-feature-extraction/#the-keypoint-descriptor) `the-keypoint-descriptor`
-  - [Matching](/en/learn/image-processing/dip-12-feature-extraction/#matching) `matching`
-- [Modern view](/en/learn/image-processing/dip-12-feature-extraction/#modern-view) `modern-view`
-  - [What the surveys say](/en/learn/image-processing/dip-12-feature-extraction/#what-the-surveys-say) `what-the-surveys-say`
-  - [How deep learning changed feature extraction](/en/learn/image-processing/dip-12-feature-extraction/#how-deep-learning-changed-feature-extraction) `how-deep-learning-changed-feature-extraction`
-- [Key takeaways](/en/learn/image-processing/dip-12-feature-extraction/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-12-feature-extraction/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/feature-extraction/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/feature-extraction/#the-big-picture) `the-big-picture`
+- [Background: features, descriptors and invariance](/en/learn/image-processing/feature-extraction/#background-features-descriptors-and-invariance) `background-features-descriptors-and-invariance`
+- [Boundary preprocessing](/en/learn/image-processing/feature-extraction/#boundary-preprocessing) `boundary-preprocessing`
+  - [Boundary following](/en/learn/image-processing/feature-extraction/#boundary-following) `boundary-following`
+  - [Chain codes](/en/learn/image-processing/feature-extraction/#chain-codes) `chain-codes`
+  - [Polygonal approximation](/en/learn/image-processing/feature-extraction/#polygonal-approximation) `polygonal-approximation`
+  - [Signatures](/en/learn/image-processing/feature-extraction/#signatures) `signatures`
+  - [Skeletons and the medial axis](/en/learn/image-processing/feature-extraction/#skeletons-and-the-medial-axis) `skeletons-and-the-medial-axis`
+- [Boundary feature descriptors](/en/learn/image-processing/feature-extraction/#boundary-feature-descriptors) `boundary-feature-descriptors`
+  - [Basic descriptors](/en/learn/image-processing/feature-extraction/#basic-descriptors) `basic-descriptors`
+  - [Shape numbers](/en/learn/image-processing/feature-extraction/#shape-numbers) `shape-numbers`
+  - [Fourier descriptors](/en/learn/image-processing/feature-extraction/#fourier-descriptors) `fourier-descriptors`
+  - [Statistical moments of a boundary](/en/learn/image-processing/feature-extraction/#statistical-moments-of-a-boundary) `statistical-moments-of-a-boundary`
+- [Region feature descriptors](/en/learn/image-processing/feature-extraction/#region-feature-descriptors) `region-feature-descriptors`
+  - [Basic descriptors](/en/learn/image-processing/feature-extraction/#basic-descriptors-1) `basic-descriptors-1`
+  - [Topological descriptors](/en/learn/image-processing/feature-extraction/#topological-descriptors) `topological-descriptors`
+  - [Texture](/en/learn/image-processing/feature-extraction/#texture) `texture`
+  - [Moment invariants](/en/learn/image-processing/feature-extraction/#moment-invariants) `moment-invariants`
+- [Principal components as feature descriptors](/en/learn/image-processing/feature-extraction/#principal-components-as-feature-descriptors) `principal-components-as-feature-descriptors`
+- [Whole-image features](/en/learn/image-processing/feature-extraction/#whole-image-features) `whole-image-features`
+  - [The Harris–Stephens corner detector](/en/learn/image-processing/feature-extraction/#the-harrisstephens-corner-detector) `the-harrisstephens-corner-detector`
+  - [Maximally stable extremal regions (MSER)](/en/learn/image-processing/feature-extraction/#maximally-stable-extremal-regions-mser) `maximally-stable-extremal-regions-mser`
+- [Scale-invariant feature transform (SIFT)](/en/learn/image-processing/feature-extraction/#scale-invariant-feature-transform-sift) `scale-invariant-feature-transform-sift`
+  - [Scale space](/en/learn/image-processing/feature-extraction/#scale-space) `scale-space`
+  - [Keypoint detection with difference of Gaussians](/en/learn/image-processing/feature-extraction/#keypoint-detection-with-difference-of-gaussians) `keypoint-detection-with-difference-of-gaussians`
+  - [Orientation assignment](/en/learn/image-processing/feature-extraction/#orientation-assignment) `orientation-assignment`
+  - [The keypoint descriptor](/en/learn/image-processing/feature-extraction/#the-keypoint-descriptor) `the-keypoint-descriptor`
+  - [Matching](/en/learn/image-processing/feature-extraction/#matching) `matching`
+- [Modern view](/en/learn/image-processing/feature-extraction/#modern-view) `modern-view`
+  - [What the surveys say](/en/learn/image-processing/feature-extraction/#what-the-surveys-say) `what-the-surveys-say`
+  - [How deep learning changed feature extraction](/en/learn/image-processing/feature-extraction/#how-deep-learning-changed-feature-extraction) `how-deep-learning-changed-feature-extraction`
+- [Key takeaways](/en/learn/image-processing/feature-extraction/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/feature-extraction/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [The Moore boundary-following procedure](/en/learn/image-processing/dip-12-feature-extraction/notes/#the-moore-boundary-following-procedure) `the-moore-boundary-following-procedure`
-- [Slope chain codes](/en/learn/image-processing/dip-12-feature-extraction/notes/#slope-chain-codes) `slope-chain-codes`
-- [Minimum-perimeter polygons in more detail](/en/learn/image-processing/dip-12-feature-extraction/notes/#minimum-perimeter-polygons-in-more-detail) `minimum-perimeter-polygons-in-more-detail`
-- [The medial axis transform](/en/learn/image-processing/dip-12-feature-extraction/notes/#the-medial-axis-transform) `the-medial-axis-transform`
-- [Computing shape numbers of a given order](/en/learn/image-processing/dip-12-feature-extraction/notes/#computing-shape-numbers-of-a-given-order) `computing-shape-numbers-of-a-given-order`
-- [Moments of a 1-D boundary function](/en/learn/image-processing/dip-12-feature-extraction/notes/#moments-of-a-1-d-boundary-function) `moments-of-a-1-d-boundary-function`
-- [Euler's formula for polygonal networks](/en/learn/image-processing/dip-12-feature-extraction/notes/#eulers-formula-for-polygonal-networks) `eulers-formula-for-polygonal-networks`
-- [Keypoint localization](/en/learn/image-processing/dip-12-feature-extraction/notes/#keypoint-localization) `keypoint-localization`
-- [RANSAC: fitting a model despite outliers](/en/learn/image-processing/dip-12-feature-extraction/notes/#ransac-fitting-a-model-despite-outliers) `ransac-fitting-a-model-despite-outliers`
-- [Learned features in more detail](/en/learn/image-processing/dip-12-feature-extraction/notes/#learned-features-in-more-detail) `learned-features-in-more-detail`
+- [The Moore boundary-following procedure](/en/learn/image-processing/feature-extraction/notes/the-moore-boundary-following-procedure/) `notes/the-moore-boundary-following-procedure/`
+- [Slope chain codes](/en/learn/image-processing/feature-extraction/notes/slope-chain-codes/) `notes/slope-chain-codes/`
+- [Minimum-perimeter polygons in more detail](/en/learn/image-processing/feature-extraction/notes/minimum-perimeter-polygons-in-more-detail/) `notes/minimum-perimeter-polygons-in-more-detail/`
+- [The medial axis transform](/en/learn/image-processing/feature-extraction/notes/the-medial-axis-transform/) `notes/the-medial-axis-transform/`
+- [Computing shape numbers of a given order](/en/learn/image-processing/feature-extraction/notes/computing-shape-numbers-of-a-given-order/) `notes/computing-shape-numbers-of-a-given-order/`
+- [Moments of a 1-D boundary function](/en/learn/image-processing/feature-extraction/notes/moments-of-a-1-d-boundary-function/) `notes/moments-of-a-1-d-boundary-function/`
+- [Euler's formula for polygonal networks](/en/learn/image-processing/feature-extraction/notes/eulers-formula-for-polygonal-networks/) `notes/eulers-formula-for-polygonal-networks/`
+- [Keypoint localization](/en/learn/image-processing/feature-extraction/notes/keypoint-localization/) `notes/keypoint-localization/`
+- [RANSAC: fitting a model despite outliers](/en/learn/image-processing/feature-extraction/notes/ransac-fitting-a-model-despite-outliers/) `notes/ransac-fitting-a-model-despite-outliers/`
+- [Learned features in more detail](/en/learn/image-processing/feature-extraction/notes/learned-features-in-more-detail/) `notes/learned-features-in-more-detail/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [Guide to the Modern view surveys](/en/learn/image-processing/dip-12-feature-extraction/papers/#guide-to-the-modern-view-surveys) `guide-to-the-modern-view-surveys`
+- [Guide to the Modern view surveys](/en/learn/image-processing/feature-extraction/papers/guide-to-the-modern-view-surveys/) `papers/guide-to-the-modern-view-surveys/`
+- [SIFT: make local features repeatable before trying to match them](/en/learn/image-processing/feature-extraction/papers/sift-make-local-features-repeatable-before-trying-to-match-them/) `papers/sift-make-local-features-repeatable-before-trying-to-match-them/`
 
 ## dip-13-pattern-classification
 
@@ -722,53 +728,53 @@ Turn regions, boundaries and whole images into compact numbers that stay the sam
 From minimum-distance and Bayes classifiers to perceptrons, backpropagation and convolutional neural networks: how a computer decides what an image or region shows.
 
 - Files: `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-13-pattern-classification.mdx`
-- Pages: `/en/learn/image-processing/dip-13-pattern-classification/`, `/en/learn/image-processing/dip-13-pattern-classification/notes/`, `/en/learn/image-processing/dip-13-pattern-classification/papers/`
-- Level advanced · order 130 · needs: `image-processing/dip-12-feature-extraction` · tags: dip, classification, bayes-classifier, neural-networks, cnn
-- Figures: 9 · references: 20 · experiments: neighbor-geometry
+- Pages: `/en/learn/image-processing/pattern-classification/`, `/en/learn/image-processing/pattern-classification/notes/`, `/en/learn/image-processing/pattern-classification/papers/`
+- Level advanced · depth 1 · needs: `image-processing/dip-12-feature-extraction` · tags: dip, classification, bayes-classifier, neural-networks, cnn
+- Figures: 10 · references: 20 · experiments: neighbor-geometry
 
-- [What you'll learn](/en/learn/image-processing/dip-13-pattern-classification/#what-youll-learn) `what-youll-learn`
-- [The big picture](/en/learn/image-processing/dip-13-pattern-classification/#the-big-picture) `the-big-picture`
-- [Background](/en/learn/image-processing/dip-13-pattern-classification/#background) `background`
-- [Patterns and pattern classes](/en/learn/image-processing/dip-13-pattern-classification/#patterns-and-pattern-classes) `patterns-and-pattern-classes`
-  - [Pattern vectors](/en/learn/image-processing/dip-13-pattern-classification/#pattern-vectors) `pattern-vectors`
-- [Pattern classification by prototype matching](/en/learn/image-processing/dip-13-pattern-classification/#pattern-classification-by-prototype-matching) `pattern-classification-by-prototype-matching`
-  - [Minimum-distance classifier](/en/learn/image-processing/dip-13-pattern-classification/#minimum-distance-classifier) `minimum-distance-classifier`
-  - [Matching by correlation (template matching)](/en/learn/image-processing/dip-13-pattern-classification/#matching-by-correlation-template-matching) `matching-by-correlation-template-matching`
-  - [Matching SIFT features](/en/learn/image-processing/dip-13-pattern-classification/#matching-sift-features) `matching-sift-features`
-- [Optimum (Bayes) statistical classifiers](/en/learn/image-processing/dip-13-pattern-classification/#optimum-bayes-statistical-classifiers) `optimum-bayes-statistical-classifiers`
-  - [Derivation](/en/learn/image-processing/dip-13-pattern-classification/#derivation) `derivation`
-  - [Bayes classifier for Gaussian pattern classes](/en/learn/image-processing/dip-13-pattern-classification/#bayes-classifier-for-gaussian-pattern-classes) `bayes-classifier-for-gaussian-pattern-classes`
-  - [Application: classifying pixels in a multispectral image](/en/learn/image-processing/dip-13-pattern-classification/#application-classifying-pixels-in-a-multispectral-image) `application-classifying-pixels-in-a-multispectral-image`
-- [Neural networks and deep learning](/en/learn/image-processing/dip-13-pattern-classification/#neural-networks-and-deep-learning) `neural-networks-and-deep-learning`
-  - [Background](/en/learn/image-processing/dip-13-pattern-classification/#background-1) `background-1`
-  - [The perceptron](/en/learn/image-processing/dip-13-pattern-classification/#the-perceptron) `the-perceptron`
-  - [Multilayer feedforward networks](/en/learn/image-processing/dip-13-pattern-classification/#multilayer-feedforward-networks) `multilayer-feedforward-networks`
-  - [Forward pass](/en/learn/image-processing/dip-13-pattern-classification/#forward-pass) `forward-pass`
-  - [Backpropagation](/en/learn/image-processing/dip-13-pattern-classification/#backpropagation) `backpropagation`
-  - [Training](/en/learn/image-processing/dip-13-pattern-classification/#training) `training`
-- [Deep convolutional neural networks](/en/learn/image-processing/dip-13-pattern-classification/#deep-convolutional-neural-networks) `deep-convolutional-neural-networks`
-  - [Why fully connected networks struggle with images](/en/learn/image-processing/dip-13-pattern-classification/#why-fully-connected-networks-struggle-with-images) `why-fully-connected-networks-struggle-with-images`
-  - [Convolutional layers](/en/learn/image-processing/dip-13-pattern-classification/#convolutional-layers) `convolutional-layers`
-  - [Pooling layers](/en/learn/image-processing/dip-13-pattern-classification/#pooling-layers) `pooling-layers`
-  - [Fully connected layers and the whole pipeline](/en/learn/image-processing/dip-13-pattern-classification/#fully-connected-layers-and-the-whole-pipeline) `fully-connected-layers-and-the-whole-pipeline`
-  - [Training a CNN](/en/learn/image-processing/dip-13-pattern-classification/#training-a-cnn) `training-a-cnn`
-  - [Worked example: digits](/en/learn/image-processing/dip-13-pattern-classification/#worked-example-digits) `worked-example-digits`
-- [Some additional details of implementation](/en/learn/image-processing/dip-13-pattern-classification/#some-additional-details-of-implementation) `some-additional-details-of-implementation`
-  - [Overfitting](/en/learn/image-processing/dip-13-pattern-classification/#overfitting) `overfitting`
-  - [Data augmentation](/en/learn/image-processing/dip-13-pattern-classification/#data-augmentation) `data-augmentation`
-  - [Regularization](/en/learn/image-processing/dip-13-pattern-classification/#regularization) `regularization`
-- [Modern view](/en/learn/image-processing/dip-13-pattern-classification/#modern-view) `modern-view`
-- [Key takeaways](/en/learn/image-processing/dip-13-pattern-classification/#key-takeaways) `key-takeaways`
-- [Exercises](/en/learn/image-processing/dip-13-pattern-classification/#exercises) `exercises`
+- [What you'll learn](/en/learn/image-processing/pattern-classification/#what-youll-learn) `what-youll-learn`
+- [The big picture](/en/learn/image-processing/pattern-classification/#the-big-picture) `the-big-picture`
+- [Background](/en/learn/image-processing/pattern-classification/#background) `background`
+- [Patterns and pattern classes](/en/learn/image-processing/pattern-classification/#patterns-and-pattern-classes) `patterns-and-pattern-classes`
+  - [Pattern vectors](/en/learn/image-processing/pattern-classification/#pattern-vectors) `pattern-vectors`
+- [Pattern classification by prototype matching](/en/learn/image-processing/pattern-classification/#pattern-classification-by-prototype-matching) `pattern-classification-by-prototype-matching`
+  - [Minimum-distance classifier](/en/learn/image-processing/pattern-classification/#minimum-distance-classifier) `minimum-distance-classifier`
+  - [Matching by correlation (template matching)](/en/learn/image-processing/pattern-classification/#matching-by-correlation-template-matching) `matching-by-correlation-template-matching`
+  - [Matching SIFT features](/en/learn/image-processing/pattern-classification/#matching-sift-features) `matching-sift-features`
+- [Optimum (Bayes) statistical classifiers](/en/learn/image-processing/pattern-classification/#optimum-bayes-statistical-classifiers) `optimum-bayes-statistical-classifiers`
+  - [Derivation](/en/learn/image-processing/pattern-classification/#derivation) `derivation`
+  - [Bayes classifier for Gaussian pattern classes](/en/learn/image-processing/pattern-classification/#bayes-classifier-for-gaussian-pattern-classes) `bayes-classifier-for-gaussian-pattern-classes`
+  - [Application: classifying pixels in a multispectral image](/en/learn/image-processing/pattern-classification/#application-classifying-pixels-in-a-multispectral-image) `application-classifying-pixels-in-a-multispectral-image`
+- [Neural networks and deep learning](/en/learn/image-processing/pattern-classification/#neural-networks-and-deep-learning) `neural-networks-and-deep-learning`
+  - [Background](/en/learn/image-processing/pattern-classification/#background-1) `background-1`
+  - [The perceptron](/en/learn/image-processing/pattern-classification/#the-perceptron) `the-perceptron`
+  - [Multilayer feedforward networks](/en/learn/image-processing/pattern-classification/#multilayer-feedforward-networks) `multilayer-feedforward-networks`
+  - [Forward pass](/en/learn/image-processing/pattern-classification/#forward-pass) `forward-pass`
+  - [Backpropagation](/en/learn/image-processing/pattern-classification/#backpropagation) `backpropagation`
+  - [Training](/en/learn/image-processing/pattern-classification/#training) `training`
+- [Deep convolutional neural networks](/en/learn/image-processing/pattern-classification/#deep-convolutional-neural-networks) `deep-convolutional-neural-networks`
+  - [Why fully connected networks struggle with images](/en/learn/image-processing/pattern-classification/#why-fully-connected-networks-struggle-with-images) `why-fully-connected-networks-struggle-with-images`
+  - [Convolutional layers](/en/learn/image-processing/pattern-classification/#convolutional-layers) `convolutional-layers`
+  - [Pooling layers](/en/learn/image-processing/pattern-classification/#pooling-layers) `pooling-layers`
+  - [Fully connected layers and the whole pipeline](/en/learn/image-processing/pattern-classification/#fully-connected-layers-and-the-whole-pipeline) `fully-connected-layers-and-the-whole-pipeline`
+  - [Training a CNN](/en/learn/image-processing/pattern-classification/#training-a-cnn) `training-a-cnn`
+  - [Worked example: digits](/en/learn/image-processing/pattern-classification/#worked-example-digits) `worked-example-digits`
+- [Some additional details of implementation](/en/learn/image-processing/pattern-classification/#some-additional-details-of-implementation) `some-additional-details-of-implementation`
+  - [Overfitting](/en/learn/image-processing/pattern-classification/#overfitting) `overfitting`
+  - [Data augmentation](/en/learn/image-processing/pattern-classification/#data-augmentation) `data-augmentation`
+  - [Regularization](/en/learn/image-processing/pattern-classification/#regularization) `regularization`
+- [Modern view](/en/learn/image-processing/pattern-classification/#modern-view) `modern-view`
+- [Key takeaways](/en/learn/image-processing/pattern-classification/#key-takeaways) `key-takeaways`
+- [Exercises](/en/learn/image-processing/pattern-classification/#exercises) `exercises`
 
-*Supplementary notes (`notes/` page):*
+*Supplementary notes (one page each, index `notes/`):*
 
-- [Structural patterns: strings and trees](/en/learn/image-processing/dip-13-pattern-classification/notes/#structural-patterns-strings-and-trees) `structural-patterns-strings-and-trees`
-- [Matching structural prototypes](/en/learn/image-processing/dip-13-pattern-classification/notes/#matching-structural-prototypes) `matching-structural-prototypes`
-- [Backpropagation step by step](/en/learn/image-processing/dip-13-pattern-classification/notes/#backpropagation-step-by-step) `backpropagation-step-by-step`
-- [Gradients through convolution, pooling and ReLU](/en/learn/image-processing/dip-13-pattern-classification/notes/#gradients-through-convolution-pooling-and-relu) `gradients-through-convolution-pooling-and-relu`
+- [Structural patterns: strings and trees](/en/learn/image-processing/pattern-classification/notes/structural-patterns-strings-and-trees/) `notes/structural-patterns-strings-and-trees/`
+- [Matching structural prototypes](/en/learn/image-processing/pattern-classification/notes/matching-structural-prototypes/) `notes/matching-structural-prototypes/`
+- [Backpropagation step by step](/en/learn/image-processing/pattern-classification/notes/backpropagation-step-by-step/) `notes/backpropagation-step-by-step/`
+- [Gradients through convolution, pooling and ReLU](/en/learn/image-processing/pattern-classification/notes/gradients-through-convolution-pooling-and-relu/) `notes/gradients-through-convolution-pooling-and-relu/`
 
-*Paper guides (`papers/` page):*
+*Paper guides (one page each, index `papers/`):*
 
-- [Guide to the Modern view papers](/en/learn/image-processing/dip-13-pattern-classification/papers/#guide-to-the-modern-view-papers) `guide-to-the-modern-view-papers`
+- [Guide to the Modern view papers](/en/learn/image-processing/pattern-classification/papers/guide-to-the-modern-view-papers/) `papers/guide-to-the-modern-view-papers/`
 

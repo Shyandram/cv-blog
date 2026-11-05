@@ -148,7 +148,7 @@ function drawChart(canvas: HTMLCanvasElement, lang: Lang, r: SegScores, small: n
 // ---------------------------------------------------------------------------------------------- the lab
 export const lab: LabDef = {
   kind: 'image', id: 'segmentation-metrics', track: 'deep-learning',
-  title: L('DLCV 03B · Does high pixel accuracy mean a good segmentation?', 'DLCV 03B・像素準確率高，就代表分割得好嗎？'),
+  title: L('DLCV 04 · Does high pixel accuracy mean a good segmentation?', 'DLCV 04・像素準確率高，就代表分割得好嗎？'),
   description: L('Simulate a segmentation network that predicts at a coarse output stride and compare pixel accuracy, mean IoU and the IoU of the smallest class.', '模擬一個以較粗的輸出步幅（stride）做預測的分割網路，比較像素準確率、平均 IoU 與最小類別的 IoU。'),
   challenge: L(
     'At the default output stride 8 the prediction gets about 95% of the pixels right, yet the small squares have an IoU of 0. Lower the stride to 4, then 2: at which stride does the thin pole come back, and why does it need a finer stride than the squares? Then raise the stride to 32: how many of the five classes still have a non-zero IoU? Finally switch the enlarging method to bilinear at stride 8: which numbers change, and which one stays at 0?',

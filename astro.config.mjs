@@ -1,4 +1,5 @@
 // @ts-check
+import legacyChapterRedirects from './src/content/legacy-chapter-redirects.json' with { type: 'json' };
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
@@ -8,8 +9,11 @@ import remarkCjkFriendly from 'remark-cjk-friendly';
 import rehypeKatex from 'rehype-katex';
 import rehypeCitations from './src/lib/rehypeCitations.mjs';
 import rehypeSupplementZones from './src/lib/rehypeSupplementZones.mjs';
+import rehypePaperHeadingIds from './src/lib/rehypePaperHeadingIds.mjs';
+import rehypeCodeFolding from './src/lib/rehypeCodeFolding.mjs';
 import { fileURLToPath } from 'node:url';
-import * as pagefind from 'pagefind';
+import { preserveRedirectFragments } from './scripts/preserve-redirect-fragments.mjs';
+import { indexSearch } from './scripts/index-search.mjs';
 
 // Build the Pagefind search index as part of `astro build`, so search works no matter
 // which build command the host runs (`astro build`, `npm run build`, …).
@@ -19,15 +23,8 @@ const pagefindIndex = () => ({
   hooks: {
     'astro:build:done': async ({ dir, logger }) => {
       const out = fileURLToPath(dir);
-      // KaTeX renders each formula three times (HTML glyphs, MathML, TeX annotation); index only the MathML text so
-      // search excerpts do not show raw TeX or tripled glyphs. UI-only text is left out too.
-      const { index, errors } = await pagefind.createIndex({
-        excludeSelectors: ['.katex-html', '.katex-mathml annotation', '.rt-copy', '.fig-badge'],
-      });
-      if (!index) throw new Error(`Pagefind failed to start: ${errors.join('; ')}`);
-      const { page_count } = await index.addDirectory({ path: out });
-      await index.writeFiles({ outputPath: `${out}pagefind` });
-      await pagefind.close();
+      await preserveRedirectFragments(out);
+      const page_count = await indexSearch(out);
       logger.info(`Pagefind indexed ${page_count} pages`);
     },
   },
@@ -62,6 +59,7 @@ export default defineConfig({
     },
   },
   redirects: {
+    ...legacyChapterRedirects,
     // Former NLP tutorials, reorganized into the 12-topic NLP syllabus.
     '/en/learn/nlp/nlp-00-language-structure-meaning/': '/en/learn/nlp/nlp-02-linguistic-essentials/',
     '/zh-tw/learn/nlp/nlp-00-language-structure-meaning/': '/zh-tw/learn/nlp/nlp-02-linguistic-essentials/',
@@ -101,7 +99,7 @@ export default defineConfig({
   },
   markdown: {
     // Astro 7 defaults to Sätteri; we use unified for remark-math + rehype-katex.
-    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations, rehypeHeadingIds, rehypeSupplementZones] }),
+    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations, rehypePaperHeadingIds, rehypeHeadingIds, rehypeCodeFolding, rehypeSupplementZones] }),
     shikiConfig: { themes: { light: 'github-light', dark: 'github-dark' }, wrap: false },
   },
 });

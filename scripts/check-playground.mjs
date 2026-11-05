@@ -32,6 +32,11 @@ for (const track of readdirSync('src/content/tutorials/en')) for (const file of 
   chapters.push(`${track}/${file.slice(0, -4)}`);
 }
 for (const slug of chapters) {
+  // A valid plan does not prove that both translations actually embed the lab.
+  const inlineLabs = lang => [...readFileSync(`src/content/tutorials/${lang}/${slug}.mdx`, 'utf8')
+    .replace(/^(```|~~~)[\s\S]*?^\1/gm, '')
+    .matchAll(/<Lab\b[^>]*\bid="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(inlineLabs('zh-tw'), inlineLabs('en'), `Bilingual inline labs differ: ${slug}`);
   const planned = chapterPlan[slug] ?? [];
   assert.ok(planned.length || readingOnly[slug], `Chapter has neither an experiment nor a reading-only entry: ${slug}`);
   assert.ok(!(planned.length && readingOnly[slug]), `Chapter is both planned and reading-only: ${slug}`);

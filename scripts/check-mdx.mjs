@@ -18,7 +18,7 @@ for (const file of process.argv.slice(2)) {
   if (!fm) problems.push('missing frontmatter');
   else {
     const need = file.includes('/tutorials/')
-      ? ['title', 'description', 'track', 'order', 'level', 'published']
+      ? ['title', 'description', 'track', 'level', 'published'] // `order` is legacy: src/content/curriculum.ts sets the order
       : ['title', 'description', 'published'];
     for (const k of need) if (!new RegExp(`^${k}:`, 'm').test(fm[1])) problems.push(`frontmatter missing "${k}"`);
   }

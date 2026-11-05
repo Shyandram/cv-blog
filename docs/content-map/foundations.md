@@ -6,8 +6,8 @@
 
 | # | Tutorial | Level | Needs | File |
 | --- | --- | --- | --- | --- |
-| 0 | [Start Here · Learning Paths and Recommended Textbooks](#getting-started) | beginner | — | `src/content/tutorials/en/foundations/getting-started.mdx` |
-| 1 | [Images as Arrays](#images-as-arrays) | beginner | — | `src/content/tutorials/en/foundations/images-as-arrays.mdx` |
+| — | [Start Here · Learning Paths and Recommended Textbooks](#getting-started) | beginner | — | `src/content/tutorials/en/foundations/getting-started.mdx` |
+| — | [Images as Arrays](#images-as-arrays) | beginner | — | `src/content/tutorials/en/foundations/images-as-arrays.mdx` |
 
 ## getting-started
 
@@ -16,7 +16,7 @@ How the eight tracks fit together, which route to follow for your background and
 
 - Files: `src/content/tutorials/en/foundations/getting-started.mdx`, `src/content/tutorials/zh-tw/foundations/getting-started.mdx`
 - Pages: `/en/learn/foundations/getting-started/`
-- Level beginner · order 0 · needs: none · tags: getting-started, textbooks, learning-path, foundations, study-guide
+- Level beginner · depth 1 · needs: none · tags: getting-started, textbooks, learning-path, foundations, study-guide
 - Figures: 1 · references: 16
 
 - [What you'll learn](/en/learn/foundations/getting-started/#what-youll-learn) `what-youll-learn`
@@ -43,7 +43,7 @@ What a digital image really is, how NumPy and OpenCV store it, and the indexing,
 
 - Files: `src/content/tutorials/en/foundations/images-as-arrays.mdx`, `src/content/tutorials/zh-tw/foundations/images-as-arrays.mdx`
 - Pages: `/en/learn/foundations/images-as-arrays/`
-- Level beginner · order 1 · needs: none · tags: numpy, opencv, basics, sampling, quantization, dtype
+- Level beginner · depth 1 · needs: none · tags: numpy, opencv, basics, sampling, quantization, dtype
 - Figures: 4 · references: 12 · experiments: array-dtype, pixel-sampling
 
 - [What you'll learn](/en/learn/foundations/images-as-arrays/#what-youll-learn) `what-youll-learn`

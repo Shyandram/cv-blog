@@ -34,11 +34,11 @@ export function enhance(kind: string, display: Float32Array, w: number, h: numbe
 
 export const lab: LabDef = {
   kind: 'image', id: 'lowlight-photons', track: 'deep-learning',
-  title: L('DLCV 05 · Gain cannot create missing photons', 'DLCV 05・增益無法創造缺少的光子'),
+  title: L('DLCV 09C · Gain cannot create missing photons', 'DLCV 09C・增益無法創造缺少的光子'),
   description: L('Simulate a dim photo with photon and read noise, then compare more light, more digital gain and a denoiser.', '模擬帶有光子雜訊與讀出雜訊的昏暗照片，比較增加光量、增加數位增益與使用去雜訊器的差別。'),
   challenge: L('At 8 photons and gain 12 the picture is as bright as the scene, yet very noisy. Lower the gain to 1: the picture goes dark, but does the signal-to-noise ratio change? Now keep gain 12 and raise the photons to 100. What changes instead, and what happens to the highlights?', '在 8 個光子、增益 12 時，畫面和場景一樣亮，卻有很多雜訊。把增益降到 1：畫面變暗，但訊雜比有變嗎？接著保持增益 12，把光子數提高到 100。這次改變了什麼？亮部又會發生什麼事？'),
   note: L('Camera test image, 256 × 256. Each pixel collects Poisson(photons × scene) electrons plus Gaussian read noise (σ = 2 electrons), then the output is clip(gain × electrons / 100). Noise fields are fixed, so sliders never re-roll them. SNR is the mean signal over the standard deviation of the noise, measured before clipping, in dB. The enhancers are a Gaussian blur (σ = 1.5) and a 3 × 3 median, stand-ins for a learned denoiser; they are not one. Large photon counts use a normal approximation of the Poisson distribution.', '相機測試影像，256 × 256。每個像素收集 Poisson(光子數 × 場景) 個電子，再加上高斯讀出雜訊（σ = 2 個電子），輸出為 clip(增益 × 電子數 / 100)。雜訊場固定不變，所以拉動滑桿不會重新抽樣。SNR 是截斷前的平均訊號除以雜訊標準差，單位為 dB。增強器是高斯模糊（σ = 1.5）與 3 × 3 中值濾波，用來代替學習式去雜訊器，但它們並不是。光子數很大時使用 Poisson 分布的常態近似。'),
-  related: ['deep-learning/dl-05-low-light-enhancement', 'deep-learning/dl-05a-lightweight-enhancement'],
+  related: ['deep-learning/dl-05-low-light-enhancement'],
   controls: [
     { key: 'photons', label: L('Exposure: photons per pixel at full white', '曝光量：全白處每像素的光子數'), kind: 'range', value: 8, min: 2, max: 100, step: 1 },
     { key: 'gain', label: L('Digital gain', '數位增益'), kind: 'range', value: 12, min: 1, max: 32, step: 1 },

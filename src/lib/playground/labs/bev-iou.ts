@@ -160,7 +160,7 @@ function curveSvg(lang: Lang, shape: Shape, yaw: number, offset: number): string
 // ---------------------------------------------------------------------------------------------- the lab
 export const lab: LabDef = {
   kind: 'image', id: 'bev-iou', track: 'deep-learning',
-  title: L('DLCV 09 · Is a small yaw error harmless?', 'DLCV 09・小小的偏航角誤差無傷大雅嗎？'),
+  title: L('DLCV 03B · Is a small yaw error harmless?', 'DLCV 03B・小小的偏航角誤差無傷大雅嗎？'),
   description: L('Turn a predicted box a few degrees away from the ground truth in the bird’s-eye view and watch the exact rotated IoU fall while the centre distance stays at zero.', '在鳥瞰視角中，把預測框從真實框轉開幾度，觀察精確的旋轉 IoU 下降，而中心距離維持為零。'),
   challenge: L(
     'At the default setting (bus or truck, 12 × 2.5 m, yaw error 10°, centres identical) the rotated IoU is 0.657 although the centre distance is 0 m; the enclosing rectangles, which ignore the yaw, give 0.539. Lower the yaw error to 5° and the IoU is still only 0.808. Switch to the car (4.5 × 1.8 m) and the same 10° costs less, 0.796, then to the pedestrian (0.7 × 0.7 m): 0.863 at 10°, and never below 0.707 at any yaw error. The last row of the table gives the yaw error at which each shape falls below IoU 0.7: 8.5° for the bus and 16.55° for the car. Which class would a matching rule that uses an IoU threshold of 0.7 punish most for a heading mistake, and what does a rule that only looks at centre distance say about all three?',

@@ -1,0 +1,862 @@
+---
+title: "單步擴散超解析度"
+description: "理解 LR 潛在起點、殘差位移蒸餾、分數正規化與可調單步超解析度，同時檢查保真、速度與虛構細節的限制。"
+track: deep-learning
+order: 49
+level: advanced
+prereqs: [deep-learning/dl-04d-blind-real-world-super-resolution, deep-learning/dl-10b-one-step-generation]
+tags: [super-resolution, one-step-diffusion, score-distillation, lora, real-world-super-resolution]
+published: 2026-11-02
+updated: 2026-11-06
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import ambiguityFig from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/measurement-ambiguity.png';
+import tradeoffFig from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/prior-measurement-tradeoff.png';
+
+import paperResshiftSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-resshift-source.png';
+
+import paperSinsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-sinsr-source.png';
+
+import paperOsediffSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-osediff-source.png';
+
+import paperS3diffSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-s3diff-source.png';
+
+import paperTsdsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-tsdsr-source.png';
+
+import paperInvsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-invsr-source.png';
+
+import paperPisaSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-pisa-source.png';
+
+import paperAddsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-addsr-source.png';
+
+## 你將學到
+
+- 區分依觀測條件化的復原與從雜訊開始的生成。
+- 比較復原鏈蒸餾與預訓練先驗調適。
+- 追蹤潛在起點、LoRA、提示與分數正規化的作用。
+- 區分退化調適、反演與忠實度／細節控制。
+- 評估缺失細節的多解性與完整部署成本。
+
+## 先看全貌
+
+<Callout type="tip" title="用最簡單的話說">
+從故事畫出整個場景，好比從零生成影像；放大小照片，則像在已經標出物件位置的紙上作畫。從這張紙開始可以省時間，但小圖沒有告訴你每片葉子或每個字，所以快速畫家仍可能補錯細節。畫得快，不會讓猜測變得更確定。
+</Callout>
+
+真實低解析度影像已含低頻結構、配置與部分語意。從其潛在表示開始，可避免花許多取樣步重建已有結構；模型仍須去除損傷、補足細節。方法可以是學得的單步映射、蒸餾的影像條件流，或以重建與分布目標調整預訓練先驗。
+
+先讀 [DLCV 09A：非盲影像超解析度](/zh-tw/learn/deep-learning/super-resolution/) 理解反問題，再讀 [DLCV 09A.1：盲與真實世界超解析度](/zh-tw/learn/deep-learning/blind-real-world-super-resolution/) 理解退化合成與評估。[DLCV 12B：單步生成](/zh-tw/learn/deep-learning/one-step-generation/) 說明端點蒸餾、一致性及分數分布匹配。本章加入**特定觀測**的限制：外觀合理之外，還須關心內容保真。
+
+第一次先看家族表、量測歧義實驗及 OSEDiff 概覽。完整訓練與控制比較放在選讀論文頁。選擇取決於損傷、可接受的虛構細節及完整部署預算，沒有對每張圖都最佳的方法。
+
+## 單步超解析度必須做到什麼
+
+**白話說。** 輸入提供起點，卻未揭露終點的每個細節。復原器要利用證據，也要承認未觀測細節有歧義。
+
+觀測寫為 $y=\mathcal D(x)+n$：$x$ 是未知高解析度影像，$y$ 是低解析度觀測，$\mathcal D$ 是退化算子，$n$ 是雜訊。真實退化通常未知且可能非線性。條件生成器輸出 $\widehat x=G_\theta(y)$；若另有隨機輸入 $z$，則為 $G_\theta(y,z)$。
+
+確定性模型可以每次輸出相同圖，仍然補出錯誤細節；隨機模型能產生多個合理答案，也不知道哪個才是真正拍下的原圖。兩者都不自動保真。觀測限制一部分內容，先驗則為剩餘部分提供偏好。
+
+### 精確的歧義實驗
+
+令 $A(x)$ 對每個 2 × 2 區塊取平均，形成 ×2 降取樣。值為 $+a,-a,-a,+a$ 的棋盤紋在區塊內總和為零，因此加上或減掉它都不改變 LR 觀測。這種紋理位於 $A$ 的零空間。
+
+以下合成平滑 LR 圖及正反兩種 HR 紋理，比較條件平均與合理模態。此處刻意已知量測模型；真實照片還須估計退化，檢查一致性更難。
+
+```python
+import numpy as np
+
+row, col = np.mgrid[:32, :32]
+lr = 0.5 + 0.12*np.sin(2*np.pi*col/16) + 0.08*np.cos(2*np.pi*row/13)
+base = lr.repeat(2, 0).repeat(2, 1)
+i, j = np.indices(base.shape)
+texture = 0.12*(-1.)**(i+j)  # zero mean in every 2x2 block
+truth = base + texture
+candidates = {'conditional mean': base, 'matching mode': base+texture, 'opposite mode': base-texture}
+def measure(x):
+    return x.reshape(32,2,32,2).mean((1,3))
+for name, x in candidates.items():
+    mse = np.mean((x-truth)**2)
+    discrepancy = np.max(np.abs(measure(x)-lr))
+    print(f'{name:16s} MSE {mse:.4f} | LR discrepancy {discrepancy:.1e}')
+```
+
+```text
+conditional mean MSE 0.0144 | LR discrepancy 0.0e+00
+matching mode    MSE 0.0000 | LR discrepancy 5.6e-17
+opposite mode    MSE 0.0576 | LR discrepancy 5.6e-17
+```
+
+實際結果顯示所有候選都在浮點誤差內重現 LR；但相對選定真值，反向清晰模態的平方誤差是條件平均的四倍。若隱藏正負紋理等機率，條件平均最小化期望平方誤差；抽取合理模態不保證抽中原圖。加速無法識別從未量測的位元。
+
+<Figure src={ambiguityFig} alt="平滑 LR 觀測，以及平滑平均、符合隱藏真值的棋盤紋和反向棋盤紋。兩個有紋理候選的區塊平均完全相同。" caption="圖 1 — 符合量測，比正確重建隱藏細節更弱。確定性單步網路和多步取樣器一樣，可能選到錯誤卻清晰的紋理。" />
+
+### 哪些工作從推論移到訓練
+
+多步復原反覆呼叫去雜訊網路；單步模型須學較大的影像條件轉換，可能使用調適、教師取樣、判別器或分數正規化。部署呼叫減少，仍可能換來昂貴的訓練機制，應兩邊一起報告。
+
+預訓練文字生成去雜訊器，不會自動把 LR 潛在向量視為合法高雜訊輸入。OSEDiff [1] 明確調適這種影像到影像用法；擴散網路提供預訓練參數化，並不證明輸入符合原前向加雜訊分布。
+
+## 短鏈與單步超解析度的地圖
+
+**白話說。** 有些縮短復原專用鏈，有些調整大型先驗，有些學起點或提供分離控制。先辨識改的是哪個元件，再比較方法名稱。
+
+| 家族 | 起點 | 主要訓練訊號 | 方法例子 | 應檢查什麼 |
+| --- | --- | --- | --- | --- |
+| 殘差位移鏈 | 以 LR 為中心的含雜訊狀態 | 影像條件擴散重建 | ResShift [2] | 排程、步數、訓練領域 |
+| 條件端點蒸餾 | LR 加初始擾動 | 教師端點、反向與真值循環 | SinSR [3] | 教師程序與學生實際映射 |
+| 預訓練先驗調適 | LR 潛在向量 | 配對重建與潛在分數正規化 | OSEDiff [1] | 編解碼調適、提示成本與分數追蹤 |
+| 退化感知調適 | LR 潛在向量加退化估計 | 重建、感知與對抗損失 | S3Diff [4] | 退化估計器與引導評估次數 |
+| 對抗蒸餾 | 影像條件短取樣器 | 教師與判別器 | AddSR [5] | 訓練版本及推論預算 |
+| 目標感知分數 | LR 條件學生 | 配對目標分數與分布感知狀態 | TSD-SR [6] | HR 目標如何進入訓練 |
+| 學得起點／反演 | 預測的影像條件吵狀態 | 預訓練反向程序後的損失 | InvSR [7] | 起點預測器與總呼叫數 |
+| 分離增強控制 | LR 潛在向量 | 像素與語意 LoRA 目標 | PiSA-SR [8] | 調整哪些權重、保真是否單調改變 |
+
+這是功能地圖，分類可以重疊；預訓練生成器、學得起點及對抗目標可同時出現。某方法支援多種預算時，四步成績仍須標四步。
+
+盲超解析度及擴散超解析度綜述 [9]、[10] 提供更廣的分類。退化假設依然重要；快速推論不會讓某種合成退化訓練，自動適用所有相機、壓縮或歷史照片。
+
+## 以觀測為中心的短鏈
+
+**白話說。** 讓高解析度影像逐漸移向低解析度觀測而非純雜訊，使反向程序從已觀測結構附近開始。
+
+ResShift [2] 定義放大後 LR $y$ 與 HR 目標 $x_0$ 的殘差 $e=y-x_0$，前向邊際可寫成：
+
+$$
+q(x_t\mid x_0,y)=\mathcal N\!\left(x_0+\eta_t(y-x_0),\kappa^2\eta_t I\right).
+$$
+
+$\eta_t$ 從近零增加到一，$\kappa$ 控制雜訊，$I$ 是單位共變異數。$y$ 已放大，或兩張圖已編碼至相容網格，所以維度一致。最後狀態近似以 LR 為中心的高斯雜訊，再反向補回細節。
+
+網路從吵狀態、觀測及時間預測 HR，因此訓練的是復原條件程序。原潛在實作使用自動編碼器和短鏈；這不同於凍結文字生成先驗再加控制器。容量、資料與表示都不同，不能把跨方法分數差只歸因於鏈長。
+
+SinSR [3] 把 ResShift 的反向程序改為確定性，再蒸餾端點為一次學生預測，並訓練反向映射與真值循環。它不是保持目標不變、只讓 ResShift 跑一次。
+
+確定性教師為每組 LR 中心的隨機起點指定終點，使端點迴歸明確，隨機起點仍可選擇不同結果。真值一致性另提供超越模仿教師的配對訊號。同一網路兼做反向／復原是訓練設計，推論只需復原方向。
+
+*選讀：[ResShift](#resshift復原條件的短鏈neurips-2023)、[SinSR](#sinsr蒸餾確定性的影像條件映射cvpr-2024)（見「論文導讀」）。前向模型、確定性係數、三項訓練損失與對應實驗。*
+
+## 從 LR 潛在向量開始：OSEDiff
+
+**白話說。** OSEDiff 用一次網路呼叫，把輸入表示轉成高解析度潛在表示；另以訓練正規化鼓勵自然輸出。
+
+### 部署時的路徑
+
+模型含調適影像編碼器 $E_\theta$、調適去雜訊器 $\epsilon_\theta$、凍結解碼器 $D$ 與提示擷取器 $Y$ [1]。先把輸入放大至工作解析度，再寫為：
+
+$$
+z_L=E_\theta(y),\quad c=Y(y),\quad
+\widehat z_H=\frac{z_L-\beta_T\epsilon_\theta(z_L,T,c)}{\alpha_T},\quad
+\widehat x_H=D(\widehat z_H).
+$$
+
+$z_L$ 是 LR 編碼的潛在向量，$c$ 是文字條件，$T$ 是固定擴散時間，$\alpha_T,\beta_T$ 沿用原文訊號／雜訊係數。公式**沒有**向 $z_L$ 新增高斯雜訊；它是特定時間下學得的影像轉換，並不假設退化潛在向量真的來自原高雜訊前向分布。
+
+LoRA [11] 對編碼器與去雜訊器加入低秩更新。凍結解碼器維持預訓練潛在空間的輸出意義。少量可訓練參數只代表調適大小，不是整個模型的參數或記憶體成本。
+
+### 配對保真與學得的先驗
+
+OSEDiff 結合像素 MSE、LPIPS 配對重建與變分分數蒸餾（VSD）[12]、[13]。前兩者對照 HR 訓練目標；分數項則用固定先驗去雜訊器和追蹤生成樣本的第二個去雜訊器，比較生成潛在分布。
+
+這是 [DLCV 12B](/zh-tw/learn/deep-learning/one-step-generation/) 分布匹配的復原版本，沒有直接計算未知真實退化的似然。合成配對教模型保留內容，先驗教自然外觀，兩者都可能不適合某張分布外影像。
+
+### 為什麼在潛在空間正規化
+
+像素空間先驗梯度可能反覆解碼、再編碼生成影像。OSEDiff 直接作用於預測潛在向量，近似這段往返以節省成本；它仰賴自動編碼器表示足夠一致，不是任意潛在向量都成立的精確恆等式。
+
+輔助正規化網路只在訓練使用。部署仍含影像編碼、提示擷取、一次去雜訊及解碼。計時要明示包含哪些步驟；改用大型描述模型，可能吃掉原本單次去雜訊省下的時間。
+
+*選讀：[OSEDiff](#osedifflr-潛在起點與變分分數正規化neurips-2024)（見「論文導讀」）。完整元件、潛在梯度、資料、分數表、編解碼消融、提示成本與 LoRA 秩。*
+
+## 依損傷調整模型
+
+**白話說。** 輕微模糊與強烈雜訊不適合完全相同的修正。S3Diff [4] 依退化估計調整低秩參數。
+
+對 $W\in\mathbb R^{m\times n}$，一般 LoRA 為 $W'=W+AB$，其中 $A\in\mathbb R^{m\times r}$、$B\in\mathbb R^{r\times n}$，$r$ 是小秩。S3Diff 再加入退化條件中間矩陣：
+
+$$
+W'_i=W_i+A_iC_i(d)B_i.
+$$
+
+$i$ 表示網路區塊，$d$ 含估計的模糊／雜訊資訊，$C_i(d)\in\mathbb R^{r\times r}$ 調制更新。共用映射結合退化嵌入與區塊識別碼，產生區塊別修正，使不同影像使用不同有效權重。
+
+退化向量只是估計，不是相機管線的完整知識；壓縮或空間變化未被描述時，修正也可能錯誤。輸入相依更新也不同於可一次合併的靜態 LoRA，仍需輸入相依計算。
+
+S3Diff 使用通用正／負品質提示與線上負目標，不必逐圖產生語意描述。引導可結合不同條件預測；若某設定做兩次去雜訊，即使只有一次狀態更新，NFE 也應計兩次。
+
+*選讀：[S3Diff](#s3diff退化引導的低秩調適)（見「論文導讀」）。動態矩陣、區塊嵌入、線上負提示與調適取捨。*
+
+## 改善短復原映射的其他方法
+
+**白話說。** 鏈縮短後，條件、目標與起點的誤差更顯著。近期方法改變不同元件，不只是繼續減少步數。
+
+### 對抗復原蒸餾
+
+AddSR [5]、[14] 將對抗擴散蒸餾用於影像條件復原：教師提供復原知識，判別器推動寫實輸出。它結合條件與蒸餾，並非把文字生成器直接套在放大輸入上。
+
+對抗項能補出可信外觀，卻不保證細節正確。比較時保留教師、條件、版本與推論步數，不把最佳少步結果改標為單步。
+
+### 目標感知分數與訓練狀態
+
+TSD-SR [6] 指出，學生早期品質差時，預訓練教師可能給不可靠方向。它以配對 HR 潛在向量建構目標分數，並用分布感知抽樣產生更接近調適軌跡的訓練狀態。
+
+配對真值只在訓練可用。比較教師對生成與真值潛在向量的預測，加入不同於學生／教師分數差的方向；這不證明已消除所有教師偏差。抽樣模組即使部署可移除，仍有訓練成本。
+
+### 學習反向程序的起點
+
+InvSR [7] 學影像條件的雜訊／起點預測器，再從該處執行預訓練反向程序。預測「雜訊」不必是獨立標準高斯，可以與觀測相關，補償以 LR 取代未知乾淨圖的誤差。
+
+這不同於任意現成照片反演；起點模型專為復原訓練，損失作用於選定反向程序後。它可支援多種步數，但起點預測器本身也是一次網路執行，所以一個反向步不一定等於總共一次評估。
+
+### 分開像素與語意增強
+
+PiSA-SR [8] 先訓練像素重建的低秩更新，再固定它訓練語意／感知更新。預設把兩組結合、做一次預測；可調版本則分別計算像素與語意輸出，需兩次擴散評估，再調殘差權重。
+
+可調版必須與預設單次版分開計數。控制只是改變模型行為，不是把每個像素物理拆成真實／虛構通道，也不保證指標單調。其分類器分數蒸餾不維護 OSEDiff 相同的生成分布分數模型，因此同時改變訓練機制與統計目標，不是完全等價的 VSD 捷徑。
+
+*選讀：[TSD-SR](#tsd-sr目標感知分數正規化cvpr-2025)、[InvSR](#invsr學得的影像條件起點cvpr-2025)、[PiSA-SR](#pisa-sr分開像素與語意調適cvpr-2025)（見「論文導讀」）。各項設計、實驗證據與限制。*
+
+## 保真、寫實與控制
+
+**白話說。** 符合自然影像先驗，不等於符合觀測。保真項與寫實項可能往不同方向拉。
+
+以二次問題示意：$a$ 是已量測座標的誤差，$b$ 是未量測紋理；先驗偏好 $(a,b)=(1,1)$，觀測限制 $a=0$。最小化 $a^2+\lambda[(a-1)^2+(b-1)^2]$，在 $\lambda>0$ 得 $a=\lambda/(1+\lambda)$、$b=1$。加強先驗也改動已受觀測限制的座標；強制 $a=0$ 可保護它，卻仍不知道紋理真值。
+
+$\lambda$ 只是示意權重，不是任何引用模型的實測超參數。神經復原器的座標無法如此乾淨分開，退化通常未知，損失也在資料集訓練，而非逐圖精確求解。這解釋了「更寫實」不等於「更保真」。
+
+<Figure src={tradeoffFig} alt="座標圖與兩條曲線顯示，加強先驗權重雖更符合先驗，卻可能讓已量測座標偏離觀測；獨立約束可保護該座標，但無法確定隱藏紋理。" caption="圖 2 — 二次示意目標區分量測一致與先驗偏好。這不是基準成績，也不是神經分數蒸餾的精確模型。" />
+
+控制可能是訓練先驗權重、推論殘差強度、引導、退化估計或起始雜訊，彼此不可互換。改訓練權重通常要重訓；改推論係數只改同一模型；換模型還可能換資料與目標。應明示比較改動了什麼。
+
+文字、人臉及重複結構尤其要檢查離散內容：字母、身分線索、磚塊數或邊界。可重複有助比較，卻不證明正確。保留原始輸入，將生成細節視為假設，不能當成新增量測。
+
+## 如實衡量速度與品質
+
+**白話說。** 計算使用者真正等待的所有工作，把品質規則和計時列綁在一起。小調適檔或一次擴散更新，不是完整速度測量。
+
+### 應計時的完整管線
+
+常見流程含縮放、編碼、退化估計、提示擷取、生成／去雜訊、解碼及後處理，也可能分塊。記錄輸入**與輸出**解析度、裝置、精度、批次、暖機、同步及文字快取。
+
+OSEDiff 表 2 在 A100、明示 **512 × 512** 輸入測試報告 **0.11 秒**，提示擷取研究另列成本 [1]。別假定與其他 128 放大至 512 的測試有相同計時邊界；若提示是否包含不明，應另報。大圖分塊編解碼可能占相當成本。
+
+區分**可訓練參數、總參數、推論峰值記憶體及調適檔大小**。LoRA 縮小第一與最後兩者，不會等比例縮小凍結骨幹。動態更新、提示和反演各有工作；靜態合併也不會消除骨幹矩陣運算。
+
+### 品質評估規則
+
+配對合成／實拍資料使用全參考保真與感知指標；未配對真實圖則使用無參考評估及檢視 [15]、[16]、[17]。PSNR、SSIM 比較參考一致性；LPIPS、DISTS 比較感知表示 [18]、[12]、[19]。NIQE、MUSIQ、MANIQA、CLIPIQA [20]、[21]、[22]、[23] 不需 HR，卻不能驗證原場景。
+
+固定通道、裁邊、縮放、對齊及種子。新增紋理可能提高無參考分數卻降低保真；實拍錯位影響像素指標，合成退化也可能偏袒相同訓練分布。詳細限制見 [DLCV 09A.1](/zh-tw/learn/deep-learning/blind-real-world-super-resolution/)。
+
+隨機模型要報種子變異，不能只挑好看輸出；確定性模型要跨影像與損傷測試。小字、人臉、平坦區與規則網格應分別檢查，平均成績可能掩蓋不同錯誤。
+
+## 現代觀點
+
+**白話說。** 短推論暴露了多種不同問題：選起點、保留觀測、估計可靠先驗方向，以及提供易懂控制。
+
+Liu 等人的盲超解析度綜述 [9] 區分顯式退化、隱式資料分布及單圖資訊；Moser 等人的擴散超解析度綜述 [10] 依領域、條件與生成程序整理保真／成本取捨。Fan 等人的蒸餾綜述 [24] 則區分端點保真、軌跡與對抗監督。
+
+2023–2025 年的方法不是單一替代鏈：ResShift 改程序，SinSR 蒸餾端點，OSEDiff 調適先驗，S3Diff 依退化調適，TSD-SR 改分數與狀態，InvSR 學起點，PiSA-SR 分開控制 [2]、[3]、[1]、[4]、[6]、[7]、[8]。瓶頸、骨幹與基準分布皆不同。
+
+2026 年 TUDSR [25] 以兩次放大／擴散設計處理較大倍率，顯示短擴散元件如何放進完整系統。多階段仍須分別計數，不能宣稱整體一次操作；新倍率和架構也要重測保真與成本。
+
+開放問題包括未知退化、文字與身分保留、劣質樣本上的分數、真實領域泛化、大圖分塊及易懂控制。介面應提供有意義的視覺選擇及原圖比較，不能暗示「增加細節」會找回未量測資訊。
+
+## 重點整理
+
+- 由觀測建立的起點，須配合預期影像轉換任務訓練才能有效省工。
+- 單步推論描述計算預算，各方法仍可使用不同訓練目標。
+- ResShift／SinSR 壓縮復原程序；OSEDiff 調適預訓練先驗。
+- 潛在編碼、提示、解碼器選擇與輔助訓練各有不同作用及成本。
+- 確定性與低解析度一致性都無法證明缺失細節正確。
+- 量測完整流程，並比較忠實度、偏好、語意正確性與變異。
+
+## 練習
+
+1. **零空間歧義。** 改變棋盤紋振幅，推導條件平均與相反紋理的平方誤差，並確認 LR 不變。
+
+<details>
+<summary>
+提示
+</summary>
+
+振幅 $a$ 下，平均的 MSE 為 $a^2$，反向模態為 $4a^2$；每個 2 × 2 紋理和為零。振幅須夠小，避免裁切改變量測方程式。
+
+</details>
+
+2. **錯誤的一致性檢查。** 改以輕微模糊再縮放，候選 HR 不變。舊區塊平均相同，是否保證新 LR 相同？這對估計退化下的一致性有何啟示？
+
+<details>
+<summary>
+提示
+</summary>
+
+零空間取決於算子。某降取樣消去的紋理，另一個未必消去。猜測算子下的一致，只是以該假設為條件的證據。
+
+</details>
+
+3. **訓練與推論網路。** 畫出 OSEDiff，標記編碼器、去雜訊器、解碼器、提示、固定正規化器及調適正規化器。哪些接收生成器梯度，哪些部署會執行？
+
+<details>
+<summary>
+提示
+</summary>
+
+生成器的調適編碼器／去雜訊器由重建與先驗更新；解碼器固定，調適正規化器有自己的去雜訊目標。兩個正規化器部署移除；除非另供提示或更改設定，提示擷取器仍保留。
+
+</details>
+
+4. **計算引導。** 一次更新分別評估正／負提示，另執行退化估計與 VAE 編解碼。哪些能稱一步？時間報告須計什麼？
+
+<details>
+<summary>
+提示
+</summary>
+
+狀態更新一次、去雜訊兩次。完整時間包含退化估計及編解碼，並明示合批慣例。快取文字嵌入能省文字編碼，不能省兩次去雜訊預測。
+
+</details>
+
+5. **有意義的控制。** 以平坦天空、小字及重複窗戶設計「增加細節」比較，提出保真檢查、視覺品質檢查及平均無參考分數會漏掉的失敗。
+
+<details>
+<summary>
+提示
+</summary>
+
+固定輸入及裁切，比較字母、窗緣與新增天空紋理。記錄品質分數，但不把它視為真值；彙總分數改善可能同時改錯離散字元。
+
+</details>
+
+## 補充資料
+
+以下選讀補充多種方法共用的兩個技術區別。
+
+### 潛在起點不等於加雜訊方程式
+
+本節區分預訓練擴散公式與新訓練的影像轉換用途。
+
+擴散訓練以 $z_t=\alpha_tz_0+\sigma_t\epsilon$ 定義分布，$z_0$ 是乾淨潛在向量，$\epsilon$ 為獨立高斯雜訊。LR 復原輸入 $E_\theta(y)$ 含結構化模糊、壓縮與內容，這些誤差不必符合任意時間的 $\sigma_t\epsilon$。
+
+預訓練公式仍可用來參數化調適網路，由資料和損失教它新轉換。但實證有效不會使舊前向分布解釋變成字面真實；訓練後任意改時間或加新雜訊，可能改變任務，並非無害地換種子。
+
+### 分數正規化與逐圖量測一致性
+
+本節區分影像分布的一致與特定觀測的一致。
+
+先驗分數描述密度如何隨影像／潛在座標改變；量測限制則描述哪些 HR 可產生此 LR。邊際分布目標可能讓圖自然，卻改掉某張輸入的物件。配對重建約束訓練資料，對新相機是否有效仍取決於退化分布和擬合。
+
+算子已知時，可做資料一致性更新或檢查 $\mathcal D(\widehat x)-y$；未知時，殘差也含算子估計錯誤。小殘差無法解決零空間細節，大殘差也可能來自錯誤測試算子，不能把單一門檻當成通用真實性測試。
+
+## 論文導讀
+
+以下選讀介紹完整設計及控制實驗。數字屬原文評估規則，不是前面合成實驗的測量值。
+
+### ResShift：復原條件的短鏈（NeurIPS 2023）
+
+#### 挑戰
+
+LR 已提供大量結構，復原不必從純雜訊重建整個場景。ResShift [2] 的前向程序逐漸把 HR 移向放大 LR，反向從觀測附近開始，使短鏈可行。
+
+貢獻是復原專用隨機程序及排程，不是蒸餾大型文字教師。短鏈、任務專用容量、資料與表示須一起評估，跨大型先驗比較不只改變步數。
+
+#### 方法
+
+<Figure src={paperResshiftSource} alt="前向鏈在加入雜訊時，將乾淨內容移向低解析度觀測條件；反轉此鏈不同於從純雜訊無條件生成。" caption="原論文圖 2 — 前向鏈在加入雜訊時，將乾淨內容移向低解析度觀測條件；反轉此鏈不同於從純雜訊無條件生成。" />
+
+*圖片來源: [2], arXiv:2307.12348v3, PDF 第 3 頁. [原始 PDF](https://arxiv.org/pdf/2307.12348).*
+
+**殘差與前向轉移。** $x_0$ 為 HR，$y$ 為放大 LR，$e=y-x_0$。遞增位移比例 $\eta_t$ 的端點近零與一，$\delta_t=\eta_t-\eta_{t-1}$。每步加入 $\delta_te$ 與共變異數 $\kappa^2\delta_tI$ 的雜訊，$\kappa$ 控制強度。此處用 $\delta$ 避免混淆其他論文的訊號係數。
+
+**封閉形式邊際。** 累積位移與高斯增量得到：
+
+$$
+q(x_t\mid x_0,y)=\mathcal N(x_0+\eta_t(y-x_0),\kappa^2\eta_tI).
+$$
+
+狀態與影像／潛在張量同形狀，小 $\eta_t$ 接近 HR，大 $\eta_t$ 的平均接近 LR。訓練可直接抽任意時間狀態，不必模擬完整前向鏈。
+
+**反向目標。** 相鄰前向狀態的後驗可解析計算，把均值裡未知 HR 換成網路 $f_\theta(x_t,y,t)$，可得：
+
+$$
+\mu_\theta=\frac{\eta_{t-1}}{\eta_t}x_t+\frac{\delta_t}{\eta_t}f_\theta(x_t,y,t),
+$$
+
+共變異數為 $\kappa^2\eta_{t-1}\delta_tI/\eta_t$，$f_\theta$ 從狀態、觀測及時間預測 HR。訓練化為加權重建，原實作經比較後省去推導時間權重；這是實務簡化，不等於精確變分式。
+
+**潛在表示。** 使用與 VQGAN [26] 相關的自動編碼器，原設定空間壓縮四倍，HR 與放大 LR 編碼至相容網格。其任務訓練先驗與大型文字模型的廣泛預訓練先驗不同。
+
+**排程。** $\sqrt{\eta_t}$ 的幾何式排程以 $p$ 控制形狀，$\kappa$ 控制雜訊。預設 **15 步、$p=0.3$、$\kappa=2$**。改參數會改訓練狀態，排程掃描不必然是同一模型免費的推論控制。
+
+**資料與推論。** 用 Real-ESRGAN 式 [27] 合成退化訓練。推論約從 $y+\kappa\epsilon$ 開始，經反向更新再解碼。較小雜訊靠近觀測，仍無法識別缺失細節或修正錯誤退化；起點和反向程序保留隨機性。
+
+#### 結果
+
+表 3 的 ImageNet-Test [28]：PSNR **25.01**、SSIM **0.677**、LPIPS **0.231**、CLIPIQA **0.592**、MUSIQ **53.660**。原文也比較同為 15 步的一般潛在擴散模型，幫助區分程序設計與單純減步，但成績仍依訓練與測試設定。
+
+真實影像的無參考及視覺比較支持該退化範圍的外觀品質，不證明缺失細節精確。應一起閱讀排程研究中的保真取捨。
+
+#### 消融實驗
+
+表 1：**10／15／50 步**的 PSNR 為 **25.20／25.01／24.22**，LPIPS **0.2517／0.2312／0.2212**。多步改善感知距離，卻降低 PSNR；「品質更好」須指明指標。
+
+15 步、$\kappa=2$ 時，$p$ 從 **0.3** 改 **1**，LPIPS **0.2312→0.2613**，MUSIQ **53.6596→48.4964**。固定 $p=0.3$，$\kappa=0.5$ 的 LPIPS **0.2437**，$\kappa=8$ 為 **0.2592**，預設 2 為 **0.2312**。排程敏感，不是單調的寫實度旋鈕。
+
+#### 結論
+
+以 LR 為中心的可解析殘差鏈，是從純雜訊開始的替代方案；排程決定保真與外觀取捨。
+
+#### 限制與問題
+
+仍須多次網路評估，不能識別未量測細節；任務先驗、合成退化涵蓋與自動編碼器皆有限制。SinSR [3] 接著把此條件程序的確定性端點蒸餾成一次學生預測。
+
+### SinSR：蒸餾確定性的影像條件映射（CVPR 2024）
+
+#### 挑戰
+
+SinSR [3] 要把 ResShift 完整映射壓成一次預測。但原反向鏈會持續加新雜訊，同一起點可有不同終點，平方誤差學生可能學到平均。
+
+因此先建構確定性教師，再加學得反向映射／真值循環。前者固定種子—終點配對，後者加入超出教師樣本的 HR 監督。
+
+#### 方法
+
+<Figure src={paperSinsrSource} alt="分開閱讀確定性教師軌跡、學生捷徑與一致性重建路徑；訓練工作量不等於推論步數。" caption="原論文圖 4 — 分開閱讀確定性教師軌跡、學生捷徑與一致性重建路徑；訓練工作量不等於推論步數。" />
+
+*圖片來源: [3], arXiv:2311.14760v1, PDF 第 4 頁. [原始 PDF](https://arxiv.org/pdf/2311.14760).*
+
+**確定性教師。** 從 ResShift 邊際 $q(x_t\mid x_0,y)=\mathcal N(x_0+\eta_t(y-x_0),\kappa^2\eta_tI)$ 推導非馬可夫確定性更新；理想條件保留預期邊際，反向對 HR 預測為仿射：
+
+$$
+x_{t-1}=k_tf_\phi(x_t,y,t)+m_tx_t+j_ty.
+$$
+
+$f_\phi$ 是凍結復原器，係數依排程推導：$m_t=\sqrt{\eta_{t-1}/\eta_t}$、$j_t=\eta_{t-1}-\sqrt{\eta_{t-1}\eta_t}$、$k_t=1-\eta_{t-1}+\sqrt{\eta_{t-1}\eta_t}-m_t$。更新不新增反向雜訊，但初始狀態仍隨機。
+
+**教師端點。** 對標準高斯 $\epsilon$ 形成 $x_T=y+\kappa\sqrt{\eta_T}\epsilon$，執行多步教師得 $F_\phi(x_T,y)$。給定起點與觀測即固定；教師多次評估只在訓練建構目標。
+
+**直接蒸餾。** 學生由教師初始化，以時間 $T$ 查詢復原，最小化 $\mathcal L_{\mathrm{distill}}=\operatorname{MSE}(f_\theta(x_T,y,T),F_\phi(x_T,y))$。時間也區分反向查詢，不代表任意中間時間都已訓練。
+
+**學得反向。** 同一網路在時間 0 從教師 HR 終點預測起點，使 $f_\theta(F_\phi(x_T,y),y,0)$ 接近 $x_T$。這提供雙向關係，不新增部署反向網路。
+
+**真值循環。** 以反向映射編碼配對 HR，再復原：
+
+$$
+\widehat x_T=\operatorname{sg}f_\theta(x_0,y,0),\qquad
+\mathcal L_{\mathrm{gt}}=\operatorname{MSE}(f_\theta(\widehat x_T,y,T),x_0).
+$$
+
+停止梯度 $\operatorname{sg}$ 很重要。否則反向分支可能把額外 HR 殘差藏進起點，使分布偏離部署的 LR 加雜訊；復原分支就解了部署時不可取得的較簡單問題。
+
+**總目標與使用。** 端點、反向與真值三項預設等權，以教師表示及合成配對訓練。部署只形成 LR 條件起點、做復原查詢與解碼，不執行循環或教師。固定種子有助比較，不證明細節正確；縮放、編解碼也要計時。
+
+#### 結果
+
+ImageNet-Test 一步 SinSR 的 LPIPS／CLIPIQA 為 **0.221／0.611**，同表 15 步 ResShift **0.228／0.603**；原模型直接截成一步則 **0.383／0.340**。學端點明顯不同於任意截短。
+
+A100、×4、64 × 64 至 256 × 256：批次一 SinSR **0.058 秒**，15 步 ResShift **0.633 秒**；批次 64 的每圖時間變成 **0.012／0.047 秒**。速度比依合批而變，不能當成所有裝置與大圖的固定倍率。
+
+#### 消融實驗
+
+補充損失消融的 PSNR／LPIPS／CLIPIQA：端點單獨 **24.69／0.222／0.607**，完整 **24.56／0.221／0.611**；移除端點但保留反向／真值為 **23.49／0.226／0.671**。無參考分數上升，像素保真卻下降。
+
+RealSet65 停止梯度研究：僅蒸餾 CLIPIQA **0.6536**，不停止循環 **0.6994**，選定停止循環 **0.7150**；MUSIQ 對應 **61.330／61.342／62.169**。推論起點視覺化也顯示不停止時的不匹配，因此梯度邊界有實質學習意義。
+
+#### 結論
+
+確定性條件教師可直接蒸餾；學得反向讓配對 HR 加入監督，停止梯度避免不可用資訊捷徑。
+
+#### 限制與問題
+
+學生仍繼承教師與合成退化假設，會遺漏或虛構細節。循環不證明所有輸出可逆或起點精確高斯。大型先驗方法的容量、目標不同，跨方法成績不是單一步損失的獨立比較。
+
+### OSEDiff：LR 潛在起點與變分分數正規化（NeurIPS 2024）
+
+#### 挑戰
+
+OSEDiff [1] 想保留大型預訓練先驗，又避免多次擴散。多步先驗復原能補細節但昂貴，配對重建雖快卻可能偏平滑，因此結合直接 LR→HR 映射與訓練時分布正規化。
+
+各元件相互配合：LR 潛在起點、編碼器與去雜訊器 LoRA、凍結解碼器、影像提示，以及配對損失與潛在分數差。每一項的功能與證據不同，不能只用「單步擴散」概括。
+
+#### 方法
+
+<Figure src={paperOsediffSource} alt="影像條件生成器同時接受重建監督與分布匹配正規化；輔助擴散模型用於訓練，並非多步推論鏈。" caption="原論文圖 2 — 影像條件生成器同時接受重建監督與分布匹配正規化；輔助擴散模型用於訓練，並非多步推論鏈。" />
+
+*圖片來源: [1], arXiv:2406.08177v3, PDF 第 4 頁. [原始 PDF](https://arxiv.org/pdf/2406.08177).*
+
+**輸入與表示。** $x_L$ 是放大至輸出解析度的低品質圖，$x_H$ 為配對目標。預訓練模型提供 VAE 編碼器 $E_\phi$、文字條件去雜訊器 $\epsilon_\phi$ 及解碼器 $D_\phi$ [29]。512 × 512 圖經八倍壓縮為 64 × 64 多通道潛在網格；不能不放大 LR，就期待任意隱式倍率轉換。
+
+**LoRA 調適。** 凍結原權重，訓練低秩更新得到 $E_\theta$、$\epsilon_\theta$ [11]。$\Delta W=AB$ 的秩受轉接器秩限制。原設定 VAE 編碼器、生成去雜訊器及調適正規化器的秩皆為 **4**。小調適不等於小執行模型。
+
+**固定解碼器。** $D_\theta=D_\phi=D$，避免生成潛在向量的像素解釋自由改變，而先驗仍在預訓練座標評估。這維持表示相容，不保證編解碼精確可逆。調適解碼器可能改善像素分數，卻削弱選定的先驗取捨，原文有直接比較。
+
+**影像提示。** $Y$ 從低品質輸入擷取條件，主實作使用 SeeSR 的 DAPE [30]。標籤是推估語意，也可能錯誤；部署仍要付出提示成本。原文比較空提示、輕量擷取器及大型多模態描述器 [31]。
+
+**固定時間的一次轉換。** 定義 $z_L=E_\theta(x_L)$、$c=Y(x_L)$，生成器為：
+
+$$
+\widehat z_H=F_\theta(z_L,c)=\frac{z_L-\beta_T\epsilon_\theta(z_L;T,c)}{\alpha_T},
+\qquad \widehat x_H=D(\widehat z_H).
+$$
+
+$T$ 是固定模型時間，$\alpha_T,\beta_T$ 是原文排程係數。部署路徑**沒有新加高斯雜訊**；舊去雜訊式只是新訓練影像映射的參數化，不主張 LR 潛在向量符合原前向分布。固定執行可重複，仍不證明細節正確。
+
+**配對重建。** 資料項為：
+
+$$
+\mathcal L_{\mathrm{data}}=\operatorname{MSE}(\widehat x_H,x_H)+\lambda_1\operatorname{LPIPS}(\widehat x_H,x_H).
+$$
+
+MSE 懲罰像素差異，LPIPS [12] 比較感知特徵，$\lambda_1$ 平衡尺度。合成配對提供該退化下的 HR 監督，不會揭露任意網路照片的原始 HR。
+
+**兩個訓練正規化器。** 凍結 $\epsilon_\phi$ 作先驗，另以 LoRA 更新 $\epsilon_{\phi'}$ 追蹤生成分布；後者也不同於生成器 $\epsilon_\theta$。圖中三個去雜訊角色不是三階段推論，而是部署生成器與兩個訓練估計器。
+
+**加雜訊的潛在比較。** 抽時間 $t$ 及高斯 $\epsilon$，形成 $\widehat z_t=\alpha_t\widehat z_H+\beta_t\epsilon$，正規化梯度為：
+
+$$
+\nabla_\theta\mathcal L_{\mathrm{VSD}}\approx
+\mathbb E_{t,\epsilon}\!\left[\omega(t)
+\left(\epsilon_\phi(\widehat z_t;t,c)-\epsilon_{\phi'}(\widehat z_t;t,c)\right)
+\frac{\partial\widehat z_H}{\partial\theta}\right].
+$$
+
+$\omega(t)$ 是時間權重，括號與生成潛在向量的參數 Jacobian 形成向量乘積。固定模型提供先驗預測，調適模型描述目前樣本分布。分數差是近似訓練方向，不是明算乾淨密度 KL。VSD [13] 不等於未知退化下的精確後驗取樣。
+
+**為何用潛在 VSD。** 近似 $E_\phi(D_\phi(\widehat z_H))\approx\widehat z_H$，省去正規化路徑的反覆編解碼。此近似仰賴潛在向量維持表示相容，不是任意向量皆可精確消去編解碼。
+
+**調適正規化器。** 用生成潛在樣本與已知新增雜訊訓練 $\epsilon_{\phi'}$：
+
+$$
+\mathcal L_{\mathrm{diff}}=
+\mathbb E\|\epsilon_{\phi'}(\alpha_t\widehat z_H+\beta_t\epsilon;t,c)-\epsilon\|_2^2.
+$$
+
+此損失更新正規化器，不是部署生成器額外的重建項。生成樣本在這裡當資料，須區分最佳化器及停止梯度邊界；追蹤不準就會讓先驗差方向不準。
+
+**訓練與部署。** 生成器目標 $\mathcal L_{\mathrm{data}}+\lambda_2\mathcal L_{\mathrm{VSD}}$，原值 $\lambda_1=2$、$\lambda_2=1$。資料為 LSDIR [32] 加 FFHQ 前 **10,000** 張 [33]，以 Real-ESRGAN [27] 合成退化；AdamW [34]、學習率 $5\times10^{-5}$、批次 **16**、四張 A100。部署保留提示、調適編碼器、生成去雜訊器及固定解碼器，移除兩個正規化器。
+
+#### 結果
+
+表 1 使用 **3,000** 個合成 DIV2K 驗證裁切及實拍 RealSR／DRealSR 配對 [17]、[15]、[16]，選列如下：
+
+| 測試集 | PSNR ↑ | LPIPS ↓ | DISTS ↓ | FID ↓ | MUSIQ ↑ | CLIPIQA ↑ |
+| --- | --- | --- | --- | --- | --- | --- |
+| DIV2K-Val | 23.72 | 0.2941 | 0.1976 | 26.32 | 67.97 | 0.6683 |
+| RealSR | 25.15 | 0.2921 | 0.2128 | 123.49 | 69.09 | 0.6693 |
+
+一些多步模型的無參考分數較佳，復原專用模型也可能有更高 PSNR。結果不是所有指標全面勝出；裁切與退化規則須跟著數字。
+
+表 2：A100、**512 × 512 輸入**測試，OSEDiff **0.11 秒**，StableSR **11.50 秒**，SinSR **0.13 秒**。可訓練參數 **850 萬**，總參數 **17.75 億**；不能只報 850 萬當完整模型。提示擷取另有計時，重現時須釐清包含邊界。
+
+#### 消融實驗
+
+**先驗目標，表 3。** RealSR 無 VSD 的 PSNR／LPIPS／MUSIQ／CLIPIQA 為 **25.42／0.2934／65.23／0.5876**；GAN **25.00／0.2760／67.29／0.6254**；像素 VSD **25.05／0.2759／67.90／0.6256**；潛在 OSEDiff **25.15／0.2921／69.09／0.6693**。潛在 VSD 的兩個無參考分數較好，LPIPS 卻比 GAN 及像素版差，不能說每項皆改善。
+
+**提示，表 4。** DRealSR 空提示的四分數 **28.51／0.2896／62.13／0.6599**，DAPE **27.92／0.2968／64.65／0.6963**，大型描述器 **27.72／0.3109／65.70／0.7033**；時間 **0／0.02／3.53 秒**。更豐富提示提高無參考分數，卻降低參考保真，且大型描述成本遠高於生成器時間。
+
+**秩，表 5–6。** 編碼器秩 2 未收斂；秩 4 的 PSNR／MUSIQ **25.15／69.09**，秩 8 **24.86／68.37**。生成去雜訊器秩 **2／4／8** 的 PSNR **25.28／25.15／24.87**，DISTS **0.2154／0.2128／0.2115**。選定秩是取捨，更多容量不保證泛化更好。
+
+**編解碼器，表 7。** 皆不調適的 MUSIQ／CLIPIQA **58.99／0.5303**；只調解碼 **65.83／0.5604**；兩者皆調 **65.92／0.5778**；只調編碼 **69.09／0.6693**。兩者皆調的 PSNR **25.59** 高於選定版 **25.15**，因此凍結解碼器支持選定感知／先驗取捨，並非所有指標最佳。
+
+#### 結論
+
+OSEDiff 將潛在擴散骨幹調整為直接復原器：配對項保留訓練目標，兩個訓練分數模型提供自然先驗；編碼器調適與固定解碼使潛在捷徑可用，提示另帶來語意與成本。
+
+#### 限制與問題
+
+預設沒有隨機取樣仍可能虛構語意；合成退化未涵蓋所有相機，提示可能導向錯誤內容，無參考分數提高也可能降保真。潛在 VSD 仰賴近似表示一致與分布追蹤，大型骨幹也未消失。後續退化調適、目標分數與分離控制 [4]、[6]、[8] 是改變系統，不是證明歧義已解決。
+
+### S3Diff：退化引導的低秩調適
+
+#### 挑戰
+
+預訓練單步生成器不自動適合 SR。S3Diff [4] 依模糊與雜訊估計調整生成器，避免固定修正對不同影像不足或過度，也免用昂貴逐圖語意描述。
+
+退化條件權重與正／負品質提示是兩個問題：前者調適，後者引導。模糊／雜訊向量不保證完整描述真實相機。
+
+#### 方法
+
+<Figure src={paperS3diffSource} alt="退化估計調變低秩調適，正負 prompt 路徑提供引導；須區分訓練支路與部署時的單步路徑。" caption="原論文圖 3 — 退化估計調變低秩調適，正負 prompt 路徑提供引導；須區分訓練支路與部署時的單步路徑。" />
+
+*圖片來源: [4], arXiv:2409.17058v1, PDF 第 5 頁. [原始 PDF](https://arxiv.org/pdf/2409.17058).*
+
+**先驗與影像路徑。** 使用 ADD 衍生單步潛在先驗 [14]，輸入 LR 表示、只加很少或不加雜訊；調適編碼器及去雜訊器，固定解碼器。編碼器可先抑制缺陷，解碼器保留預訓練表示。
+
+**低秩修正。** $W\in\mathbb R^{m\times n}$、$A\in\mathbb R^{m\times r}$、$B\in\mathbb R^{r\times n}$、秩 $r$；將一般 $W'=W+AB$ 改為 $W'=W+AC(d)B$，$C(d)\in\mathbb R^{r\times r}$ 依退化描述 $d$ 調制低秩方向。
+
+**退化與區塊識別。** 預訓練估計器給兩個正規化模糊／雜訊值，經正弦／Fourier 嵌入與映射。區塊 ID 讓共用映射產生不同 $C_i(d)$，介於所有區塊共用同一矩陣與每塊獨立大型預測器之間。
+
+**動態成本。** 有效修正依輸入改變，不能像靜態轉接器一次合併；估計與調制仍要執行。手動輸入的退化值也是估計，不是已驗證物理量。
+
+**線上負目標。** 訓練以 **0.05** 機率改用退化目標配負品質提示，其餘用正品質提示；重建／感知依選定目標，對抗監督作用於正 HR。如此學負外觀，不只依賴離線生成負例。
+
+**損失與引導。** L2、LPIPS、GAN 權重 **2、5、0.5**；判別器使用預訓練特徵和可訓練頭。正／負引導可能做兩次預測，須報兩次 NFE；原文選小引導以避免過度傷害保真。
+
+**訓練。** LSDIR 加 FFHQ **10,000** 張 [32]、[33]，Real-ESRGAN 式退化 [27]；編碼器／去雜訊器秩 **16／32**。這些值屬開啟稿件的設定，不是所有低秩模型的通則。
+
+#### 結果
+
+原文 DIV2K 驗證：PSNR **23.40**、LPIPS **0.2571**、DISTS **0.1730**、FID **19.35**、MUSIQ **68.21**；RealSR 的 PSNR／LPIPS／FID **25.03／0.2699／108.88**。其中 OSEDiff 重跑列與原論文不同，不能把不同規則拼成唯一標準分數。
+
+改善涉及整組指標與影像，並非每資料集每項皆贏。保真基準可能 PSNR 較高，無參考指標也可能偏好不同外觀。
+
+#### 消融實驗
+
+退化 LoRA 消融：共用修正矩陣在 DIV2K 的 LPIPS／MUSIQ **0.2613／65.52**，區塊 ID 條件版 **0.2563／66.55**；RealSR 對應 **0.2626／64.23→0.2573／65.78**。
+
+RealSR 線上負目標但無引導為 PSNR／MUSIQ **25.76／66.42**，加引導 **25.03／67.88**，外觀偏好提高而參考保真下降。秩與編解碼消融也不支持容量越大、引導越強越好，成本須一併評估。
+
+#### 結論
+
+退化估計可調制低秩復原器，線上負目標可免語意描述而學品質引導；兩者是不同作用。
+
+#### 限制與問題
+
+估計器可能誤判，兩值描述也漏掉壓縮等效果。動態修正與引導增加工作；通用提示不解決細節歧義，小轉接器也沒移除大型骨幹。比較須固定版本、引導與規則。
+
+### TSD-SR：目標感知分數正規化（CVPR 2025）
+
+#### 挑戰
+
+學生輸出差時，強教師也可能給不可靠方向。TSD-SR [6] 在訓練使用配對 HR，改善分數訊號，而非只看教師對生成樣本的預測。
+
+它也以分布感知抽樣強調較難的細節形成狀態，不只均勻抽時間再獨立加雜訊。HR 與額外軌跡只在訓練可用。
+
+#### 方法
+
+<Figure src={paperTsdsrSource} alt="區分學生預測、目標感知分數引導與學得的輔助分數；箭頭顯示哪些模型提供梯度、哪些參數會更新。" caption="原論文圖 2 — 區分學生預測、目標感知分數引導與學得的輔助分數；箭頭顯示哪些模型提供梯度、哪些參數會更新。" />
+
+*圖片來源: [6], arXiv:2411.18263v4, PDF 第 3 頁. [原始 PDF](https://arxiv.org/pdf/2411.18263).*
+
+**學生及分數模型。** $G_\theta$ 預測 HR 潛在向量 $\widehat z$，凍結教師提供先驗，低秩調適模型估計學生分布。主實驗使用預訓練流匹配骨幹 [35]，另比較較小骨幹；調適學生編碼器／去雜訊器，固定解碼器。
+
+**一般變分訊號。** 對 $\widehat z_t$，教師與生成分布模型的預測差提供先驗梯度，角色類似 OSEDiff。可靠性取決於它們是否理解實際生成狀態，不能因教師強就假設任何劣質樣本上都校準良好。
+
+**目標分數比較。** 編碼配對 HR 為 $z$ 並加雜訊成 $z_t$，比較教師在 $\widehat z_t$ 與 $z_t$ 的預測；方向含 $\epsilon_\psi(\widehat z_t,t,c)-\epsilon_\psi(z_t,t,c)$，$\psi$ 為固定教師，$c$ 是訓練文字條件。這是配對訊號，不是任意同分布點的分數都應相等。
+
+**合併方向。** 目標分數與 VSD 結合，一種表示為：
+
+$$
+g_t=\epsilon_\psi(\widehat z_t,t,c)-\epsilon_\psi(z_t,t,c)
++\lambda\bigl(\epsilon_\psi(z_t,t,c)-\epsilon_\phi(\widehat z_t,t,c)\bigr).
+$$
+
+$\phi$ 是調適生成分布模型，$\lambda$ 平衡兩項；再乘時間權重與學生參數 Jacobian 得更新。特定端點權重化為一般分數差，中間值引入 HR 資訊。它仍是梯度目標，不是明算乾淨密度。
+
+**分布感知抽樣。** 從吵的生成／HR 潛在狀態出發，用短調適去雜訊轉移形成多個正規化狀態並累積梯度。狀態數與間隔影響訓練成本，更多不必然更好。
+
+**其他監督。** 結合像素 LPIPS、潛在 MSE 與目標分數；輔助模型另做擴散訓練，先穩定基本目標，再加入完整抽樣。教師訓練提示可來自 HR，部署學生用預設提示，不能把訓練圖看成推論必須擷取 HR 描述。
+
+#### 結果
+
+主模型 RealSR 的 PSNR／LPIPS／DISTS／FID／MUSIQ 為 **24.81／0.2743／0.2104／114.45／71.19**，DIV2K 合成驗證為 **23.02／0.2673／0.1821／29.16／71.69**。部分感知分數改善，像素保真低於某些基準；主骨幹與 OSEDiff 不同，並非純目標比較。
+
+原文也把方法套到較小先驗，以檢查超出大骨幹本身的效果。無參考與偏好仍只衡量所測影像，不證明恢復所有真實細節。
+
+#### 消融實驗
+
+DRealSR 移除目標分數的 LPIPS／DISTS／MUSIQ **0.3176／0.2327／63.90**；移除分布抽樣 **0.3097／0.2311／63.56**；完整 **0.2967／0.2136／66.62**。RealSR LPIPS 對應 **0.2934／0.2873／0.2743**，支持兩元件在該設定皆有貢獻。
+
+固定間隔抽 **2／4／8** 狀態時，DRealSR LPIPS **0.3104／0.2967／0.3421**。更多狀態反而可能變差；這些是正規化訓練狀態，不是部署 SR 步數。
+
+#### 結論
+
+配對 HR 改善教師先驗方向，軌跡感知狀態改變施加方向的位置。方法針對分數目標及訓練分布，不只是增加推論預算。
+
+#### 限制與問題
+
+仍須配對資料、輔助模型與額外轉移；分數是近似，目標感知不會替新輸入創造 HR 證據。大骨幹若無控制會混合容量與目標；保真、外觀與語意仍可能衝突。
+
+### InvSR：學得的影像條件起點（CVPR 2025）
+
+#### 挑戰
+
+固定反向擴散已有影像先驗，但 LR 不提供能通往未知 HR 的正確吵狀態。InvSR [7] 學習**起點建構**，讓少數反向步產生復原，而非只調適反向去雜訊器。
+
+逐張最佳化反演昂貴，逐步預測整串雜訊也複雜，因此只預測選定中間時間的起始擾動。
+
+#### 方法
+
+<Figure src={paperInvsrSource} alt="學得的雜訊預測器在選定擴散時間建立影像條件化起點，後續去雜訊可採不同步數。" caption="原論文圖 2 — 學得的雜訊預測器在選定擴散時間建立影像條件化起點，後續去雜訊可採不同步數。" />
+
+*圖片來源: [7], arXiv:2412.09013v2, PDF 第 5 頁. [原始 PDF](https://arxiv.org/pdf/2412.09013).*
+
+**部分預測。** 從較高訊雜比的中間時間開始，利用 LR 已有結構，再以快速取樣跳步。主實驗考慮 **一至五個**反向步，不必回到原純雜訊邊界。
+
+**學得狀態。** 時間條件預測器 $f_w$ 接收放大 LR 或潛在表示，產生擾動，形成：
+
+$$
+x_{\tau}=\sqrt{\bar\alpha_{\tau}}\,y+
+\sqrt{1-\bar\alpha_{\tau}}\,f_w(y,\tau).
+$$
+
+$y$ 是 LR 表示，$\tau$ 是起始時間，$\bar\alpha_\tau$ 是預訓練排程。預測器可藉平均與變異數參數化擾動；擾動允許與輸入相關，以補償 $y$ 取代未知 HR，不必是獨立零均值標準高斯。
+
+**固定反向先驗。** 從預測狀態執行 ADD 衍生快速先驗 [14]，也比較一般潛在擴散 [29]。凍結權重仍可讓梯度穿過網路訓練起點，且訓練／部署仍須付出執行成本。
+
+**中間隨機性。** 不為每個訪問狀態另預測擾動，而沿用預訓練程序的取樣雜訊。額外中間預測器在選定高訊雜比範圍效益很小，不能外推所有擴散反演皆只需一個預測。
+
+**損失。** 在選定反向程序後評估 L2、感知及對抗項。實作在潛在域計算並調適感知比較器，訓練起點使固定先驗輸出有用結果；部署不需 HR 或逐圖最佳化。
+
+**預算選擇。** 時間嵌入讓預測器學多種起始時間；推論選起點及跳步序列。起始時間與反向步數是不同控制，更多更新也可能放大雜訊。「任意步數」須限於已訓練及驗證範圍。
+
+#### 結果
+
+ImageNet-Test 單步列的 PSNR／LPIPS／NIQE／MUSIQ 為 **24.14／0.2517／4.3815／72.2900**；RealSR **24.50／0.2872／4.2189／67.4586**。依原文起始時間及前處理而定；小起點網路參數不代表完整大型先驗的大小。
+
+固定一個反向步，起始時間 **250** 得 PSNR／MUSIQ **23.84／72.5773**，時間 **100** 為 **24.66／70.8251**。同樣步數也有不同保真／外觀，不能只用步數識別操作點。
+
+#### 消融實驗
+
+一步、起始時間 **200**，快速先驗 LPIPS **0.2517**，一般替代先驗 **0.2647**。這支持特定骨幹設定，不代表蒸餾普遍改善所有反演方法。
+
+五步加入中間雜訊預測，LPIPS 顯示精度下仍 **0.2844→0.2844**，MUSIQ **69.8427→69.8466**，效益極小。L2-only 為 PSNR／LPIPS **26.71／0.2850**，合併感知／對抗為 **24.14／0.2517**。感知改善伴隨像素保真下降，更多步也可能放大輸入雜訊。
+
+#### 結論
+
+學有用起點，可讓固定生成先驗成為短預算復原器；起始時間、預測器及取樣器都是系統的一部分。
+
+#### 限制與問題
+
+陌生退化可能讓起點不適合，大型先驗及解碼器仍保留。一次反向步還有起點預測與表示處理，不是總共一次網路呼叫。合理軌跡不證明輸出紋理真的屬於原照片。
+
+### PiSA-SR：分開像素與語意調適（CVPR 2025）
+
+#### 挑戰
+
+像素重建與生成細節常在同一調適中競爭。PiSA-SR [8] 分成兩組低秩更新，讓使用者不用每種偏好都重訓，也能調節保真與外觀。
+
+它們是學得的控制方向，不是影像真實／虛構的物理拆解。語意增強仍可能改字，像素模型也可能保留模糊，不能只靠控制名稱判定效果。
+
+#### 方法
+
+<Figure src={paperPisaSource} alt="像素與語意低秩支路接受不同訓練訊號，推論時可調組合呈現忠實度與感知品質取捨。" caption="原論文圖 3 — 像素與語意低秩支路接受不同訓練訊號，推論時可調組合呈現忠實度與感知品質取捨。" />
+
+*圖片來源: [8], arXiv:2412.03017v2, PDF 第 5 頁. [原始 PDF](https://arxiv.org/pdf/2412.03017).*
+
+**潛在殘差。** 固定自動編碼器把放大 LR 編為 $z_L$；簡化固定時間式為 $\widehat z_H=z_L-\epsilon_\theta(z_L)$。這是調適的影像殘差，不主張 $z_L$ 真含該時間的獨立高斯雜訊。
+
+**像素轉接器。** 對凍結去雜訊器加入 $\Delta\theta_{\mathrm{pix}}$，以 L2 訓練成 $\theta_{\mathrm{pix}}$，專注參考對齊結構。編碼器及解碼器均固定。
+
+**語意轉接器。** 固定已學像素更新，再加 $\Delta\theta_{\mathrm{sem}}$，以 LPIPS 和分類器分數蒸餾訓練成 $\theta_{\mathrm{PiSA}}$。兩階段依序訓練，語意階段不能任意重寫像素轉接器。
+
+**語意先驗。** 固定文字擴散的有條件／無條件預測差，提供無分類器引導導出的方向 [36]。它不訓練 OSEDiff 式生成分布分數模型，減少輔助最佳化，也改變統計目標，兩種正規化不完全相同。
+
+**預設推論。** 合併兩組轉接器，做一次殘差預測，不必線上執行訓練提示擷取器。固定編解碼仍要執行，大型骨幹也仍計入總參數。
+
+**可調推論。** 分別評估像素模型與合併模型，再形成：
+
+$$
+\epsilon_{\mathrm{adj}}=\lambda_{\mathrm{pix}}\epsilon_{\theta_{\mathrm{pix}}}(z_L)
++\lambda_{\mathrm{sem}}\bigl(\epsilon_{\theta_{\mathrm{PiSA}}}(z_L)-\epsilon_{\theta_{\mathrm{pix}}}(z_L)\bigr).
+$$
+
+$\lambda_{\mathrm{pix}}$ 控制像素修正，$\lambda_{\mathrm{sem}}$ 控制語意調適帶來的差異。此版需要**兩次去雜訊預測**，成本高於預設；非線性網路下，內插轉接器權重也不等價於此輸出差構造。
+
+**資料。** LSDIR 加 FFHQ 前 **10,000** 張 [32]、[33]，Real-ESRGAN 退化 [27]，選定秩 **4**。訓練語意條件被蒸餾入更新，不表示部署需要描述器。
+
+#### 結果
+
+預設 RealSR 的 PSNR／LPIPS／CLIPIQA／MUSIQ 為 **25.50／0.2672／0.6702／70.15**。固定像素強度 1，語意 **0.2** 的 PSNR／MUSIQ **26.95／53.64**，語意 **1.2** 為 **24.59／71.60**。這是偏好取捨，不是新增細節的獨立真實性證據。
+
+A100 **80 GB**、×4、128 × 128 輸入，預設 **0.09 秒／一次**預測，可調 **0.13 秒／兩次**。介面不能把所有可調設定都宣傳成預設單次延遲。
+
+#### 消融實驗
+
+像素單獨／語意單獨／兩階段的 RealSR PSNR **27.28／24.13／25.50**，LPIPS **0.3090／0.2803／0.2672**，MUSIQ **49.02／70.69／70.15**。這些是各自訓練消融，不都等於最後模型直接把係數歸零。
+
+語意秩 **4→32**，PSNR **25.50→25.40**，LPIPS **0.2672→0.2713**，MUSIQ 相近。容量更多不保證更好，控制掃描的最佳感知值也可能落在中間強度。
+
+#### 結論
+
+分開訓練目標提供可用增強方向；合併預設快，輸出差控制較彈性但多花推論成本。
+
+#### 限制與問題
+
+像素／語意未必完全解耦，固定像素轉接器不一定涵蓋所有損傷。強細節設定可改掉內容，可調版也較貴並繼承先驗偏差。應評估每個操作點，不能用一個分數保證整段控制範圍。
+
+### AddSR：預測細化的對抗復原蒸餾
+
+#### 挑戰
+
+對抗文字生成器不自動適合盲復原，漂亮細節可能偏離觀測。AddSR [5] 結合影像條件教師、對抗蒸餾與依預測更新條件。
+
+原文支援一步及四步。後者逐步改善條件，資訊不等於第一輪；最強感知設定不能當成一步成績。
+
+#### 方法
+
+<Figure src={paperAddsrSource} alt="學生、教師與鑑別器分工不同，預測細化條件隨步驟改變；鑑別器提供訓練監督。" caption="原論文圖 2 — 學生、教師與鑑別器分工不同，預測細化條件隨步驟改變；鑑別器提供訓練監督。" />
+
+*圖片來源: [5], arXiv:2404.01717v4, PDF 第 4 頁. [原始 PDF](https://arxiv.org/pdf/2404.01717).*
+
+**教師與學生。** 使用 SeeSR 教師 [30] 初始化學生，保留影像／語意控制，另加判別器。教師知識固定，學生學短映射，判別器學真實／生成外觀。
+
+**訓練狀態。** 從小時間集合抽樣，對 HR 加雜訊，學生輸入吵狀態、條件圖及語意。教師目標可用 HR 細化條件以降低退化；此訓練優勢不是部署可取得的觀測。
+
+**自我細化。** 第一步用 LR，後續用上次預測的乾淨 HR 作條件。對 $x_s$ 及 $\epsilon_\theta$ 依排程換算乾淨估計；它可能有更多結構，也可能有錯誤，回饋會強化兩者。
+
+**自適應蒸餾權重。** 權重同時依教師與學生時間改變。極短預算偏外觀，細化時加強蒸餾以減少漂移，不能假設一組固定權重適用所有查詢。
+
+**判別器。** 預訓練影像特徵與可訓練頭，在影像條件下提供局部／整體外觀訊號。它不知道每張部署影像的原 HR，分數不能驗證缺失細節。
+
+**資料與表示。** 使用 DIV2K、Flickr2K、LSDIR 及人臉子集 [17]、[37]、[32]、[33]，Real-ESRGAN 退化 [27]。潛在模型降低重複空間成本，仍有編解碼及語意擷取。最終期刊書目已確認；以下數值依連結稿件表格。
+
+#### 結果
+
+稿件合成 ×4 單退化，一步的 PSNR／LPIPS／MUSIQ／CLIPIQA **22.70／0.2872／63.05／0.5572**；四步 **21.83／0.2812／71.43／0.7794**。更多步大幅增加無參考分數，卻降低 PSNR，不能稱為一步保真全面改善。
+
+多種退化與真實集合的偏好／品質測試，支持部分外觀優勢，不確定事實重建。平均指標可能漏掉離散物件特徵被改錯。
+
+#### 消融實驗
+
+RealLR200 不做教師影像／語意細化時，MUSIQ／CLIPIQA **70.75／0.7431**，完整 **72.62／0.7724**；DRealSR 對應 PSNR **26.96→26.09**。預測外觀變好伴隨參考保真下降，不能概括為重建全面改善。
+
+原文比較時間權重形式與超參數，選指數形式；不同平衡產生不同感知／保真操作點。視覺例子顯示部分漂移減少，不證明某權重消除虛構。
+
+#### 結論
+
+短復原學生結合教師、外觀目標與自我更新條件，可形成有效系統；目標平衡必須符合步數預算。
+
+#### 限制與問題
+
+細化可能放大早期錯誤，對抗清晰不保證正確。訓練 HR 與合成假設不會在部署消失；一步／四步成本與成績必須分開，條件網路、潛在模型及編解碼也要計入完整成本。
+
+## 參考文獻
+
+1. R. Wu, L. Sun, Z. Ma, L. Zhang, "One-Step Effective Diffusion Network for Real-World Image Super-Resolution," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2406.08177)
+2. Z. Yue, J. Wang, C. C. Loy, "ResShift: Efficient Diffusion Model for Image Super-resolution by Residual Shifting," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2307.12348)
+3. Y. Wang, W. Yang, X. Chen, et al., "SinSR: Diffusion-Based Image Super-Resolution in a Single Step," *CVPR*, 2024. [source](https://arxiv.org/abs/2311.14760) · [supplementary ablations](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wang_SinSR_Diffusion-Based_Image_CVPR_2024_supplemental.pdf)
+4. A. Zhang, Z. Yue, R. Pei, W. Ren, X. Cao, "Degradation-Guided One-Step Image Super-Resolution with Diffusion Priors," *arXiv preprint*, 2024. [paper](https://arxiv.org/abs/2409.17058)
+5. Y. Tai, R. Xie, C. Zhao, K. Zhang, Z. Zhang, J. Zhou, J. Yang, "AddSR: Accelerating diffusion-based blind super-resolution with adversarial diffusion distillation," *Pattern Recognition*, 2026. [published version](https://doi.org/10.1016/j.patcog.2025.113012) · [manuscript supplying the discussed tables](https://arxiv.org/abs/2404.01717)
+6. L. Dong, Q. Fan, Y. Guo, Z. Wang, Q. Zhang, J. Chen, Y. Luo, C. Zou, "TSD-SR: One-Step Diffusion with Target Score Distillation for Real-World Image Super-Resolution," *CVPR*, 2025. [paper](https://arxiv.org/abs/2411.18263)
+7. Z. Yue, K. Liao, C. C. Loy, "Arbitrary-steps Image Super-resolution via Diffusion Inversion," *CVPR*, 2025. [paper](https://arxiv.org/abs/2412.09013)
+8. L. Sun, R. Wu, Z. Ma, S. Liu, Q. Yi, L. Zhang, "Pixel-level and Semantic-level Adjustable Super-resolution: A Dual-LoRA Approach," *CVPR*, 2025. [paper](https://arxiv.org/abs/2412.03017)
+9. A. Liu, Y. Liu, J. Gu, Y. Qiao, C. Dong, "Blind Image Super-Resolution: A Survey and Beyond," *IEEE TPAMI (early access)*, 2022. [source](https://arxiv.org/abs/2107.03055)
+10. B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+11. E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, W. Chen, "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [source](https://arxiv.org/abs/2106.09685)
+12. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+13. Z. Wang, C. Lu, Y. Wang, F. Bao, C. Li, H. Su, J. Zhu, "ProlificDreamer: High-Fidelity and Diverse Text-to-3D Generation with Variational Score Distillation," *NeurIPS*, 2023. [paper](https://arxiv.org/abs/2305.16213)
+14. A. Sauer, D. Lorenz, A. Blattmann, R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [paper](https://arxiv.org/abs/2311.17042)
+15. J. Cai, H. Zeng, H. Yong, Z. Cao, L. Zhang, "Toward Real-World Single Image Super-Resolution: A New Benchmark and a New Model," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2019. [source](https://openaccess.thecvf.com/content_ICCV_2019/html/Cai_Toward_Real-World_Single_Image_Super-Resolution_A_New_Benchmark_and_a_ICCV_2019_paper.html)
+16. P. Wei, Z. Xie, H. Lu, Z. Zhan, Q. Ye, W. Zuo, L. Lin, "Component Divide-and-Conquer for Real-World Image Super-Resolution," *ECCV*, 2020. [source](https://arxiv.org/abs/2008.01928)
+17. E. Agustsson and R. Timofte, "NTIRE 2017 Challenge on Single Image Super-Resolution: Dataset and Study," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1122–1131. [doi](https://doi.org/10.1109/CVPRW.2017.150) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Agustsson_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+18. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+19. K. Ding, K. Ma, S. Wang, E. P. Simoncelli, "Image Quality Assessment: Unifying Structure and Texture Similarity," *IEEE TPAMI*, 2022. [source](https://arxiv.org/abs/2004.07728)
+20. A. Mittal, R. Soundararajan and A. C. Bovik, "Making a “Completely Blind” Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+21. J. Ke, Q. Wang, Y. Wang, P. Milanfar, F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," *ICCV*, 2021. [source](https://arxiv.org/abs/2108.05997)
+22. S. Yang, T. Wu, S. Shi, S. Lao, Y. Gong, M. Cao, J. Wang, Y. Yang, "MANIQA: Multi-dimension Attention Network for No-Reference Image Quality Assessment," *CVPR Workshops*, 2022. [source](https://arxiv.org/abs/2204.08958)
+23. J. Wang, K. C. K. Chan, C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," *AAAI*, 2023. [source](https://arxiv.org/abs/2207.12396)
+24. X. Fan, Z. Wu, H. Wu, L. Cao, "A Survey on Pre-Trained Diffusion Model Distillations," *arXiv preprint, version 2*, 2025. [paper](https://arxiv.org/abs/2502.08364)
+25. Z. Wu, Y. Dong, X. Wei, "TUDSR: Twice Upsampling-Diffusion for Higher Super-Resolution," *CVPR*, 2026. [paper](https://openaccess.thecvf.com/content/CVPR2026/html/Wu_TUDSR_Twice_Upsampling-Diffusion_for_Higher_Super-Resolution_CVPR_2026_paper.html)
+26. P. Esser, R. Rombach, B. Ommer, "Taming Transformers for High-Resolution Image Synthesis," *CVPR*, 2021. [paper](https://arxiv.org/abs/2012.09841)
+27. X. Wang, L. Xie, C. Dong, Y. Shan, "Real-ESRGAN: Training Real-World Blind Super-Resolution With Pure Synthetic Data," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Wang_Real-ESRGAN_Training_Real-World_Blind_Super-Resolution_With_Pure_Synthetic_Data_ICCVW_2021_paper.html)
+28. J. Deng, W. Dong, R. Socher, L. Li,  Kai Li,  Li Fei-Fei, "ImageNet: A large-scale hierarchical image database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+29. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+30. R. Wu, T. Yang, L. Sun, Z. Zhang, S. Li, L. Zhang, "SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2024. [source](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_SeeSR_Towards_Semantics-Aware_Real-World_Image_Super-Resolution_CVPR_2024_paper.html) · [supplementary experiments](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_SeeSR_Towards_Semantics-Aware_CVPR_2024_supplemental.pdf)
+31. H. Liu, C. Li, Q. Wu, Y. J. Lee, "Visual Instruction Tuning," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2304.08485)
+32. Y. Li, K. Zhang, J. Liang, et al., "LSDIR: A Large Scale Dataset for Image Restoration," *CVPR Workshops*, 2023. [paper](https://openaccess.thecvf.com/content/CVPR2023W/NTIRE/html/Li_LSDIR_A_Large_Scale_Dataset_for_Image_Restoration_CVPRW_2023_paper.html)
+33. T. Karras, S. Laine, T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [paper](https://arxiv.org/abs/1812.04948)
+34. I. Loshchilov, F. Hutter, "Decoupled Weight Decay Regularization," *ICLR*, 2019. [paper](https://arxiv.org/abs/1711.05101)
+35. P. Esser, S. Kulal, A. Blattmann, et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, 2024. [paper](https://arxiv.org/abs/2403.03206)
+36. J. Ho, T. Salimans, "Classifier-Free Diffusion Guidance," *arXiv preprint*, 2022. [paper](https://arxiv.org/abs/2207.12598)
+37. R. Timofte, E. Agustsson, L. Van Gool, M.-H. Yang, L. Zhang et al., "NTIRE 2017 Challenge on Single Image Super-Resolution: Methods and Results," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1110–1121. [doi](https://doi.org/10.1109/CVPRW.2017.149) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Timofte_NTIRE_2017_Challenge_CVPR_2017_paper.html)

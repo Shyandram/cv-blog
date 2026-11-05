@@ -21,7 +21,7 @@ normalize = lambda s: re.sub(r'\s+', '', s)
 for stem, edition in manifest['books'].items():
     lang = stem.removeprefix('pixels-perception-')  # e.g. en-vol1
     source = (out / f'{stem}.tex').read_text()
-    assert source.count('\\bookchapter{') == len(edition['chapters'])
+    assert source.count('\\bookchapter{') + source.count('\\booksubchapter{') == len(edition['chapters'])
     assert source.count('\\begin{Verbatim}') == edition['codeBlocks']
     assert source.count('\\bookdisplay{') == edition['displayEquations']
     assert source.count('\\bookimage{') == edition['figures'] + edition['comparisons'] * 2

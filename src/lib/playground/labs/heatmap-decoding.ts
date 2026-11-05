@@ -194,7 +194,7 @@ function drawHist(canvas: HTMLCanvasElement, lang: Lang, sw: Sweep, stride: numb
 const pxs = (a: ArrayLike<number>[]) => a.map(x => fmt(mean(x), 2)).join(' / ');
 export const lab: LabDef = {
   kind: 'image', id: 'heatmap-decoding', track: 'deep-learning',
-  title: L('DLCV 06A · Is the argmax of a heatmap the keypoint?', 'DLCV 06A・熱圖的 argmax 就是關鍵點嗎？'),
+  title: L('DLCV 05 · Is the argmax of a heatmap the keypoint?', 'DLCV 05・熱圖的 argmax 就是關鍵點嗎？'),
   description: L('Render a Gaussian heatmap at output stride 1, 2, 4 or 8 for 500 random sub-pixel keypoints and compare three ways to read the position back: the brightest cell, a quarter-cell offset and a Taylor step.', '對 500 個隨機的子像素關鍵點，以步幅 1、2、4 或 8 繪製高斯熱圖，比較三種讀回位置的方法：最亮的格子、四分之一格偏移與 Taylor 步驟。'),
   challenge: L(
     'At the default setting (stride 4, plain argmax) the 500 keypoints are off by 1.58 px on average, and the table of means shows the error doubling with every doubling of the stride: 0.37, 0.78, 1.58 and 3.12 px at strides 1, 2, 4 and 8, close to 0.383 times the stride. Switch the decoding to the quarter offset (about half of that) and then to the Taylor step: at stride 8 it brings 3.12 px down to 0.41 px. Now keep the Taylor step and raise σ from 2 to 4 cells: at stride 8 its error grows from 0.41 to 1.58 px. A wider blob should be easier to read, so why does the same noise hurt more?',

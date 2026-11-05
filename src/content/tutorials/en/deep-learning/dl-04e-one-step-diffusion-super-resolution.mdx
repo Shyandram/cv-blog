@@ -1,0 +1,862 @@
+---
+title: "One-Step Diffusion Super-Resolution"
+description: "Understand LR-latent starts, residual-shift distillation, score regularization and adjustable one-step SR, with explicit limits on fidelity, speed and invented detail."
+track: deep-learning
+order: 49
+level: advanced
+prereqs: [deep-learning/dl-04d-blind-real-world-super-resolution, deep-learning/dl-10b-one-step-generation]
+tags: [super-resolution, one-step-diffusion, score-distillation, lora, real-world-super-resolution]
+published: 2026-11-02
+updated: 2026-11-06
+---
+import Callout from '../../../../components/Callout.astro';
+import Figure from '../../../../components/Figure.astro';
+import ambiguityFig from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/measurement-ambiguity.png';
+import tradeoffFig from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/prior-measurement-tradeoff.png';
+
+import paperResshiftSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-resshift-source.png';
+
+import paperSinsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-sinsr-source.png';
+
+import paperOsediffSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-osediff-source.png';
+
+import paperS3diffSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-s3diff-source.png';
+
+import paperTsdsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-tsdsr-source.png';
+
+import paperInvsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-invsr-source.png';
+
+import paperPisaSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-pisa-source.png';
+
+import paperAddsrSource from '../../../../assets/deep-learning/dl-04e-one-step-diffusion-super-resolution/paper-addsr-source.png';
+
+## What you'll learn
+
+- Distinguish observation-conditioned restoration from generation starting at noise.
+- Compare restoration-chain distillation with adaptation of a pretrained prior.
+- Trace latent starts, LoRA, prompts and score regularization.
+- Separate degradation adaptation, inversion and fidelity/detail controls.
+- Evaluate missing-detail ambiguity and complete deployment cost.
+
+## The big picture
+
+<Callout type="tip" title="Explain like I'm five">
+Making a picture from nothing is like painting a whole scene from a story. Enlarging a small photograph is like painting on a sheet that already shows where the objects are. You can save time by starting from that sheet. But the small sheet does not reveal every leaf or letter, so a fast painter can still add the wrong detail. Working faster does not make the guess more certain.
+</Callout>
+
+A real-world SR input already contains useful low-frequency structure, layout and some semantic information. Starting from its latent representation can avoid spending many sampling steps rebuilding that structure. The network still has to remove damage and supply missing detail. It can do so through a learned one-step map, a distilled image-conditioned flow, or a pretrained prior adapted with reconstruction and distribution objectives.
+
+Read [DLCV 09A: Non-Blind Image Super-Resolution](/en/learn/deep-learning/super-resolution/) for the inverse problem and [DLCV 09A.1: Blind and Real-World SR](/en/learn/deep-learning/blind-real-world-super-resolution/) for degradation synthesis, datasets and evaluation. [DLCV 12B: One-Step Generation](/en/learn/deep-learning/one-step-generation/) explains endpoint distillation, consistency and score-based distribution matching. This chapter applies those ideas to a **particular observation**, where factual fidelity matters in addition to plausible appearance.
+
+For a first reading, follow the family table, the measurement-ambiguity experiment and the OSEDiff overview. The optional paper pages contain full training procedures and controlled comparisons. The main lesson is not that one method is best for every image: the useful choice depends on damage, acceptable invention and the complete deployment budget.
+
+## What a one-step SR model must do
+
+**Plain version.** The input tells the model where to begin, but not every detail of where to end. A useful restorer must use that evidence while recognizing that the unobserved detail is ambiguous.
+
+Write the observation as $y=\mathcal D(x)+n$, where $x$ is an unknown high-resolution image, $y$ the observed low-resolution image, $\mathcal D$ a degradation operator, and $n$ noise. In real-world SR, $\mathcal D$ is usually unknown and may include nonlinear processing. A trained conditional generator returns $\widehat x=G_\theta(y)$ or $G_\theta(y,z)$ if it also receives random input $z$.
+
+A deterministic $G_\theta(y)$ can give repeatable output and still invent details. A stochastic generator can express several plausible reconstructions without knowing which one was photographed. Neither property alone establishes fidelity. The observation constrains some aspects of the image, while the learned prior supplies preferences for the rest.
+
+### An exact ambiguity experiment
+
+Consider ×2 block averaging, $A(x)$, which replaces each 2 × 2 block by its mean. A checkerboard with values $+a,-a,-a,+a$ sums to zero inside that block. Adding or subtracting it changes HR texture without changing the observed LR image. The texture lies in the null space of $A$.
+
+The following synthetic experiment builds a smooth LR pattern and two opposite HR textures. It compares a conditional mean with two plausible modes. We deliberately know the measurement model here; real-world photos make consistency checking harder because that model must itself be estimated.
+
+```python
+import numpy as np
+
+row, col = np.mgrid[:32, :32]
+lr = 0.5 + 0.12*np.sin(2*np.pi*col/16) + 0.08*np.cos(2*np.pi*row/13)
+base = lr.repeat(2, 0).repeat(2, 1)
+i, j = np.indices(base.shape)
+texture = 0.12*(-1.)**(i+j)  # zero mean in every 2x2 block
+truth = base + texture
+candidates = {'conditional mean': base, 'matching mode': base+texture, 'opposite mode': base-texture}
+def measure(x):
+    return x.reshape(32,2,32,2).mean((1,3))
+for name, x in candidates.items():
+    mse = np.mean((x-truth)**2)
+    discrepancy = np.max(np.abs(measure(x)-lr))
+    print(f'{name:16s} MSE {mse:.4f} | LR discrepancy {discrepancy:.1e}')
+```
+
+```text
+conditional mean MSE 0.0144 | LR discrepancy 0.0e+00
+matching mode    MSE 0.0000 | LR discrepancy 5.6e-17
+opposite mode    MSE 0.0576 | LR discrepancy 5.6e-17
+```
+
+These are our calculated outputs. All candidates reproduce the LR observation up to floating-point rounding. The sharp opposite mode nevertheless has four times the conditional mean’s squared error against this chosen ground truth. If the two hidden texture signs are equally likely, the conditional mean minimizes expected squared error, while a randomly sampled plausible mode is not guaranteed to match the particular original. No amount of inference acceleration identifies a bit the observation never measured.
+
+<Figure src={ambiguityFig} alt="A smooth observed LR image and three HR candidates: a smooth mean, a checkerboard matching the chosen hidden ground truth, and its opposite checkerboard. Both textured images have exactly the same block averages as the LR observation." caption="Figure 1 — Measurement consistency is weaker than correct hidden detail. A deterministic one-step network can choose the wrong sharp texture just as a multi-step sampler can." />
+
+### What is transferred from inference to training?
+
+Multi-step restoration repeatedly calls a denoising network. A one-step model must learn a larger image-conditioned transformation, so adaptation, teacher sampling, discriminators or score regularizers can make training more demanding. Report both sides of the trade: fewer deployment calls may require substantial training machinery.
+
+A pretrained text-to-image denoiser has not automatically learned that an LR image latent is a legitimate high-noise input. Feeding it such a latent without adaptation can fail. Methods such as OSEDiff explicitly train that image-to-image use [1]. The diffusion network is then a useful pretrained parameterization of a conditional restorer, rather than proof that the input follows its original forward-noise distribution.
+
+## A map of short-chain and one-step SR
+
+**Plain version.** Some methods shorten a restoration-specific chain; some adapt a large pretrained prior; others learn the starting state or expose separate controls. Identify which component changes before comparing names.
+
+| Family | Starting point | Main training signal | Representative method | What to check |
+| --- | --- | --- | --- | --- |
+| Residual-shift chain | LR-centered noisy state | Image-conditioned diffusion reconstruction | ResShift [2] | Noise schedule, number of steps, training domain |
+| Conditional endpoint distillation | LR plus an initial random perturbation | Teacher endpoints and a learned inverse/GT cycle | SinSR [3] | Teacher procedure and student’s actual one-step mapping |
+| Pretrained-prior adaptation | LR image latent | Paired reconstruction plus latent score regularization | OSEDiff [1] | Encoder/decoder adaptation, prompt cost, auxiliary score tracking |
+| Degradation-aware adaptation | LR latent with estimated degradation | Reconstruction, perceptual and adversarial losses | S3Diff [4] | Degradation estimator and guidance evaluation count |
+| Adversarial distillation | Image-conditioned short sampler | Teacher and discriminator | AddSR [5] | Training version and inference budget |
+| Target-aware score training | LR-conditioned student | Paired target scores and distribution-aware training states | TSD-SR [6] | How target HR information enters training |
+| Learned inversion/start | Predicted image-conditioned noisy state | Loss after a pretrained reverse process | InvSR [7] | Starting-state predictor and total number of calls |
+| Separate enhancement controls | LR latent | Pixel and semantic LoRA objectives | PiSA-SR [8] | Which weights are varied and whether fidelity changes monotonically |
+
+The categories overlap. The table is a functional map, not an exclusive taxonomy. A pretrained one-step generator, a learned start and an adversarial objective can occur in the same system. Some methods support several inference budgets; a four-step score must retain its four-step label.
+
+The larger field is organized in the blind-SR and diffusion-SR surveys [9], [10]. Their degradation assumptions remain important here. Fast inference does not make a model trained on one synthetic degradation distribution robust to every camera, codec or historical photograph.
+
+## A short chain centered on the observation
+
+**Plain version.** Shift the high-resolution image toward the low-resolution observation rather than pure noise, so reversal starts near observed structure.
+
+ResShift defines a residual $e=y-x_0$ between the enlarged LR image $y$ and HR target $x_0$ [2]. A convenient expression for its forward marginal is
+
+$$
+q(x_t\mid x_0,y)=\mathcal N\!\left(x_0+\eta_t(y-x_0),\kappa^2\eta_t I\right).
+$$
+
+Here $\eta_t$ increases from near zero toward one, $\kappa$ scales noise, and $I$ is the identity covariance. Image dimensions match because $y$ has been enlarged, or both images have been encoded into matching latent grids. Near the final forward time, the state is approximately LR-centered Gaussian noise; reversing the chain restores detail.
+
+The network predicts the HR target from a noisy state, the observation and time. Training therefore learns a restoration-conditioned process. The published latent implementation uses an image autoencoder and a short default chain. This is different from freezing a large text-to-image prior and adding a controller. Its capacity, training images and representation differ, so score differences with a large pretrained prior do not isolate the chain length alone.
+
+SinSR constructs a deterministic version of the ResShift reverse process, then distills its endpoint into one student prediction [3]. It also trains an inverse mapping and uses ground-truth reconstructions through that inverse. The student is not merely ResShift evaluated once with an unchanged prediction target.
+
+A deterministic teacher mapping fixes the output associated with each LR-centered random start. It makes endpoint regression well defined, while the random start can still select different results. The ground-truth consistency term gives the student a paired-data signal beyond reproducing the teacher’s endpoint. Its use of the same network in inverse and restoration directions is a training design; inference only needs the restoration direction.
+
+*Optional: [ResShift](#resshift-a-short-restoration-conditioned-chain-neurips-2023) and [SinSR](#sinsr-distilling-a-deterministic-image-conditioned-map-cvpr-2024) (in the Paper guides). The forward model, deterministic coefficients, three training losses and the corresponding experiments.*
+
+## Starting from an LR latent: OSEDiff
+
+**Plain version.** OSEDiff converts an input-derived representation to a high-resolution latent in one network call; a separate training regularizer encourages natural outputs.
+
+### The deployed path
+
+The model has an adapted image encoder $E_\theta$, an adapted diffusion denoiser $\epsilon_\theta$, a frozen image decoder $D$, and a prompt extractor $Y$ [1]. With input enlarged to the working resolution, write
+
+$$
+z_L=E_\theta(y),\quad c=Y(y),\quad
+\widehat z_H=\frac{z_L-\beta_T\epsilon_\theta(z_L,T,c)}{\alpha_T},\quad
+\widehat x_H=D(\widehat z_H).
+$$
+
+Here $z_L$ is the LR-derived latent, $c$ text conditioning, $T$ the selected fixed diffusion timestep, and $\alpha_T,\beta_T$ signal/noise coefficients in the paper’s notation. The formula does **not** add fresh Gaussian noise to $z_L$. It is a learned image-to-image transformation at a fixed model timestep. The denoiser output is adapted for this use; the degraded latent is not assumed to be a genuine sample of the original high-noise forward process.
+
+LoRA adds low-rank trainable updates to the pretrained encoder and denoiser [11]. Freezing the decoder keeps the representation’s output interpretation tied to the pretrained latent space. A small trainable parameter count describes adaptation size, not the total parameters or memory required to execute the pretrained network.
+
+### Paired fidelity and a learned prior
+
+OSEDiff combines pixel MSE and LPIPS reconstruction with variational score distillation (VSD) [12], [13]. The first two terms compare outputs with paired HR training targets. The score regularizer compares the distribution of generated latents with a pretrained natural-image prior, using a fixed pretrained denoiser and a second denoiser adapted to current generated samples.
+
+This is the restoration counterpart of the distribution-matching idea in [DLCV 12B](/en/learn/deep-learning/one-step-generation/). It does not directly calculate the unknown real-world degradation likelihood. The paired synthetic examples teach how to preserve content under sampled damage; the prior regularizer teaches natural appearance. Both may be wrong for a particular out-of-distribution input.
+
+### Why regularize in latent space?
+
+A pixel-space prior-gradient calculation can repeatedly decode a generated latent and encode the resulting image again. OSEDiff approximates that round trip by operating directly on the predicted latent. This reduces repeated encoding/decoding on the regularization path. It relies on the pretrained autoencoder’s representation being sufficiently consistent; it is an approximation, not an exact identity for arbitrary latents.
+
+The auxiliary regularizer networks are training-time components. Deployment still includes image encoding, prompt extraction, one denoiser pass and image decoding. A paper’s timing must state which of these were measured. A change from a lightweight tag extractor to a large captioning model can erase much of the practical speed benefit even when the denoiser still runs once.
+
+*Optional: [OSEDiff](#osediff-lr-latent-start-and-variational-score-regularization-neurips-2024) (in the Paper guides). Every component, the latent-space gradient, training data, score tables, encoder/decoder studies, prompt costs and LoRA-rank ablations.*
+
+## Making adaptation depend on the damage
+
+**Plain version.** One fixed correction is not equally suitable for slight blur and heavy noise. S3Diff changes the low-rank adaptation according to an estimated degradation description [4].
+
+For a weight matrix $W\in\mathbb R^{m\times n}$, ordinary LoRA gives $W'=W+AB$, with $A\in\mathbb R^{m\times r}$ and $B\in\mathbb R^{r\times n}$ for a small rank $r$. S3Diff introduces a degradation-conditioned middle matrix:
+
+$$
+W'_i=W_i+A_iC_i(d)B_i.
+$$
+
+Here $i$ identifies a network block, $d$ contains estimated blur/noise information, and $C_i(d)\in\mathbb R^{r\times r}$ modulates the low-rank update. A shared mapping uses degradation embeddings and block identifiers to produce block-specific corrections. Different images can therefore receive different effective updates.
+
+The degradation vector is an estimate, not complete knowledge of the camera pipeline. If it is wrong or fails to describe compression and spatial variation, the adaptive correction can be wrong too. The method is also different from a single static LoRA that can be merged once for all inputs: an input-dependent correction still requires input-dependent computation.
+
+S3Diff uses generic positive/negative quality prompts and online negative targets rather than requiring a semantic captioner for every image. The training mixture teaches the meaning of poor-quality output. Classifier-free guidance can then combine differently conditioned predictions. If that configuration makes two denoiser predictions, count both when reporting NFE even though there is only one state-update step.
+
+*Optional: [S3Diff](#s3diff-degradation-guided-low-rank-adaptation) (in the Paper guides). Dynamic matrices, block embeddings, online negative prompting and measured adaptation trade-offs.*
+
+## Other ways to improve a short restoration map
+
+**Plain version.** Once the chain is short, errors in conditions, targets and starting states matter more. Recent methods address different parts of that problem instead of only reducing the step count further.
+
+### Adversarial restoration distillation
+
+AddSR applies adversarial diffusion distillation to image-conditioned restoration [5], [14]. A pretrained teacher supplies restoration knowledge, while a discriminator pushes outputs toward realistic images. The method combines conditioning and distillation rather than simply applying a text-to-image one-step generator to the enlarged input.
+
+An adversarial objective can add convincing detail without proving that the detail is correct. Check the teacher, restoration conditioning, number of inference steps and training version. A method that supports a few steps should not have its best few-step result relabeled as one-step performance.
+
+### Target-aware scores and training states
+
+TSD-SR observes that a pretrained teacher can provide unreliable directions on poor student outputs, especially early in training [6]. It introduces a target-score construction that uses the paired HR training latent, and a distribution-aware sampling module that produces training states closer to the adapted diffusion trajectory.
+
+The paired target is available during training, not at deployment. Comparing the teacher’s predictions on a generated latent and its paired target supplies an additional direction beyond comparing teacher and current-student scores. This is a change to the regularization target, not direct evidence that all teacher-score errors have been eliminated. The sampling module also costs training work, even if it is discarded from a one-step inference pipeline.
+
+### Learning where the reverse process starts
+
+InvSR learns an image-conditioned noise/start predictor and runs a pretrained reverse process from the predicted state [7]. At the starting point, the predicted “noise” need not be independent standard Gaussian noise; it can be correlated with the observed image to compensate for replacing an unknown clean image with its LR observation.
+
+This is not the same as taking an arbitrary off-the-shelf inversion of a real photograph. The starting-state model is trained for restoration, with losses evaluated after the chosen reverse process. It can support different selected step budgets, but a learned starting-state predictor adds a network call. One reverse denoising step therefore need not equal one total model evaluation.
+
+### Separating pixel and semantic enhancement
+
+PiSA-SR trains two low-rank update groups: one for pixel reconstruction and another for semantic/perceptual enhancement [8]. The first is trained before the second; the semantic stage holds the learned pixel update fixed. The default inference uses one combined prediction. Its adjustable configuration computes pixel- and semantic-enhanced outputs separately and uses two diffusion evaluations; separate weights then alter the residual contributions.
+
+That adjustable setting must be counted separately from the default one-step setting. These controls change a learned model’s behavior. They do not physically separate every pixel into a “factual” and “invented” channel, and metric responses need not be monotonic. PiSA-SR uses a classifier-score-distillation objective rather than maintaining the same generated-distribution score model as OSEDiff. The change reduces some training machinery while changing the statistical objective; it is not an algebraically identical shortcut to the same VSD loss.
+
+*Optional: [TSD-SR](#tsd-sr-target-aware-score-regularization-cvpr-2025), [InvSR](#invsr-a-learned-image-conditioned-start-cvpr-2025) and [PiSA-SR](#pisa-sr-separate-pixel-and-semantic-adaptation-cvpr-2025) (in the Paper guides). The components and evidence behind these different interventions.*
+
+## Fidelity, realism and control
+
+**Plain version.** Making an output agree with a natural-image prior does not necessarily make it agree with the observation. A fidelity term and a realism term can pull in different directions.
+
+For an illustrative quadratic problem, let $a$ represent an error in a measured coordinate and $b$ an unmeasured texture coordinate. Suppose a prior prefers $(a,b)=(1,1)$ while the observation constrains $a=0$. Minimizing $a^2+\lambda[(a-1)^2+(b-1)^2]$ gives $a=\lambda/(1+\lambda)$ and $b=1$ when $\lambda>0$. Stronger prior weight changes a coordinate the observation actually constrains. A separate constraint $a=0$ would protect that coordinate, but would still leave the texture’s correctness unresolved.
+
+Here $\lambda$ is a hypothetical objective weight, not a measured hyperparameter of any cited model. The example explains why “more realistic” is not synonymous with “more faithful.” In a neural restorer the coordinates are not cleanly separated, the degradation is unknown, and pixel/perceptual losses are trained over a dataset rather than solved exactly for each input.
+
+<Figure src={tradeoffFig} alt="A coordinate diagram and two curves illustrate how increasing a prior weight can move a measured coordinate away from its observation even while improving agreement with the prior. A separate constrained solution preserves the measured coordinate but does not determine the hidden texture." caption="Figure 2 — An illustrative quadratic objective separates measurement agreement from prior preference. It is not a benchmark or an exact model of a neural score-distillation loss." />
+
+Useful controls include a prior-loss weight during training, a feature/residual strength at inference, a guidance scale, a degradation estimate or a selected starting noise level. They are not interchangeable. A training-loss weight usually requires retraining; an inference coefficient changes one fitted model; choosing another checkpoint may change both training data and objectives. State which operation produces a comparison.
+
+For text, faces and repeated structure, inspect whether the model changes discrete content: a letter, identity cue, brick count or boundary. Repeatability helps compare settings but does not establish factual correctness. For evidence-sensitive use, retain the original and describe generated detail as a hypothesis rather than treating a sharper output as an additional measurement.
+
+## Measuring speed and quality honestly
+
+**Plain version.** Count everything a user waits for, and keep the quality protocol attached to the timing row. A smaller adaptation file or one diffusion update is not a complete speed measurement.
+
+### The pipeline to time
+
+A typical system performs resizing, image encoding, optional degradation estimation, optional prompt extraction, generation/denoising, decoding and postprocessing. Some systems also use tiling. Record input resolution **and output resolution**, device, precision, batch size, warm-up, synchronization and whether text features are cached.
+
+For OSEDiff, its Table 2 reports 0.11 seconds on an A100 under a stated 512 × 512 input-size test; the prompt-extractor study separately reports costs [1]. Do not assume the same timing boundary as another paper’s 128-to-512 benchmark. A rigorous reproduction should inspect the timing code and report prompt extraction separately if its inclusion is unclear. At high resolutions, tiled encoding and decoding can become substantial even when there is only one denoiser call.
+
+Distinguish **trainable parameters**, **total model parameters**, **peak inference memory** and **adaptation-file size**. LoRA can reduce the first and last without proportionally reducing the frozen backbone required for inference. Dynamic LoRA, prompt extraction and learned inversion add their own work. Even static adapters merged into a backbone do not make its matrix multiplications disappear.
+
+### The quality protocol
+
+Use full-reference fidelity and perceptual metrics on synthetic or captured pairs, and no-reference measurements plus inspection on unpaired real images [15], [16], [17]. PSNR and SSIM measure different aspects of reference agreement; LPIPS and DISTS compare perceptual representations [18], [12], [19]. NIQE, MUSIQ, MANIQA and CLIPIQA predict aspects of visual quality without an HR reference [20], [21], [22], [23]. They do not verify the original scene.
+
+Keep channel, border crop, resizing, alignment and random seed conventions fixed. A method can improve a no-reference score by adding texture and worsen reference fidelity. On captured pairs, slight misregistration affects pixel metrics. On synthetic tests, matching a model’s own training degradation may favor it. The detailed evaluation caveats remain those in [DLCV 09A.1](/en/learn/deep-learning/blind-real-world-super-resolution/).
+
+For stochastic models, report variability across seeds rather than choosing only an attractive output. For deterministic models, examine multiple image types and damages rather than interpreting a single repeatable output as robustness. Evaluate letters, small faces, flat regions and regular grids separately, because an average score can hide different failure mechanisms.
+
+## Modern view
+
+**Plain version.** Shortening inference has exposed several distinct learning problems: choose a useful start, preserve observed content, estimate a reliable prior direction and offer understandable controls.
+
+Liu et al.’s blind-SR survey [9] distinguishes explicit degradation modeling, implicit data-distribution learning and single-image information. It helps identify what uncertainty an efficient model still assumes away. Moser et al.’s diffusion-SR survey [10] organizes diffusion restoration by domain, conditioning and generative process; it places short-chain designs within a larger set of fidelity and computation trade-offs. Fan et al.’s distillation survey [24] supplies a complementary objective-based view: endpoint fidelity, trajectories and adversarial learning are different supervision sources.
+
+The 2023–2025 sequence is not a single replacement chain. ResShift changes the restoration process; SinSR distills its conditional endpoint; OSEDiff adapts a large pretrained prior with score regularization; S3Diff adapts to degradation; TSD-SR changes score targets and training states; InvSR learns the start; PiSA-SR separates enhancement controls [2], [3], [1], [4], [6], [7], [8]. Each addresses a different bottleneck, and their benchmark distributions and backbones differ.
+
+The 2026 TUDSR work uses a twice-upsampling/diffusion design for higher-scale restoration [25]. It is relevant to how short diffusion components scale into a complete upsampling system, but multiple stages should be counted as multiple stages rather than advertised as one total operation. New architecture or scale settings also require renewed fidelity and cost comparisons.
+
+Open problems include uncertain degradation, reliable text and identity preservation, score estimates on poor generated samples, generalization beyond synthetic processing, large-image tiling, and controls that users can understand without learning training terminology. A practical interface should expose meaningful visual choices and preserve the input for comparison. It should not imply that an “enhance detail” setting recovers information that was never measured.
+
+## Key takeaways
+
+- An observation-derived start saves work only when trained for the intended image-to-image use.
+- One-step inference describes a budget; methods can use different training objectives.
+- ResShift/SinSR compress a restoration process; OSEDiff adapts a pretrained prior.
+- Latent encoding, prompts, decoder choices and auxiliary training each have separate roles and costs.
+- Determinism and low-resolution consistency do not establish correct missing detail.
+- Measure the whole pipeline and compare fidelity, preference, semantic correctness and variability.
+
+## Exercises
+
+1. **Null-space ambiguity.** Change the checkerboard amplitude in the experiment. Derive the squared errors of the conditional mean and opposite texture, and check that the LR measurements remain unchanged.
+
+<details>
+<summary>
+Hint
+</summary>
+
+For amplitude $a$, each texture value has magnitude $a$, so the mean’s MSE is $a^2$ and the opposite mode’s MSE is $4a^2$. Each 2 × 2 texture sums to zero. Keep the amplitude small enough that clipping does not alter the measurement equation.
+
+</details>
+
+2. **A wrong consistency test.** Replace block averaging with a mildly blurred resize while keeping the same HR candidates. Do identical old block averages guarantee identical new LR images? Explain what this says about testing real-world consistency with an estimated degradation.
+
+<details>
+<summary>
+Hint
+</summary>
+
+Null spaces depend on the operator. A texture annihilated by one downsampler need not be annihilated by another. Agreement under a guessed operator is evidence conditional on that operator, not proof about the unknown camera pipeline.
+
+</details>
+
+3. **Training-time and inference-time networks.** Draw the OSEDiff computation and mark the encoder, denoiser, decoder, prompt extractor, fixed regularizer and adapted regularizer. Which networks receive generator gradients, and which execute at deployment?
+
+<details>
+<summary>
+Hint
+</summary>
+
+The generator’s adapted encoder and denoiser are updated by reconstruction and prior signals. The decoder is fixed. The adapted regularizer has its own denoising objective. The two regularizers are discarded at deployment; the prompt extractor remains unless prompts are supplied or a different configuration is used.
+
+</details>
+
+4. **Count dynamic guidance.** A method predicts one updated state but evaluates positive and negative prompts separately, and also calls a degradation estimator and VAE encoder/decoder. What can be called one step, and what should a timing report count?
+
+<details>
+<summary>
+Hint
+</summary>
+
+There is one state-update step but two prompt-conditioned denoiser evaluations. Include degradation estimation, encoding and decoding in end-to-end timing; report any batching convention. A cached prompt embedding reduces text-encoder work, not the two denoising predictions themselves.
+
+</details>
+
+5. **A meaningful control.** Design a comparison for a “more detail” control using flat sky, small text and repeated windows. State one fidelity check, one visual-quality check and one failure that an average no-reference score could miss.
+
+<details>
+<summary>
+Hint
+</summary>
+
+Compare the same inputs and crops across settings. Check changed letters and window boundaries, inspect new sky texture, and record a quality metric without treating it as truth. A setting can improve an aggregate score while changing a discrete character or repeating a false pattern.
+
+</details>
+
+## Supplementary notes
+
+These optional notes expand two technical distinctions used by several methods.
+
+### Why a latent start is not a noising equation
+
+This note separates a pretrained diffusion formula from a newly trained image-to-image use.
+
+In diffusion training, $z_t=\alpha_tz_0+\sigma_t\epsilon$ defines a distribution through a clean latent $z_0$ and independently drawn Gaussian noise $\epsilon$. In an LR-latent restorer, the input $E_\theta(y)$ contains structured blur, compression and image content. There is no reason for those errors to have the same distribution as $\sigma_t\epsilon$ at an arbitrary selected timestep.
+
+A pretrained denoising equation can still parameterize the adapted network. The training examples and losses teach it a new transformation. The usefulness of that parameterization is empirical; it does not make the old forward-process interpretation literally true for the degraded latent. This also explains why changing the timestep or adding fresh noise after training may change the task rather than supply a harmless random seed.
+
+### Score regularization and per-image measurement agreement
+
+This note distinguishes agreement between image distributions from agreement with one observation.
+
+A prior score describes how density changes in image or latent space. A measurement constraint describes which candidate HR images could produce an observed LR input under a degradation model. A marginal distribution objective can favor natural images while changing the particular object in one input. Paired reconstruction loss constrains the training examples, but its generalization to a new camera image still depends on the degradation distribution and model fit.
+
+When the forward operator is known, one can impose a data-consistency step or inspect $\mathcal D(\widehat x)-y$. When it is unknown, the residual also includes operator-estimation error. A small residual is useful but cannot resolve null-space detail; a large residual can come from an incorrect test operator. Report both assumptions instead of turning one residual threshold into a universal factuality test.
+
+## Paper guides
+
+These optional introductions explain the individual designs and their controlled experiments. Scores belong to the cited source’s protocol; they are not measurements from the synthetic examples above.
+
+### ResShift: a short restoration-conditioned chain (NeurIPS 2023)
+
+#### Challenge
+
+A diffusion restorer need not reconstruct the complete scene from pure noise when an LR image already supplies much of its structure. ResShift builds a forward process that gradually moves an HR target toward the enlarged LR observation [2]. Reversing this process starts near the observation, making a shorter chain plausible.
+
+The contribution is a restoration-specific stochastic process and schedule, not distillation of a large text-to-image teacher. Its shorter chain and smaller task-specific model must therefore be evaluated together with their training data and representation. Comparing it with a pretrained text-to-image prior does not isolate only the number of steps.
+
+#### Method
+
+<Figure src={paperResshiftSource} alt="The forward chain shifts clean content toward the observed low-resolution condition while adding noise; reversing that chain is different from unconditional generation from pure noise." caption="Original paper figure 2 — The forward chain shifts clean content toward the observed low-resolution condition while adding noise; reversing that chain is different from unconditional generation from pure noise." />
+
+*Figure source: [2], arXiv:2307.12348v3, PDF page 3. [Original PDF](https://arxiv.org/pdf/2307.12348).*
+
+**Residual and forward transition.** Let $x_0$ be HR, $y$ the enlarged LR observation, and $e=y-x_0$ their residual. Choose increasing shift fractions $\eta_t$, with the endpoints near zero and one. Set $\delta_t=\eta_t-\eta_{t-1}$. A forward transition adds $\delta_te$ plus Gaussian noise of covariance $\kappa^2\delta_tI$, where $\kappa$ controls noise. Using $\delta$ here avoids confusing this residual increment with the signal coefficient used by other diffusion papers.
+
+**Closed-form marginal.** The summed shifts and Gaussian increments give
+
+$$
+q(x_t\mid x_0,y)=\mathcal N(x_0+\eta_t(y-x_0),\kappa^2\eta_tI).
+$$
+
+The state has the image/latent shape. At small $\eta_t$, it is near HR; at large $\eta_t$, its mean is near LR. Training can sample a state directly at any time without simulating the full forward chain. This makes the process tractable even though the original image is unknown during deployment.
+
+**Reverse target.** The tractable posterior between adjacent forward states has a mean that combines $x_t$ with the HR target. Replace that unknown target by a network prediction $f_\theta(x_t,y,t)$. One reverse mean is
+
+$$
+\mu_\theta=\frac{\eta_{t-1}}{\eta_t}x_t+\frac{\delta_t}{\eta_t}f_\theta(x_t,y,t),
+$$
+
+with covariance $\kappa^2\eta_{t-1}\delta_tI/\eta_t$. Here $f_\theta$ predicts HR from the current state, observation and time. The resulting training objective reduces to a weighted reconstruction loss; the published implementation drops the derived time weight after an empirical comparison. That practical simplification should be distinguished from the exact variational expression.
+
+**Latent domain.** The process is implemented using an image autoencoder associated with VQGAN [26], compressing spatial dimensions by four in the paper’s setting. Both HR and enlarged LR images occupy compatible latent grids. The model learns its restoration prior from its training task; it does not obtain the same broad prior as freezing a large text-to-image network.
+
+**Schedule.** A geometric-style schedule for $\sqrt{\eta_t}$ includes a shape parameter $p$, while $\kappa$ sets noise intensity. The published default uses 15 steps, $p=0.3$ and $\kappa=2$. These are fitted design choices. Changing the process parameters can change what the network sees, so a schedule sweep should not automatically be interpreted as free inference-time control for one unchanged model.
+
+**Data and inference.** Training uses synthetic degradations on image data, with a Real-ESRGAN-style observation model [27]. Inference begins approximately at $y+\kappa\epsilon$ and follows the learned reverse transitions. A smaller noise scale keeps states closer to the observation, but closeness alone cannot identify the missing high-frequency content or compensate for an incorrect degradation model. Randomness remains in the starting state and stochastic reverse updates. The decoder converts the resulting latent to pixels.
+
+#### Results
+
+On the paper’s ImageNet-Test protocol [28], Table 3 reports PSNR 25.01, SSIM 0.677, LPIPS 0.231, CLIPIQA 0.592 and MUSIQ 53.660 for the selected model. The comparison includes a general latent diffusion model shortened to the same 15-step budget, helping separate the benefit from merely choosing fewer steps. The results are still specific to that training and test setup.
+
+The paper also evaluates real images with no-reference metrics and visual comparisons. Those results support practical appearance quality under the tested degradations; they do not prove exact reconstruction of missing scene details. No-reference scores are particularly important to read alongside the reference-based trade-offs in the schedule study.
+
+#### Ablations
+
+Table 1 varies step count while retaining the listed process parameters. At 10, 15 and 50 steps, PSNR is 25.20, 25.01 and 24.22, while LPIPS is 0.2517, 0.2312 and 0.2212. More steps improve this perceptual distance while reducing PSNR; “more computation improves quality” needs a metric attached.
+
+At 15 steps and $\kappa=2$, changing $p$ from 0.3 to 1 changes LPIPS from 0.2312 to 0.2613 and MUSIQ from 53.6596 to 48.4964. A larger $p$ can suppress detail. Varying $\kappa$ also changes the trade-off: at $p=0.3$, $\kappa=0.5$ gives LPIPS 0.2437 and $\kappa=8$ gives 0.2592, versus 0.2312 at 2. These comparisons demonstrate schedule sensitivity, not a monotonic realism dial.
+
+#### Conclusion
+
+A chain centered on the observed LR image is a useful alternative to starting restoration from pure noise. The residual process supplies tractable training and reverse transitions, while the schedule determines a fidelity/appearance trade.
+
+#### Problems
+
+The method still needs repeated network calls and cannot identify unmeasured detail. Its task-specific prior can be less expressive than larger pretrained generative models. Synthetic degradation coverage and autoencoder reconstruction remain limitations. SinSR subsequently learns a deterministic endpoint of this conditional process in one student call [3].
+
+### SinSR: distilling a deterministic image-conditioned map (CVPR 2024)
+
+#### Challenge
+
+ResShift’s short chain still requires several model evaluations. SinSR aims to learn its complete LR-conditioned mapping in a single prediction [3]. A difficulty is that the original reverse process is stochastic: the same starting state can lead to different endpoints if fresh noise is injected along the way. A squared-error student trained against varying endpoints can average them.
+
+SinSR therefore derives a deterministic sampling map and then adds a learned inverse/ground-truth cycle to go beyond endpoint imitation. These steps have distinct roles: determinism makes a seed-to-endpoint target specific; paired HR reconstruction supplies information not limited to the teacher’s chosen sample.
+
+#### Method
+
+<Figure src={paperSinsrSource} alt="Read the deterministic teacher trajectory and student shortcuts separately from the consistency-preserving reconstruction path; training work is not the same as inference steps." caption="Original paper figure 4 — Read the deterministic teacher trajectory and student shortcuts separately from the consistency-preserving reconstruction path; training work is not the same as inference steps." />
+
+*Figure source: [3], arXiv:2311.14760v1, PDF page 4. [Original PDF](https://arxiv.org/pdf/2311.14760).*
+
+**Deterministic teacher.** Begin with the ResShift marginal $q(x_t\mid x_0,y)=\mathcal N(x_0+\eta_t(y-x_0),\kappa^2\eta_tI)$. A non-Markovian deterministic update can retain the intended forward marginals in the ideal derivation. The reverse update is affine in the predicted HR image:
+
+$$
+x_{t-1}=k_tf_\phi(x_t,y,t)+m_tx_t+j_ty.
+$$
+
+Here $f_\phi$ is the frozen pretrained restorer, and $k_t,m_t,j_t$ are coefficients derived from the shift schedule. In particular, $m_t=\sqrt{\eta_{t-1}/\eta_t}$, $j_t=\eta_{t-1}-\sqrt{\eta_{t-1}\eta_t}$ and $k_t=1-\eta_{t-1}+\sqrt{\eta_{t-1}\eta_t}-m_t$. The update removes newly sampled reverse noise, while the initial LR-centered state remains random.
+
+**Teacher endpoint.** With $x_T=y+\kappa\sqrt{\eta_T}\epsilon$ for standard Gaussian $\epsilon$, run that deterministic teacher to obtain $F_\phi(x_T,y)$. This map is fixed for a given start and observation. Constructing it requires multiple teacher evaluations during training, but those evaluations are not part of the student’s one-step deployment.
+
+**Direct distillation.** Initialize the student $f_\theta$ from the teacher. Its restoration query uses time $T$, and minimizes $\mathcal L_{\mathrm{distill}}=\operatorname{MSE}(f_\theta(x_T,y,T),F_\phi(x_T,y))$. Time here also distinguishes restoration from the inverse query; it is not an invitation to use an arbitrary untrained intermediate-step sampler.
+
+**Learned inverse.** The same network queried at time 0 predicts a starting state from a teacher-generated HR endpoint. The inverse loss compares $f_\theta(F_\phi(x_T,y),y,0)$ with $x_T$. This encourages a bidirectional relation between generated images and starting states without adding a separate inverse network at deployment.
+
+**Ground-truth cycle.** Encode a real paired HR target with the learned inverse, then restore it:
+
+$$
+\widehat x_T=\operatorname{sg}f_\theta(x_0,y,0),\qquad
+\mathcal L_{\mathrm{gt}}=\operatorname{MSE}(f_\theta(\widehat x_T,y,T),x_0).
+$$
+
+The stop-gradient operation $\operatorname{sg}$ is essential. Without it, the inverse can hide extra HR residual information in a starting state whose distribution differs from the LR-plus-noise states used at inference. The decoder/restoration branch could then solve an easier training task that is unavailable during deployment.
+
+**Complete loss and use.** The paper combines endpoint, inverse and ground-truth terms with equal default weights. It trains on paired synthetic degradations using the teacher’s representation. Deployment forms one LR-conditioned starting state and makes the restoration query, then decodes. The generated sample can still change with its initial random draw. Holding that draw fixed is useful for comparing settings, but makes only the sampling procedure repeatable; it does not validate the image details. Input resizing and latent decoding also remain part of the complete runtime. It does not run the inverse cycle or teacher online.
+
+#### Results
+
+On the paper’s ImageNet-Test comparison, SinSR’s one-step LPIPS is 0.221 and CLIPIQA 0.611, compared with 0.228 and 0.603 for 15-step ResShift in the same table. A one-step call to the unchanged ResShift model has LPIPS 0.383 and CLIPIQA 0.340. Learning the endpoint therefore differs substantially from simply truncating the teacher.
+
+For ×4 restoration from 64 × 64 to 256 × 256 on an A100, batch-one runtime is 0.058 seconds for SinSR and 0.633 for 15-step ResShift. At batch size 64, per-image times change to 0.012 and 0.047 seconds. The measured ratio depends on batching; neither row predicts an invariant speedup on every deployment device or larger image size.
+
+#### Ablations
+
+The supplementary loss study reports ImageNet-Test PSNR/LPIPS/CLIPIQA of 24.69/0.222/0.607 for endpoint distillation alone and 24.56/0.221/0.611 for the complete default. Removing endpoint distillation while retaining the inverse/GT terms gives 23.49/0.226/0.671. The last variant improves a no-reference score but reduces pixel fidelity, illustrating why the three terms are balanced.
+
+The stop-gradient study on RealSet65 gives CLIPIQA 0.6536 for distillation only, 0.6994 for the cycle without detaching, and 0.7150 for the selected detached cycle. The corresponding MUSIQ values are 61.330, 61.342 and 62.169. Visualizations of the inferred starting noise also show the distribution mismatch without detaching. This evidence supports the gradient boundary, rather than treating it as an implementation detail with no learning consequence.
+
+#### Conclusion
+
+A deterministic image-conditioned teacher map can be distilled directly. A learned inverse lets paired HR data add supervision, and stopping gradients through that inverse prevents an unavailable information shortcut.
+
+#### Problems
+
+The student inherits its restoration-specific teacher and synthetic degradation assumptions. One-step output can still have invented or missing detail. The inverse cycle is not proof that every generated sample is invertible or that starting noise remains perfectly Gaussian. Larger pretrained-prior methods use different objectives and capacities; their scores should not be interpreted as an isolated comparison of one-step distillation losses.
+
+### OSEDiff: LR-latent start and variational score regularization (NeurIPS 2024)
+
+#### Challenge
+
+OSEDiff asks how to retain a large pretrained image prior without repeatedly running its diffusion sampler [1]. Multi-step text-to-image-prior restorers can produce appealing detail, but need repeated denoising and often use an input-control network. A conventional paired reconstruction model is fast, yet may return smooth outputs when the HR target is ambiguous. The proposed system combines a direct LR-to-HR transformation with a distribution-oriented regularizer during training.
+
+Its central decisions are connected. Start from an LR image latent rather than random noise. Adapt the pretrained encoder and denoiser with LoRA. Keep the decoder fixed so that generated latents remain interpretable in the original representation. Supply image-derived text prompts. During training, use both paired reconstruction and a latent-space score-difference signal. These are separate components with separate evidence; “one-step diffusion” alone does not explain the method.
+
+#### Method
+
+<Figure src={paperOsediffSource} alt="The image-conditioned generator receives reconstruction supervision and a distribution-matching regularizer; the auxiliary diffusion models belong to training, not a multi-step inference chain." caption="Original paper figure 2 — The image-conditioned generator receives reconstruction supervision and a distribution-matching regularizer; the auxiliary diffusion models belong to training, not a multi-step inference chain." />
+
+*Figure source: [1], arXiv:2406.08177v3, PDF page 4. [Original PDF](https://arxiv.org/pdf/2406.08177).*
+
+**Inputs and representation.** Let $x_L$ be the low-quality image enlarged to the working output resolution and $x_H$ its paired high-quality training target. The pretrained model supplies a variational-autoencoder encoder $E_\phi$, a text-conditioned diffusion denoiser $\epsilon_\phi$ and decoder $D_\phi$ [29]. For a 512 × 512 image under the model’s factor-eight spatial compression, the latent grid is 64 × 64; the representation includes multiple latent channels. Spatial dimensions must match the generator’s intended output, so a latent start is not equivalent to feeding an unresized LR grid and expecting an implicit arbitrary scale change.
+
+**LoRA adaptation.** Train low-rank additions to the encoder and denoiser, obtaining $E_\theta$ and $\epsilon_\theta$ [11]. The underlying pretrained weights remain fixed, and the selected low-rank modules supply the adaptation. A matrix update has the form $\Delta W=AB$ with rank bounded by the adapter rank; this changes the effective transformation without learning every backbone parameter. The reported setting uses rank 4 in the VAE encoder, generator denoiser and adapted regularizer. A small adaptation does not make the complete execution model equally small.
+
+**Fixed decoder.** Set $D_\theta=D_\phi=D$. Freezing the decoder avoids letting it freely redefine how the predicted latent becomes an image while the prior regularizer still evaluates the pretrained latent coordinates. This is a consistency of representation, not a guarantee that the encoder/decoder round trip is exact. An adapted decoder can improve some pixel scores while weakening the intended prior alignment; the paper tests that choice explicitly.
+
+**Image-derived prompt.** A prompt extractor $Y$ processes the low-quality input. The main implementation uses the degradation-aware prompt extraction approach from SeeSR [30]. Its tags are embedded for the text-conditioned denoiser. A tag is an inferred semantic condition and can be wrong. This is additional computation at deployment, even though the denoiser is called only once. The paper compares a null prompt, the lightweight extractor and a larger multimodal captioner [31].
+
+**One fixed-timestep transformation.** Define $z_L=E_\theta(x_L)$ and $c=Y(x_L)$. The generator predicts
+
+$$
+\widehat z_H=F_\theta(z_L,c)=\frac{z_L-\beta_T\epsilon_\theta(z_L;T,c)}{\alpha_T},
+\qquad \widehat x_H=D(\widehat z_H).
+$$
+
+Here $T$ is the selected fixed model timestep, and $\alpha_T,\beta_T$ are its signal/noise coefficients in the paper’s notation. There is **no newly sampled Gaussian noise** added to $z_L$ in this deployed path. The pretrained denoising expression is used as a parameterization of a newly adapted image-to-image map. The LR latent is not claimed to obey the original forward corruption law at that timestep. Given a fixed input and deterministic extraction/execution, the output is repeatable; repeatability does not establish correctness of generated detail.
+
+**Paired reconstruction.** The data term is
+
+$$
+\mathcal L_{\mathrm{data}}=\operatorname{MSE}(\widehat x_H,x_H)+\lambda_1\operatorname{LPIPS}(\widehat x_H,x_H).
+$$
+
+MSE penalizes pixel discrepancies; LPIPS compares learned perceptual features [12]. The scalar $\lambda_1$ balances their scales. The paired training data tell the model what an HR result should be for the sampled synthetic degradation. They do not reveal the true HR original of an arbitrary internet image at inference.
+
+**Two training regularizers.** Keep a frozen pretrained denoiser $\epsilon_\phi$ as the prior model. Maintain a second denoiser $\epsilon_{\phi'}$, adapted with LoRA to the generator’s changing output distribution. This second model is distinct from the generator denoiser $\epsilon_\theta$. The diagram therefore contains three denoiser roles: the deployed generator, a fixed prior estimator and an adapted generated-distribution estimator. Confusing the last two with a second inference stage obscures the main computational trade.
+
+**Noised latent comparison.** Sample a regularization time $t$ and Gaussian noise $\epsilon$, and form $\widehat z_t=\alpha_t\widehat z_H+\beta_t\epsilon$. The regularization gradient is written as
+
+$$
+\nabla_\theta\mathcal L_{\mathrm{VSD}}\approx
+\mathbb E_{t,\epsilon}\!\left[\omega(t)
+\left(\epsilon_\phi(\widehat z_t;t,c)-\epsilon_{\phi'}(\widehat z_t;t,c)\right)
+\frac{\partial\widehat z_H}{\partial\theta}\right].
+$$
+
+Here $\omega(t)$ is the time-dependent weight, and the bracket denotes a vector–Jacobian product through the generator latent. The frozen model supplies a target-prior prediction; the adapted model estimates how the current generated samples differ from it. The score-difference direction is treated as a training signal rather than differentiating a tractable, explicitly evaluated image-density KL divergence. VSD originates in variational score-distillation work [13]; using it here does not establish exact posterior sampling for the unknown SR degradation.
+
+**Why latent VSD.** A pixel-space route would decode $\widehat z_H$ and re-encode the generated image before regularizing it. OSEDiff approximates $E_\phi(D_\phi(\widehat z_H))\approx\widehat z_H$ and works directly on $\widehat z_H$. This removes repeated encoding/decoding from the regularization path. The approximation is most credible when latents stay compatible with the fixed representation. It is not an exact algebraic cancellation for every latent vector.
+
+**Adapted-regularizer update.** Train $\epsilon_{\phi'}$ to predict the known added noise on generated latents:
+
+$$
+\mathcal L_{\mathrm{diff}}=
+\mathbb E\|\epsilon_{\phi'}(\alpha_t\widehat z_H+\beta_t\epsilon;t,c)-\epsilon\|_2^2.
+$$
+
+This loss updates the adapted regularizer. It is not an extra reconstruction loss on the deployed generator. During its update, generator samples serve as training data; the optimizers and stopped-gradient boundaries must keep the two roles separate. A poorly tracked generated distribution can make the prior-difference direction inaccurate.
+
+**Complete training and deployment.** The generator uses $\mathcal L_{\mathrm{data}}+\lambda_2\mathcal L_{\mathrm{VSD}}$, with the reported $\lambda_1=2$ and $\lambda_2=1$. The dataset is LSDIR [32] plus the first 10,000 FFHQ images [33], with synthetic pairs from the Real-ESRGAN pipeline [27]. The paper reports AdamW adaptation [34], learning rate $5\times10^{-5}$ and batch size 16 on four A100 GPUs. Deployment retains the prompt extractor, adapted encoder, adapted generator denoiser and fixed decoder. The two regularizer denoisers are discarded.
+
+#### Results
+
+Table 1 uses 3,000 synthetic DIV2K validation crops and captured RealSR/DRealSR pairs [17], [15], [16]. OSEDiff’s selected rows are:
+
+| Test set | PSNR ↑ | LPIPS ↓ | DISTS ↓ | FID ↓ | MUSIQ ↑ | CLIPIQA ↑ |
+| --- | --- | --- | --- | --- | --- | --- |
+| DIV2K-Val | 23.72 | 0.2941 | 0.1976 | 26.32 | 67.97 | 0.6683 |
+| RealSR | 25.15 | 0.2921 | 0.2128 | 123.49 | 69.09 | 0.6693 |
+
+The paper finds favorable perceptual/reference comparisons on real pairs, while some multi-step methods obtain better no-reference scores and restoration-specific models obtain higher PSNR. The table is not an across-the-board victory for one-step prediction. Metrics measure different things, and crop/degradation conventions belong with the numbers.
+
+Table 2 reports 0.11 seconds on an A100 for its stated 512 × 512 input-size test, compared with 11.50 seconds for StableSR and 0.13 for SinSR in that experiment. It lists 8.5 million trainable parameters but 1,775 million total parameters for OSEDiff. Reporting only “8.5 million parameters” as its complete model size would be wrong. The paper also separately times prompt extraction; the inclusion boundary should be checked when reproducing its latency rather than assumed to match every other paper.
+
+#### Ablations
+
+**Prior objective, Table 3.** On RealSR, no VSD gives PSNR 25.42, LPIPS 0.2934, MUSIQ 65.23 and CLIPIQA 0.5876. Replacing it with GAN training gives 25.00/0.2760/67.29/0.6254. Pixel-domain VSD gives 25.05/0.2759/67.90/0.6256. Latent-domain OSEDiff gives 25.15/0.2921/69.09/0.6693. Latent VSD leads those two NR scores but does **not** lead every fidelity/perceptual metric: its LPIPS is worse than the GAN and image-domain variants. The exact table is more informative than saying the regularizer improves everything.
+
+**Prompt extraction, Table 4.** On DRealSR, the null prompt gives PSNR 28.51, LPIPS 0.2896, MUSIQ 62.13 and CLIPIQA 0.6599. DAPE gives 27.92/0.2968/64.65/0.6963. The larger captioner gives 27.72/0.3109/65.70/0.7033. Extractor times are 0, 0.02 and 3.53 seconds. Richer prompting increases NR scores while reducing reference fidelity in this study. The larger captioner’s cost is substantial compared with the generator’s reported runtime.
+
+**Adapter rank, Tables 5–6.** Encoder rank 2 does not converge in the reported experiment. Rank 4 gives PSNR 25.15 and MUSIQ 69.09, while rank 8 gives 24.86 and 68.37. For the generator denoiser, ranks 2, 4 and 8 give PSNR 25.28, 25.15 and 24.87, with DISTS 0.2154, 0.2128 and 0.2115. The chosen rank is a balance, not the best value in every column. More adapter capacity is not guaranteed to improve generalization.
+
+**Encoder/decoder, Table 7.** With neither adapted, MUSIQ is 58.99 and CLIPIQA 0.5303. Adapting only the decoder gives 65.83/0.5604; adapting both gives 65.92/0.5778. Adapting only the encoder, the selected method, gives 69.09/0.6693. The both-adapted variant has higher PSNR, 25.59 versus 25.15, so freezing the decoder supports the selected perceptual/prior trade rather than dominating all metrics. These controlled rows directly support the design distinction between removing degradation in the encoder and preserving the decoder’s latent interpretation.
+
+#### Conclusion
+
+OSEDiff turns a pretrained latent diffusion backbone into a direct image-conditioned restorer. Paired losses preserve training-target agreement, while two training-only score models supply a natural-image regularizer. Encoder adaptation and a fixed decoder make the latent-space shortcut practical; prompt extraction adds semantics and deployment cost.
+
+#### Problems
+
+An LR-latent start removes random sampling from the default generator but does not prevent semantic invention. Synthetic degradations do not cover every real camera pipeline. Prompt errors can steer a plausible reconstruction toward the wrong content, and higher NR scores can accompany lower reference fidelity. Latent VSD relies on approximate representation consistency and a well-tracked generated distribution. The total pretrained model remains large despite small adapters. Later work investigates degradation-guided updates, target-aware scores and separate enhancement controls [4], [6], [8]; those are changed objectives and systems, not proof that this ambiguity has been solved.
+
+### S3Diff: degradation-guided low-rank adaptation
+
+#### Challenge
+
+A pretrained one-step image generator is not automatically a reliable SR model. Blur and noise vary between photographs, and a fixed adaptation may under-correct one input while over-correcting another. S3Diff adapts the generator according to estimated damage, while avoiding an expensive semantic captioner for each input [4].
+
+The design asks two separate questions: how should the network’s effective weights depend on degradation, and how should it learn positive/negative quality prompting? The first changes image-conditioned adaptation; the second teaches quality steering. Neither guarantees that an estimated blur/noise vector fully represents a real camera pipeline.
+
+#### Method
+
+<Figure src={paperS3diffSource} alt="Degradation estimates modulate low-rank adaptation, while positive and negative prompt paths support guidance; distinguish the training branches from the deployed one-step path." caption="Original paper figure 3 — Degradation estimates modulate low-rank adaptation, while positive and negative prompt paths support guidance; distinguish the training branches from the deployed one-step path." />
+
+*Figure source: [4], arXiv:2409.17058v1, PDF page 5. [Original PDF](https://arxiv.org/pdf/2409.17058).*
+
+**Starting prior and image path.** The method uses an ADD-derived one-step latent image prior [14]. It feeds the LR-derived image representation with little or no added noise, adapts the VAE encoder and denoiser, and keeps the decoder fixed. The encoder can suppress input defects before the latent transformation. Freezing the decoder preserves the pretrained output representation, with the same general motivation tested by other latent-prior restorers.
+
+**Low-rank correction.** For $W\in\mathbb R^{m\times n}$, write an adapted weight as $W'=W+AB$, where $A\in\mathbb R^{m\times r}$, $B\in\mathbb R^{r\times n}$ and $r$ is the rank. S3Diff inserts a learned correction $C(d)\in\mathbb R^{r\times r}$ between them: $W'=W+AC(d)B$. This changes the effective low-rank directions according to the current degradation descriptor $d$.
+
+**Degradation and block identity.** A pretrained estimator supplies two normalized values representing blur and noise. A sinusoidal/Fourier embedding and learned mapping process that descriptor. Block-ID embeddings let the shared mapping generate different $C_i(d)$ for different network blocks. A single shared matrix can be too restrictive, while an entirely separate large predictor for every block increases adaptation cost. The block embedding provides an intermediate design.
+
+**Dynamic computation.** Unlike one globally merged static adapter, the effective correction can vary per input. The matrix factors still restrict its structure and parameter count, but estimation and modulation remain part of the executed system. If a deployment exposes manual degradation values, those are user-supplied estimates, not verified physical measurements.
+
+**Online negative targets.** During training, a small fraction of targets is replaced by their degraded counterparts and associated with a negative-quality prompt. Positive targets use a generic positive-quality prompt. This teaches the model what negative appearance means using the same damage distribution, instead of relying only on offline generative negative examples. The reported negative-target probability is 0.05. Reconstruction/perceptual supervision applies to the selected target, while adversarial supervision applies to positive HR targets.
+
+**Losses and guidance.** The generator combines L2, LPIPS and GAN terms, with reported weights 2, 5 and 0.5. The discriminator uses pretrained image features and trainable heads. At inference, positive/negative guidance can combine two conditioned predictions. This is still one state-update step, but the guided configuration must count both denoiser predictions. The source uses a small guidance strength because excessive guidance harms fidelity.
+
+**Training setup.** The linked manuscript trains on LSDIR and a 10,000-image face subset from FFHQ [32], [33], with Real-ESRGAN-style synthetic damage [27]. Its selected adapter ranks are 16 for the encoder and 32 for the denoiser. Those ranks and the guidance setting belong to the reported version; they are not universal requirements for every low-rank SR model.
+
+#### Results
+
+In the opened manuscript’s synthetic DIV2K validation comparison, S3Diff gives PSNR 23.40, LPIPS 0.2571, DISTS 0.1730, FID 19.35 and MUSIQ 68.21. On RealSR it gives PSNR 25.03, LPIPS 0.2699 and FID 108.88. These figures describe that paper’s rerun of the compared checkpoints and processing protocol. Its OSEDiff rows differ from OSEDiff’s original tables; use a controlled rerun or keep the source table attached instead of merging them into one canonical score.
+
+The reported improvement concerns the collection of measures and images, not every metric on every dataset. Some stronger-reference baselines have higher PSNR, while different no-reference metrics favor different appearance choices.
+
+#### Ablations
+
+For degradation-guided LoRA, using a shared correction matrix gives DIV2K LPIPS 0.2613 and MUSIQ 65.52; block-ID-conditioned unshared corrections give 0.2563 and 66.55. On RealSR, the same comparison changes LPIPS from 0.2626 to 0.2573 and MUSIQ from 64.23 to 65.78.
+
+The negative-prompting study on RealSR gives PSNR 25.76 and MUSIQ 66.42 with online negative targets but no guidance; with guidance these become 25.03 and 67.88. Increasing preferred appearance therefore costs reference fidelity in that setting. Encoder/decoder adaptation and rank sweeps provide additional evidence that more trainable capacity or stronger guidance is not automatically better. The dynamic architecture and the guidance must be evaluated together with their cost.
+
+#### Conclusion
+
+Estimated degradation can modulate a low-rank generative restorer, and online negative targets can teach quality steering without a semantic captioner. These are distinct controls over adaptation and appearance.
+
+#### Problems
+
+The estimator can misread damage, and blur/noise descriptors omit many processing effects. Dynamic corrections and guided predictions add deployment work. Generic prompts avoid some semantic-extractor cost but do not solve missing-detail ambiguity. The pretrained prior can still invent texture, and parameter-efficient adaptation does not remove the large backbone. Compare the exact checkpoint, guidance and evaluation protocol, since experimental settings can differ between versions.
+
+### TSD-SR: target-aware score regularization (CVPR 2025)
+
+#### Challenge
+
+A pretrained diffusion teacher can give an unreliable optimization direction when the current student output is poor. TSD-SR investigates this problem in real-world SR, where low-frequency structure is supplied by an LR input but high-frequency content is missing [6]. It uses the paired HR target during training to improve the score-based signal, rather than relying only on a teacher prediction evaluated at a generated sample.
+
+The method also changes which noisy states are used for regularization. Uniformly sampling a time and independently adding noise may under-emphasize difficult detail-forming regions of the adapted trajectory. TSD-SR combines a target-aware score term with distribution-aware sampling. These are training changes; the HR target and additional sampled trajectory are unavailable during deployment.
+
+#### Method
+
+<Figure src={paperTsdsrSource} alt="Separate the student prediction, target-aware score guidance and learned auxiliary score; the arrows identify which models provide gradients and which parameters are updated." caption="Original paper figure 2 — Separate the student prediction, target-aware score guidance and learned auxiliary score; the arrows identify which models provide gradients and which parameters are updated." />
+
+*Figure source: [6], arXiv:2411.18263v4, PDF page 3. [Original PDF](https://arxiv.org/pdf/2411.18263).*
+
+**Student and score models.** A one-step image-conditioned student $G_\theta$ predicts an HR latent $\widehat z$. A frozen pretrained teacher predicts a target-prior direction, while an adapted low-rank model estimates the student distribution. The main experiments use a pretrained flow-matching image-generation backbone [35], with additional smaller-backbone comparisons. The student encoder and denoising network are adapted while the image decoder remains fixed.
+
+**Ordinary variational score signal.** For a noised generated latent $\widehat z_t$, the difference between the fixed teacher prediction and adapted generated-distribution prediction supplies a prior gradient. This is the same general role as the two regularizers in OSEDiff. Its reliability depends on the predictions being meaningful at the actual generated states; a powerful teacher is not automatically calibrated on every poor early-training sample.
+
+**Target-score comparison.** Encode the paired HR target as $z$ and construct a corresponding noised target state $z_t$. Compare the teacher’s predictions on $\widehat z_t$ and $z_t$. The gradient direction contains a term proportional to $\epsilon_\psi(\widehat z_t,t,c)-\epsilon_\psi(z_t,t,c)$, where $\psi$ denotes fixed teacher parameters and $c$ training text conditioning. This is a paired target-aware signal, not a theorem that scores at arbitrary points from one distribution should be equal.
+
+**Combined direction.** The paper combines target-score matching with variational score distillation. One expression is
+
+$$
+g_t=\epsilon_\psi(\widehat z_t,t,c)-\epsilon_\psi(z_t,t,c)
++\lambda\bigl(\epsilon_\psi(z_t,t,c)-\epsilon_\phi(\widehat z_t,t,c)\bigr).
+$$
+
+Here $\phi$ is the adapted generated-distribution model and $\lambda$ balances the terms. A time weight and the student latent’s parameter Jacobian turn this vector into a generator update. At a special endpoint of the weighting this reduces algebraically to the ordinary score-difference direction; intermediate weighting introduces paired HR-target information. Predictions are used as gradient targets, not as an explicitly evaluated clean-image density.
+
+**Distribution-aware sampling.** Start from noised generated and HR latents, then use short adapted-model denoising transitions to produce multiple regularization states. Accumulating gradients over these states emphasizes regions of the trajectory that a single uniformly sampled comparison may miss. The module’s parameters include the number of sampled states and their spacing. More states increase training work and do not necessarily improve the result.
+
+**Other supervision.** The student combines pixel-space LPIPS with latent-space MSE and the target-score regularizer. The adapted score model has its own diffusion training loss. The implementation first stabilizes training without the full distribution-aware module, then introduces it. Training prompts for the teacher/score models can come from HR images; the deployed student uses a default prompt. Consequently, the complete training diagram should not be interpreted as requiring an HR-caption extractor at inference.
+
+#### Results
+
+The main one-step comparison reports, on RealSR, PSNR 24.81, LPIPS 0.2743, DISTS 0.2104, FID 114.45 and MUSIQ 71.19. On synthetic DIV2K validation crops, it reports 23.02/0.2673/0.1821/29.16/71.69 for those measures. These rows show improved selected perceptual measures with lower pixel fidelity than some restoration baselines. The main backbone differs from OSEDiff’s, so the cross-method table is not an objective-only experiment.
+
+The paper therefore also plugs the training idea into smaller pretrained backbones. Those comparisons help assess whether the target-aware changes matter apart from the larger prior. No-reference scores and preference studies remain measurements of the tested images, not proof that the method recovers every missing scene feature.
+
+#### Ablations
+
+On DRealSR, removing target-score matching gives LPIPS 0.3176, DISTS 0.2327 and MUSIQ 63.90. Removing distribution-aware sampling gives 0.3097, 0.2311 and 63.56. The complete setting gives 0.2967, 0.2136 and 66.62. On RealSR, the corresponding LPIPS values are 0.2934, 0.2873 and 0.2743. These controlled comparisons support both components under the tested setup.
+
+For distribution-aware sampling at the selected spacing, two, four and eight sampled states give LPIPS 0.3104, 0.2967 and 0.3421 on DRealSR. More states are not automatically better. The paper also compares spacing choices. These are regularizer-training settings, not additional deployed SR steps.
+
+#### Conclusion
+
+Paired HR targets can improve how a pretrained prior guides a one-step restorer, while trajectory-aware training states change where that guidance is applied. The method addresses score-target and training-distribution errors rather than merely using a larger inference budget.
+
+#### Problems
+
+The procedure needs paired data, auxiliary models and extra training transitions. Teacher-score predictions remain approximations, and target-aware training does not create HR evidence for a new input. Larger-backbone comparisons mix capacity and objectives unless controlled. Pixel fidelity, predicted appearance and semantics can still disagree, so one-step output needs the same detailed inspection as slower generative restoration.
+
+### InvSR: a learned image-conditioned start (CVPR 2025)
+
+#### Challenge
+
+A pretrained reverse diffusion process may already contain a useful image prior, but a real LR observation does not supply the noisy state that will lead to its unknown HR original. InvSR learns that **starting-state construction** instead of adapting only the reverse denoiser [7]. Its central question is where to begin a pretrained reverse process so that a small selected number of steps produces a useful reconstruction.
+
+Optimizing a separate inversion for every test image would be costly. Predicting an entire set of noise maps for all reverse steps would also be difficult. InvSR simplifies the problem by predicting only the starting perturbation at selected intermediate timesteps.
+
+#### Method
+
+<Figure src={paperInvsrSource} alt="A learned noise predictor creates an image-conditioned starting state at the selected diffusion time; later denoising can use different step counts." caption="Original paper figure 2 — A learned noise predictor creates an image-conditioned starting state at the selected diffusion time; later denoising can use different step counts." />
+
+*Figure source: [7], arXiv:2412.09013v2, PDF page 5. [Original PDF](https://arxiv.org/pdf/2412.09013).*
+
+**Partial prediction.** Start the reverse process at an intermediate noise level with relatively high signal-to-noise ratio. The LR image already approximates much of the HR structure, so there is no need to begin at the original pure-noise endpoint. Fast-sampler skipping then reduces the number of visited states. The paper considers one through five reverse steps in its main experiments.
+
+**Learned starting state.** A timestep-conditioned predictor $f_w$ receives the enlarged LR image or its latent representation and supplies a perturbation. The state is
+
+$$
+x_{\tau}=\sqrt{\bar\alpha_{\tau}}\,y+
+\sqrt{1-\bar\alpha_{\tau}}\,f_w(y,\tau).
+$$
+
+Here $y$ is the LR-derived representation, $\tau$ a selected starting time, and $\bar\alpha_{\tau}$ the pretrained diffusion schedule coefficient. The predictor parameterization can generate a perturbation through predicted mean and variance. Importantly, the starting perturbation is allowed to be correlated with the input: it compensates for using $y$ instead of the unknown HR representation. It is not assumed to be independent, zero-mean standard Gaussian noise simply because the paper calls it a noise map.
+
+**Frozen reverse prior.** Run the pretrained image-generation reverse process from this predicted state. The selected model is an ADD-derived fast prior [14], and the paper compares it with a conventional pretrained latent-diffusion alternative [29]. Training the start predictor can backpropagate through the fixed reverse model without updating all its weights. A frozen network still incurs computation during both this training path and deployment.
+
+**Intermediate randomness.** The method does not predict a separate perturbation for every visited state. At intermediate states it uses the pretrained process and the prescribed sampling noise. An additional intermediate predictor is tested and yields little improvement in the chosen high-SNR regime. This empirical simplification is conditional on that regime; it is not a general statement that all diffusion inversions need only one predicted state.
+
+**Training losses.** Evaluate the reconstructed output after the selected reverse process using L2, learned perceptual and adversarial terms. The implementation computes losses in the latent domain and adapts its perceptual comparator for that domain. The losses train the starting-state predictor to select useful inputs for the fixed prior. There is no HR image or per-image optimization required at deployment.
+
+**Budget selection.** Train the predictor for several starting timesteps through a time embedding. During inference, choose a start and a skipping sequence. The starting time and number of visited reverse states are separate controls. A later start can retain more observation structure; additional updates can add detail or, on noisy inputs, amplify artifacts. The model’s name “arbitrary steps” should be read within the trained/validated time range, not as evidence for every possible off-grid schedule.
+
+#### Results
+
+On ImageNet-Test, the main one-step row reports PSNR 24.14, LPIPS 0.2517, NIQE 4.3815 and MUSIQ 72.2900. On RealSR it reports 24.50, 0.2872, 4.2189 and 67.4586. These use the paper’s specific starting time and test preprocessing. Its parameter table lists a small learned component relative to a large pretrained prior; do not report the predictor’s parameter count as the complete model footprint.
+
+The flexibility study is especially informative. At one reverse step, starting at timestep 250 gives PSNR 23.84 and MUSIQ 72.5773; starting at 100 gives 24.66 and 70.8251. The choice changes fidelity and appearance even when the step count is unchanged. A step count alone therefore does not fully identify the operating point.
+
+#### Ablations
+
+The prior-backbone comparison at one step and starting time 200 gives LPIPS 0.2517 with the fast prior and 0.2647 with the conventional alternative. This supports the selected backbone in that experiment, not a general claim that distillation always improves all inversion methods.
+
+Adding intermediate noise prediction changes the five-step LPIPS from 0.2844 to 0.2844 at displayed precision, and MUSIQ from 69.8427 to 69.8466. The extra module has negligible measured benefit there. For loss terms, L2-only training gives PSNR 26.71 and LPIPS 0.2850; the combined perceptual/adversarial configuration gives 24.14 and 0.2517. Better perceptual reconstruction comes with lower pixel fidelity. The paper also shows cases where more steps amplify input noise, so budget selection depends on the damage.
+
+#### Conclusion
+
+Learning a useful input state can make a fixed generative reverse process an effective short-budget restorer. Starting time, predictor and sampler are all parts of the system, with different effects on fidelity and appearance.
+
+#### Problems
+
+The predictor can construct an unsuitable state for unfamiliar damage. The pretrained prior and decoder remain large. One reverse step still includes the starting-state predictor and representation processing, so it is not one total network call. Flexible schedules can change content or amplify artifacts. A plausible inverted trajectory is not evidence that the recovered HR texture belonged to the original photograph.
+
+### PiSA-SR: separate pixel and semantic adaptation (CVPR 2025)
+
+#### Challenge
+
+Pixel reconstruction and generative detail enhancement often compete inside the same adaptation. PiSA-SR separates them into two low-rank update groups, aiming to offer more understandable control over the resulting appearance [8]. The intention is to change how strongly the model restores measured structure and adds semantic/perceptual detail without retraining for every preference.
+
+These are learned control directions, not a physical decomposition of an image into perfectly factual and invented parts. A semantic enhancement can still change letters or object details, and a pixel-oriented model can retain blur. The controls therefore need measured and visual evaluation rather than labels alone.
+
+#### Method
+
+<Figure src={paperPisaSource} alt="Pixel and semantic low-rank branches receive different training signals; their adjustable combination at inference exposes a fidelity–perception tradeoff." caption="Original paper figure 3 — Pixel and semantic low-rank branches receive different training signals; their adjustable combination at inference exposes a fidelity–perception tradeoff." />
+
+*Figure source: [8], arXiv:2412.03017v2, PDF page 5. [Original PDF](https://arxiv.org/pdf/2412.03017).*
+
+**Residual latent map.** Encode the enlarged LR input as $z_L$ using a fixed pretrained image autoencoder. The denoising backbone predicts a residual-like correction, giving $\widehat z_H=z_L-\epsilon_\theta(z_L)$ in the paper’s simplified fixed-timestep formulation. This is an adapted image-to-image residual, not a claim that $z_L$ contains independent Gaussian noise at that timestep.
+
+**Pixel adapter.** Add a low-rank parameter group $\Delta\theta_{\mathrm{pix}}$ to the frozen pretrained denoiser and train it with an L2 reconstruction objective. The resulting parameter set $\theta_{\mathrm{pix}}$ supplies an output focused on reducing degradation and recovering reference-aligned structure. The image encoder and decoder remain fixed in this design.
+
+**Semantic adapter.** Freeze the learned pixel adapter, add a second low-rank group $\Delta\theta_{\mathrm{sem}}$, and train this group with LPIPS and a classifier-score-distillation objective. The combined parameter set is $\theta_{\mathrm{PiSA}}$. The stages are sequential: the semantic phase is not jointly allowed to rewrite the pixel adapter arbitrarily.
+
+**Semantic prior signal.** A fixed text-conditioned diffusion model supplies conditional and unconditional predictions. Their difference gives a classifier-free-guidance-derived semantic direction [36]. The training objective uses this signal in latent space, together with LPIPS. It does not train a separate generated-distribution score model as in OSEDiff’s VSD regularizer. Consequently, it reduces auxiliary optimization while changing the objective; the two regularizers are not statistically identical.
+
+**Default inference.** Merge the selected pixel and semantic adapters into one combined model and make one residual prediction. The trained semantic direction supplies the intended enhancement without requiring the training prompt-extraction model online. The fixed image encoder and decoder still execute. The method’s default parameter count includes a large pretrained backbone even though the adapters themselves are small.
+
+**Adjustable inference.** Evaluate both the pixel-only and combined denoisers, then form
+
+$$
+\epsilon_{\mathrm{adj}}=\lambda_{\mathrm{pix}}\epsilon_{\theta_{\mathrm{pix}}}(z_L)
++\lambda_{\mathrm{sem}}\bigl(\epsilon_{\theta_{\mathrm{PiSA}}}(z_L)-\epsilon_{\theta_{\mathrm{pix}}}(z_L)\bigr).
+$$
+
+Here $\lambda_{\mathrm{pix}}$ weights the pixel-oriented correction and $\lambda_{\mathrm{sem}}$ the difference introduced by semantic adaptation. The output latent uses the resulting residual. This configuration needs **two denoiser predictions**. It is not the same cost as the default combined prediction, and interpolating adapter weights is not algebraically equivalent to this output-difference construction in a nonlinear network.
+
+**Training data.** The paper uses LSDIR and the first 10,000 FFHQ images with Real-ESRGAN-style degradations [32], [33], [27]. Adapter rank 4 is used in the selected configuration. Training-generated semantic conditions do not imply that inference needs a captioner; the design deliberately distills those semantic preferences into the learned update.
+
+#### Results
+
+On RealSR, the default setting reports PSNR 25.50, LPIPS 0.2672, CLIPIQA 0.6702 and MUSIQ 70.15. In the control sweep with pixel strength fixed at 1, semantic strength 0.2 gives PSNR 26.95 and MUSIQ 53.64; semantic strength 1.2 gives 24.59 and 71.60. This illustrates a practical preference trade, not independent verification of added detail.
+
+The timing comparison uses ×4 SR from 128 × 128 input on a single A100 80 GB GPU. It reports 0.09 seconds for the default configuration and 0.13 for adjustable inference, with one and two diffusion predictions respectively. A quality-control interface should disclose that distinction rather than advertise every setting as the default one-step latency.
+
+#### Ablations
+
+The dual-adapter study compares a pixel-only trained variant, semantic-only variant and the two-stage design. Their RealSR PSNR values are 27.28, 24.13 and 25.50; LPIPS values are 0.3090, 0.2803 and 0.2672. MUSIQ is 49.02, 70.69 and 70.15. The combined design improves this reference perceptual distance over the single-objective variants while retaining a stronger pixel score than semantic-only training. These are separately trained ablations, not all identical to zeroing a coefficient in one final model.
+
+The rank study changes one adapter’s capacity while holding the other fixed. Increasing semantic rank from 4 to 32 changes PSNR from 25.50 to 25.40 and LPIPS from 0.2672 to 0.2713, with similar MUSIQ. More rank is not automatically beneficial. The control sweep also shows that the best LPIPS or NR value can occur at an intermediate strength rather than an extreme.
+
+#### Conclusion
+
+Separating training objectives into two adapters provides useful enhancement directions. A combined default is fast; output-difference control offers flexibility at additional inference cost.
+
+#### Problems
+
+The control names do not guarantee that semantics and pixels are perfectly disentangled. Severe degradation may need different adaptation, and one fixed pixel adapter may not cover all damage. Strong detail settings can change reference content. Adjustable inference costs more than the default and still inherits the pretrained prior’s biases. Evaluate each selected operating point rather than presenting one score as a certificate for the whole control range.
+
+### AddSR: prediction-refined adversarial restoration distillation
+
+#### Challenge
+
+An adversarially distilled text-to-image generator is not automatically a good blind restorer. It can generate attractive details that drift from the observation, and the balance between realism and fidelity can change across a few refinement steps. AddSR combines an image-conditioned teacher, adversarial distillation and prediction-based condition refinement [5].
+
+The paper supports one- and four-step settings. Its strongest perceptual setting is not interchangeable with a one-step result. That budget distinction is central to understanding the method: a progressively refined condition supplies information that is absent from the first call.
+
+#### Method
+
+<Figure src={paperAddsrSource} alt="The student, teacher and discriminator have different roles, and prediction-refined conditions change across steps; the discriminator is training supervision." caption="Original paper figure 2 — The student, teacher and discriminator have different roles, and prediction-refined conditions change across steps; the discriminator is training supervision." />
+
+*Figure source: [5], arXiv:2404.01717v4, PDF page 4. [Original PDF](https://arxiv.org/pdf/2404.01717).*
+
+**Teacher and student.** The linked manuscript uses a SeeSR-based restoration teacher [30]. The student is initialized from that teacher, retaining an image-conditioned diffusion architecture with semantic/image control. A discriminator supplies additional appearance supervision. The three networks have different roles: teacher knowledge is fixed during distillation, the student learns the fast restoration map, and the discriminator learns a real-versus-generated distinction.
+
+**Training states.** Sample a student timestep from a small predefined set and noise an HR training image at that level. The student receives the noisy state, a condition image and semantic conditions. A teacher path supplies a denoising target under its training condition. The manuscript refines teacher conditioning using HR data available at training time, reducing degradation in that supervision. HR conditioning is a training advantage, not an available deployment observation.
+
+**Prediction-based self-refinement.** At the first inference step, the condition is the LR image. Later steps use the previous predicted clean HR image as the next condition. Given a noisy state $x_s$ and noise prediction $\epsilon_\theta$, a clean estimate is formed by the standard schedule conversion. This estimate can contain more recovered structure than the original LR condition, but it can also contain mistakes. Feeding it back can reinforce either.
+
+**Adaptive distillation weighting.** The relative strength of the adversarial and teacher losses changes with both teacher and student timesteps. The paper motivates stronger appearance supervision at very short budgets and increased distillation influence during refinement, when uncontrolled adversarial detail could drift further. It uses a two-time weighting rather than assuming one fixed weight is suitable for all student queries.
+
+**Discriminator.** A pretrained image-feature backbone with trainable heads judges real and generated results, with image conditioning. This supplies a local/global appearance signal beyond endpoint regression. The discriminator does not know the original HR scene for every real deployment image; its learned realness score cannot certify missing-detail accuracy.
+
+**Data and representation.** The manuscript trains on restoration photo collections, including DIV2K, Flickr2K, LSDIR and a face subset [17], [37], [32], [33], with Real-ESRGAN-style damage [27]. A latent image model reduces repeated spatial computation, while encoding/decoding and semantic extraction remain part of the complete system. The final journal publication has verified bibliographic metadata; the numerical examples here refer to the linked manuscript’s tables.
+
+#### Results
+
+For the manuscript’s synthetic ×4 single-degradation comparison, one-step AddSR gives PSNR 22.70, LPIPS 0.2872, MUSIQ 63.05 and CLIPIQA 0.5572. Four-step AddSR gives 21.83, 0.2812, 71.43 and 0.7794. The longer setting substantially increases those NR scores while lowering PSNR. It is therefore misleading to describe the four-step appearance result as one-step fidelity preservation.
+
+The paper evaluates several degradation settings and real-image collections, emphasizing human preference and predicted quality. Those tests demonstrate selected appearance advantages but do not settle factual reconstruction. A model may look more detailed while changing a discrete object feature, and an averaged metric can hide that failure.
+
+#### Ablations
+
+The refined-training study separately changes the teacher’s condition image and semantic condition extraction. On RealLR200, the row using neither refinement has MUSIQ 70.75 and CLIPIQA 0.7431; the complete refined configuration has 72.62 and 0.7724. On DRealSR, the same rows have PSNR 26.96 and 26.09. The improvement in predicted appearance is accompanied by lower reference fidelity, so the refinement should not be summarized as uniformly better reconstruction.
+
+Additional experiments compare timestep-weighting forms and their hyperparameters. The paper selects an exponential form, while changing its balance yields different perceptual/fidelity operating points. These are controlled training and sampling comparisons, not a proof that a particular weight eliminates hallucination. Visual examples illustrate that adaptive weighting can reduce some semantic drift in a refined output.
+
+#### Conclusion
+
+A few-step restoration student benefits from image-conditioned teacher knowledge, a realistic-appearance objective and conditions updated from its own predictions. The objective balance must account for the student’s selected budget.
+
+#### Problems
+
+Refinement can amplify an earlier mistake. Adversarial sharpness and preferred appearance do not guarantee correct missing detail. Training uses paired HR information unavailable during real inference, and synthetic processing still limits generalization. One- and four-step costs and scores must remain separate. The system includes conditioning networks and a pretrained latent model, so a count of diffusion updates alone is an incomplete deployment description.
+
+## References
+
+1. R. Wu, L. Sun, Z. Ma, L. Zhang, "One-Step Effective Diffusion Network for Real-World Image Super-Resolution," *NeurIPS*, 2024. [source](https://arxiv.org/abs/2406.08177)
+2. Z. Yue, J. Wang, C. C. Loy, "ResShift: Efficient Diffusion Model for Image Super-resolution by Residual Shifting," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2307.12348)
+3. Y. Wang, W. Yang, X. Chen, et al., "SinSR: Diffusion-Based Image Super-Resolution in a Single Step," *CVPR*, 2024. [source](https://arxiv.org/abs/2311.14760) · [supplementary ablations](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wang_SinSR_Diffusion-Based_Image_CVPR_2024_supplemental.pdf)
+4. A. Zhang, Z. Yue, R. Pei, W. Ren, X. Cao, "Degradation-Guided One-Step Image Super-Resolution with Diffusion Priors," *arXiv preprint*, 2024. [paper](https://arxiv.org/abs/2409.17058)
+5. Y. Tai, R. Xie, C. Zhao, K. Zhang, Z. Zhang, J. Zhou, J. Yang, "AddSR: Accelerating diffusion-based blind super-resolution with adversarial diffusion distillation," *Pattern Recognition*, 2026. [published version](https://doi.org/10.1016/j.patcog.2025.113012) · [manuscript supplying the discussed tables](https://arxiv.org/abs/2404.01717)
+6. L. Dong, Q. Fan, Y. Guo, Z. Wang, Q. Zhang, J. Chen, Y. Luo, C. Zou, "TSD-SR: One-Step Diffusion with Target Score Distillation for Real-World Image Super-Resolution," *CVPR*, 2025. [paper](https://arxiv.org/abs/2411.18263)
+7. Z. Yue, K. Liao, C. C. Loy, "Arbitrary-steps Image Super-resolution via Diffusion Inversion," *CVPR*, 2025. [paper](https://arxiv.org/abs/2412.09013)
+8. L. Sun, R. Wu, Z. Ma, S. Liu, Q. Yi, L. Zhang, "Pixel-level and Semantic-level Adjustable Super-resolution: A Dual-LoRA Approach," *CVPR*, 2025. [paper](https://arxiv.org/abs/2412.03017)
+9. A. Liu, Y. Liu, J. Gu, Y. Qiao, C. Dong, "Blind Image Super-Resolution: A Survey and Beyond," *IEEE TPAMI (early access)*, 2022. [source](https://arxiv.org/abs/2107.03055)
+10. B. B. Moser, A. S. Shanbhag, F. Raue, S. Frolov, S. Palacio and A. Dengel, "Diffusion Models, Image Super-Resolution, and Everything: A Survey," *IEEE Transactions on Neural Networks and Learning Systems*, vol. 36, no. 7, pp. 11793–11813, 2025. [doi](https://doi.org/10.1109/TNNLS.2024.3476671) · [arXiv](https://arxiv.org/abs/2401.00736)
+11. E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, W. Chen, "LoRA: Low-Rank Adaptation of Large Language Models," *ICLR*, 2022. [source](https://arxiv.org/abs/2106.09685)
+12. R. Zhang, P. Isola, A. A. Efros, E. Shechtman and O. Wang, "The Unreasonable Effectiveness of Deep Features as a Perceptual Metric," in *Proc. IEEE/CVF CVPR*, 2018, pp. 586–595. [doi](https://doi.org/10.1109/CVPR.2018.00068) · [arXiv](https://arxiv.org/abs/1801.03924)
+13. Z. Wang, C. Lu, Y. Wang, F. Bao, C. Li, H. Su, J. Zhu, "ProlificDreamer: High-Fidelity and Diverse Text-to-3D Generation with Variational Score Distillation," *NeurIPS*, 2023. [paper](https://arxiv.org/abs/2305.16213)
+14. A. Sauer, D. Lorenz, A. Blattmann, R. Rombach, "Adversarial Diffusion Distillation," *ECCV*, 2024. [paper](https://arxiv.org/abs/2311.17042)
+15. J. Cai, H. Zeng, H. Yong, Z. Cao, L. Zhang, "Toward Real-World Single Image Super-Resolution: A New Benchmark and a New Model," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2019. [source](https://openaccess.thecvf.com/content_ICCV_2019/html/Cai_Toward_Real-World_Single_Image_Super-Resolution_A_New_Benchmark_and_a_ICCV_2019_paper.html)
+16. P. Wei, Z. Xie, H. Lu, Z. Zhan, Q. Ye, W. Zuo, L. Lin, "Component Divide-and-Conquer for Real-World Image Super-Resolution," *ECCV*, 2020. [source](https://arxiv.org/abs/2008.01928)
+17. E. Agustsson and R. Timofte, "NTIRE 2017 Challenge on Single Image Super-Resolution: Dataset and Study," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1122–1131. [doi](https://doi.org/10.1109/CVPRW.2017.150) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Agustsson_NTIRE_2017_Challenge_CVPR_2017_paper.html)
+18. Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, "Image Quality Assessment: From Error Visibility to Structural Similarity," *IEEE Transactions on Image Processing*, vol. 13, no. 4, pp. 600–612, 2004. [doi](https://doi.org/10.1109/TIP.2003.819861)
+19. K. Ding, K. Ma, S. Wang, E. P. Simoncelli, "Image Quality Assessment: Unifying Structure and Texture Similarity," *IEEE TPAMI*, 2022. [source](https://arxiv.org/abs/2004.07728)
+20. A. Mittal, R. Soundararajan and A. C. Bovik, "Making a “Completely Blind” Image Quality Analyzer," *IEEE Signal Processing Letters*, vol. 20, no. 3, pp. 209–212, 2013. [doi](https://doi.org/10.1109/LSP.2012.2227726)
+21. J. Ke, Q. Wang, Y. Wang, P. Milanfar, F. Yang, "MUSIQ: Multi-scale Image Quality Transformer," *ICCV*, 2021. [source](https://arxiv.org/abs/2108.05997)
+22. S. Yang, T. Wu, S. Shi, S. Lao, Y. Gong, M. Cao, J. Wang, Y. Yang, "MANIQA: Multi-dimension Attention Network for No-Reference Image Quality Assessment," *CVPR Workshops*, 2022. [source](https://arxiv.org/abs/2204.08958)
+23. J. Wang, K. C. K. Chan, C. C. Loy, "Exploring CLIP for Assessing the Look and Feel of Images," *AAAI*, 2023. [source](https://arxiv.org/abs/2207.12396)
+24. X. Fan, Z. Wu, H. Wu, L. Cao, "A Survey on Pre-Trained Diffusion Model Distillations," *arXiv preprint, version 2*, 2025. [paper](https://arxiv.org/abs/2502.08364)
+25. Z. Wu, Y. Dong, X. Wei, "TUDSR: Twice Upsampling-Diffusion for Higher Super-Resolution," *CVPR*, 2026. [paper](https://openaccess.thecvf.com/content/CVPR2026/html/Wu_TUDSR_Twice_Upsampling-Diffusion_for_Higher_Super-Resolution_CVPR_2026_paper.html)
+26. P. Esser, R. Rombach, B. Ommer, "Taming Transformers for High-Resolution Image Synthesis," *CVPR*, 2021. [paper](https://arxiv.org/abs/2012.09841)
+27. X. Wang, L. Xie, C. Dong, Y. Shan, "Real-ESRGAN: Training Real-World Blind Super-Resolution With Pure Synthetic Data," *Proceedings of the IEEE/CVF International Conference on Computer Vision*, 2021. [source](https://openaccess.thecvf.com/content/ICCV2021W/AIM/html/Wang_Real-ESRGAN_Training_Real-World_Blind_Super-Resolution_With_Pure_Synthetic_Data_ICCVW_2021_paper.html)
+28. J. Deng, W. Dong, R. Socher, L. Li,  Kai Li,  Li Fei-Fei, "ImageNet: A large-scale hierarchical image database," *CVPR*, 2009. [doi](https://doi.org/10.1109/CVPR.2009.5206848)
+29. R. Rombach, A. Blattmann, D. Lorenz, P. Esser, B. Ommer, "High-Resolution Image Synthesis with Latent Diffusion Models," *CVPR*, 2022. [source](https://arxiv.org/abs/2112.10752)
+30. R. Wu, T. Yang, L. Sun, Z. Zhang, S. Li, L. Zhang, "SeeSR: Towards Semantics-Aware Real-World Image Super-Resolution," *Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition*, 2024. [source](https://openaccess.thecvf.com/content/CVPR2024/html/Wu_SeeSR_Towards_Semantics-Aware_Real-World_Image_Super-Resolution_CVPR_2024_paper.html) · [supplementary experiments](https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_SeeSR_Towards_Semantics-Aware_CVPR_2024_supplemental.pdf)
+31. H. Liu, C. Li, Q. Wu, Y. J. Lee, "Visual Instruction Tuning," *NeurIPS*, 2023. [source](https://arxiv.org/abs/2304.08485)
+32. Y. Li, K. Zhang, J. Liang, et al., "LSDIR: A Large Scale Dataset for Image Restoration," *CVPR Workshops*, 2023. [paper](https://openaccess.thecvf.com/content/CVPR2023W/NTIRE/html/Li_LSDIR_A_Large_Scale_Dataset_for_Image_Restoration_CVPRW_2023_paper.html)
+33. T. Karras, S. Laine, T. Aila, "A Style-Based Generator Architecture for Generative Adversarial Networks," *CVPR*, 2019. [paper](https://arxiv.org/abs/1812.04948)
+34. I. Loshchilov, F. Hutter, "Decoupled Weight Decay Regularization," *ICLR*, 2019. [paper](https://arxiv.org/abs/1711.05101)
+35. P. Esser, S. Kulal, A. Blattmann, et al., "Scaling Rectified Flow Transformers for High-Resolution Image Synthesis," *ICML*, 2024. [paper](https://arxiv.org/abs/2403.03206)
+36. J. Ho, T. Salimans, "Classifier-Free Diffusion Guidance," *arXiv preprint*, 2022. [paper](https://arxiv.org/abs/2207.12598)
+37. R. Timofte, E. Agustsson, L. Van Gool, M.-H. Yang, L. Zhang et al., "NTIRE 2017 Challenge on Single Image Super-Resolution: Methods and Results," in *Proc. IEEE CVPR Workshops*, 2017, pp. 1110–1121. [doi](https://doi.org/10.1109/CVPRW.2017.149) · [CVF](https://openaccess.thecvf.com/content_cvpr_2017_workshops/w12/html/Timofte_NTIRE_2017_Challenge_CVPR_2017_paper.html)
