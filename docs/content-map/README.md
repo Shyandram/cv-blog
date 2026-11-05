@@ -41,7 +41,7 @@ renaming a tutorial or heading (CI runs it with `--check`). Rules for editing li
 | Optimization (OPT) | 8 | [optimization.md](optimization.md) |
 | Information Theory (IT) | 8 | [information-theory.md](information-theory.md) |
 
-Total: 97 tutorials (97 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
+Total: 97 tutorials (97 with a zh-tw twin), 10 English and 10 zh-tw blog posts.
 
 ## Where things are in the repo
 
@@ -66,7 +66,23 @@ Total: 97 tutorials (97 with a zh-tw twin), 2 English and 2 zh-tw blog posts.
 
 ## Blog posts
 
+- `src/content/posts/en/agent-skills-and-harnesses.mdx` — Agents, part 2: skills, harnesses, and work you can verify (2026-11-05)
+- `src/content/posts/en/agent-workflows.mdx` — Agent workflows: from a request to a verified result (2026-11-05)
+- `src/content/posts/en/agents-from-prompts-to-systems.mdx` — Agents, part 1: from prompts to working systems (2026-11-05)
+- `src/content/posts/en/choosing-agent-tools.mdx` — Choosing agent tools: editors, terminals, frameworks, and automation (2026-11-05)
+- `src/content/posts/en/choosing-image-generation-models.mdx` — Choosing image-generation tools and models (2026-11-05)
+- `src/content/posts/en/choosing-video-generation-models.mdx` — Choosing video-generation models: shots, control, and usable results (2026-11-05)
 - `src/content/posts/en/introducing-pixels-perception.md` — Introducing Pixels → Perception (2026-10-04)
+- `src/content/posts/en/models-benchmarks-and-people.mdx` — Choosing models: benchmarks, companies, and the people behind the field (2026-11-05)
+- `src/content/posts/en/openclaw-practical-agent-operations.mdx` — Agents, part 3: using and operating OpenClaw (2026-11-05)
 - `src/content/posts/en/welcome.md` — Welcome to Pixels → Perception (2026-10-04)
+- `src/content/posts/zh-tw/agent-skills-and-harnesses.mdx` — Agent 實務（二）：Skills、harness 與能驗證的工作流程 (2026-11-05)
+- `src/content/posts/zh-tw/agent-workflows.mdx` — Agent 工作流程：從一個請求到可驗證的成果 (2026-11-05)
+- `src/content/posts/zh-tw/agents-from-prompts-to-systems.mdx` — Agent 實務（一）：從提示詞走向能完成工作的系統 (2026-11-05)
+- `src/content/posts/zh-tw/choosing-agent-tools.mdx` — Agent 工具怎麼選：編輯器、終端、框架與自動化 (2026-11-05)
+- `src/content/posts/zh-tw/choosing-image-generation-models.mdx` — 文生圖工具與影像生成模型怎麼選 (2026-11-05)
+- `src/content/posts/zh-tw/choosing-video-generation-models.mdx` — 影片生成模型怎麼選：鏡頭、控制與真正可用的成果 (2026-11-05)
 - `src/content/posts/zh-tw/introducing-pixels-perception.md` — 介紹 Pixels → Perception (2026-10-04)
+- `src/content/posts/zh-tw/models-benchmarks-and-people.mdx` — 大模型怎麼選：評測、公司與領域人物的閱讀地圖 (2026-11-05)
+- `src/content/posts/zh-tw/openclaw-practical-agent-operations.mdx` — Agent 實務（三）：OpenClaw 的使用、擴充與維運 (2026-11-05)
 - `src/content/posts/zh-tw/welcome.md` — 歡迎來到 Pixels → Perception (2026-10-04)

@@ -3,6 +3,7 @@ import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
 
 import { TRACKS, LEVELS } from './lib/taxonomy';
+import { BLOG_TOPICS } from './lib/blog-topics';
 
 // Entry ids look like "en/ml/ml-03-convolutional-networks"; the first segment is the language.
 const tutorials = defineCollection({
@@ -30,6 +31,8 @@ const posts = defineCollection({
     title: z.string(),
     description: z.string(),
     tags: z.array(z.string()).default([]),
+    category: z.enum(BLOG_TOPICS).default('site'),
+    topicOrder: z.number().int().positive().optional(),
     published: z.coerce.date(),
     updated: z.coerce.date().optional(),
     draft: z.boolean().default(false),
