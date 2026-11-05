@@ -28,10 +28,10 @@
 What it means for a computer to learn from data: the learning paradigms, linear and logistic regression, cost functions, gradient descent, overfitting and evaluation, built from scratch in NumPy.
 
 - Files: `src/content/tutorials/en/ml/ml-01-introduction.mdx`, `src/content/tutorials/zh-tw/ml/ml-01-introduction.mdx`
-- Pages: `/en/learn/ml/introduction/`
+- Pages: `/en/learn/ml/introduction/`, `/en/learn/ml/introduction/papers/`
 - Course tree: main chapter · sub-chapters: `ml/ml-01a-linear-algebra`, `ml/ml-01b-probability-information`, `ml/ml-01c-numerical-computation`
 - Level beginner · depth 1 · needs: `foundations/images-as-arrays` · tags: machine-learning, linear-regression, logistic-regression, gradient-descent, regularization
-- Figures: 8 (script `scripts/figures/ml_01_introduction.py`) · references: 25
+- Figures: 9 (script `scripts/figures/ml_01_introduction.py`) · references: 26
 
 - [What you'll learn](/en/learn/ml/introduction/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/introduction/#the-big-picture) `the-big-picture`
@@ -86,6 +86,16 @@ What it means for a computer to learn from data: the learning paradigms, linear 
 - [Key takeaways](/en/learn/ml/introduction/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/introduction/#exercises) `exercises`
 - [Continue through ML/DL](/en/learn/ml/introduction/#continue-through-mldl) `continue-through-mldl`
+- [A first route through the papers](/en/learn/ml/introduction/#a-first-route-through-the-papers) `a-first-route-through-the-papers`
+  - [1 · Frame the problem and its mathematics](/en/learn/ml/introduction/#1--frame-the-problem-and-its-mathematics) `1--frame-the-problem-and-its-mathematics`
+  - [2 · Make training and architectures understandable](/en/learn/ml/introduction/#2--make-training-and-architectures-understandable) `2--make-training-and-architectures-understandable`
+  - [3 · Ask what a representation preserves](/en/learn/ml/introduction/#3--ask-what-a-representation-preserves) `3--ask-what-a-representation-preserves`
+  - [4 · Compare generative objectives and sampling](/en/learn/ml/introduction/#4--compare-generative-objectives-and-sampling) `4--compare-generative-objectives-and-sampling`
+  - [5 · Close the loop with reliable evaluation](/en/learn/ml/introduction/#5--close-the-loop-with-reliable-evaluation) `5--close-the-loop-with-reliable-evaluation`
+
+*Paper guides (one page each, index `papers/`):*
+
+- [Domingos — A Few Useful Things to Know About Machine Learning](/en/learn/ml/introduction/papers/domingos--a-few-useful-things-to-know-about-machine-learning/) `papers/domingos--a-few-useful-things-to-know-about-machine-learning/`
 
 ## ml-01a-linear-algebra
 
@@ -93,10 +103,10 @@ What it means for a computer to learn from data: the learning paradigms, linear 
 Vectors, matrices and tensors, norms, eigendecomposition, the SVD, the pseudo-inverse, trace and determinant, and a step-by-step derivation of PCA, with tested NumPy code.
 
 - Files: `src/content/tutorials/en/ml/ml-01a-linear-algebra.mdx`, `src/content/tutorials/zh-tw/ml/ml-01a-linear-algebra.mdx`
-- Pages: `/en/learn/ml/linear-algebra/`
+- Pages: `/en/learn/ml/linear-algebra/`, `/en/learn/ml/linear-algebra/papers/`
 - Course tree: under `ml/ml-01-introduction`
 - Level beginner · depth 2 · needs: `ml/ml-01-introduction` · tags: linear-algebra, vectors, matrix, svd, pca, numpy
-- Figures: 4 · references: 19 · experiments: linear-transform
+- Figures: 5 · references: 19 · experiments: linear-transform
 
 - [What you'll learn](/en/learn/ml/linear-algebra/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/linear-algebra/#the-big-picture) `the-big-picture`
@@ -123,16 +133,20 @@ Vectors, matrices and tensors, norms, eigendecomposition, the SVD, the pseudo-in
 - [Key takeaways](/en/learn/ml/linear-algebra/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/linear-algebra/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [PCA — Jolliffe and Cadima’s Review](/en/learn/ml/linear-algebra/papers/pca--jolliffe-and-cadimas-review/) `papers/pca--jolliffe-and-cadimas-review/`
+
 ## ml-01b-probability-information
 
 **ML 01B · Probability and Information Theory** · ML 01B・機率與資訊理論  
 Random variables, common distributions, Bayes' rule, expectation and covariance, likelihood, entropy, cross-entropy, KL divergence and structured models, connected to how neural networks are trained and evaluated.
 
 - Files: `src/content/tutorials/en/ml/ml-01b-probability-information.mdx`, `src/content/tutorials/zh-tw/ml/ml-01b-probability-information.mdx`
-- Pages: `/en/learn/ml/probability-information/`
+- Pages: `/en/learn/ml/probability-information/`, `/en/learn/ml/probability-information/papers/`
 - Course tree: under `ml/ml-01-introduction`
 - Level beginner · depth 2 · needs: `ml/ml-01a-linear-algebra` · tags: probability, bayes, information-theory, entropy, cross-entropy, kl
-- Figures: 5 · references: 20 · experiments: probability-mismatch, bayes-decision
+- Figures: 6 · references: 20 · experiments: probability-mismatch, bayes-decision
 
 - [What you'll learn](/en/learn/ml/probability-information/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/probability-information/#the-big-picture) `the-big-picture`
@@ -178,16 +192,20 @@ Random variables, common distributions, Bayes' rule, expectation and covariance,
 - [Key takeaways](/en/learn/ml/probability-information/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/probability-information/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Shannon — A Mathematical Theory of Communication](/en/learn/ml/probability-information/papers/shannon--a-mathematical-theory-of-communication/) `papers/shannon--a-mathematical-theory-of-communication/`
+
 ## ml-01c-numerical-computation
 
 **ML 01C · Numerical Computation and Gradient Checks** · ML 01C・數值計算與梯度檢查  
 Floating point, overflow and underflow, stable softmax, conditioning, gradients, Jacobians and Hessians, Newton-type methods, KKT conditions and mixed precision: make the mathematical model survive actual computation.
 
 - Files: `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx`, `src/content/tutorials/zh-tw/ml/ml-01c-numerical-computation.mdx`
-- Pages: `/en/learn/ml/numerical-computation/`
+- Pages: `/en/learn/ml/numerical-computation/`, `/en/learn/ml/numerical-computation/papers/`
 - Course tree: under `ml/ml-01-introduction`
 - Level beginner · depth 2 · needs: `ml/ml-01b-probability-information` · tags: numerical-computation, floating-point, softmax, optimization, hessian, kkt
-- Figures: 5 · references: 22 · experiments: gradient-check
+- Figures: 6 · references: 22 · experiments: gradient-check
 
 - [What you'll learn](/en/learn/ml/numerical-computation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/numerical-computation/#the-big-picture) `the-big-picture`
@@ -228,15 +246,19 @@ Floating point, overflow and underflow, stable softmax, conditioning, gradients,
 - [Key takeaways](/en/learn/ml/numerical-computation/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/numerical-computation/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Mixed Precision Training — where precision matters](/en/learn/ml/numerical-computation/papers/mixed-precision-training--where-precision-matters/) `papers/mixed-precision-training--where-precision-matters/`
+
 ## ml-02-neural-networks
 
 **ML 02 · Neural Networks from Perceptron to Deep Networks** · ML 02・類神經網路：從感知器到深度網路  
 From a single perceptron to deep networks: activations, normalization, output layers and losses, backpropagation, optimizers, and the habits that make a network train and generalize.
 
 - Files: `src/content/tutorials/en/ml/ml-02-neural-networks.mdx`, `src/content/tutorials/zh-tw/ml/ml-02-neural-networks.mdx`
-- Pages: `/en/learn/ml/neural-networks/`
+- Pages: `/en/learn/ml/neural-networks/`, `/en/learn/ml/neural-networks/papers/`
 - Level intermediate · depth 1 · needs: `ml/ml-01c-numerical-computation` · tags: neural-networks, backpropagation, activation-functions, optimization, regularization, pytorch
-- Figures: 7 (script `scripts/figures/ml_02_neural_networks.py`) · references: 29 · experiments: mlp-training, gradient-check
+- Figures: 8 (script `scripts/figures/ml_02_neural_networks.py`) · references: 30 · experiments: mlp-training, gradient-check
 
 - [What you'll learn](/en/learn/ml/neural-networks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/neural-networks/#the-big-picture) `the-big-picture`
@@ -276,15 +298,19 @@ From a single perceptron to deep networks: activations, normalization, output la
 - [Key takeaways](/en/learn/ml/neural-networks/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/neural-networks/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Adam — adaptive updates and the convergence caveat](/en/learn/ml/neural-networks/papers/adam--adaptive-updates-and-the-convergence-caveat/) `papers/adam--adaptive-updates-and-the-convergence-caveat/`
+
 ## ml-03-convolutional-networks
 
 **ML 03 · Convolution, Image Filtering and CNNs** · ML 03・卷積、影像濾波與 CNN  
 From blur and Sobel kernels to learned filters: convolution versus correlation, border handling, padding, stride, dilation, pooling, receptive fields, backpropagation through a convolution, and the classic CNN architectures.
 
 - Files: `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx`, `src/content/tutorials/zh-tw/ml/ml-03-convolutional-networks.mdx`
-- Pages: `/en/learn/ml/convolutional-networks/`
+- Pages: `/en/learn/ml/convolutional-networks/`, `/en/learn/ml/convolutional-networks/papers/`
 - Level intermediate · depth 1 · needs: `ml/ml-02-neural-networks`, `foundations/images-as-arrays` · tags: filtering, convolution, numpy, opencv, cnn, resnet, convnext, pytorch
-- Figures: 9 · references: 31 · experiments: kernel-filter, receptive-field
+- Figures: 10 · references: 31 · experiments: kernel-filter, receptive-field
 
 - [What you'll learn](/en/learn/ml/convolutional-networks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/convolutional-networks/#the-big-picture) `the-big-picture`
@@ -311,15 +337,19 @@ From blur and Sobel kernels to learned filters: convolution versus correlation, 
 - [Key takeaways](/en/learn/ml/convolutional-networks/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/convolutional-networks/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [ResNet — learning a residual instead of a whole mapping](/en/learn/ml/convolutional-networks/papers/resnet--learning-a-residual-instead-of-a-whole-mapping/) `papers/resnet--learning-a-residual-instead-of-a-whole-mapping/`
+
 ## ml-03a-recurrent-recursive-networks
 
 **ML 04 · Recurrent and Recursive Networks** · ML 04・循環與遞迴神經網路  
 Learn from sequences and trees: shared recurrent state, backpropagation through time, vanishing and exploding gradients, LSTM and GRU gates, bidirectional and encoder–decoder models, attention as the bridge to Transformers, recursive networks, and their uses in vision.
 
 - Files: `src/content/tutorials/en/ml/ml-03a-recurrent-recursive-networks.mdx`, `src/content/tutorials/zh-tw/ml/ml-03a-recurrent-recursive-networks.mdx`
-- Pages: `/en/learn/ml/recurrent-recursive-networks/`
+- Pages: `/en/learn/ml/recurrent-recursive-networks/`, `/en/learn/ml/recurrent-recursive-networks/papers/`
 - Level intermediate · depth 1 · needs: `ml/ml-02-neural-networks` · tags: rnn, lstm, gru, recursive-networks, sequence-modeling, bptt, attention, mamba, state-space-models
-- Figures: 7 · references: 30 · experiments: selective-memory
+- Figures: 8 · references: 30 · experiments: selective-memory
 
 - [What you'll learn](/en/learn/ml/recurrent-recursive-networks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/recurrent-recursive-networks/#the-big-picture) `the-big-picture`
@@ -345,15 +375,19 @@ Learn from sequences and trees: shared recurrent state, backpropagation through 
 - [Key takeaways](/en/learn/ml/recurrent-recursive-networks/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/recurrent-recursive-networks/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [LSTM — protecting a state across long delays](/en/learn/ml/recurrent-recursive-networks/papers/lstm--protecting-a-state-across-long-delays/) `papers/lstm--protecting-a-state-across-long-delays/`
+
 ## ml-04-vision-transformers
 
 **ML 05 · Attention and Vision Transformers** · ML 05・注意力與視覺 Transformer  
 Build self-attention from queries, keys and values; add multiple heads, positional encodings and the Transformer block; turn images into patch tokens with ViT; then study DeiT, Swin, hybrid CNN–Transformer models, efficient attention and state-space alternatives.
 
 - Files: `src/content/tutorials/en/ml/ml-04-vision-transformers.mdx`, `src/content/tutorials/zh-tw/ml/ml-04-vision-transformers.mdx`
-- Pages: `/en/learn/ml/vision-transformers/`
+- Pages: `/en/learn/ml/vision-transformers/`, `/en/learn/ml/vision-transformers/papers/`
 - Level intermediate · depth 1 · needs: `ml/ml-03-convolutional-networks` · tags: attention, transformer, vit, swin, positional-encoding, mamba, state-space-models, pytorch
-- Figures: 7 · references: 34 · experiments: attention
+- Figures: 8 · references: 34 · experiments: attention
 
 - [What you'll learn](/en/learn/ml/vision-transformers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/vision-transformers/#the-big-picture) `the-big-picture`
@@ -376,16 +410,20 @@ Build self-attention from queries, keys and values; add multiple heads, position
 - [Key takeaways](/en/learn/ml/vision-transformers/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/vision-transformers/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [ViT — image patches and the role of pretraining scale](/en/learn/ml/vision-transformers/papers/vit--image-patches-and-the-role-of-pretraining-scale/) `papers/vit--image-patches-and-the-role-of-pretraining-scale/`
+
 ## ml-05-representation-learning
 
 **ML 06 · Representation Learning and Self-Supervision** · ML 06・表示學習與自監督  
 What a representation is, why distributed features transfer, and how SimCLR, MoCo, BYOL, SimSiam, DINO, MAE, JEPA and CLIP learn them without labels, with honest linear-probe and fine-tuning evaluation.
 
 - Files: `src/content/tutorials/en/ml/ml-05-representation-learning.mdx`, `src/content/tutorials/zh-tw/ml/ml-05-representation-learning.mdx`
-- Pages: `/en/learn/ml/representation-learning/`
+- Pages: `/en/learn/ml/representation-learning/`, `/en/learn/ml/representation-learning/papers/`
 - Course tree: main chapter · sub-chapters: `ml/ml-05a-factor-models-autoencoders`
 - Level intermediate · depth 1 · needs: `ml/ml-04-vision-transformers` · tags: representation-learning, self-supervised, contrastive, transfer-learning, clip, mae
-- Figures: 8 · references: 24 · experiments: contrastive-alignment
+- Figures: 9 · references: 24 · experiments: contrastive-alignment
 
 - [What you'll learn](/en/learn/ml/representation-learning/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/representation-learning/#the-big-picture) `the-big-picture`
@@ -418,16 +456,20 @@ What a representation is, why distributed features transfer, and how SimCLR, MoC
 - [Key takeaways](/en/learn/ml/representation-learning/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/representation-learning/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [SimCLR — what a positive pair teaches a representation](/en/learn/ml/representation-learning/papers/simclr--what-a-positive-pair-teaches-a-representation/) `papers/simclr--what-a-positive-pair-teaches-a-representation/`
+
 ## ml-05a-factor-models-autoencoders
 
 **ML 06A · Linear Factor Models and Autoencoders** · ML 06A・線性因子模型與自編碼器  
 PCA, probabilistic PCA, factor analysis, ICA, sparse coding, NMF and autoencoders (undercomplete, sparse, denoising, contractive): how compression, noise assumptions and the manifold view lead to VAEs.
 
 - Files: `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx`, `src/content/tutorials/zh-tw/ml/ml-05a-factor-models-autoencoders.mdx`
-- Pages: `/en/learn/ml/factor-models-autoencoders/`
+- Pages: `/en/learn/ml/factor-models-autoencoders/`, `/en/learn/ml/factor-models-autoencoders/papers/`
 - Course tree: under `ml/ml-05-representation-learning`
 - Level intermediate · depth 2 · needs: `ml/ml-01b-probability-information`, `ml/ml-02-neural-networks` · tags: pca, factor-analysis, ica, sparse-coding, autoencoder, denoising
-- Figures: 5 · references: 21 · experiments: transform-coding, vae-tradeoff
+- Figures: 6 · references: 21 · experiments: transform-coding, vae-tradeoff
 
 - [What you'll learn](/en/learn/ml/factor-models-autoencoders/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/factor-models-autoencoders/#the-big-picture) `the-big-picture`
@@ -469,15 +511,19 @@ PCA, probabilistic PCA, factor analysis, ICA, sparse coding, NMF and autoencoder
 - [Key takeaways](/en/learn/ml/factor-models-autoencoders/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/factor-models-autoencoders/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [Probabilistic PCA — a density model behind a subspace](/en/learn/ml/factor-models-autoencoders/papers/probabilistic-pca--a-density-model-behind-a-subspace/) `papers/probabilistic-pca--a-density-model-behind-a-subspace/`
+
 ## ml-06-generative-models
 
 **ML 07 · Generative Models: Autoencoders, VAEs, GANs and Flows** · ML 07・生成模型：自編碼器、VAE、GAN 與正規化流  
 Learn distributions rather than labels: likelihood-based versus implicit models, the ELBO and reparameterization, adversarial training and Wasserstein GANs, normalizing flows, and how generative models are evaluated.
 
 - Files: `src/content/tutorials/en/ml/ml-06-generative-models.mdx`, `src/content/tutorials/zh-tw/ml/ml-06-generative-models.mdx`
-- Pages: `/en/learn/ml/generative-models/`
+- Pages: `/en/learn/ml/generative-models/`, `/en/learn/ml/generative-models/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-05-representation-learning` · tags: generative-models, autoencoder, vae, gan, normalizing-flow, likelihood
-- Figures: 6 · references: 37 · experiments: vae-tradeoff, flow-density
+- Figures: 8 · references: 37 · experiments: vae-tradeoff, flow-density
 
 - [What you'll learn](/en/learn/ml/generative-models/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/generative-models/#the-big-picture) `the-big-picture`
@@ -520,15 +566,20 @@ Learn distributions rather than labels: likelihood-based versus implicit models,
 - [Key takeaways](/en/learn/ml/generative-models/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/generative-models/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [VAE — learning through a tractable lower bound](/en/learn/ml/generative-models/papers/vae--learning-through-a-tractable-lower-bound/) `papers/vae--learning-through-a-tractable-lower-bound/`
+- [GAN — a distribution game and its idealized guarantee](/en/learn/ml/generative-models/papers/gan--a-distribution-game-and-its-idealized-guarantee/) `papers/gan--a-distribution-game-and-its-idealized-guarantee/`
+
 ## ml-07-diffusion-flow-matching
 
 **ML 08 · Diffusion Models and Flow Matching** · ML 08・擴散模型與流匹配  
 Derive noise, clean-image and velocity prediction, compare pixel and latent generation with JiT and representation autoencoders, and understand pretrained image/video diffusion and flow pipelines.
 
 - Files: `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx`, `src/content/tutorials/zh-tw/ml/ml-07-diffusion-flow-matching.mdx`
-- Pages: `/en/learn/ml/diffusion-flow-matching/`
+- Pages: `/en/learn/ml/diffusion-flow-matching/`, `/en/learn/ml/diffusion-flow-matching/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-06-generative-models`, `ml/ml-04-vision-transformers` · tags: diffusion, ddpm, score-matching, flow-matching, rectified-flow, dit, jit, representation-autoencoders, pixel-space, latent-space, video-generation
-- Figures: 8 · references: 48 · experiments: diffusion-targets, transport-steps
+- Figures: 10 · references: 48 · experiments: diffusion-targets, transport-steps
 
 - [What you'll learn](/en/learn/ml/diffusion-flow-matching/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/diffusion-flow-matching/#the-big-picture) `the-big-picture`
@@ -577,15 +628,20 @@ Derive noise, clean-image and velocity prediction, compare pixel and latent gene
 - [Key takeaways](/en/learn/ml/diffusion-flow-matching/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/diffusion-flow-matching/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [DDPM — noise prediction and the quality–likelihood tradeoff](/en/learn/ml/diffusion-flow-matching/papers/ddpm--noise-prediction-and-the-qualitylikelihood-tradeoff/) `papers/ddpm--noise-prediction-and-the-qualitylikelihood-tradeoff/`
+- [Flow Matching — regress a velocity, then integrate it](/en/learn/ml/diffusion-flow-matching/papers/flow-matching--regress-a-velocity-then-integrate-it/) `papers/flow-matching--regress-a-velocity-then-integrate-it/`
+
 ## ml-08-autoregressive-vision
 
 **ML 09 · Autoregressive Vision: Pixels, Tokens and Scales** · ML 09・視覺自迴歸：像素、Tokens 與尺度  
 Factor an image distribution into conditionals: PixelCNN, VQ-VAE and VQGAN tokenizers, GPT-style token transformers, next-scale prediction, masked generative models, continuous tokens and how they compare with diffusion.
 
 - Files: `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx`, `src/content/tutorials/zh-tw/ml/ml-08-autoregressive-vision.mdx`
-- Pages: `/en/learn/ml/autoregressive-vision/`
+- Pages: `/en/learn/ml/autoregressive-vision/`, `/en/learn/ml/autoregressive-vision/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-06-generative-models`, `ml/ml-04-vision-transformers` · tags: autoregressive, pixelcnn, vq-vae, vqgan, var, maskgit, tokenization
-- Figures: 6 · references: 24 · experiments: autoregressive-pixels, decoding-controls
+- Figures: 7 · references: 24 · experiments: autoregressive-pixels, decoding-controls
 
 - [What you'll learn](/en/learn/ml/autoregressive-vision/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/autoregressive-vision/#the-big-picture) `the-big-picture`
@@ -616,15 +672,19 @@ Factor an image distribution into conditionals: PixelCNN, VQ-VAE and VQGAN token
 - [Key takeaways](/en/learn/ml/autoregressive-vision/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/autoregressive-vision/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [VQ-VAE — discrete codes and a separately learned prior](/en/learn/ml/autoregressive-vision/papers/vq-vae--discrete-codes-and-a-separately-learned-prior/) `papers/vq-vae--discrete-codes-and-a-separately-learned-prior/`
+
 ## ml-09-foundation-models
 
 **ML 10 · Foundation Models and Vision–Language Learning** · ML 10・基礎模型與視覺語言學習  
 What makes a model a foundation model: scaling laws, pre-training objectives, CLIP and SigLIP, DINOv2 features, promptable segmentation, multimodal language models, adaptation with linear probes and LoRA, and how to evaluate the risks.
 
 - Files: `src/content/tutorials/en/ml/ml-09-foundation-models.mdx`, `src/content/tutorials/zh-tw/ml/ml-09-foundation-models.mdx`
-- Pages: `/en/learn/ml/foundation-models/`
+- Pages: `/en/learn/ml/foundation-models/`, `/en/learn/ml/foundation-models/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-05-representation-learning`, `ml/ml-08-autoregressive-vision`, `ml/ml-07-diffusion-flow-matching` · tags: foundation-models, clip, siglip, sam, vlm, lora, world-models, geometry
-- Figures: 6 · references: 45 · experiments: contrastive-alignment
+- Figures: 7 · references: 45 · experiments: contrastive-alignment
 
 - [What you'll learn](/en/learn/ml/foundation-models/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/foundation-models/#the-big-picture) `the-big-picture`
@@ -663,15 +723,19 @@ What makes a model a foundation model: scaling laws, pre-training objectives, CL
 - [Key takeaways](/en/learn/ml/foundation-models/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/foundation-models/#exercises) `exercises`
 
+*Paper guides (one page each, index `papers/`):*
+
+- [CLIP — from paired captions to a zero-shot classifier](/en/learn/ml/foundation-models/papers/clip--from-paired-captions-to-a-zero-shot-classifier/) `papers/clip--from-paired-captions-to-a-zero-shot-classifier/`
+
 ## ml-10-evaluation-deployment
 
 **ML 11 · Evaluation, Efficiency and Deployment** · ML 11・評估、效率與部署  
 Split data without leakage, cross-validate, attach confidence intervals, check calibration and robustness under shift, measure FLOPs, memory and latency honestly, then export, compress, monitor and reproduce a model.
 
 - Files: `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx`, `src/content/tutorials/zh-tw/ml/ml-10-evaluation-deployment.mdx`
-- Pages: `/en/learn/ml/evaluation-deployment/`
+- Pages: `/en/learn/ml/evaluation-deployment/`, `/en/learn/ml/evaluation-deployment/papers/`
 - Level advanced · depth 1 · needs: `ml/ml-09-foundation-models` · tags: evaluation, cross-validation, calibration, distribution-shift, quantization, deployment
-- Figures: 7 · references: 46 · experiments: temperature-calibration
+- Figures: 8 · references: 46 · experiments: temperature-calibration
 
 - [What you'll learn](/en/learn/ml/evaluation-deployment/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/ml/evaluation-deployment/#the-big-picture) `the-big-picture`
@@ -717,4 +781,8 @@ Split data without leakage, cross-validate, attach confidence intervals, check c
 - [Modern view](/en/learn/ml/evaluation-deployment/#modern-view) `modern-view`
 - [Key takeaways](/en/learn/ml/evaluation-deployment/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/ml/evaluation-deployment/#exercises) `exercises`
+
+*Paper guides (one page each, index `papers/`):*
+
+- [Temperature Scaling — confidence without changing the class](/en/learn/ml/evaluation-deployment/papers/temperature-scaling--confidence-without-changing-the-class/) `papers/temperature-scaling--confidence-without-changing-the-class/`
 

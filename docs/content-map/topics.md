@@ -15,6 +15,7 @@
 
 ## 1
 
+- 1 · Frame the problem and its mathematics — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#1--frame-the-problem-and-its-mathematics`
 - 1. Causal sequence probability — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/#1-causal-sequence-probability`
 - 1. Distances, projections and separation — OPT 08 · `src/content/tutorials/en/optimization/opt-08-applications-modern-methods.mdx` · `/en/learn/optimization/applications-modern-methods/#1-distances-projections-and-separation`
 - 1. Equality constraints change the permitted directions — OPT 07 · `src/content/tutorials/en/optimization/opt-07-constrained-interior-point.mdx` · `/en/learn/optimization/constrained-interior-point/#1-equality-constraints-change-the-permitted-directions`
@@ -43,6 +44,7 @@
 
 ## 2
 
+- 2 · Make training and architectures understandable — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#2--make-training-and-architectures-understandable`
 - 2-D sampling and aliasing — IP 04 · `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx` · `/en/learn/image-processing/frequency-domain/#2-d-sampling-and-aliasing`
 - 2. A constrained quadratic with an inspectable certificate — OPT 07 · `src/content/tutorials/en/optimization/opt-07-constrained-interior-point.mdx` · `/en/learn/optimization/constrained-interior-point/#2-a-constrained-quadratic-with-an-inspectable-certificate`
 - 2. A short history: rules, statistics, neural networks and pretraining — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#2-a-short-history-rules-statistics-neural-networks-and-pretraining`
@@ -56,6 +58,7 @@
 
 ## 3
 
+- 3 · Ask what a representation preserves — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#3--ask-what-a-representation-preserves`
 - 3. A runnable causal model — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/#3-a-runnable-causal-model`
 - 3. From counts to normalized probabilities — NLP 05 · `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` · `/en/learn/nlp/recurrent-neural-networks/#3-from-counts-to-normalized-probabilities`
 - 3. From text to BERT input — NLP 10 · `src/content/tutorials/en/nlp/nlp-10-pretrained-bert.mdx` · `/en/learn/nlp/pretrained-bert/#3-from-text-to-bert-input`
@@ -73,6 +76,7 @@
 
 ## 4
 
+- 4 · Compare generative objectives and sampling — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#4--compare-generative-objectives-and-sampling`
 - 4. Decoding: greedy search, beam search and length normalization — NLP 08 · `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` · `/en/learn/nlp/seq2seq-transformers/#4-decoding-greedy-search-beam-search-and-length-normalization`
 - 4. Parts of speech — NLP 02 · `src/content/tutorials/en/nlp/nlp-02-linguistic-essentials.mdx` · `/en/learn/nlp/linguistic-essentials/#4-parts-of-speech`
 - 4. Proximal operations handle nonsmooth structure — OPT 08 · `src/content/tutorials/en/optimization/opt-08-applications-modern-methods.mdx` · `/en/learn/optimization/applications-modern-methods/#4-proximal-operations-handle-nonsmooth-structure`
@@ -86,6 +90,7 @@
 
 ## 5
 
+- 5 · Close the loop with reliable evaluation — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#5--close-the-loop-with-reliable-evaluation`
 - 5. A complete one-dimensional barrier experiment — OPT 07 · `src/content/tutorials/en/optimization/opt-07-constrained-interior-point.mdx` · `/en/learn/optimization/constrained-interior-point/#5-a-complete-one-dimensional-barrier-experiment`
 - 5. Evaluating translations: BLEU, chrF and COMET — NLP 08 · `src/content/tutorials/en/nlp/nlp-08-seq2seq-transformers.mdx` · `/en/learn/nlp/seq2seq-transformers/#5-evaluating-translations-bleu-chrf-and-comet`
 - 5. Generation, stopping and the memory ceiling — NLP 05 · `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` · `/en/learn/nlp/recurrent-neural-networks/#5-generation-stopping-and-the-memory-ceiling`
@@ -172,6 +177,7 @@
 - A direction and a distance — OPT 06 · `src/content/tutorials/en/optimization/opt-06-gradient-newton.mdx` · `/en/learn/optimization/gradient-newton/#a-direction-and-a-distance`
 - A failure that more training cannot remove — NLP 05 · `src/content/tutorials/en/nlp/nlp-05-recurrent-neural-networks.mdx` · `/en/learn/nlp/recurrent-neural-networks/#a-failure-that-more-training-cannot-remove`
 - A fast detector that one ordinary GPU can train — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/real-time-detection/#a-fast-detector-that-one-ordinary-gpu-can-train`
+- A first route through the papers — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#a-first-route-through-the-papers`
 - A fitting and design audit — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/fitting-estimation/#a-fitting-and-design-audit`
 - A fitting dual built from the norm conjugate — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/duality-kkt/#a-fitting-dual-built-from-the-norm-conjugate`
 - A fragile example: least significant bits — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/compression-watermarking/#a-fragile-example-least-significant-bits`
@@ -245,6 +251,7 @@
 - Activation: Mish — DLCV 03A · `src/content/tutorials/en/deep-learning/dl-03a-real-time-detection.mdx` · `/en/learn/deep-learning/real-time-detection/#activation-mish`
 - Activations and gates — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#activations-and-gates`
 - AdaIR: adaptively separate and exchange frequency information — DLCV 09 (papers) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/papers/adair-adaptively-separate-and-exchange-frequency-information/`
+- Adam — adaptive updates and the convergence caveat — ML 02 (papers) · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/neural-networks/papers/adam--adaptive-updates-and-the-convergence-caveat/`
 - Adapting a foundation model — ML 10 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/#adapting-a-foundation-model`
 - Adaptive filters — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/#adaptive-filters`
 - Add an escape branch to make the catalog lossless — IT 02 · `src/content/tutorials/en/information-theory/it-02-typicality-entropy-rates.mdx` · `/en/learn/information-theory/typicality-entropy-rates/#add-an-escape-branch-to-make-the-catalog-lossless`
@@ -544,6 +551,7 @@
 - Classifier-free guidance (CFG) — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#classifier-free-guidance-cfg`
 - Classifier-free guidance for autoregressive models — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#classifier-free-guidance-for-autoregressive-models`
 - Classifiers built from densities — PR 02 · `src/content/tutorials/en/pattern-recognition/pr-02-density-estimation.mdx` · `/en/learn/pattern-recognition/density-estimation/#classifiers-built-from-densities`
+- CLIP — from paired captions to a zero-shot classifier — ML 10 (papers) · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/papers/clip--from-paired-captions-to-a-zero-shot-classifier/`
 - CLIP-IQA and Q-Align scores — DLCV 09 (notes) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/notes/clip-iqa-and-q-align-scores/`
 - CLIP: zero-shot classification with language — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/image-classification/#clip-zero-shot-classification-with-language`
 - Closed set: rank-1 and the CMC curve — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/face-metric-learning/#closed-set-rank-1-and-the-cmc-curve`
@@ -828,6 +836,7 @@
 - DDFM: a diffusion prior with likelihood rectification — DLCV 10 (papers) · `src/content/tutorials/en/deep-learning/dl-05b-image-fusion.mdx` · `/en/learn/deep-learning/image-fusion/papers/ddfm-a-diffusion-prior-with-likelihood-rectification/`
 - DDIM: same training, different sampler — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#ddim-same-training-different-sampler`
 - DDNM: preserve measured components and generate the null space — DLCV 09B (papers) · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/generative-restoration/papers/ddnm-preserve-measured-components-and-generate-the-null-space/`
+- DDPM — noise prediction and the quality–likelihood tradeoff — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/ddpm--noise-prediction-and-the-qualitylikelihood-tradeoff/`
 - DDPM ancestral sampling — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#ddpm-ancestral-sampling`
 - Deblurring — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/#deblurring`
 - Deblurring and general inverse problems — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/#deblurring-and-general-inverse-problems`
@@ -970,6 +979,7 @@
 - Does realistic video mean physical understanding? — DLCV 13 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/world-models/#does-realistic-video-mean-physical-understanding`
 - Domain restrictions are part of duality — OPT 04 · `src/content/tutorials/en/optimization/opt-04-duality-kkt.mdx` · `/en/learn/optimization/duality-kkt/#domain-restrictions-are-part-of-duality`
 - Domain-adversarial training and the gradient-reversal layer — DLCV 14 (notes) · `src/content/tutorials/en/deep-learning/dl-11-robustness.mdx` · `/en/learn/deep-learning/robustness/notes/domain-adversarial-training-and-the-gradient-reversal-layer/`
+- Domingos — A Few Useful Things to Know About Machine Learning — ML 01 (papers) · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/papers/domingos--a-few-useful-things-to-know-about-machine-learning/`
 - Donut: a reading guide — DLCV 06 (papers) · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/papers/donut-a-reading-guide/`
 - Double descent: reading Belkin, Hsu, Ma and Mandal (PNAS 2019) — PR 09 (papers) · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/papers/double-descent-reading-belkin-hsu-ma-and-mandal-pnas-2019/`
 - Dreamer: learning behavior in imagination — DLCV 13 · `src/content/tutorials/en/deep-learning/dl-07-world-models.mdx` · `/en/learn/deep-learning/world-models/#dreamer-learning-behavior-in-imagination`
@@ -1153,6 +1163,7 @@
 - Fitting the Bradley–Terry model — DLCV 09 (notes) · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/notes/fitting-the-bradleyterry-model/`
 - Flip testing and left–right bookkeeping — DLCV 05 (notes) · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/pose-keypoints/notes/flip-testing-and-leftright-bookkeeping/`
 - Floating-point numbers — ML 01C · `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx` · `/en/learn/ml/numerical-computation/#floating-point-numbers`
+- Flow Matching — regress a velocity, then integrate it — ML 08 (papers) · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/papers/flow-matching--regress-a-velocity-then-integrate-it/`
 - Flow matching: learn a transport velocity — ML 08 · `src/content/tutorials/en/ml/ml-07-diffusion-flow-matching.mdx` · `/en/learn/ml/diffusion-flow-matching/#flow-matching-learn-a-transport-velocity`
 - Flow metrics — DLCV 11A · `src/content/tutorials/en/deep-learning/dl-08a-depth-optical-flow.mdx` · `/en/learn/deep-learning/depth-optical-flow/#flow-metrics`
 - Focal loss and class imbalance — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/object-detection/#focal-loss-and-class-imbalance`
@@ -1223,6 +1234,7 @@
 
 - Gamma correction — DLCV 09C · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/#gamma-correction`
 - Gamut — IP 06 · `src/content/tutorials/en/image-processing/dip-06-color.mdx` · `/en/learn/image-processing/color/#gamut`
+- GAN — a distribution game and its idealized guarantee — ML 07 (papers) · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/generative-models/papers/gan--a-distribution-game-and-its-idealized-guarantee/`
 - GAN-prior restorers in more detail — DLCV 09B (notes) · `src/content/tutorials/en/deep-learning/dl-04c-generative-restoration.mdx` · `/en/learn/deep-learning/generative-restoration/notes/gan-prior-restorers-in-more-detail/`
 - GANs: learning with an adversary — ML 07 · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/generative-models/#gans-learning-with-an-adversary`
 - Gated recurrent unit (GRU) — ML 04 · `src/content/tutorials/en/ml/ml-03a-recurrent-recursive-networks.mdx` · `/en/learn/ml/recurrent-recursive-networks/#gated-recurrent-unit-gru`
@@ -1586,6 +1598,7 @@
 - Low-light enhancement (brief) — DLCV 09 · `src/content/tutorials/en/deep-learning/dl-04-image-restoration.mdx` · `/en/learn/deep-learning/image-restoration/#low-light-enhancement-brief`
 - Low-light images in color space — DLCV 09C · `src/content/tutorials/en/deep-learning/dl-05-low-light-enhancement.mdx` · `/en/learn/deep-learning/low-light-enhancement/#low-light-images-in-color-space`
 - Low-rank factorization — DLCV 01C · `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` · `/en/learn/deep-learning/model-compression/#low-rank-factorization`
+- LSTM — protecting a state across long delays — ML 04 (papers) · `src/content/tutorials/en/ml/ml-03a-recurrent-recursive-networks.mdx` · `/en/learn/ml/recurrent-recursive-networks/papers/lstm--protecting-a-state-across-long-delays/`
 - LZW coding — IP 08 · `src/content/tutorials/en/image-processing/dip-08-compression-watermarking.mdx` · `/en/learn/image-processing/compression-watermarking/#lzw-coding`
 
 ## M
@@ -1681,6 +1694,7 @@
 - Mixed precision — ML 01C · `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx` · `/en/learn/ml/numerical-computation/#mixed-precision`
 - Mixed precision and loss scaling — DLCV 01A · `src/content/tutorials/en/deep-learning/dl-01a-training-practice.mdx` · `/en/learn/deep-learning/training-practice/#mixed-precision-and-loss-scaling`
 - Mixed precision and other number formats — DLCV 01C · `src/content/tutorials/en/deep-learning/dl-01c-model-compression.mdx` · `/en/learn/deep-learning/model-compression/#mixed-precision-and-other-number-formats`
+- Mixed Precision Training — where precision matters — ML 01C (papers) · `src/content/tutorials/en/ml/ml-01c-numerical-computation.mdx` · `/en/learn/ml/numerical-computation/papers/mixed-precision-training--where-precision-matters/`
 - Mixtures and latent variables — ML 01B · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/probability-information/#mixtures-and-latent-variables`
 - MobileNet: factorize the convolution — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/image-classification/#mobilenet-factorize-the-convolution`
 - MoCo: a queue of negatives and a momentum encoder — ML 06 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/#moco-a-queue-of-negatives-and-a-momentum-encoder`
@@ -1905,6 +1919,7 @@
 - Pattern classification by prototype matching — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/pattern-classification/#pattern-classification-by-prototype-matching`
 - Pattern vectors — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/pattern-classification/#pattern-vectors`
 - Patterns and pattern classes — IP 13 · `src/content/tutorials/en/image-processing/dip-13-pattern-classification.mdx` · `/en/learn/image-processing/pattern-classification/#patterns-and-pattern-classes`
+- PCA — Jolliffe and Cadima’s Review — ML 01A (papers) · `src/content/tutorials/en/ml/ml-01a-linear-algebra.mdx` · `/en/learn/ml/linear-algebra/papers/pca--jolliffe-and-cadimas-review/`
 - PCA: the best linear reconstruction subspace — ML 06A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/factor-models-autoencoders/#pca-the-best-linear-reconstruction-subspace`
 - PCK and PCKh — DLCV 05 · `src/content/tutorials/en/deep-learning/dl-06a-pose-keypoints.mdx` · `/en/learn/deep-learning/pose-keypoints/#pck-and-pckh`
 - Per-frame fidelity: Y-channel PSNR and SSIM — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#per-frame-fidelity-y-channel-psnr-and-ssim`
@@ -1976,6 +1991,7 @@
 - Principal components as feature descriptors — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/#principal-components-as-feature-descriptors`
 - Principles of computed tomography (CT) — IP 05 · `src/content/tutorials/en/image-processing/dip-05-restoration-reconstruction.mdx` · `/en/learn/image-processing/restoration-reconstruction/#principles-of-computed-tomography-ct`
 - Privacy, consent and the law — DLCV 02A · `src/content/tutorials/en/deep-learning/dl-02a-face-metric-learning.mdx` · `/en/learn/deep-learning/face-metric-learning/#privacy-consent-and-the-law`
+- Probabilistic PCA — a density model behind a subspace — ML 06A (papers) · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/factor-models-autoencoders/papers/probabilistic-pca--a-density-model-behind-a-subspace/`
 - Probabilistic PCA (PPCA) — ML 06A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/factor-models-autoencoders/#probabilistic-pca-ppca`
 - Probabilistic PCA and factor analysis — ML 06A · `src/content/tutorials/en/ml/ml-05a-factor-models-autoencoders.mdx` · `/en/learn/ml/factor-models-autoencoders/#probabilistic-pca-and-factor-analysis`
 - Probabilities over structures — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/syntactic-semantic-tasks/#probabilities-over-structures`
@@ -2133,6 +2149,7 @@
 - Residual connections and residual scaling — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#residual-connections-and-residual-scaling`
 - Residual connections and the road to Transformers — ML 02 · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/neural-networks/#residual-connections-and-the-road-to-transformers`
 - Residual norms express priorities — OPT 05 · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/fitting-estimation/#residual-norms-express-priorities`
+- ResNet — learning a residual instead of a whole mapping — ML 03 (papers) · `src/content/tutorials/en/ml/ml-03-convolutional-networks.mdx` · `/en/learn/ml/convolutional-networks/papers/resnet--learning-a-residual-instead-of-a-whole-mapping/`
 - ResNet (2015) and why residual connections work — DLCV 01 · `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` · `/en/learn/deep-learning/deep-learning-for-image-processing/#resnet-2015-and-why-residual-connections-work`
 - ResNet versus EDSR and NAFNet — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#resnet-versus-edsr-and-nafnet`
 - ResNet: learning residuals — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/image-classification/#resnet-learning-residuals`
@@ -2243,6 +2260,7 @@
 - Set prediction with transformers: DETR and its descendants — DLCV 03 · `src/content/tutorials/en/deep-learning/dl-03-object-detection.mdx` · `/en/learn/deep-learning/object-detection/#set-prediction-with-transformers-detr-and-its-descendants`
 - Setup and notation — DLCV 09A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/super-resolution/#setup-and-notation`
 - Seven ways to store a 3D scene — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/3d-reconstruction/#seven-ways-to-store-a-3d-scene`
+- Shannon — A Mathematical Theory of Communication — ML 01B (papers) · `src/content/tutorials/en/ml/ml-01b-probability-information.mdx` · `/en/learn/ml/probability-information/papers/shannon--a-mathematical-theory-of-communication/`
 - Shape numbers — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/#shape-numbers`
 - Shape, dtype and memory — Images as Arrays · `src/content/tutorials/en/foundations/images-as-arrays.mdx` · `/en/learn/foundations/images-as-arrays/#shape-dtype-and-memory`
 - Sharpening — IP 06 · `src/content/tutorials/en/image-processing/dip-06-color.mdx` · `/en/learn/image-processing/color/#sharpening`
@@ -2257,6 +2275,7 @@
 - Sigmoid and tanh — ML 02 · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/neural-networks/#sigmoid-and-tanh`
 - Signatures — IP 12 · `src/content/tutorials/en/image-processing/dip-12-feature-extraction.mdx` · `/en/learn/image-processing/feature-extraction/#signatures`
 - SimCLR — ML 06 · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/#simclr`
+- SimCLR — what a positive pair teaches a representation — ML 06 (papers) · `src/content/tutorials/en/ml/ml-05-representation-learning.mdx` · `/en/learn/ml/representation-learning/papers/simclr--what-a-positive-pair-teaches-a-representation/`
 - Similarity and contrastive sentence learning — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#similarity-and-contrastive-sentence-learning`
 - Similarity, scaling and what "a cluster" means — PR 07 · `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx` · `/en/learn/pattern-recognition/clustering-mixtures/#similarity-scaling-and-what-a-cluster-means`
 - Similarity: correlate cosines with human ratings — NLP 04 · `src/content/tutorials/en/nlp/nlp-04-lexical-semantics-word-embeddings.mdx` · `/en/learn/nlp/lexical-semantics-word-embeddings/#similarity-correlate-cosines-with-human-ratings`
@@ -2427,6 +2446,7 @@
 - Telling the network the kernel — DLCV 09A.1 · `src/content/tutorials/en/deep-learning/dl-04d-blind-real-world-super-resolution.mdx` · `/en/learn/deep-learning/blind-real-world-super-resolution/#telling-the-network-the-kernel`
 - Temperature — NLP 09 · `src/content/tutorials/en/nlp/nlp-09-language-modeling-transformers.mdx` · `/en/learn/nlp/language-modeling-transformers/#temperature`
 - Temperature scaling — ML 11 · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/evaluation-deployment/#temperature-scaling`
+- Temperature Scaling — confidence without changing the class — ML 11 (papers) · `src/content/tutorials/en/ml/ml-10-evaluation-deployment.mdx` · `/en/learn/ml/evaluation-deployment/papers/temperature-scaling--confidence-without-changing-the-class/`
 - Template matching — PR 06 · `src/content/tutorials/en/pattern-recognition/pr-06-templates-structured-models.mdx` · `/en/learn/pattern-recognition/templates-structured-models/#template-matching`
 - Temporal action localization — DLCV 08 · `src/content/tutorials/en/deep-learning/dl-06b-video-understanding.mdx` · `/en/learn/deep-learning/video-understanding/#temporal-action-localization`
 - Temporal consistency — DLCV 09A.3 · `src/content/tutorials/en/deep-learning/dl-04b-video-super-resolution.mdx` · `/en/learn/deep-learning/video-super-resolution/#temporal-consistency`
@@ -2791,6 +2811,7 @@
 
 ## V
 
+- VAE — learning through a tractable lower bound — ML 07 (papers) · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/generative-models/papers/vae--learning-through-a-tractable-lower-bound/`
 - VAEs: a latent-variable probability model — ML 07 · `src/content/tutorials/en/ml/ml-06-generative-models.mdx` · `/en/learn/ml/generative-models/#vaes-a-latent-variable-probability-model`
 - Validation estimates a procedure — PR 09 · `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx` · `/en/learn/pattern-recognition/ensembles-validation/#validation-estimates-a-procedure`
 - Vanishing and exploding gradients — ML 02 · `src/content/tutorials/en/ml/ml-02-neural-networks.mdx` · `/en/learn/ml/neural-networks/#vanishing-and-exploding-gradients`
@@ -2817,12 +2838,14 @@
 - Vision-language models for documents — DLCV 06 · `src/content/tutorials/en/deep-learning/dl-11a-text-in-images.mdx` · `/en/learn/deep-learning/text-in-images/#vision-language-models-for-documents`
 - Vision–language models — DLCV 01 · `src/content/tutorials/en/deep-learning/dl-01-deep-learning-for-image-processing.mdx` · `/en/learn/deep-learning/deep-learning-for-image-processing/#visionlanguage-models`
 - Visual instruction tuning — ML 10 · `src/content/tutorials/en/ml/ml-09-foundation-models.mdx` · `/en/learn/ml/foundation-models/#visual-instruction-tuning`
+- ViT — image patches and the role of pretraining scale — ML 05 (papers) · `src/content/tutorials/en/ml/ml-04-vision-transformers.mdx` · `/en/learn/ml/vision-transformers/papers/vit--image-patches-and-the-role-of-pretraining-scale/`
 - ViT versus Restormer — DLCV 01B · `src/content/tutorials/en/deep-learning/dl-01b-building-blocks.mdx` · `/en/learn/deep-learning/building-blocks/#vit-versus-restormer`
 - ViT: an image as a sequence of patches — DLCV 02 · `src/content/tutorials/en/deep-learning/dl-02-image-classification.mdx` · `/en/learn/deep-learning/image-classification/#vit-an-image-as-a-sequence-of-patches`
 - Vocabulary coverage and unknown inputs — NLP 01 · `src/content/tutorials/en/nlp/nlp-01-introduction.mdx` · `/en/learn/nlp/introduction/#vocabulary-coverage-and-unknown-inputs`
 - Volume rendering along a ray — DLCV 11 · `src/content/tutorials/en/deep-learning/dl-08-3d-reconstruction.mdx` · `/en/learn/deep-learning/3d-reconstruction/#volume-rendering-along-a-ray`
 - Voxel-based: VoxelNet and SECOND — DLCV 03B · `src/content/tutorials/en/deep-learning/dl-09-3d-object-detection.mdx` · `/en/learn/deep-learning/3d-object-detection/#voxel-based-voxelnet-and-second`
 - VQ-VAE — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#vq-vae`
+- VQ-VAE — discrete codes and a separately learned prior — ML 09 (papers) · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/papers/vq-vae--discrete-codes-and-a-separately-learned-prior/`
 - VQGAN: perceptual tokens — ML 09 · `src/content/tutorials/en/ml/ml-08-autoregressive-vision.mdx` · `/en/learn/ml/autoregressive-vision/#vqgan-perceptual-tokens`
 
 ## W
