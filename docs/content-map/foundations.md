@@ -44,7 +44,7 @@ What a digital image really is, how NumPy and OpenCV store it, and the indexing,
 - Files: `src/content/tutorials/en/foundations/images-as-arrays.mdx`, `src/content/tutorials/zh-tw/foundations/images-as-arrays.mdx`
 - Pages: `/en/learn/foundations/images-as-arrays/`
 - Level beginner · depth 1 · needs: none · tags: numpy, opencv, basics, sampling, quantization, dtype
-- Figures: 4 · references: 12 · experiments: array-dtype, pixel-sampling
+- Figures: 4 · references: 13 · experiments: array-dtype, pixel-sampling
 
 - [What you'll learn](/en/learn/foundations/images-as-arrays/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/foundations/images-as-arrays/#the-big-picture) `the-big-picture`

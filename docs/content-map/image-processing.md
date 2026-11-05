@@ -63,7 +63,7 @@ How eyes and cameras turn light into numbers, how sampling and quantization shap
 - Files: `src/content/tutorials/en/image-processing/dip-02-fundamentals.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-02-fundamentals.mdx`
 - Pages: `/en/learn/image-processing/fundamentals/`, `/en/learn/image-processing/fundamentals/notes/`, `/en/learn/image-processing/fundamentals/papers/`
 - Level beginner · depth 1 · needs: `image-processing/dip-01-introduction` · tags: dip, sampling, quantization, interpolation, visual-perception
-- Figures: 11 · references: 20 · experiments: pixel-sampling
+- Figures: 11 · references: 21 · experiments: pixel-sampling
 
 - [What you'll learn](/en/learn/image-processing/fundamentals/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/fundamentals/#the-big-picture) `the-big-picture`
@@ -177,7 +177,7 @@ How the Fourier transform turns an image into a recipe of waves, and how editing
 - Files: `src/content/tutorials/en/image-processing/dip-04-frequency-domain.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-04-frequency-domain.mdx`
 - Pages: `/en/learn/image-processing/frequency-domain/`, `/en/learn/image-processing/frequency-domain/notes/`, `/en/learn/image-processing/frequency-domain/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-03-intensity-spatial-filtering` · tags: dip, fourier-transform, dft, sampling, frequency-filtering
-- Figures: 11 · references: 20 · experiments: frequency-filter
+- Figures: 11 · references: 21 · experiments: frequency-filter
 
 - [What you'll learn](/en/learn/image-processing/frequency-domain/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/frequency-domain/#the-big-picture) `the-big-picture`
@@ -376,7 +376,7 @@ Treat every image transform as a change of basis, then build up from the DCT and
 - Files: `src/content/tutorials/en/image-processing/dip-07-wavelets-transforms.mdx`, `src/content/tutorials/zh-tw/image-processing/dip-07-wavelets-transforms.mdx`
 - Pages: `/en/learn/image-processing/wavelets-transforms/`, `/en/learn/image-processing/wavelets-transforms/notes/`, `/en/learn/image-processing/wavelets-transforms/papers/`
 - Level intermediate · depth 1 · needs: `image-processing/dip-06-color` · tags: dip, wavelets, dct, transforms, multiresolution, denoising
-- Figures: 10 · references: 20
+- Figures: 10 · references: 21
 
 - [What you'll learn](/en/learn/image-processing/wavelets-transforms/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/image-processing/wavelets-transforms/#the-big-picture) `the-big-picture`

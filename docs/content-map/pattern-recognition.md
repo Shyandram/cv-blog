@@ -118,7 +118,7 @@ From nearest neighbors and the kernel trick to soft-margin SVMs, RBF networks, d
 - Files: `src/content/tutorials/en/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx`, `src/content/tutorials/zh-tw/pattern-recognition/pr-04-kernels-nonlinear-classifiers.mdx`
 - Pages: `/en/learn/pattern-recognition/kernels-nonlinear-classifiers/`
 - Level intermediate · depth 1 · needs: `pattern-recognition/pr-03-linear-models` · tags: knn, kernels, svm, decision-trees, rbf-networks, nonlinear-classification
-- Figures: 5 · references: 26 · experiments: neighbor-geometry
+- Figures: 5 · references: 27 · experiments: neighbor-geometry
 
 - [What you'll learn](/en/learn/pattern-recognition/kernels-nonlinear-classifiers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/pattern-recognition/kernels-nonlinear-classifiers/#the-big-picture) `the-big-picture`
@@ -228,7 +228,7 @@ Group unlabeled data with k-means and k-means++, hierarchical linkage, DBSCAN an
 - Files: `src/content/tutorials/en/pattern-recognition/pr-07-clustering-mixtures.mdx`, `src/content/tutorials/zh-tw/pattern-recognition/pr-07-clustering-mixtures.mdx`
 - Pages: `/en/learn/pattern-recognition/clustering-mixtures/`
 - Level advanced · depth 1 · needs: `pattern-recognition/pr-06-templates-structured-models` · tags: clustering, kmeans, em, gaussian-mixtures, hierarchical, dbscan
-- Figures: 6 · references: 25 · experiments: mixture-em
+- Figures: 6 · references: 26 · experiments: mixture-em
 
 - [What you'll learn](/en/learn/pattern-recognition/clustering-mixtures/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/pattern-recognition/clustering-mixtures/#the-big-picture) `the-big-picture`
@@ -317,7 +317,7 @@ Derive the bias–variance decomposition, bagging, random forests, AdaBoost and 
 - Files: `src/content/tutorials/en/pattern-recognition/pr-09-ensembles-validation.mdx`, `src/content/tutorials/zh-tw/pattern-recognition/pr-09-ensembles-validation.mdx`
 - Pages: `/en/learn/pattern-recognition/ensembles-validation/`, `/en/learn/pattern-recognition/ensembles-validation/papers/`
 - Level advanced · depth 1 · needs: `pattern-recognition/pr-08-approximate-inference` · tags: ensembles, bias-variance, random-forests, boosting, cross-validation, model-comparison
-- Figures: 6 · references: 26 · experiments: bagging-trees
+- Figures: 6 · references: 27 · experiments: bagging-trees
 
 - [What you'll learn](/en/learn/pattern-recognition/ensembles-validation/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/pattern-recognition/ensembles-validation/#the-big-picture) `the-big-picture`

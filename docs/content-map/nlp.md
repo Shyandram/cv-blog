@@ -283,7 +283,7 @@ From the encoder–decoder bottleneck to Bahdanau and Luong attention, scaled do
 - Files: `src/content/tutorials/en/nlp/nlp-07-attention-transformers.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-07-attention-transformers.mdx`
 - Pages: `/en/learn/nlp/attention-transformers/`, `/en/learn/nlp/attention-transformers/papers/`
 - Level intermediate · depth 1 · needs: `nlp/nlp-06-sequence-labeling` · tags: nlp, attention, transformers, self-attention, cross-attention, positional-encoding, masks
-- Figures: 5 (script `scripts/figures/nlp_07_attention_transformers.py`) · references: 21 · experiments: attention
+- Figures: 5 (script `scripts/figures/nlp_07_attention_transformers.py`) · references: 23 · experiments: attention
 
 - [What you'll learn](/en/learn/nlp/attention-transformers/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/attention-transformers/#the-big-picture) `the-big-picture`
@@ -493,7 +493,7 @@ Parse constituents with CKY and dependencies with transitions or spanning trees,
 - Files: `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx`, `src/content/tutorials/zh-tw/nlp/nlp-12-syntactic-semantic-tasks.mdx`
 - Pages: `/en/learn/nlp/syntactic-semantic-tasks/`, `/en/learn/nlp/syntactic-semantic-tasks/papers/`
 - Level advanced · depth 1 · needs: `nlp/nlp-11-classification-bert`, `nlp/nlp-06-sequence-labeling` · tags: nlp, parsing, dependency-parsing, semantic-role-labeling, coreference, amr, evaluation
-- Figures: 7 (script `scripts/figures/nlp_12_syntactic_semantic_tasks.py`) · references: 39 · experiments: quantifier-scope, sequence-decoding
+- Figures: 7 (script `scripts/figures/nlp_12_syntactic_semantic_tasks.py`) · references: 40 · experiments: quantifier-scope, sequence-decoding
 
 - [What you'll learn](/en/learn/nlp/syntactic-semantic-tasks/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/nlp/syntactic-semantic-tasks/#the-big-picture) `the-big-picture`

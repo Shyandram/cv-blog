@@ -152,7 +152,7 @@ Handle continuous information with explicit units, derive Gaussian capacity unde
 - Files: `src/content/tutorials/en/information-theory/it-05-continuous-gaussian-channels.mdx`, `src/content/tutorials/zh-tw/information-theory/it-05-continuous-gaussian-channels.mdx`
 - Pages: `/en/learn/information-theory/continuous-gaussian-channels/`
 - Level advanced · depth 1 · needs: `information-theory/it-04-channel-capacity` · tags: differential-entropy, gaussian-channels, mutual-information, power-constraints, water-filling, continuous-information
-- Figures: 2 · references: 5 · experiments: gaussian-water-filling
+- Figures: 2 · references: 6 · experiments: gaussian-water-filling
 
 - [What you'll learn](/en/learn/information-theory/continuous-gaussian-channels/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/information-theory/continuous-gaussian-channels/#the-big-picture) `the-big-picture`
@@ -215,9 +215,9 @@ Derive binary and Gaussian rate–distortion limits, compute finite-alphabet tes
 Connect likelihood ratios, rare empirical distributions, Fisher information, maximum entropy and logarithmic growth through explicit statistical models.
 
 - Files: `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx`, `src/content/tutorials/zh-tw/information-theory/it-07-statistics-decision-growth.mdx`
-- Pages: `/en/learn/information-theory/statistics-decision-growth/`
+- Pages: `/en/learn/information-theory/statistics-decision-growth/`, `/en/learn/information-theory/statistics-decision-growth/notes/`
 - Level advanced · depth 1 · needs: `information-theory/it-06-rate-distortion` · tags: hypothesis-testing, method-of-types, fisher-information, maximum-entropy, kelly, universal-portfolios
-- Figures: 2 · references: 4 · experiments: hypothesis-errors
+- Figures: 2 · references: 5 · experiments: hypothesis-errors
 
 - [What you'll learn](/en/learn/information-theory/statistics-decision-growth/#what-youll-learn) `what-youll-learn`
 - [The big picture](/en/learn/information-theory/statistics-decision-growth/#the-big-picture) `the-big-picture`
@@ -242,6 +242,10 @@ Connect likelihood ratios, rare empirical distributions, Fisher information, max
 - [Modern view](/en/learn/information-theory/statistics-decision-growth/#modern-view) `modern-view`
 - [Key takeaways](/en/learn/information-theory/statistics-decision-growth/#key-takeaways) `key-takeaways`
 - [Exercises](/en/learn/information-theory/statistics-decision-growth/#exercises) `exercises`
+
+*Supplementary notes (one page each, index `notes/`):*
+
+- [When the support moves with the parameter](/en/learn/information-theory/statistics-decision-growth/notes/when-the-support-moves-with-the-parameter/) `notes/when-the-support-moves-with-the-parameter/`
 
 ## it-08-networks-information-learning
 

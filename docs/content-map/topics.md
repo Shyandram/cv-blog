@@ -1592,6 +1592,7 @@
 - Logistic classification and its loss — NLP 03 · `src/content/tutorials/en/nlp/nlp-03-neural-networks-for-nlp.mdx` · `/en/learn/nlp/neural-networks-for-nlp/#logistic-classification-and-its-loss`
 - Logistic regression — PR 03 · `src/content/tutorials/en/pattern-recognition/pr-03-linear-models.mdx` · `/en/learn/pattern-recognition/linear-models/#logistic-regression`
 - Logistic regression for classification — ML 01 · `src/content/tutorials/en/ml/ml-01-introduction.mdx` · `/en/learn/ml/introduction/#logistic-regression-for-classification`
+- Logistic separation and finite estimates — OPT 05 (notes) · `src/content/tutorials/en/optimization/opt-05-fitting-estimation.mdx` · `/en/learn/optimization/fitting-estimation/notes/logistic-separation-and-finite-estimates/`
 - Long short-term memory (LSTM) — ML 04 · `src/content/tutorials/en/ml/ml-03a-recurrent-recursive-networks.mdx` · `/en/learn/ml/recurrent-recursive-networks/#long-short-term-memory-lstm`
 - Long videos — DLCV 12A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/video-generation/#long-videos`
 - Longer context changes the reference decision, not only memory size — NLP 12 · `src/content/tutorials/en/nlp/nlp-12-syntactic-semantic-tasks.mdx` · `/en/learn/nlp/syntactic-semantic-tasks/#longer-context-changes-the-reference-decision-not-only-memory-size`
@@ -2946,6 +2947,7 @@
 - What tracking does — DLCV 07 · `src/content/tutorials/en/deep-learning/dl-06-object-tracking.mdx` · `/en/learn/deep-learning/object-tracking/#what-tracking-does`
 - When ML breaks: too many parameters — PR 02 · `src/content/tutorials/en/pattern-recognition/pr-02-density-estimation.mdx` · `/en/learn/pattern-recognition/density-estimation/#when-ml-breaks-too-many-parameters`
 - When the degradation is unknown: blind and real-world SR — DLCV 09A · `src/content/tutorials/en/deep-learning/dl-04a-super-resolution.mdx` · `/en/learn/deep-learning/super-resolution/#when-the-degradation-is-unknown-blind-and-real-world-sr`
+- When the support moves with the parameter — IT 07 (notes) · `src/content/tutorials/en/information-theory/it-07-statistics-decision-growth.mdx` · `/en/learn/information-theory/statistics-decision-growth/notes/when-the-support-moves-with-the-parameter/`
 - Where inconsistency comes from — DLCV 12A · `src/content/tutorials/en/deep-learning/dl-10a-video-generation.mdx` · `/en/learn/deep-learning/video-generation/#where-inconsistency-comes-from`
 - Where processing ends and vision begins — IP 01 · `src/content/tutorials/en/image-processing/dip-01-introduction.mdx` · `/en/learn/image-processing/introduction/#where-processing-ends-and-vision-begins`
 - Where the assumptions can fail — PR 01 · `src/content/tutorials/en/pattern-recognition/pr-01-bayes-decisions.mdx` · `/en/learn/pattern-recognition/bayes-decisions/#where-the-assumptions-can-fail`
