@@ -1,7 +1,7 @@
 # Pixels → Perception
 
 A bilingual (English / 繁體中文) tutorial site covering image processing, pattern recognition, machine learning, deep learning for vision, NLP, optimization, and information theory.
-Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed to Cloudflare Pages.
+Built with [Astro 7](https://astro.build) + MDX, KaTeX math, Pagefind search, and deployed as static files on Cloudflare.
 
 **Live site: <https://blog.shyandram.dev/>** ([English](https://blog.shyandram.dev/en/) · [繁體中文](https://blog.shyandram.dev/zh-tw/))
 
@@ -56,7 +56,36 @@ SAM 3, Qwen3-VL, V-JEPA 2, VGGT, VAR, MAR, MeanFlow, JiT and representation auto
 reported capabilities from general guarantees. Small CPU experiments and synthetic
 figures teach mechanisms; they do not claim to reproduce those large-model benchmarks.
 
-## Deploying (Cloudflare Pages)
+## Deploying (Cloudflare Workers static assets)
+
+The checked-in `wrangler.json` deploys the generated `dist` directory as static
+assets. It deliberately has no Worker entry point or Astro Cloudflare adapter.
+Without this file, Wrangler's automatic Astro setup installs the server adapter
+and changes the build/runtime; that is unnecessary for this pre-rendered course.
+
+For **Workers Builds**, use:
+
+| Setting | Value |
+|---|---|
+| Production branch | `main` |
+| Build command | Leave empty; Wrangler's custom build runs `npm run build` |
+| Deploy command | `npx wrangler deploy` |
+
+Avoid running `npm run build` in both the dashboard's build command and Wrangler's
+custom build: that builds the whole course twice. Workers Builds selects the
+connected Worker's name using `WRANGLER_CI_OVERRIDE_NAME`; the configuration's
+`cv-blog` name is the local default. Existing domains remain managed in Cloudflare.
+
+To validate without publishing, run `npx wrangler deploy --dry-run`. This runs the
+same static build and validates the deployment configuration. Astro's MDX static
+optimization keeps the rendered math/code HTML while reducing the prerender
+module graph.
+
+References: [static Astro deployment](https://developers.cloudflare.com/workers/framework-guides/web-apps/astro/#if-you-have-a-static-site),
+[automatic configuration](https://developers.cloudflare.com/workers/framework-guides/automatic-configuration/),
+[Workers Builds troubleshooting](https://developers.cloudflare.com/workers/ci-cd/builds/troubleshoot/).
+
+### Existing Cloudflare Pages projects
 
 The site is hosted on Cloudflare Pages, which builds it from this GitHub repo on every push.
 

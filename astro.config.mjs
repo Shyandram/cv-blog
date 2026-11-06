@@ -44,6 +44,7 @@ const site = process.env.SITE || 'https://blog.shyandram.dev';
 const base = process.env.BASE || '/';
 
 export default defineConfig({
+  output: 'static',
   site,
   base,
   trailingSlash: 'always',
@@ -99,7 +100,8 @@ export default defineConfig({
     '/zh-tw/blog/llie-intro/': '/zh-tw/learn/deep-learning/dl-05-low-light-enhancement/',
     '/zh-tw/blog/object-tracking-intro/': '/zh-tw/learn/deep-learning/dl-06-object-tracking/',
   },
-  integrations: [mdx(), pagefindIndex(), sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', 'zh-tw': 'zh-TW' } } })],
+  // Serialize static KaTeX/Shiki HTML instead of loading millions of MDX VNodes during prerendering.
+  integrations: [mdx({ optimize: true }), pagefindIndex(), sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', 'zh-tw': 'zh-TW' } } })],
   i18n: {
     locales: ['en', 'zh-tw'],
     defaultLocale: 'en',
