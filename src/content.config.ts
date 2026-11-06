@@ -35,6 +35,8 @@ const posts = defineCollection({
     topicOrder: z.number().int().positive().optional(),
     published: z.coerce.date(),
     updated: z.coerce.date().optional(),
+    checked: z.coerce.date().optional(), // when product/version facts were last re-verified
+    question: z.string().optional(), // the one question the post answers (shown on the blog index)
     draft: z.boolean().default(false),
     original: z.url().optional(), // where the post first appeared, e.g. Medium
   }),

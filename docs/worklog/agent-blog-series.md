@@ -93,3 +93,84 @@ and `/workspace/scratch/cvblog-work/learning-disclosure/`.
 New figures are labeled original teaching syntheses, not paper reproductions.
 Existing paper-guide registries and legacy heading-ID baselines are unchanged.
 Downloadable course PDFs are unchanged; the new material is in the online blog.
+
+## Revision 2026-11-06: more general, more informative (English only)
+
+Owner's request: "make the blog part more general and more informative". The eight
+English posts were restructured; the zh-tw twins are untouched and await translation.
+
+Pattern applied to every post: frontmatter `question` (the one question the post
+answers) and `checked` (date product facts were re-verified, both new optional
+schema fields); a "Key points" list at the top; product-neutral main text
+(mechanisms, trade-offs, evaluation, failure modes); a dated
+"Current options, checked 6 November 2026" section holding named products,
+versions, licenses and releases; a "Further reading" list of primary sources;
+renumbered references. Slugs are unchanged, so no redirects were needed.
+
+- Part 1 (agents-from-prompts-to-systems): new sections on the tool-calling round
+  trip, the context window as a budget (tested snippet), and an agent failure-mode
+  table (incl. indirect prompt injection); research directions moved to the dated
+  section. New figure `tool-call-context.png`.
+- Part 2 (agent-skills-and-harnesses): progressive-disclosure table from the Agent
+  Skills spec, explicit loop exit conditions, idempotency-key design; harness code
+  unchanged (output re-run, matches).
+- Part 3 (openclaw-practical-agent-operations): retitled "operating an agent
+  harness (OpenClaw as a worked example)"; organized by sessions, tools and
+  permissions, skills, memory, scheduling, recovery and observability, each with a
+  general principle and an "In OpenClaw" paragraph; operating checklist. OpenClaw
+  docs re-pinned from `34bc643` to `27f2437` (main on 2026-11-06, package
+  2026.11.1 = latest stable tag); differences between the two snapshots in the
+  cited pages were diffed and are small (noted in the post).
+- choosing-agent-tools: five kinds of tool, a dimension table, trial protocol;
+  product tables moved to the dated section with licenses read from each
+  repository's license file (OpenHands MIT, Cline Apache-2.0, LangGraph/Agents
+  SDK/CrewAI/Browser Use MIT, n8n Sustainable Use License, OpenClaw MIT).
+- agent-workflows: pattern-choice questions, stage gates, approval placement,
+  budgets, failure-type recovery, a handoff template; checkpoint mechanics now
+  link to part 2 instead of repeating them.
+- models-benchmarks-and-people: retitled "Choosing models: reading benchmarks,
+  licenses and evidence"; licensing layers (figure `licensing-layers.png`),
+  anatomy of a benchmark, contamination, Wilson intervals, pass@k vs pass^k
+  (figure `pass-at-k.png`, tested snippet), KV-cache memory estimate (tested
+  snippet); model/benchmark tables and the people reading map moved to the dated
+  section.
+- choosing-image-generation-models: operations table, mechanism primer (latent
+  diffusion, rectified flow, masked tokens, SDEdit), capability axes, what FID,
+  CLIPScore, compositional benchmarks and arenas measure, provenance (C2PA).
+- choosing-video-generation-models: inputs table, mechanism primer, capability
+  axes, FVD/VBench/VBench-2.0, cost per accepted second (tested snippet).
+
+Stale facts corrected on 2026-11-06: OpenAI image catalog now lists
+`gpt-image-2.6-sunburst`/`-flare`; `gpt-image-1` shut down 23 Oct 2026; Google
+lists `gemini-4-argon` (stable) and `gemini-nano-banana-2.1`; Veo 3.1 Lite
+preview on Google Cloud; Sora/Videos API removal now cited to OpenAI's
+deprecations page (help-center page returns 403 to automated checks); the
+Midjourney "V8.2 default" claim was removed because the official page could not
+be opened (403) for re-verification; xAI Grok Imagine Video 1.5 and Runway's
+`wan3` added. Older representative model cards (Qwen3-8B, DeepSeek-R1,
+Llama-3.3, Mistral Small 3.1) and the OpenAI "About" page were dropped.
+
+Blog index: "Where to start" box (three entry points), series labels
+("Agent fundamentals · Part n of 3"), each post's question instead of its
+description when present, and "Sources checked" dates; post pages show the
+question and the checked date. English topic descriptions updated; zh-tw topic
+descriptions left for the translator.
+
+New figure script: `scripts/figures/blog_general_guides.py` (writes only to
+`src/assets/blog/general-guides/`; three PNGs, 1500 px wide, under 200 KB).
+
+Validation (2026-11-06): check-mdx on the 8 files; all 5 Python blocks re-run and
+match their printed output; `astro check` 0 errors / 0 warnings (3 existing
+hints); production build 1,268 pages, Pagefind 1,267; built-site link audit
+2,233 pages, 150,207 internal links, 0 broken; content map regenerated and
+`--check` passes; unit tests 336 pass; content-stats, playground and paper-guide
+checks unchanged. External links: 205 URLs checked; non-200 responses are
+bot-blocking 403s (GitHub web pages, openai.com, arena.ai, Midjourney, Adobe, DOI
+resolvers). GitHub targets were confirmed through raw files or a rendering fetch,
+DOIs through Crossref. openai.com/index/harness-engineering, the Arena
+text-to-image leaderboard, the Midjourney version page and the Adobe Firefly page
+could not be opened in this session; their (unchanged, non-numeric) citations rest
+on the 2026-11-05 verification.
+Playwright at 1440 and 375 px: blog index (collapsed and expanded), part 1,
+the models post, part 3 and the zh-tw index; no horizontal overflow, no JS
+errors.
