@@ -166,6 +166,49 @@ the item (`*Optional: [RANSAC](#ransac-...) (in the Supplementary notes). One se
 - "What you'll learn", "Key takeaways" and "Exercises" are never moved into the notes, and the notes stay
   shorter than the main text (a few items per tutorial).
 
+**Showing structure and layers.** A reader should see the shape of a chapter before its detail, and open detail only
+when they want it. Pilot: DLCV 02 (`deep-learning/dl-02-image-classification`); design record:
+`docs/worklog/content-layers-uiux.md`.
+- *Layer 1 (always visible):* each topic's plain statement, its key points as a leveled list, the key figure.
+  *Layer 2 (one click, in place):* the precise version — definitions and display math with every symbol defined,
+  a worked derivation, a long numeric example — in `<Deeper title="…">`. *Layer 3:* Supplementary notes and Paper guides.
+  Code is already Layer 2 (every block starts folded); do not wrap a lone code block in `<Deeper>`.
+- *Leveled lists:* nested Markdown lists render as levels automatically (level 1 key point; level 2 supporting detail,
+  indented under a connector; level 3 minor detail, smaller and muted). Max depth 3. Use them where points really
+  have parents and children (a claim and its reasons, a term and its caveat); keep connected argument as prose.
+- *Priority markers (opt-in):* start an item with `[core]` (what the reader must take away), `[key]` (needed to apply
+  it well) or `[detail]` (safe to skip on a first read). The same English tokens in both languages; they render as
+  "Core / 核心", "Important / 重要", "Detail / 細節" with a distinct shape, and a list with markers becomes an outline
+  whose long third level (3+ items, or 240+ characters with a CJK character counting 2.5) folds. Mark at most about half the items `[core]`; use them in
+  "What you'll learn", "Key takeaways" and dense topic sections, not in every list.
+- *`<HowItFits>`:* at most one per chapter, usually in "The big picture": what the chapter builds on → the chapter →
+  what it leads to (`chapter: '<track>/<file slug>'`, validated at build time) and its parts with the problem each solves
+  (`href: '#section-id'`, nesting ≤ 2). Props hold no citations (`[n]` is not linked there); keep cited claims in prose.
+- *`<Deeper>`:* only after the plain statement it makes precise; no headings inside; nothing outside may depend on
+  reading it (it is collapsed); `kind="example" | "derivation" | "code" | "more"` changes the small label (default
+  "Precise"). Pointer lines (`*Optional: …*`) stay outside it. Restructuring keeps every sentence and reference; the zh-tw
+  file mirrors the English one exactly.
+- The chapter map at the top of every tutorial is generated (h2s, the first sentence of each section's "Plain version"
+  paragraph, reading time, h3s on demand); keep the first sentence of each "Plain version" a good one-line summary.
+
+```mdx
+import Deeper from '../../../../components/Deeper.astro';
+
+- [core] **Precision** answers "when the model says positive, how often is it right?"
+  - It matters when a false alarm is costly.
+- [detail] Specificity is recall for the negative class.
+
+<Deeper title="The ratios as formulas">
+
+$$
+\text{precision} = \frac{\text{TP}}{\text{TP} + \text{FP}},
+$$
+
+where TP counts true positives and FP false positives.
+
+</Deeper>
+```
+
 **Titles and link text:** tutorials are named by track prefix and two-digit number, e.g. `IP 05`,
 `ML 03a`, `DLCV 04` — never "Chapter 5" / "第 5 章" (the image-processing series follows a textbook's
 chapter order, but the site calls them IP 01–13). Link text to a tutorial uses the same name.

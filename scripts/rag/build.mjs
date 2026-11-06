@@ -38,6 +38,7 @@ function clean(text) {
     .replace(/<Figure[^>]*?caption="([^"]*)"[^>]*?alt="([^"]*)"[^>]*\/>/g, '[Figure: $1 — $2]')
     .replace(/<\/?[A-Z][A-Za-z]*[^>]*>/g, '')
     .replace(/<\/?(details|summary)>/g, '')
+    .replace(/^(\s*(?:[-*+]|\d+\.) )\[(core|key|detail)\]\s*/gm, '$1') // outline priority markers (src/lib/rehypeOutline.mjs)
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

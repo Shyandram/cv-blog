@@ -180,6 +180,74 @@ export function exerciseCount(body: string | undefined): number {
   return (section.match(/^\s*<details\b/gm) ?? []).length;
 }
 
+/**
+ * A one-line summary of each "## " section, in order, for the section map at the top of a tutorial: the first sentence
+ * of the section's "Plain version" paragraph when it has one (the house style opens every topic with it), otherwise of
+ * its first paragraph before any "### ". A section that opens with a list ("What you'll learn", "Key takeaways") is
+ * summarized by its item count, the exercises by their count. Markup, citations and links are reduced to plain text;
+ * inline math keeps a few readable symbols. Nothing new is written: the map only quotes the page.
+ */
+const PLAIN = /^[*_]{0,2}(plain version|in plain words|白話版|白話說|直觀說法)[.:。：]?[*_]{0,2}[.:。：]?\s*/i;
+const TEX: [RegExp, string][] = [[/\\times/g, '×'], [/\\lt/g, '<'], [/\\gt/g, '>'], [/\\le(q)?/g, '≤'], [/\\ge(q)?/g, '≥'], [/\\cdot/g, '·'], [/\\to/g, '→'], [/\^2/g, '²'], [/\\[a-zA-Z]+/g, ''], [/[{}]/g, '']];
+function plainSentence(paragraph: string, lang: Lang): string {
+  let s = paragraph.replace(PLAIN, '')
+    .replace(/(?<!\\)\$([^$\n]+)\$/g, (_, tex: string) => TEX.reduce((t, [re, to]) => t.replace(re, to), tex).replace(/\s+/g, ' ').trim())
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\s*\[\d+\](?:\s*[–,-]\s*\[\d+\])*/g, '')
+    .replace(/\*\*|__|(?<![\w*])\*(?!\s)|(?<!\s)\*(?![\w*])|`/g, '')
+    .replace(/\s+/g, ' ').trim();
+  const zh = lang === 'zh-tw';
+  const end = zh ? s.search(/[。！？]/) : s.search(/[.!?](?=\s+[A-Z0-9"“(]|$)/);
+  if (end >= 0) s = s.slice(0, end + 1);
+  const max = zh ? 72 : 160;
+  if (s.length > max) {
+    // Prefer ending at a clause ("X fixed one problem of its predecessors: …" keeps the claim), else at a word.
+    const clause = Math.max(...[...s.slice(0, max)].map((c, i) => (/[:;：；]/.test(c) ? i : -1)));
+    if (clause > max / 3) s = `${s.slice(0, clause)}${zh ? '。' : '.'}`;
+    else {
+      const cut = zh ? max : s.lastIndexOf(' ', max);
+      s = `${s.slice(0, cut > 40 ? cut : max).replace(/[,，、;；:：\s]+$/, '')}…`;
+    }
+  }
+  return s;
+}
+const summaryCache = new Map<string, string[]>();
+export function sectionSummaries(body: string | undefined, lang: Lang): string[] {
+  if (!body) return [];
+  const key = `${lang}\n${body}`;
+  const cached = import.meta.env.DEV ? undefined : summaryCache.get(key);
+  if (cached) return cached;
+  const zh = lang === 'zh-tw';
+  const sections: { title: string; lead: string[]; all: string[] }[] = [];
+  let fence = false, sub = false;
+  for (const line of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (!fence && /^## /.test(line)) { sections.push({ title: line.slice(3).trim(), lead: [], all: [] }); sub = false; continue; }
+    const cur = sections.at(-1);
+    if (!cur) continue;
+    if (!fence && /^#{3,} /.test(line)) sub = true;
+    cur.all.push(fence ? '' : line);
+    if (!sub) cur.lead.push(fence ? '' : line);
+  }
+  const blocks = (lines: string[]) => lines.join('\n').split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
+  const isParagraph = (b: string) => !/^(<|\||[-*+] |\d+\. |\$\$|#|\*(Optional|選讀)|import |\{\/\*)/.test(b);
+  const out = sections.map(({ title, lead, all }) => {
+    if (OPTIONAL_SECTION.test(title)) return '';
+    if (EXERCISES.test(title)) {
+      const n = (all.join('\n').match(/^\s*<details\b/gm) ?? []).length;
+      return n ? (zh ? `${n} 題練習，每題附提示。` : `${n} exercises, each with a hint.`) : '';
+    }
+    const leadBlocks = blocks(lead);
+    const plain = blocks(all).find((b) => PLAIN.test(b));
+    const para = plain ?? leadBlocks.find(isParagraph);
+    if (para) return plainSentence(para.split('\n').join(' '), lang);
+    const items = lead.filter((l) => /^([-*+] |\d+\. )/.test(l)).length;
+    return items ? (zh ? `${items} 個重點。` : `${items} points.`) : '';
+  });
+  summaryCache.set(key, out);
+  return out;
+}
+
 function sectionText(body: string | undefined, title: RegExp): string {
   if (!body) return '';
   const out: string[] = [];
