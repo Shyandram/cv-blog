@@ -15,7 +15,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
@@ -132,10 +132,16 @@ def check_browser(origin):
             fields = page.locator("experiment-playground input[type=text], experiment-playground textarea")
             assert fields.count() >= 4
             for field in fields.all():
+                # Cards load their computation module near the viewport.
+                field.scroll_into_view_if_needed()
+                expect(field).to_be_enabled()
                 field.fill('<svg onload="window.__injected=1"></svg>')
             assert page.evaluate("window.__injected === undefined")
             assert page.locator(".experiment-plot script, .experiment-plot [onload]").count() == 0
-            page.locator("experiment-playground [data-reset]").first.click()
+            reset = page.locator("experiment-playground [data-reset]").first
+            reset.scroll_into_view_if_needed()
+            expect(reset).to_be_enabled()
+            reset.click()
         page.goto(f"{origin}/en/")
         page.locator("a.lang").click()
         page.wait_for_url("**/zh-tw/")

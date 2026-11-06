@@ -1,14 +1,26 @@
-import { TRACKS, type Track } from '../taxonomy';
-import { visionExperiments } from './vision';
-import { languageExperiments } from './language';
-import { mathExperiments } from './math';
-import { chapterFoundationsExperiments } from './chapters-foundations';
-import { chapterOptimizationExperiments } from './chapters-optimization';
-import { chapterInformationExperiments } from './chapters-information';
-import { chapterRecognitionExperiments } from './chapters-recognition';
-import { chapterVisionExperiments } from './chapters-vision';
-import { chapterLanguageExperiments } from './chapters-language';
-export const experiments = [...visionExperiments, ...languageExperiments, ...mathExperiments, ...chapterFoundationsExperiments, ...chapterOptimizationExperiments, ...chapterInformationExperiments, ...chapterRecognitionExperiments, ...chapterVisionExperiments, ...chapterLanguageExperiments]
+import { TRACKS, type Track } from '../taxonomy.ts';
+import { visionExperiments } from './vision.ts';
+import { languageExperiments } from './language.ts';
+import { mathExperiments } from './math.ts';
+import { chapterOptimizationExperiments } from './chapters-optimization.ts';
+import { chapterInformationExperiments } from './chapters-information.ts';
+import { chapterRecognitionExperiments } from './chapters-recognition.ts';
+import { chapterVisionExperiments } from './chapters-vision.ts';
+import { chapterLanguageExperiments } from './chapters-language.ts';
+/** Server-side grouping also tells each card which small browser module it needs. */
+export const experimentGroups = {
+    vision: visionExperiments,
+    language: languageExperiments,
+    math: mathExperiments,
+    'chapters-optimization': chapterOptimizationExperiments,
+    'chapters-information': chapterInformationExperiments,
+    'chapters-recognition': chapterRecognitionExperiments,
+    'chapters-vision': chapterVisionExperiments,
+    'chapters-language': chapterLanguageExperiments,
+};
+export type ExperimentGroup = keyof typeof experimentGroups;
+export const experimentGroupFor = new Map(Object.entries(experimentGroups).flatMap(([group, entries]) => entries.map(e => [e.id, group as ExperimentGroup] as const)));
+export const experiments = Object.values(experimentGroups).flat()
     .sort((a, b) => TRACKS.indexOf(a.track) - TRACKS.indexOf(b.track));
 export interface Source {
     title: string;
