@@ -2,6 +2,7 @@ import { chapterPath } from '../../src/lib/chapter-paths.mjs';
 // Convert published MDX to a portable LaTeX book without executing its expressions.
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
 import { createProcessor } from '@mdx-js/mdx';
 import { toMarkdown } from 'mdast-util-to-markdown';
@@ -42,6 +43,7 @@ const places = placesOf(curriculum);
 const OPTIONAL = /^(supplementary notes|補充資料|paper guides|論文導讀)$/i;
 const plain = node => node.type === 'text' || node.type === 'inlineCode' ? node.value : (node.children ?? []).map(plain).join('');
 const label = (kind, slug) => `book-${kind}-${slug.replaceAll('/', '-')}`;
+const PRIORITY = { en: { core: 'Core', key: 'Important', detail: 'Detail' }, 'zh-tw': { core: '核心', key: '重要', detail: '細節' } };
 fs.mkdirSync(path.join(out, 'assets/fonts'), { recursive: true });
 if (!fontDir) throw new Error('Set BOOK_FONTS to a directory containing the Noto CJK OTF files and licenses.');
 for (const required of ['NotoSerifCJKtc-Regular.otf', 'NotoSerifCJKtc-Bold.otf', 'NotoSansCJKtc-Regular.otf', 'NotoSansCJKtc-Bold.otf', 'DejaVuSansMono.ttf']) {
@@ -154,6 +156,28 @@ for (const lang of langs) {
    function figure(src, caption) {
     return [para([{ type: 'image', url: asset(src), alt: '', title: null }]), para([{ type: 'emphasis', children: [text(caption || '')] }])];
    }
+   // <HowItFits>: props evaluated as plain data (object and array literals only), printed as a nested list.
+   function howItFits(node) {
+    const prop = name => {
+     const a = node.attributes.find(x => x.name === name);
+     if (!a) return undefined;
+     return a.value && typeof a.value === 'object' ? vm.runInNewContext(`(${a.value.value})`, Object.create(null), { timeout: 100 }) : a.value;
+    };
+    const item = n => {
+     const target = n.chapter ? allEntries.find(e => e.kind === 'tutorials' && e.slug === n.chapter) : undefined;
+     if (n.chapter && !target) throw new Error(`HowItFits: unknown chapter ${n.chapter} in ${file}`);
+     const name = n.label || target?.data.title;
+     const href = target ? chapterPath(`/${lang}/learn/${target.slug}/`) : n.href;
+     const head = [...(n.tag ? [strong(PRIORITY[lang][n.tag]), text(zh ? '：' : ': ')] : []), href ? { type: 'link', url: href, children: [text(name)] } : strong(name), ...(n.note ? [text(`${zh ? '：' : ' — '}${n.note}`)] : [])];
+     return { type: 'listItem', spread: false, children: [para(head), ...(n.children?.length ? [list(n.children)] : [])] };
+    };
+    const list = nodes => ({ type: 'list', ordered: false, spread: false, children: nodes.map(item) });
+    const group = (title, nodes) => nodes?.length ? [{ type: 'listItem', spread: false, children: [para([strong(title)]), list(nodes)] }] : [];
+    const center = { type: 'listItem', spread: false, children: [para([strong(zh ? '本章' : 'This chapter'), text(`${zh ? '：' : ': '}${prop('center')}`), ...(prop('centerNote') ? [text(`${zh ? '——' : ' — '}${prop('centerNote')}`)] : [])]),
+     ...(prop('parts')?.length ? [{ type: 'list', ordered: false, spread: false, children: [{ type: 'listItem', spread: false, children: [para([strong(zh ? '組成部分，以及各自解決的問題' : 'Its parts, and the problem each one solves')]), list(prop('parts'))] }] }] : [])] };
+    const tree = { type: 'list', ordered: false, spread: false, children: [...group(prop('fromLabel') || (zh ? '建立在' : 'Builds on'), prop('from')), center, ...group(prop('toLabel') || (zh ? '接著通往' : 'Leads to'), prop('to'))] };
+    return [para([strong(prop('title') || (zh ? '本章的位置' : 'How it fits'))]), ...convert(tree)];
+   }
    function convert(node) {
     if (node.type === 'mdxjsEsm') return [];
     if (node.type === 'code') stats.codeBlocks++;
@@ -166,6 +190,9 @@ for (const lang of langs) {
      if (node.name === 'details') return [{ type: 'blockquote', children }];
      if (node.name === 'summary') return [para([{ type: 'strong', children }])];
      if (node.name === 'Figure') { stats.figures++; return figure(attrs.src, attrs.caption || attrs.alt); }
+     // Layer 2 (<Deeper>) prints in full, inline, under its title; "How it fits" becomes the nested list it already is.
+     if (node.name === 'Deeper') return [para([strong(attrs.title || '')]), ...children];
+     if (node.name === 'HowItFits') return howItFits(node);
      if (node.name === 'ImageCompare' && attrs.before && attrs.after) {
       stats.comparisons++;
       return [...figure(attrs.before, attrs.beforeLabel), ...figure(attrs.after, attrs.afterLabel), para([text(attrs.alt || '')])];
@@ -184,6 +211,15 @@ for (const lang of langs) {
      return [{ ...node, url: href, children: node.children.flatMap(convert) }];
     }
     if (node.type.startsWith('mdx')) throw new Error(`Unsupported MDX node ${node.type} in ${file}`);
+    // Priority markers of a leveled outline (src/lib/rehypeOutline.mjs): "[core] text" -> "**Core:** text".
+    if (node.type === 'listItem') {
+     const lead = node.children?.[0]?.type === 'paragraph' ? node.children[0].children?.[0] : undefined;
+     const m = lead?.type === 'text' && lead.value.match(/^\s*\[(core|key|detail)\]\s*/);
+     if (m) {
+      lead.value = lead.value.slice(m[0].length);
+      node.children[0].children.unshift(strong(PRIORITY[lang][m[1]]), text(zh ? '：' : ': '));
+     }
+    }
     return [{ ...node, ...(node.children ? { children: node.children.flatMap(convert) } : {}) }];
    }
    const converted = { type: 'root', children: ast.children.flatMap(convert) };

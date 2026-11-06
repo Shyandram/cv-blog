@@ -11,6 +11,7 @@ import rehypeCitations from './src/lib/rehypeCitations.mjs';
 import rehypeSupplementZones from './src/lib/rehypeSupplementZones.mjs';
 import rehypePaperHeadingIds from './src/lib/rehypePaperHeadingIds.mjs';
 import rehypeCodeFolding from './src/lib/rehypeCodeFolding.mjs';
+import rehypeOutline from './src/lib/rehypeOutline.mjs';
 import { fileURLToPath } from 'node:url';
 import { preserveRedirectFragments } from './scripts/preserve-redirect-fragments.mjs';
 import { indexSearch } from './scripts/index-search.mjs';
@@ -109,7 +110,7 @@ export default defineConfig({
   },
   markdown: {
     // Astro 7 defaults to Sätteri; we use unified for remark-math + rehype-katex.
-    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations, rehypePaperHeadingIds, rehypeHeadingIds, rehypeCodeFolding, rehypeSupplementZones] }),
+    processor: unified({ remarkPlugins: [remarkMath, remarkCjkFriendly], rehypePlugins: [rehypeKatex, rehypeCitations, rehypePaperHeadingIds, rehypeHeadingIds, rehypeCodeFolding, rehypeOutline, rehypeSupplementZones] }),
     shikiConfig: { themes: { light: 'github-light', dark: 'github-dark' }, wrap: false },
   },
 });
