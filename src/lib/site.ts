@@ -84,11 +84,23 @@ export function nestTutorials<T extends { slug: string; place: Place }>(list: T[
   return roots;
 }
 
-/** The Supplementary notes and Paper guides of a tutorial (each item is a page of its own), from its rendered headings. */
-const zoneCache = new Map<string, Promise<Zones>>();
-export function zonesFor(entry: Tut): Promise<Zones> {
-  if (!zoneCache.has(entry.id)) zoneCache.set(entry.id, render(entry).then((r) => zonesOf(r.headings)));
-  return zoneCache.get(entry.id)!;
+async function prepareTutorial(entry: Tut) {
+  const result = await render(entry);
+  return { ...result, zones: zonesOf(result.headings) };
+}
+// A chapter and all its optional pages reuse the same compiled component and metadata.
+// Development stays uncached so edits cannot leave stale headings or content behind.
+const tutorialCache = new Map<string, ReturnType<typeof prepareTutorial>>();
+export function renderTutorial(entry: Tut) {
+  if (import.meta.env.DEV) return prepareTutorial(entry);
+  let result = tutorialCache.get(entry.id);
+  if (!result) { result = prepareTutorial(entry); tutorialCache.set(entry.id, result); }
+  return result;
+}
+
+/** The Supplementary notes and Paper guides of a tutorial (each item is a page of its own). */
+export async function zonesFor(entry: Tut): Promise<Zones> {
+  return (await renderTutorial(entry)).zones;
 }
 
 /** The chain of tutorials above `slug` (top-level first) among those shown. */
@@ -129,8 +141,14 @@ export const OPTIONAL_SECTION = /^(supplementary notes|補充資料|paper guides
  * Reading time of each "## " section of a tutorial body, in order (headings inside fenced code are ignored). Optional
  * sections (notes, paper guides, references) get 0 minutes because the main page only shows a short card or a list.
  */
-export function sectionMinutes(body: string | undefined, lang: Lang): { title: string; minutes: number; units: number }[] {
+type SectionTime = { title: string; minutes: number; units: number };
+const sectionCache = new Map<Lang, Map<string, SectionTime[]>>();
+export function sectionMinutes(body: string | undefined, lang: Lang): SectionTime[] {
   if (!body) return [];
+  const cache = import.meta.env.DEV ? undefined : sectionCache.get(lang) ?? new Map<string, SectionTime[]>();
+  if (cache && !sectionCache.has(lang)) sectionCache.set(lang, cache);
+  const cached = cache?.get(body);
+  if (cached) return cached;
   const out: { title: string; lines: string[] }[] = [];
   let fence = false;
   for (const line of body.split('\n')) {
@@ -138,10 +156,12 @@ export function sectionMinutes(body: string | undefined, lang: Lang): { title: s
     if (!fence && /^## /.test(line)) { out.push({ title: line.slice(3).trim(), lines: [] }); continue; }
     out.at(-1)?.lines.push(line);
   }
-  return out.map(({ title, lines }) => {
+  const sections = out.map(({ title, lines }) => {
     const units = OPTIONAL_SECTION.test(title) ? 0 : readingUnits(lines.join('\n'), lang);
     return { title, units, minutes: units > 0 ? Math.max(1, Math.round(units)) : 0 };
   });
+  cache?.set(body, sections);
+  return sections;
 }
 
 /** Reading time of a tutorial's main line: every section except the optional ones. */

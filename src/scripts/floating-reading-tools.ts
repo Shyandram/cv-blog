@@ -173,13 +173,22 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
   });
 
   let headings: HTMLElement[] = [];
+  let headingsDirty = true;
+  let foldStateDirty = false;
+  const syncGroups = new Map<'sections' | 'code', () => void>();
   let active = 0;
   const update = () => {
-    const found = [...document.querySelectorAll<HTMLElement>('.prose .chapter-section > summary > :is(h2,h3,h4,h5,h6)')];
-    const items = found.length ? found : [...document.querySelectorAll<HTMLElement>('.prose h2[id]')];
-    if (items.length !== headings.length || items.some((h, i) => h !== headings[i])) {
-      headings = items;
+    // The article is fixed after its chapter/code controls register. Scroll and
+    // toggle events only change visibility, so they can reuse the heading list.
+    if (headingsDirty) {
+      headingsDirty = false;
+      const found = [...prose.querySelectorAll<HTMLElement>('.chapter-section > summary > :is(h2,h3,h4,h5,h6)')];
+      headings = found.length ? found : [...prose.querySelectorAll<HTMLElement>('h2[id]')];
       select.replaceChildren(...headings.map((heading, i) => new Option(`${i + 1}. ${heading.textContent?.trim() ?? ''}`, String(i))));
+    }
+    if (foldStateDirty) {
+      foldStateDirty = false;
+      syncGroups.forEach((sync) => sync());
     }
     select.disabled = !headings.length;
     const headerHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--header-h')) || 0;
@@ -220,7 +229,12 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
   window.addEventListener('resize', resize);
   window.visualViewport?.addEventListener('resize', resize);
   window.visualViewport?.addEventListener('scroll', place);
-  document.addEventListener('toggle', schedule, true);
+  // One delegated listener replaces a listener per fold. Expanding all blocks
+  // batches their button-state calculations into the existing animation frame.
+  document.addEventListener('toggle', (event) => {
+    if (event.target instanceof HTMLDetailsElement && prose.contains(event.target)) foldStateDirty = true;
+    schedule();
+  }, true);
   document.addEventListener('DOMContentLoaded', schedule);
   document.fonts.ready.then(schedule);
   new ResizeObserver(place).observe(panel);
@@ -229,6 +243,7 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
   return {
     register(kind: 'sections' | 'code', folds: HTMLDetailsElement[], setOpen: (open: boolean) => void) {
       const button = kind === 'sections' ? sectionsButton : codeButton;
+      let lastExpanded: boolean | undefined;
       const sync = () => {
         const count = folds.filter((fold) => fold.open).length;
         const expanded = count > 0;
@@ -239,11 +254,12 @@ export function setupFloatingReadingTools(prose: HTMLElement) {
         button.setAttribute('aria-label', `${label} (${count}/${folds.length})`);
         button.setAttribute('aria-pressed', count === 0 ? 'false' : count === folds.length ? 'true' : 'mixed');
         button.title = label;
-        button.querySelector('.reader-console-label')!.textContent = zh ? (kind === 'sections' ? '章節' : '程式碼') : (kind === 'sections' ? 'Sections' : 'Code');
-        if (kind === 'sections') button.querySelector('.reader-console-icon')!.innerHTML = iconMarkup(expanded ? 'collapse' : 'expand');
+        if (kind === 'sections' && expanded !== lastExpanded) button.querySelector('.reader-console-icon')!.innerHTML = iconMarkup(expanded ? 'collapse' : 'expand');
+        lastExpanded = expanded;
       };
-      button.addEventListener('click', () => { setOpen(!folds.some((fold) => fold.open)); sync(); });
-      folds.forEach((fold) => fold.addEventListener('toggle', sync));
+      button.onclick = () => { setOpen(!folds.some((fold) => fold.open)); sync(); };
+      syncGroups.set(kind, sync);
+      headingsDirty = true;
       sync();
       schedule();
     },
