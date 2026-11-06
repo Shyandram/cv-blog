@@ -18,17 +18,25 @@ import { indexSearch } from './scripts/index-search.mjs';
 // Build the Pagefind search index as part of `astro build`, so search works no matter
 // which build command the host runs (`astro build`, `npm run build`, …).
 /** @returns {import('astro').AstroIntegration} */
-const pagefindIndex = () => ({
-  name: 'pagefind-index',
-  hooks: {
-    'astro:build:done': async ({ dir, logger }) => {
-      const out = fileURLToPath(dir);
-      await preserveRedirectFragments(out);
-      const page_count = await indexSearch(out);
-      logger.info(`Pagefind indexed ${page_count} pages`);
+const pagefindIndex = () => {
+  /** @type {Record<string, string> | undefined} */
+  let redirectTargets;
+  return {
+    name: 'pagefind-index',
+    hooks: {
+      'astro:config:done': ({ config }) => {
+        // Use final destinations, including overrides of historical chapter paths.
+        redirectTargets = Object.fromEntries(Object.entries(config.redirects).map(([from, target]) => [from, typeof target === 'string' ? target : target.destination]));
+      },
+      'astro:build:done': async ({ dir, logger }) => {
+        const out = fileURLToPath(dir);
+        await preserveRedirectFragments(out, redirectTargets);
+        const page_count = await indexSearch(out);
+        logger.info(`Pagefind indexed ${page_count} pages`);
+      },
     },
-  },
-});
+  };
+};
 
 // Hosted on Cloudflare at the domain root. SITE can override the production URL
 // (e.g. for a preview deployment); it defaults to the live domain.
