@@ -1,36 +1,141 @@
 ---
-title: "Agent 實務（三）：OpenClaw 的使用、擴充與維運"
-description: "理解 OpenClaw 的 gateway、工作階段、skills、記憶、自動化與執行邊界，從有版本依據的小專案開始。"
-tags: [agents, openclaw, skills, operations]
+title: "Agent 實務（三）：維運 agent harness（以 OpenClaw 為實例）"
+description: "日常運行 agent 的通用指南：工作階段、工具與權限、skills、記憶、排程、復原與可觀測性，並以 OpenClaw 作為實例說明。"
+question: "如何日常運行 agent：工作階段、權限、skills、記憶、排程、復原與可觀測性？"
+tags: [agents, operations, harness, openclaw]
 category: agents
 topicOrder: 3
 published: 2026-11-05
+updated: 2026-11-06
+checked: 2026-11-06
 ---
 
 import Figure from '../../../components/Figure.astro';
 import requestMap from '../../../assets/blog/agent-engineering/openclaw-request.png';
 
-OpenClaw 讓 agent 的抽象組件變得具體：訊息從通道或介面進入，gateway 將它導向工作階段，執行系統再結合模型、工具與工作區資訊。它很適合用來學習如何操作與維運 agent，而不只是如何下提示詞。[1]
+建立一個 agent 循環是一回事，讓 agent 持續好用好幾個月是另一回事。一旦 agent 依自己的排程運行、與多個通道對話並保有記憶，問題就變了：這是哪一段對話？誰可以要求什麼？指令在哪裡執行？重啟後什麼會留下來？出了問題我要怎麼知道？
 
-**系列順序：** [一 · 演進與選型](/zh-tw/blog/agents-from-prompts-to-systems/) → [二 · Skills 與 harness](/zh-tw/blog/agent-skills-and-harnesses/) → **三 · OpenClaw 實務**。
+**系列順序：** [一 · Agent 如何運作](/zh-tw/blog/agents-from-prompts-to-systems/) → [二 · Skills 與 harness](/zh-tw/blog/agent-skills-and-harnesses/) → **三 · 維運 agent harness**。
 
-**版本界線。** 本文於 2026 年 11 月 5 日，查核官方原始碼提交 `34bc6434914728a8d13e8e2dcf6dd98bce6d1d88` 所附文件。儲存庫開發分支可能領先已發布套件，使用下列指令前，請先確認已安裝版本及其說明。指令已對照文件，但本文沒有實際啟動完成驗證的 OpenClaw 服務；第二篇的 Python harness 則已在本地執行。
+下面每一節先說明通用的維運原則，再說明一個開源 harness **OpenClaw** 如何實作（以標示為 **在 OpenClaw 中** 的引用段落呈現）。OpenClaw 是實例，不是主題：同樣的問題適用於任何常駐的 agent 執行系統。與版本相關的指令及確切的文件快照，在[現行選項](#現行選項查核日期-2026-年-11-月-6-日)。
+
+## 重點
+
+- 把運行中的 agent 當作一項服務，有八個維運面向：工作階段、工具、權限、skills、記憶、排程、復原與可觀測性。
+- 把常被混在一起的三個問題分開：**誰可以提出要求**、**哪些行動可以執行**，以及**這些行動在哪裡執行**。
+- 核准提示可以減少意外，但它不是身分驗證邊界，也不是沙箱。
+- 記憶、壓縮、檢查點與 skills 是不同的機制，要分開診斷。
+- 排程需要重複處理政策與寄送紀錄，不能只有計時器。
+- 任何重啟之後，agent 都應先重新檢查現況再繼續，因為它的操作紀錄可能落後於實際發生的事。
+- 記錄足夠的結構化事件（執行、工作階段、工具呼叫、核准、結果、寄送），這樣不必翻對話紀錄就能回答「發生了什麼事？」
+
+## 維運面向一覽
+
+| 面向 | 它回答的問題 | 出問題時要檢查什麼 |
+| --- | --- | --- |
+| 工作階段 | 這則訊息屬於哪段對話與歷史？ | 工作階段鍵、重設政策、待處理輪次的佇列 |
+| 工具 | 這個 agent 有哪些行動可用？ | 該工作階段實際生效的工具清單，而非設定檔中的清單 |
+| 權限 | 誰可以提出要求？哪些行動需要核准？ | 寄件者存取權、工具政策、核准紀錄 |
+| 執行邊界 | 行動實際在哪裡執行？ | 主機、沙箱或遠端裝置；掛載的檔案 |
+| Skills | 有哪些程序可用？是哪個版本？ | 來源優先序、啟用條件、版本 |
+| 記憶與情境 | 每一輪開始時，agent 知道什麼？ | 載入的記憶檔、壓縮摘要 |
+| 排程 | 沒有人傳訊息時，什麼在執行？ | 工作定義、執行歷史、寄送結果 |
+| 復原與可觀測性 | 中斷之後會怎樣？我們怎麼知道？ | 結構化日誌、執行識別碼、重啟紀錄 |
 
 ## 追蹤一個請求如何通過系統
 
-**Gateway** 是串接通道、用戶端與執行操作的常駐服務。**工作階段（session）** 識別對話與執行歷史。**工作區（workspace）** 保存工作使用的檔案。**Skills** 提供程序，**工具**提供行動，已配對的 **node** 則可以暴露其他裝置的能力。即使都在同一臺電腦上，這些職責仍然不同。[1, 2]
+常駐的 harness 通常有一個長時間運行的 **gateway**，從各通道（聊天應用程式、網頁介面、終端機）接收訊息，把每則訊息導向一個**工作階段（session）**，並在帶有一組工具的**工作區（workspace）**中，為該工作階段執行 agent 循環。依序追蹤一個請求經過這些階段，是定位失敗最快的方法：通道可能已連線，模型存取卻失敗；模型能回答，執行環境卻缺少必要指令；skill 已安裝，卻不符合啟用條件。「機器人在線上」無法區分這些情況。
 
-<Figure src={requestMap} alt="聊天請求經 Gateway 進入 agent 執行系統、工作區與工作階段，再跨越執行邊界產生可檢查的結果。" caption="圖 1 — 依固定版本 OpenClaw 架構文件 [1] 整理的原創簡化教學圖。官方連線圖著重 WebSocket 訊息，本圖則標示新手應在哪裡查看任務狀態與權限。" />
+<Figure src={requestMap} alt="聊天請求經 Gateway 進入 agent 執行系統、工作區與工作階段，再跨越執行邊界產生可檢查的結果。" caption="圖 1 — 依 OpenClaw 架構文件 [1] 整理的原創簡化教學圖。官方文件描述的是 WebSocket 訊息；本圖則標示操作者應在哪裡查看任務狀態與權限。" />
 
-回應失敗時，先定位在哪個階段。通道可能已連線，模型存取卻不可用；模型能回答，執行環境卻缺少必要指令；skill 已安裝，卻不符合目前 agent 的啟用條件。「機器人在線上」無法區分這些情況。
+> **在 OpenClaw 中：** Gateway 是串接通道、用戶端與執行操作的常駐服務；工作階段識別對話與執行歷史；工作區保存檔案；skills 提供程序，工具提供行動；已配對的 node 可以暴露另一台裝置的能力。文件將 agent 循環描述為每個工作階段內序列化的一次執行：接收輸入、組成情境、模型推論、工具執行、串流輸出與持久化。[1, 11]
 
-## 從一份本地草稿開始
+## 工作階段：身分、順序與重設
 
-沿用前兩篇的論文摘要任務。先使用一位使用者、一個工作區、一組模型連線與少量來源，產生本地草稿。等這條路徑通過，再加入訊息通道或固定排程。
+**原則。** 每則進來的訊息必須恰好對應到一個工作階段，而且同一個工作階段內的輪次不能交錯。兩個同時進行的輪次寫入同一份歷史，會把它弄壞。要有意識地決定工作階段何時結束：永不重設的工作階段會累積過時的情境；重設太頻繁，又會忘記進行中的工作。
 
-官方快速入門涵蓋支援的執行環境、安裝方式、模型供應商設定、Gateway 狀態與 Control UI。需求會隨版本變動，安裝時應查看當前文件，不要照抄舊部落格中的執行環境版本。[3]
+**需要決定的事：** 寄件者與通道如何對應到工作階段（每個私訊一個、每個群組一個，或每個討論串一個）；在輪次進行中又收到訊息時怎麼辦（排隊、合併，或中斷）；以及重設政策（手動、每日，或閒置一段時間後）。
 
-安裝預定使用的版本並完成初始設定後，下列文件記載的指令可查看狀態或開啟介面：
+> **在 OpenClaw 中：** 輪次會先依工作階段序列化，再配置全域容量，而且每次執行都會記錄寫入者宣告（writer claim），讓被取代的執行不能提交過時的對話資料。工作階段預設會一直重複使用，直到重設；操作者可以依聊天類型或通道，選擇在設定的時刻每日重設，或在閒置若干分鐘後重設，也可以用 `/new` 或 `/reset` 手動開始新的工作階段。排程執行等背景事件，不計入閒置重設的活動。[11, 12]
+
+## 工具、權限與執行邊界
+
+**原則。** 三個問題必須有各自的答案：
+
+1. **誰可以提出要求？** 寄件者的身分驗證與配對，決定誰的訊息能到達 agent。
+2. **哪些行動可以執行？** 工具政策決定某個工作階段有哪些工具；核准政策決定哪些呼叫需要人工說「可以」。
+3. **它們在哪裡執行？** 在 gateway 主機上、沙箱裡，或已配對的遠端裝置上。這決定一個成功的行動最多能造成多大的損害。
+
+通過身分驗證的寄件者，只是通過了第一關。這並不表示他要求 agent 讀取的網頁中，每一句指令都具有權威；工具擷取回來的內容是資料，而間接提示詞注入正是越過這條界線的標準手法。[17] 核准提示能減少意外執行，但一旦核准，指令就以它所在之處的完整權限運行。因此，最小權限存在於執行邊界與限定範圍的憑證中，而不是在提示詞裡。
+
+**第一次部署的實用政策：** 唯讀工具不需核准；寫入限制在單一工作區；任何會寄送、發布、刪除或花錢的行動都要先核准；機密由工具持有，絕不貼進提示詞或 skills；凡是會瀏覽不受信任內容的 agent，都放進沙箱。
+
+> **在 OpenClaw 中：** 文件把一個 Gateway 視為一個信任邊界：通過驗證的呼叫者就是受信任的操作者，同一個 Gateway 上的多個 agent 或工作階段，並不會隔離彼此敵對的使用者。執行核准在執行主機上強制進行，並綁定已核准指令的確切脈絡（工作目錄、引數清單、解析後的執行檔），但文件明確說明，它們不是針對個別使用者的身分驗證邊界，也不是唯讀政策。工具可用性與指令核准是分開的設定。沙箱預設關閉；啟用後，工具執行會移到沙箱後端，Gateway 仍留在主機上。[4, 5, 13]
+
+## Skills：可用性、優先序與版本
+
+**原則。** 對 agent 使用的每個 skill，你應該能回答：載入的是哪一份副本、來自哪個來源、是哪個版本，以及它在這裡是否具備執行資格（所需的執行檔、檔案與憑證，在*執行發生的地方*是否存在）。當兩個來源定義了同名的 skill，由優先序規則決定；在除錯「我改了卻沒有效果」之前，先弄清楚這條規則。Skills 如何組織與測試，請見[第二篇](/zh-tw/blog/agent-skills-and-harnesses/)。
+
+> **在 OpenClaw 中：** 檔案式 skills 從一份文件列出的來源清單載入，其中工作區 skills 的優先序最高，內建 skills 接近最低；同名衝突時，由最高的來源勝出。Skills 可以用啟用條件管控，CLI 會列出符合條件的 skills，並檢查缺少的先備條件。檔案式 skills、受管理的函式庫版本與 Workshop 學得的 skills，各自遵循不同的更新規則，所以執行中的工作階段可能不會立刻看到剛改過的檔案。[2, 6]
+
+## 記憶與情境：每一輪開始時 agent 知道什麼
+
+**原則。** 把四件事分開。*情境*是目前這次請求裡的內容。*壓縮*用摘要取代較舊的輪次，讓長工作階段放得進視窗。*記憶*跨工作階段攜帶挑選過的事實。*檢查點*記錄執行進度，讓工作可以續作。有用的記憶條目是持久、有來源、有日期的（「優先使用原始論文；觀察於 2026-11-03」）；尚未確認的猜測不應變成永久事實，改變後的偏好則應取代舊的，而不是與它並存。關於外部世界的證據（「星期二無法連到來源 B」）不是偏好，會過期。
+
+> **在 OpenClaw 中：** 記憶分成不同角色的檔案：`USER.md` 放穩定的偏好與指示，`MEMORY.md` 放持久的非個人資料事實與決策，按日期命名的 `memory/YYYY-MM-DD.md` 放日常觀察，新的工作階段會載入近期的每日筆記。壓縮會摘要較舊的輪次、保持近期訊息完整、讓每個工具呼叫與其結果成對，並把完整歷史留在磁碟上；它只改變模型接下來看到的內容。[7, 14]
+
+## 排程：沒有人傳訊息時的工作
+
+**原則。** 週期性工作需要的不只是計時器。排程之前先寫下：時區、輸入範圍、輸出目的地、在既有工作階段（帶有其情境）還是全新的工作階段中執行、預算、輸入缺失時的行為，以及**重複處理政策**。排程器可能觸發兩次，也可能工作成功之後寄送卻失敗。為每次執行設定穩定的週期鍵（例如預定的那一週加上來源集合的版本），保存產物識別與寄送收據，並在寄送前檢查是否已有收據。把執行與寄送記為兩個獨立的結果：「執行了但無法寄送」與「根本沒有執行」，修正方式不同。
+
+先手動驗證工作，再排程為只產生草稿，檢查第一次執行，最後才允許寄送。
+
+> **在 OpenClaw 中：** 排程工作、webhook 與其他觸發條件，統一以 *automations* 管理，它會持久保存工作、喚醒 agent，並把輸出送到通道、webhook 或不送出；各工作有自己的執行歷史。早期版本有獨立的 heartbeat 監控；現行文件說明如何把這些監控遷移成一般的 automation 工作。[8, 9]
+
+## 復原：中斷、重啟與升級
+
+**原則。** 假設任何步驟都可能被中斷：行程重啟、逾時、連線中斷。復原有兩條規則。第一，中斷之後，agent 應*先檢查目前的狀態*（檔案、行程、外部紀錄）再繼續，因為保存的紀錄可能落後於實際發生的事。第二，結果未知的行動不能盲目重複；先比對狀態，或使用冪等鍵。升級是有計畫的中斷：依文件的方法備份狀態、閱讀遷移說明、盡可能先升級測試用的實例，並重跑固定的驗收任務。換掉執行檔不一定能還原狀態遷移，所以要保留可還原的備份。
+
+> **在 OpenClaw 中：** Gateway 正常停止時，會為每個執行中的根工作階段寫下一個小標記；啟動時，Gateway 會對 agent 送出一則輸入，請它在繼續之前先檢查目前的檔案、行程、子 agent 與外部動作。子執行不會自行恢復。更新指南要求在重大更新之前先備份並驗證，並區分套件更新、狀態遷移與復原。[10, 12]
+
+## 可觀測性：回答「發生了什麼事？」
+
+**原則。** 對話紀錄不是日誌。對每一次執行，把下列內容記錄為結構化事件：執行識別碼、工作階段、觸發來源（訊息、排程、webhook）、模型與設定、每個工具呼叫及其參數（機密已遮蔽）、核准決定、錯誤、token 與成本用量、最終狀態，以及寄送結果。有了這些欄位，多數維運問題都可以用一次查詢回答：昨晚哪些執行失敗、哪個工具最慢、哪些核准最頻繁、哪個工作重複寄送。OpenTelemetry 維護了生成式 AI 遙測的語意慣例（針對模型用戶端與 MCP 的 span、指標與事件），如果你已經在用追蹤，這是個合理的起始詞彙。[16]
+
+> **在 OpenClaw 中：** Gateway 會寫入滾動的日誌檔，每行一個 JSON 物件，並支援遮蔽；`openclaw logs` 可以持續查看這些日誌，包括遠端查看。工作階段可以用 JSON 列出；在聊天中，`/status` 顯示情境用量與模型，`/context list` 顯示系統提示詞裡有什麼。某次執行的等待結果會回報其狀態，並且在可用時，附上確認回覆已送達來源對話的收據。`openclaw doctor` 會執行健康檢查與引導式修復。[11, 12, 15]
+
+## 學得的程序就是程式變更
+
+有些 harness 能根據經驗撰寫或修訂自己的 skills。把學得的程序當作 pull request 看待：審閱它的範圍、與先前的失敗比較，重跑一個相關請求、一個不相關請求與一個先前失敗的案例，並保留回復的途徑。好的教訓是「PDF 無法取得時，保留已驗證的中繼資料並標明缺少的結果」；壞的教訓是從一次成功的執行推論出「永遠信任這個網站」。這一切都不會改變模型的權重。
+
+> **在 OpenClaw 中：** Skill Workshop 在每次變更前都會保存先前的版本，並支援復原；提案模式讓背景學習把草稿存起來供審閱，而不是直接套用。[6]
+
+## 從症狀開始診斷
+
+| 症狀 | 先檢查 | 要避免什麼 |
+| --- | --- | --- |
+| 訊息一直沒有到達任何一次執行 | 通道存取權、配對、路由、gateway 狀態 | 在確認訊息有送達之前就改寫 skill |
+| 找不到某個 skill | 選取的工作區、來源優先序、啟用條件 | 以為安裝就等於啟用 |
+| 指令在主機上能用，在任務中卻失敗 | 實際的執行主機、相依套件、掛載的檔案 | 為了補上缺少的執行檔，授予過大的權限 |
+| 舊的指令一直出現 | 工作階段選擇、skill 版本與更新規則 | 改了另一份同名的副本 |
+| Agent 忘記某個決定 | 已保存的記憶、壓縮摘要、載入上限 | 每次提示都重複整份對話紀錄 |
+| 排程工作產生重複的輸出 | 執行歷史、觸發識別、寄送收據 | 對不確定的寄送盲目重試 |
+
+這些是除錯假設；請在日誌與實際生效的設定中確認。
+
+## 維運檢查清單
+
+**第一次執行前：** 一位使用者、一個工作區、一組模型連線；寫下工具政策；決定是否使用沙箱；機密由工具持有；一個有已知正確輸出的小型驗收任務（[第一篇](/zh-tw/blog/agents-from-prompts-to-systems/)的論文摘要就很適合）。
+
+**排程之前：** 任務手動執行即可通過；已定義重複處理政策與週期鍵；已在私人通道測試寄送；已設定預算；失敗通知會送到真人手上。
+
+**每週：** 閱讀失敗的執行與核准紀錄；清理或取代過時的記憶；審閱學得或更新過的 skills；確認磁碟、日誌與成本都在預期範圍內。
+
+**每次升級前：** 已驗證的備份；已閱讀版本與遷移說明；在新版本上重跑驗收任務；已確認回復途徑。
+
+## 現行選項，查核日期 2026 年 11 月 6 日
+
+**查核了什麼。** OpenClaw 的官方文件，來源提交為 `27f243756a45f02724b70597803571e2f0e1d020`（2026 年 11 月 6 日的 `main` 分支；套件版本 2026.11.1，同時也是最新穩定發行標籤，另有標記為 2026.11.5 的 beta）。本文先前的版本使用提交 `34bc643`；比對被引用的頁面後，其間的變動不大（快速入門現在會詢問是否讓 Gateway 在背景持續運行，並新增 `openclaw gateway start`，它會等到就緒；被隱藏、不讓模型自動選擇的 skill，現在可以出現在 `$` 選單中；回復時會保留之後獨立的變更）。以下指令已對照文件檢查；本文沒有實際執行經過驗證的 OpenClaw 部署。使用前請先確認你安裝的版本。[1–15]
 
 ```bash
 openclaw --version
@@ -39,102 +144,43 @@ openclaw dashboard
 openclaw skills list --eligible
 openclaw skills check
 openclaw security audit
-```
-
-`dashboard` 只負責開啟介面，不能驗證完整任務。`skills check` 協助發現缺少的先備條件。`security audit` 回報設定問題，不代表已證明每個外掛與工作流程都安全。這些指令不會安裝第三方 skill 或建立排程。[2–4]
-
-把第一篇的摘要任務約定交給 agent，再查看真正的輸出檔案。確認論文身分一致、證據缺口清楚，而且沒有寄出內容。這次小型成功執行，會成為後續修改的比較基準。
-
-## 加入一個你理解的 skill
-
-一般本地工作區可以把[第二篇](/zh-tw/blog/agent-skills-and-harnesses/)的 `paper-digest/SKILL.md` 範例，放進該工作區的 `skills/` 目錄。固定版本文件中，工作區 skills 的優先序高於多種共享與內建來源。同名時，應確認實際選中哪個路徑。[2]
-
-使用已安裝 CLI 的 skill 檢查指令，確認它已被找到且符合啟用條件。第一次測試明確要求使用 `paper-digest`；再試一般聊天請求，確認不會無差別套用這套程序。
-
-安裝 skill，不代表它提到的每個依賴也都安裝了。如果行動在沙箱或已配對的 node 上執行，所需檔案、程式與憑證也必須在那個環境裡可用。只確認主機上有，還不夠。[2, 5]
-
-### 分清楚這次更新的是哪一種 skill
-
-固定來源版本中，一般檔案式 skill、受管理的函式庫版本，以及 Workshop 產生的 skill，更新規則並不相同。檔案式來源可以在變更後重新發現；受管理的選取項目保留指定版本，直到明確更新；Workshop 文件則說明，修改過的學得 skills 會在新工作階段載入。應確認使用的是哪個機制，不要假設每個執行中的工作階段立刻看到最新檔案。[2, 6]
-
-為了讓測試能重現，記錄 skill 來源與版本，適當時開啟新工作階段，再跑相同驗收案例。第三方 skill 更新時，要檢查完整套件，包括腳本與參考檔案。簡短描述沒變，不代表工作程序也沒變。
-
-## 讓記憶有用，也能被更正
-
-目前記憶文件區分精簡的使用者資料、持久事實與決策，以及按日期保存的工作筆記。`USER.md` 放穩定偏好，`MEMORY.md` 放經整理的非個人資料，`memory/YYYY-MM-DD.md` 放日常觀察。實際載入方式仍依系統設定而定。[7]
-
-對摘要專案來說，有用的持久筆記可以是「優先使用原始論文，標明無法取得的實驗」，並附上觀察日期。每篇論文的完整文字應保存在來源資料裡，不必全部塞進起始記憶。尚未確認的猜測，也不應悄悄變成永久事實。
-
-偏好改變時，應替換被取代的舊規則，而不是追加互相矛盾的指令。證據與任務狀態也要分清楚：「星期二無法取得來源 B」不等於它永遠不可用。記憶檢索與一般搜尋一樣，都可能帶回過時資訊。
-
-## 手動驗證後，再建立排程
-
-固定摘要需要的不只是一個計時器。應定義時區、來源範圍、產物位置、重複處理政策、寄送對象、額度，以及缺少輸入時的行為。依真正需要的情境，決定使用既有或全新的工作階段。
-
-**這裡有一項需要更新的遷移資訊：** 固定版本 OpenClaw 文件已將 heartbeat 監控描述為一般 automation jobs。主要管理介面是 `openclaw automations`，`openclaw cron` 則保留為別名。舊教學中設定 heartbeat 欄位的方式，可能對應較早版本。修改現有安裝前，先閱讀該版本的遷移文件。[8, 9]
-
-新增工作前，先查看既有工作：
-
-```bash
+openclaw sessions --json
 openclaw automations list --all
+openclaw logs --follow
+openclaw doctor
 ```
 
-透過已安裝版本的管理介面建立只產生草稿的工作，查看定義，再檢查第一次執行。工作成功執行但無法送出結果，與工作根本沒有啟動，是不同失敗；執行與交付都要有紀錄。
+`dashboard` 負責開啟網頁介面，不能驗證任務。`skills check` 回報缺少的先備條件。`security audit` 回報設定上的疑慮，不代表已證明每個外掛與工作流程都安全。`automations list` 顯示已啟用的工作，加上 `--all` 則包含已停用的；`openclaw cron` 仍保留為別名。這些指令都不會安裝第三方 skill 或建立排程。[2, 3, 8, 12, 15]
 
-為了控制重複產物，本系列建議替每份摘要指定穩定的期間識別，例如目標週次加上來源集合版本，並保存產物識別與交付紀錄。排程醒來兩次，不應直接變成發布兩份。這是應用設計建議，不代表某個設定旗標就能保證恰好一次交付。
+**第一個 skill。** 若要試用[第二篇](/zh-tw/blog/agent-skills-and-harnesses/)的 `paper-digest` skill，把它放進工作區的 `skills/` 目錄，確認它被列為符合啟用條件，明確要求使用一次，再送出一個不相關的請求，確認它沒有被套用。[2]
 
-## 分開處理存取、工具與執行環境
+## 延伸閱讀
 
-三個問題分別是：**誰可以提出請求、哪些行動可以執行、行動在哪裡執行。** 已配對的傳送者通過了存取檢查，但他請 agent 閱讀的網頁，不會因此取得下指令的權限。工具政策限制行動，沙箱限制部分執行環境。[4, 5]
-
-固定版本的沙箱文件指出，沙箱預設未啟用；啟用後移動的是工具執行，Gateway 仍在主機上。不能只因產品名稱或 agent 有工作區，就推論它已在沙箱內，應確認實際生效的設定。[5]
-
-OpenClaw 安全指引將一個 Gateway 視為一個信任邊界。多個 agent 或工作階段，本身不會替互不信任的對抗性使用者建立隔離。信任需求不同時，應分開憑證與執行邊界。[4]
-
-論文摘要只需要取得來源與撰寫本地草稿。發布可以是對明確目的地執行的獨立授權操作。祕密值不要放進 skill 或產生的報告；檢查執行軌跡時，保留除錯所需資訊，但不要把憑證抄進可分享產物。
-
-## 把學到的新程序當成可審閱變更
-
-固定版本的 **Skill Workshop** 文件描述了可重用程序的保存、變更歷史、復原，以及供審閱背景學習結果的提案模式。這是 agent 改善工作指令的具體例子，不代表底層模型權重已經更新。[6]
-
-有用的候選規則可以是：「PDF 取不到時，保留已驗證的中繼資料，並標示缺少的結果。」比較不好的規則是因一次成功，就學成「永遠相信這個網站」。應檢查規則範圍，用過去失敗案例比較，並保留回復方式。
-
-接受新版本前，重新測試相關請求、不相關請求，以及曾經失敗的案例。如果新版本讓其他工作變差，就保留舊版。清楚的差異與通過的迴歸案例，比「agent 變聰明了」更有說服力。
-
-## 從症狀開始排查
-
-| 症狀 | 優先查看 | 避免什麼 |
-| --- | --- | --- |
-| 訊息沒有進入執行流程 | 通道存取、配對、路由與 Gateway 狀態 | 尚未確認傳遞就重寫 skill |
-| 找不到 skill | 選定工作區、來源優先序、啟用條件 | 把安裝等同啟用 |
-| 主機指令正常，任務裡卻失敗 | 真正執行主機、依賴與掛載檔案 | 為了缺少程式而全面放寬權限 |
-| 一直出現舊指令 | 工作階段選取、skill 版本與更新規則 | 更新另一個同名副本 |
-| 忘記了某個決策 | 已存記憶、載入限制與來源紀錄 | 每次把完整對話重新塞進提示 |
-| 排程重複產生結果 | 執行歷史、觸發識別與應用紀錄 | 不確認狀態就重送 |
-
-這些是排查假設，不是所有錯誤的標準答案。應用真實紀錄與生效設定確認；官方快速入門、skills、記憶與自動化文件，提供對應的檢查入口。[2, 3, 7, 8]
-
-## 用可重複的驗收流程升級
-
-記錄已安裝的應用、模型、skill 與外掛版本。遷移前依官方方式備份狀態，閱讀發布與遷移說明，能建立測試環境時先在其中升級，再跑同一個小型工作流程。更新文件區分套件／執行環境更新、狀態遷移與恢復程序。[10]
-
-確認任務能啟動、選中預期 skill、建立草稿、來源仍可存取、記憶範圍正確，而且暫停後能續作。如果流程會寄送訊息，應在已授權的測試通道檢查目的地與重複行為。保留升級前狀態備份，依文件回復；只換回執行檔，不一定能撤銷資料結構遷移。
-
-第一個專案可以停在有來源依據的本地摘要。當你能檢查產物、說明權限、重現失敗並恢復執行，就有基礎進一步建立固定運作的個人助理或更複雜的開發流程。
-
-選擇下一項技巧時，可以回到[技術地圖](/zh-tw/blog/agents-from-prompts-to-systems/)；想理解循環為什麼停止、恢復或重做時，則回到 [harness 範例](/zh-tw/blog/agent-skills-and-harnesses/)。
+- OpenClaw, [Gateway architecture](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/architecture.md) 與 [Agent loop](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/agent-loop.md)：對常駐 harness 如何執行一個輪次的詳細公開說明。[1, 11]
+- OpenClaw, [Exec approvals](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/tools/exec-approvals.md)：對核准能保護什麼、不能保護什麼，非常明確的說明。[13]
+- OWASP, [LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)：為什麼必須把「誰可以提出要求」與「內容說了什麼」分開。[17]
+- OpenTelemetry, [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai)：agent 遙測的共用詞彙。[16]
+- Anthropic, [*Effective harnesses for long-running agents*](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents)：設計狀態，讓新的工作階段可以續作。[18]
 
 ## 參考文獻
 
-以下 OpenClaw 來源全部固定在相同官方提交，查閱日期為 2026-11-05。它們描述該開發快照；操作已安裝套件時，仍應核對其發布版本文件。
+OpenClaw 參考文獻 1–15 是固定在來源提交 `27f2437`（2026 年 11 月 6 日）的官方文件。它們描述的是該快照；請查閱你所安裝版本的文件。
 
-1. OpenClaw contributors, “Gateway architecture,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/concepts/architecture.md).
-2. OpenClaw contributors, “Skills” 與 skills CLI reference，2026 原始碼快照。 [載入與更新](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/tools/skills.md)、[CLI](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/cli/skills.md).
-3. OpenClaw contributors, “Getting started,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/start/getting-started.md).
-4. OpenClaw contributors, “Security,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/gateway/security/index.md).
-5. OpenClaw contributors, “Sandboxing,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/gateway/sandboxing.md).
-6. OpenClaw contributors, “Skill Workshop,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/tools/skill-workshop.md).
-7. OpenClaw contributors, “Memory overview,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/concepts/memory.md).
-8. OpenClaw contributors, “Automations,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/automation/cron-jobs.md).
-9. OpenClaw contributors, “Heartbeat migration,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/gateway/heartbeat.md).
-10. OpenClaw contributors, “Updating,” 2026 原始碼快照。 [文件](https://github.com/openclaw/openclaw/blob/34bc6434914728a8d13e8e2dcf6dd98bce6d1d88/docs/install/updating.md).
+1. OpenClaw contributors, “Gateway architecture.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/architecture.md).
+2. OpenClaw contributors, “Skills” and skills CLI reference. [載入與更新](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/tools/skills.md)、[CLI](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/cli/skills.md).
+3. OpenClaw contributors, “Getting started.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/start/getting-started.md).
+4. OpenClaw contributors, “Security.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/gateway/security/index.md).
+5. OpenClaw contributors, “Sandboxing.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/gateway/sandboxing.md).
+6. OpenClaw contributors, “Skill Workshop.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/tools/skill-workshop.md).
+7. OpenClaw contributors, “Memory overview.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/memory.md).
+8. OpenClaw contributors, “Automations” and automations CLI reference. [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/automation/cron-jobs.md)、[CLI](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/cli/cron.md).
+9. OpenClaw contributors, “Heartbeat migration.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/gateway/heartbeat.md).
+10. OpenClaw contributors, “Updating.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/install/updating.md).
+11. OpenClaw contributors, “Agent loop.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/agent-loop.md).
+12. OpenClaw contributors, “Session management” and sessions CLI reference. [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/session.md)、[CLI](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/cli/sessions.md).
+13. OpenClaw contributors, “Exec approvals.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/tools/exec-approvals.md).
+14. OpenClaw contributors, “Compaction.” [文件](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/concepts/compaction.md).
+15. OpenClaw contributors, “Gateway logging,” logs CLI and doctor CLI references. [日誌](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/gateway/logging.md)、[logs CLI](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/cli/logs.md)、[doctor CLI](https://github.com/openclaw/openclaw/blob/27f243756a45f02724b70597803571e2f0e1d020/docs/cli/doctor.md).
+16. OpenTelemetry contributors, “Semantic Conventions for Generative AI,” 儲存庫，查閱日期 2026-11-06。 [儲存庫](https://github.com/open-telemetry/semantic-conventions-genai).
+17. OWASP Gen AI Security Project, “LLM01:2025 Prompt Injection,” OWASP Top 10 for LLM Applications 2025。 [條目](https://genai.owasp.org/llmrisk/llm01-prompt-injection/).
+18. Anthropic, “Effective harnesses for long-running agents,” 2025-11-26。 [文章](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents).

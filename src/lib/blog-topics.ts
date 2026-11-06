@@ -10,10 +10,10 @@ export const BLOG_TOPIC_LABELS = {
 } satisfies Record<BlogTopic, Record<'en' | 'zh-tw', string>>;
 
 export const BLOG_TOPIC_DESCRIPTIONS = {
-  agents: { en: 'How agents work, how to build and operate them, and how to choose tools and workflows.', 'zh-tw': '從第一個任務，到 skills、harness 與工具選擇。' },
-  'models-evaluation': { en: 'Read benchmarks, licenses and evidence, and run your own model evaluation.', 'zh-tw': '認識模型家族、評測證據、指標與代表人物。' },
-  'image-generation': { en: 'How image generators work and how to test them for a real deliverable.', 'zh-tw': '選擇適合影像生成與編輯的模型及工作流程。' },
-  'video-generation': { en: 'Motion, control, evaluation and the cost of usable footage.', 'zh-tw': '比較動態品質、控制方式、成本與部署選項。' },
+  agents: { en: 'How agents work, how to build and operate them, and how to choose tools and workflows.', 'zh-tw': '說明 agent 如何運作、如何建立與維運，以及如何選擇工具與工作流程。' },
+  'models-evaluation': { en: 'Read benchmarks, licenses and evidence, and run your own model evaluation.', 'zh-tw': '閱讀基準測試、授權與證據，並自行評估模型。' },
+  'image-generation': { en: 'How image generators work and how to test them for a real deliverable.', 'zh-tw': '說明影像生成模型如何運作，以及如何針對實際成品加以測試。' },
+  'video-generation': { en: 'Motion, control, evaluation and the cost of usable footage.', 'zh-tw': '動態、控制、評估，以及取得可用影片的成本。' },
   site: { en: 'Introductions and notes about Pixels → Perception.', 'zh-tw': 'Pixels → Perception 的介紹與相關筆記。' },
 } satisfies Record<BlogTopic, Record<'en' | 'zh-tw', string>>;
 
