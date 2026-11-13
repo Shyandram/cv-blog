@@ -16,25 +16,35 @@ class CodeMarkup(HTMLParser):
         self.details = []
         self.pre = None
         self.blocks = 0
+        self.outputs = 0
+        self.divs = []
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == 'div': self.divs.append('rt-output' in (a.get('class') or '').split())
         if tag == 'details':
             folded_code = 'code-fold' in a.get('class', '').split()
             if folded_code: assert 'open' not in a
             self.details.append(folded_code)
         if tag == 'pre': self.pre = a
         if tag == 'code' and self.pre is not None:
+            # A code block's printed output (tutorials) is attached below it, outside the fold, and stays visible.
+            if any(self.divs):
+                self.outputs += 1
+                return
             assert any(self.details) and self.pre.get('id'), 'code must start in a native disclosure with a bookmark'
             self.blocks += 1
     def handle_endtag(self, tag):
+        if tag == 'div' and self.divs: self.divs.pop()
         if tag == 'details': self.details.pop()
         if tag == 'pre': self.pre = None
 
 static_pages = 0
 static_blocks = 0
+static_outputs = 0
 for html in (ROOT / 'dist').rglob('*.html'):
     scan = CodeMarkup()
     scan.feed(html.read_text())
+    static_outputs += scan.outputs
     if scan.blocks:
         static_pages += 1
         static_blocks += scan.blocks
@@ -152,9 +162,9 @@ with sync_playwright() as p:
     page.close()
     browser.close()
 (ROOT / 'docs/worklog/code-folding-validation.json').write_text(json.dumps({
-    'staticPagesWithCode': static_pages, 'staticCodeBlocks': static_blocks, 'layouts': results,
+    'staticPagesWithCode': static_pages, 'staticCodeBlocks': static_blocks, 'attachedOutputs': static_outputs, 'layouts': results,
     'checks': ['default closed', 'copy while closed', 'source text unchanged', 'keyboard', 'touch targets',
                'bulk controls', 'print restoration', 'direct bookmarks', 'clipboard failure fallback',
                'native no-JS disclosure and print', 'Pagefind code search'],
 }, indent=2) + '\n')
-print(f'{static_blocks} blocks on {static_pages} pages start folded; {len(results)} layouts passed; native no-JS disclosure/print and search indexing passed')
+print(f'{static_blocks} blocks on {static_pages} pages start folded ({static_outputs} attached outputs stay visible); {len(results)} layouts passed; native no-JS disclosure/print and search indexing passed')
