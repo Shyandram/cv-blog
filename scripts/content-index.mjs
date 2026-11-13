@@ -238,7 +238,7 @@ ${[
   ['src/lib/rehypeSupplementZones.mjs, src/components/zones/', 'splits each tutorial into its main page and one page per note and paper guide (plus an index page for each section)'],
   ['src/lib/rehypeCitations.mjs', 'turns [n] citations into links to the reference list'],
   ['src/components/', 'MDX components (Callout, Figure, ImageCompare, KernelPlayground, Lab, …) and page widgets'],
-  ['src/pages/[lang]/', 'routes: home, learn (+ [...slug]: main page, notes/papers index pages and item pages), blog, playground, search, download, about'],
+  ['src/pages/[lang]/', 'routes: home, learn (+ [...slug]: main page, notes/papers index pages and item pages), practice (+ [id]: one page per experiment), blog, playground, search, download, about'],
   ['src/i18n/ui.ts, src/lib/site.ts, src/lib/taxonomy.ts', 'UI strings, site helpers, track list'],
   ['scripts/check-mdx.mjs, check-playground.mjs, tests/', 'validators (see AGENTS.md section 6)'],
   ['scripts/book/', 'PDF book export (four volumes per language)'],
