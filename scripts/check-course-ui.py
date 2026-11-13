@@ -1,11 +1,14 @@
 """Smoke test the bilingual course's navigation and mobile layout against a local build."""
-import json
+import glob, json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 BASE='http://127.0.0.1:4322'
 report=[]
+Path('artifacts').mkdir(exist_ok=True)
+# Use a preinstalled Chromium when Playwright's own browser build is not downloaded.
+chrome=sorted(glob.glob('/opt/pw-browsers/chromium-*/chrome-linux*/chrome'))
 with sync_playwright() as p:
- b=p.chromium.launch(headless=True,args=['--no-sandbox'])
+ b=p.chromium.launch(headless=True,args=['--no-sandbox'],**({'executable_path':chrome[-1]} if chrome else {}))
  for lang in ['en','zh-tw']:
   for width in [1440,375]:
    page=b.new_page(viewport={'width':width,'height':900},device_scale_factor=1)
@@ -18,10 +21,18 @@ with sync_playwright() as p:
     page.screenshot(path=f'artifacts/{lang}-{width}-{name}.png')
     report.append({'path':path,'width':width,'errors':list(errors)})
    visit(f'/{lang}/learn/','learn')
-   button=page.locator('.lt-toggle').first
+   # The Learn page shows course cards; a card opens its course's units, and a unit's toggle opens its sub-chapters.
+   assert not page.locator('.course-panel').first.is_visible()
+   card=page.locator('.course-card[data-track="deep-learning"]')
+   card.click(); assert card.get_attribute('aria-expanded')=='true'
+   panel=page.locator('#'+card.get_attribute('aria-controls'))
+   assert panel.is_visible() and page.locator('.course-panel:visible').count()==1
+   button=panel.locator('.unit-toggle').first
    button.click(); assert button.get_attribute('aria-expanded')=='true'
    controlled=button.get_attribute('aria-controls')
    assert page.locator('#'+controlled).is_visible()
+   page.goto(BASE+f'/{lang}/learn/#ml'); page.wait_for_timeout(200)
+   assert page.locator('#ml').is_visible() and page.locator('.course-card[data-track="ml"]').get_attribute('aria-expanded')=='true'
    visit(f'/{lang}/learn/tree/','tree')
    visit(f'/{lang}/learn/deep-learning/image-classification/','chapter')
    if width==375:
