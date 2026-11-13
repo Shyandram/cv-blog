@@ -5,7 +5,7 @@ const equations = [...document.querySelectorAll<HTMLElement>('.prose .katex-disp
 const overflows = (el: HTMLElement) => el.scrollWidth > el.clientWidth + 1;
 const mark = (el: HTMLElement) => {
   // An equation wider than the text measure may use the whole article column before it has to scroll.
-  if (overflows(el) && el.parentElement?.matches('.prose, .section-body')) el.classList.add('eq-wide');
+  if (overflows(el) && el.parentElement?.matches('.prose, .section-body, .deeper-body')) el.classList.add('eq-wide');
   const wide = overflows(el);
   if (wide && !el.hasAttribute('tabindex')) {
     el.tabIndex = 0;

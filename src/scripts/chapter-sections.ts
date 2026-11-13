@@ -46,7 +46,8 @@ if (prose) {
     try { id = decodeURIComponent(hash.slice(1)); } catch { return; }
     const target = document.getElementById(id);
     if (!target || !prose.contains(target)) return;
-    for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+    // The target itself may be a disclosure (a <Deeper> block's id); open it and every disclosure around it.
+    for (let parent: HTMLElement | null = target; parent; parent = parent.parentElement) {
       if (parent instanceof HTMLDetailsElement) parent.open = true;
     }
     if (scroll) requestAnimationFrame(() => target.scrollIntoView());
