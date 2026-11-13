@@ -32,3 +32,25 @@ test('preserves existing bookmarks, avoids collisions and does not double-wrap',
   transform(tree, { path: '/en/test.md' });
   assert.deepEqual(tree, once);
 });
+
+test('in tutorials, a text block right after code becomes its attached, unfolded output', () => {
+  const pre = (lang: string, value: string) => ({ type: 'element', tagName: 'pre', properties: { dataLanguage: lang }, children: [{ type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value }] }] });
+  const make = (): any => ({ type: 'root', children: [pre('python', 'print(1)\n'), { type: 'text', value: '\n' }, pre('text', '1\n'), { type: 'text', value: '\n' }, pre('text', 'grid\n')] });
+  const tree = make();
+  const transform = rehypeCodeFolding();
+  transform(tree, { path: '/src/content/tutorials/en/x/y.mdx' });
+  assert.equal(tree.children.length, 3);
+  const wrap = tree.children[0];
+  assert.equal(wrap.children[1].properties.className[0], 'rt-output');
+  assert.equal(wrap.children[1].children[0].children[0].value, 'Output');
+  assert.equal(wrap.children[1].children[1].children[0].children[0].value, '1\n');
+  // A second text block is not output: it stays a folded block of its own.
+  assert.equal(tree.children[2].children[0].tagName, 'details');
+  const once = structuredClone(tree);
+  transform(tree, { path: '/src/content/tutorials/en/x/y.mdx' });
+  assert.deepEqual(tree, once);
+  // Outside tutorials nothing is paired.
+  const post = make();
+  transform(post, { path: '/src/content/posts/en/p.md' });
+  assert.equal(post.children.filter((n: any) => n.tagName === 'div').length, 3);
+});
