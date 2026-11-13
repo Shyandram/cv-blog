@@ -4,8 +4,9 @@ New, self-contained components (own styles, no change to the tutorial route) and
 
 ## `MarginNote` (`src/components/MarginNote.astro`)
 - Written inline: `$t_i$<MarginNote>true positives plus misses</MarginNote> plus ...`; replaces a parenthetical, adds no facts.
-- Margin mode needs the window to be at least 1200 px wide AND the `.prose` column at least 880 px wide (40rem text + 28 px gap +
-  200 px note, plus slack). The column test is a CSS container query (`.prose { container-type: inline-size }`, set by this
+- Margin mode needs the window to be at least 1200 px wide AND the `.prose` column at least 820 px wide. The note takes the room
+  beside the text measure (`100cqw - --measure - 20px`, clamped to 120–200 px); with the d2l-style chapter layout (680 px measure in
+  a column up to 880 px) that is about 128 px at 1440 px and 180 px when the column is at its full width. The column test is a CSS container query (`.prose { container-type: inline-size }`, set by this
   component's global style, so only on pages that use it), so the note never runs under a sidebar whatever the layout does.
   In margin mode the note floats right with a negative margin: the prose column does not move.
 - Otherwise a small script moves each note after its paragraph (a left-ruled aside, numbered; list items and table cells get it
