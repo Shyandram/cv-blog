@@ -124,6 +124,8 @@ Source excerpts obey the same size and readability limits; preserve their labels
 **Components** (`src/components/`): `Callout`, `Figure`, `ImageCompare` (before/after slider, two
 same-size images), `KernelPlayground` (live 3×3 kernel; `lang="zh-tw"` on Chinese pages). Use them
 only where they teach.
+`MarginNote` (inline `<MarginNote>short definition</MarginNote>` replacing a parenthetical: numbered note in the right margin at ≥1200 px, aside under the paragraph below; short plain text only, no new facts) and
+`LabFigure` (`<LabFigure caption="..."><Lab id="..." /></LabFigure>`: embeds an existing lab wider than the column, breakout width `--lab-breakout`, numbered "Interactive figure n" caption).
 
 **Supplementary notes.** Additional information that is optional for the main line does **not** sit in the middle of a
 section. Typical items: the introduction of a named algorithm the text only uses or mentions (RANSAC, the guided
